@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -32,9 +33,16 @@ class ManifestManager:
         """Initialize manifest manager.
 
         Args:
-            base_path: Base path for storage. Defaults to ~/.percus
+            base_path: Base path for storage.
+                       Defaults to PHI_DATA_DIR env var, or ./data
         """
-        self.base_path = base_path or Path.home() / ".percus"
+        if base_path:
+            self.base_path = base_path
+        elif os.environ.get("PHI_DATA_DIR"):
+            self.base_path = Path(os.environ["PHI_DATA_DIR"])
+        else:
+            # Default to ./data relative to current working directory
+            self.base_path = Path.cwd() / "data"
         self.manifest_path = self.base_path / "manifest.json"
 
         self._manifest: Optional[Manifest] = None
@@ -45,6 +53,11 @@ class ManifestManager:
         if self._manifest is None:
             self._manifest = self._load_manifest()
         return self._manifest
+
+    def reload(self) -> None:
+        """Reload manifest from disk."""
+        self._manifest = self._load_manifest()
+        logger.debug("Reloaded manifest from disk")
 
     def _load_manifest(self) -> Manifest:
         """Load manifest from disk or create new one."""
@@ -94,15 +107,25 @@ class ManifestManager:
             return None
 
         meta_path = self.base_path / entry.path / ".meta.json"
-        if not meta_path.exists():
-            return None
+        if meta_path.exists():
+            try:
+                data = json.loads(meta_path.read_text())
+                return DatasetMetadata(**data)
+            except Exception as e:
+                logger.error(f"Failed to load dataset metadata {dataset_id}: {e}")
 
-        try:
-            data = json.loads(meta_path.read_text())
-            return DatasetMetadata(**data)
-        except Exception as e:
-            logger.error(f"Failed to load dataset metadata {dataset_id}: {e}")
-            return None
+        # Return minimal metadata from manifest entry for remote-only datasets
+        from interfaces_backend.models.storage import DatasetType, SyncInfo
+        return DatasetMetadata(
+            id=dataset_id,
+            name=dataset_id,
+            source=entry.source,
+            status=entry.status,
+            created_at=_now_iso(),
+            updated_at=_now_iso(),
+            dataset_type=DatasetType(entry.type) if entry.type else DatasetType.RECORDED,
+            sync=SyncInfo(size_bytes=entry.size_bytes, hash=entry.hash),
+        )
 
     def list_datasets(
         self,
@@ -124,7 +147,7 @@ class ManifestManager:
         return results
 
     def register_dataset(self, metadata: DatasetMetadata) -> ManifestEntry:
-        """Register a new dataset in the manifest."""
+        """Register a new dataset in the manifest (with local files)."""
         path = self.get_dataset_path(metadata.id, metadata.source)
         path.mkdir(parents=True, exist_ok=True)
 
@@ -146,6 +169,28 @@ class ManifestManager:
         self.save()
 
         logger.info(f"Registered dataset: {metadata.id}")
+        return entry
+
+    def register_dataset_remote(self, metadata: DatasetMetadata) -> ManifestEntry:
+        """Register a remote-only dataset in the manifest (no local files).
+
+        Used for datasets that exist on R2 but haven't been downloaded.
+        """
+        path = self.get_dataset_path(metadata.id, metadata.source)
+
+        entry = ManifestEntry(
+            path=str(path.relative_to(self.base_path)),
+            source=metadata.source,
+            type=metadata.dataset_type.value,
+            hash=metadata.sync.hash,
+            size_bytes=metadata.sync.size_bytes,
+            status=metadata.status,
+        )
+        self.manifest.datasets[metadata.id] = entry
+        self.manifest.last_updated = _now_iso()
+        self.save()
+
+        logger.info(f"Registered remote dataset: {metadata.id}")
         return entry
 
     def update_dataset(self, metadata: DatasetMetadata) -> None:
@@ -196,6 +241,17 @@ class ManifestManager:
         subdir = "r2" if source == DataSource.R2 else "hub"
         return self.base_path / "models" / subdir / model_id
 
+    def _guess_policy_type(self, model_id: str) -> str:
+        """Guess policy type from model ID."""
+        model_id_lower = model_id.lower()
+        if "act" in model_id_lower:
+            return "act"
+        elif "pi0" in model_id_lower or "pi05" in model_id_lower:
+            return "pi0"
+        elif "diffusion" in model_id_lower:
+            return "diffusion"
+        return "unknown"
+
     def get_model(self, model_id: str) -> Optional[ModelMetadata]:
         """Get model metadata by ID."""
         entry = self.manifest.models.get(model_id)
@@ -203,15 +259,26 @@ class ManifestManager:
             return None
 
         meta_path = self.base_path / entry.path / ".meta.json"
-        if not meta_path.exists():
-            return None
+        if meta_path.exists():
+            try:
+                data = json.loads(meta_path.read_text())
+                return ModelMetadata(**data)
+            except Exception as e:
+                logger.error(f"Failed to load model metadata {model_id}: {e}")
 
-        try:
-            data = json.loads(meta_path.read_text())
-            return ModelMetadata(**data)
-        except Exception as e:
-            logger.error(f"Failed to load model metadata {model_id}: {e}")
-            return None
+        # Return minimal metadata from manifest entry for remote-only models
+        from interfaces_backend.models.storage import ModelType, SyncInfo
+        return ModelMetadata(
+            id=model_id,
+            name=model_id,
+            source=entry.source,
+            status=entry.status,
+            created_at=_now_iso(),
+            updated_at=_now_iso(),
+            model_type=ModelType(entry.type) if entry.type else ModelType.TRAINED,
+            policy_type=self._guess_policy_type(model_id),
+            sync=SyncInfo(size_bytes=entry.size_bytes, hash=entry.hash),
+        )
 
     def list_models(
         self,
@@ -233,7 +300,7 @@ class ManifestManager:
         return results
 
     def register_model(self, metadata: ModelMetadata) -> ManifestEntry:
-        """Register a new model in the manifest."""
+        """Register a new model in the manifest (with local files)."""
         path = self.get_model_path(metadata.id, metadata.source)
         path.mkdir(parents=True, exist_ok=True)
 
@@ -255,6 +322,28 @@ class ManifestManager:
         self.save()
 
         logger.info(f"Registered model: {metadata.id}")
+        return entry
+
+    def register_model_remote(self, metadata: ModelMetadata) -> ManifestEntry:
+        """Register a remote-only model in the manifest (no local files).
+
+        Used for models that exist on R2 but haven't been downloaded.
+        """
+        path = self.get_model_path(metadata.id, metadata.source)
+
+        entry = ManifestEntry(
+            path=str(path.relative_to(self.base_path)),
+            source=metadata.source,
+            type=metadata.model_type.value,
+            hash=metadata.sync.hash,
+            size_bytes=metadata.sync.size_bytes,
+            status=metadata.status,
+        )
+        self.manifest.models[metadata.id] = entry
+        self.manifest.last_updated = _now_iso()
+        self.save()
+
+        logger.info(f"Registered remote model: {metadata.id}")
         return entry
 
     def update_model(self, metadata: ModelMetadata) -> None:
@@ -477,7 +566,7 @@ class ManifestManager:
     # --- Storage Stats ---
 
     def get_storage_stats(self) -> Dict:
-        """Get storage usage statistics."""
+        """Get storage usage statistics (local only - items that exist on disk)."""
         stats = {
             "datasets_count": 0,
             "datasets_size_bytes": 0,
@@ -485,20 +574,45 @@ class ManifestManager:
             "models_size_bytes": 0,
             "archive_count": 0,
             "archive_size_bytes": 0,
+            # Remote-only stats (not downloaded locally)
+            "remote_datasets_count": 0,
+            "remote_datasets_size_bytes": 0,
+            "remote_models_count": 0,
+            "remote_models_size_bytes": 0,
         }
 
-        for entry in self.manifest.datasets.values():
+        for dataset_id, entry in self.manifest.datasets.items():
+            # Check if local path exists (has actual files)
+            local_path = self.base_path / entry.path
+            is_local = local_path.exists() and any(local_path.iterdir()) if local_path.exists() else False
+
             if entry.status == DataStatus.ACTIVE:
-                stats["datasets_count"] += 1
-                stats["datasets_size_bytes"] += entry.size_bytes
+                if is_local:
+                    stats["datasets_count"] += 1
+                    stats["datasets_size_bytes"] += entry.size_bytes
+                else:
+                    stats["remote_datasets_count"] += 1
+                    stats["remote_datasets_size_bytes"] += entry.size_bytes
             else:
                 stats["archive_count"] += 1
                 stats["archive_size_bytes"] += entry.size_bytes
 
-        for entry in self.manifest.models.values():
+        for model_id, entry in self.manifest.models.items():
+            # Check if local path exists (has actual files beyond just .meta.json)
+            local_path = self.base_path / entry.path
+            is_local = False
+            if local_path.exists():
+                files = list(local_path.iterdir())
+                # Has files beyond just .meta.json
+                is_local = len(files) > 1 or (len(files) == 1 and files[0].name != ".meta.json")
+
             if entry.status == DataStatus.ACTIVE:
-                stats["models_count"] += 1
-                stats["models_size_bytes"] += entry.size_bytes
+                if is_local:
+                    stats["models_count"] += 1
+                    stats["models_size_bytes"] += entry.size_bytes
+                else:
+                    stats["remote_models_count"] += 1
+                    stats["remote_models_size_bytes"] += entry.size_bytes
             else:
                 stats["archive_count"] += 1
                 stats["archive_size_bytes"] += entry.size_bytes
@@ -507,6 +621,11 @@ class ManifestManager:
             stats["datasets_size_bytes"]
             + stats["models_size_bytes"]
             + stats["archive_size_bytes"]
+        )
+
+        stats["remote_total_size_bytes"] = (
+            stats["remote_datasets_size_bytes"]
+            + stats["remote_models_size_bytes"]
         )
 
         return stats

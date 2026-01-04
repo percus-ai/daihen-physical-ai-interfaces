@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, List
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
+from InquirerPy.separator import Separator
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
@@ -25,13 +26,16 @@ class StorageMenu(BaseMenu):
 
     def get_choices(self) -> List[Choice]:
         return [
-            Choice(value="datasets", name="📁 [DATASETS] データセット管理"),
-            Choice(value="models", name="🤖 [MODELS] モデル管理"),
-            Choice(value="sync", name="🔄 [SYNC] R2クラウド同期"),
-            Choice(value="hub", name="🌐 [HUB] HuggingFace連携"),
-            Choice(value="migration", name="📤 [MIGRATION] 旧バージョンから移管"),
-            Choice(value="archive", name="📦 [ARCHIVE] アーカイブ一覧"),
-            Choice(value="usage", name="📊 [USAGE] ストレージ使用量"),
+            Separator("─── データ ───"),
+            Choice(value="datasets", name="📁 データセット管理"),
+            Choice(value="models", name="🤖 モデル管理"),
+            Separator("─── 同期 ───"),
+            Choice(value="sync", name="🔄 R2クラウド同期"),
+            Choice(value="hub", name="🌐 HuggingFace連携"),
+            Choice(value="migration", name="📤 旧バージョンから移管"),
+            Separator("─── 情報 ───"),
+            Choice(value="archive", name="📦 アーカイブ一覧"),
+            Choice(value="usage", name="📊 ストレージ使用量"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
@@ -58,18 +62,22 @@ class StorageMenu(BaseMenu):
         try:
             usage = self.api.get_storage_usage()
 
-            print(f"{Colors.CYAN}Local Storage:{Colors.RESET}")
-            print(f"  Datasets: {format_size(usage.get('datasets_size_bytes', 0))}")
-            print(f"  Models: {format_size(usage.get('models_size_bytes', 0))}")
-            print(f"  Total: {format_size(usage.get('total_size_bytes', 0))}")
+            # Local storage (downloaded to disk)
+            print(f"{Colors.CYAN}📁 ローカルストレージ:{Colors.RESET}")
+            print(f"  データセット: {format_size(usage.get('datasets_size_bytes', 0))} ({usage.get('datasets_count', 0)}個)")
+            print(f"  モデル: {format_size(usage.get('models_size_bytes', 0))} ({usage.get('models_count', 0)}個)")
+            print(f"  合計: {format_size(usage.get('total_size_bytes', 0))}")
 
-            print(f"\n{Colors.CYAN}Counts:{Colors.RESET}")
-            print(f"  Datasets: {usage.get('datasets_count', 0)}")
-            print(f"  Models: {usage.get('models_count', 0)}")
+            # Remote storage (on R2, not downloaded)
+            remote_total = usage.get("remote_total_size_bytes", 0)
+            remote_datasets = usage.get("remote_datasets_count", 0)
+            remote_models = usage.get("remote_models_count", 0)
 
-            if usage.get("r2_usage"):
-                print(f"\n{Colors.CYAN}R2 Cloud:{Colors.RESET}")
-                print(f"  Used: {format_size(usage.get('r2_usage', 0))}")
+            if remote_total > 0 or remote_datasets > 0 or remote_models > 0:
+                print(f"\n{Colors.CYAN}☁️  R2リモートストレージ (未ダウンロード):{Colors.RESET}")
+                print(f"  データセット: {format_size(usage.get('remote_datasets_size_bytes', 0))} ({remote_datasets}個)")
+                print(f"  モデル: {format_size(usage.get('remote_models_size_bytes', 0))} ({remote_models}個)")
+                print(f"  合計: {format_size(remote_total)}")
 
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")
@@ -358,12 +366,30 @@ class R2SyncMenu(BaseMenu):
 
     def get_choices(self) -> List[Choice]:
         return [
-            Choice(value="push", name="📤 [PUSH] マニフェストをR2にアップロード"),
-            Choice(value="pull", name="📥 [PULL] R2からマニフェストをダウンロード"),
-            Choice(value="usage", name="📊 [USAGE] R2使用量"),
+            Separator("─── ダウンロード ───"),
+            Choice(value="download_models", name="📥 モデルをダウンロード"),
+            Choice(value="download_datasets", name="📥 データセットをダウンロード"),
+            Separator("─── アップロード ───"),
+            Choice(value="upload_models", name="📤 モデルをアップロード"),
+            Choice(value="upload_datasets", name="📤 データセットをアップロード"),
+            Separator("─── マニフェスト管理 ───"),
+            Choice(value="regenerate", name="🔄 マニフェストを再生成"),
+            Choice(value="push", name="📤 マニフェストをR2にPush"),
+            Choice(value="pull", name="📥 R2からマニフェストをPull"),
+            Separator("─── 情報 ───"),
+            Choice(value="usage", name="📊 R2ストレージ使用量"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
+        if choice == "download_models":
+            return self._download_models()
+        if choice == "download_datasets":
+            return self._download_datasets()
+        if choice == "upload_models":
+            return self._upload_models()
+        if choice == "upload_datasets":
+            return self._upload_datasets()
+
         show_section_header(f"R2 Sync: {choice}")
 
         if choice == "push":
@@ -396,15 +422,680 @@ class R2SyncMenu(BaseMenu):
             except Exception as e:
                 print(f"{Colors.error('Error:')} {e}")
 
+        elif choice == "regenerate":
+            try:
+                confirm = inquirer.confirm(
+                    message="R2とローカルをスキャンしてマニフェストを再生成しますか？",
+                    default=True,
+                    style=hacker_style,
+                ).execute()
+                if confirm:
+                    print(f"\n{Colors.CYAN}スキャン中...{Colors.RESET}")
+                    result = self.api.regenerate_manifest()
+                    print(f"\n{Colors.success('マニフェストを再生成しました')}")
+                    print(f"\n{Colors.CYAN}R2リモート:{Colors.RESET}")
+                    print(f"  モデル: {result.get('remote_models', 0)}個")
+                    print(f"  データセット: {result.get('remote_datasets', 0)}個")
+                    print(f"\n{Colors.CYAN}ローカル:{Colors.RESET}")
+                    print(f"  モデル: {result.get('local_models', 0)}個")
+                    print(f"  データセット: {result.get('local_datasets', 0)}個")
+            except Exception as e:
+                print(f"{Colors.error('Error:')} {e}")
+
         elif choice == "usage":
             try:
                 usage = self.api.get_storage_usage()
-                print(f"{Colors.CYAN}R2 Storage:{Colors.RESET}")
-                print(f"  Total: {format_size(usage.get('r2_size', 0))}")
-                print(f"  Datasets: {format_size(usage.get('r2_datasets_size', 0))}")
-                print(f"  Models: {format_size(usage.get('r2_models_size', 0))}")
+                print(f"{Colors.CYAN}☁️  R2リモートストレージ:{Colors.RESET}")
+                print(f"  モデル: {format_size(usage.get('remote_models_size_bytes', 0))} ({usage.get('remote_models_count', 0)}個)")
+                print(f"  データセット: {format_size(usage.get('remote_datasets_size_bytes', 0))} ({usage.get('remote_datasets_count', 0)}個)")
+                print(f"  合計: {format_size(usage.get('remote_total_size_bytes', 0))}")
             except Exception as e:
                 print(f"{Colors.error('Error:')} {e}")
+
+        input(f"\n{Colors.muted('Press Enter to continue...')}")
+        return MenuResult.CONTINUE
+
+    def _download_models(self) -> MenuResult:
+        """Download models from R2."""
+        show_section_header("モデルをR2からダウンロード")
+
+        try:
+            # Get models list and filter remote-only ones
+            result = self.api.list_models()
+            models = result.get("models", [])
+
+            # Filter to show remote models (source=r2 and not downloaded)
+            remote_models = []
+            for m in models:
+                if isinstance(m, dict):
+                    source = m.get("source", "")
+                    # Check if it's a remote model (source is r2)
+                    if source == "r2":
+                        remote_models.append(m)
+
+            if not remote_models:
+                print(f"{Colors.muted('R2にダウンロード可能なモデルがありません')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"ダウンロード可能なモデル: {len(remote_models)}個\n")
+
+            choices = []
+            for m in remote_models:
+                model_id = m.get("id", "unknown")
+                size = format_size(m.get("sync", {}).get("size_bytes", 0))
+                policy = m.get("policy_type", "?")
+                choices.append(Choice(
+                    value=model_id,
+                    name=f"{model_id} [{policy}] ({size})",
+                ))
+
+            selected = inquirer.checkbox(
+                message="ダウンロードするモデルを選択:",
+                choices=choices,
+                style=hacker_style,
+                instruction="(Spaceで選択/解除、Enterで確定)",
+                keybindings={"toggle": [{"key": "space"}]},
+            ).execute()
+
+            if not selected:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Confirm
+            print(f"\n{Colors.CYAN}選択されたモデル:{Colors.RESET}")
+            for model_id in selected:
+                print(f"  - {model_id}")
+
+            confirm = inquirer.confirm(
+                message=f"{len(selected)}個のモデルをダウンロードしますか?",
+                default=True,
+                style=hacker_style,
+            ).execute()
+
+            if not confirm:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Execute downloads with WebSocket progress
+            print(f"\n{Colors.CYAN}ダウンロード中...{Colors.RESET}\n")
+
+            console = Console()
+            current_item = {"id": "", "file": "", "done": 0, "total": 0, "size": 0, "transferred": 0, "total_size": 0}
+            completed_items = []
+
+            def make_progress_table():
+                """Create a progress display table."""
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Label", style="cyan")
+                table.add_column("Value")
+
+                if current_item["id"]:
+                    table.add_row("モデル:", current_item["id"])
+                    if current_item["file"]:
+                        size_str = format_size(current_item["size"]) if current_item["size"] else ""
+                        if current_item["size"] > 0:
+                            pct = (current_item["transferred"] / current_item["size"]) * 100
+                            transferred_str = format_size(current_item["transferred"])
+                            progress_str = f"{transferred_str} / {size_str} ({pct:.1f}%)"
+                        else:
+                            progress_str = size_str
+                        table.add_row("ファイル:", current_item["file"])
+                        table.add_row("転送:", progress_str)
+                    if current_item["total"] > 0:
+                        table.add_row("ファイル数:", f"{current_item['done']}/{current_item['total']}")
+
+                if completed_items:
+                    table.add_row("完了:", f"{len(completed_items)}/{len(selected)} モデル")
+
+                return Panel(table, title="📥 ダウンロード進捗", border_style="cyan")
+
+            def progress_callback(data):
+                """Handle progress updates from WebSocket."""
+                msg_type = data.get("type", "")
+
+                if msg_type == "start":
+                    current_item["id"] = data.get("item_id", "")
+                    current_item["total"] = data.get("total_files", 0)
+                    current_item["total_size"] = data.get("total_size", 0)
+                    current_item["done"] = 0
+                    current_item["file"] = ""
+                    current_item["transferred"] = 0
+                elif msg_type == "downloading":
+                    current_item["file"] = data.get("current_file", "")
+                    current_item["size"] = data.get("file_size", 0)
+                    current_item["done"] = data.get("files_done", 0)
+                    current_item["transferred"] = 0
+                elif msg_type == "progress":
+                    current_item["file"] = data.get("current_file", "")
+                    current_item["size"] = data.get("file_size", 0)
+                    current_item["transferred"] = data.get("bytes_transferred", 0)
+                elif msg_type == "downloaded":
+                    current_item["done"] = data.get("files_done", 0)
+                    current_item["transferred"] = current_item["size"]
+                elif msg_type == "complete":
+                    completed_items.append(data.get("item_id", ""))
+                    current_item["id"] = ""
+                    current_item["file"] = ""
+                    current_item["transferred"] = 0
+                elif msg_type == "error":
+                    if data.get("item_id"):
+                        pass  # Will be handled in results
+
+            try:
+                with Live(make_progress_table(), console=console, refresh_per_second=4) as live:
+                    def update_display(data):
+                        progress_callback(data)
+                        live.update(make_progress_table())
+
+                    result = self.api.sync_with_progress(
+                        action="download",
+                        entry_type="models",
+                        item_ids=selected,
+                        progress_callback=update_display,
+                    )
+
+                success_count = result.get("success_count", 0)
+                failed_count = result.get("failed_count", 0)
+                results = result.get("results", {})
+            except Exception as e:
+                print(f"{Colors.error('Error:')} {e}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"\n{Colors.success('ダウンロード完了')}")
+            print(f"  成功: {success_count}")
+            print(f"  失敗: {failed_count}")
+
+            if failed_count > 0:
+                print(f"\n{Colors.error('失敗したモデル:')}")
+                for item_id, info in results.items():
+                    if isinstance(info, dict) and not info.get("success"):
+                        error_msg = info.get("error", "Unknown error")
+                        print(f"  - {item_id}: {error_msg}")
+
+        except Exception as e:
+            print(f"{Colors.error('Error:')} {e}")
+
+        input(f"\n{Colors.muted('Press Enter to continue...')}")
+        return MenuResult.CONTINUE
+
+    def _download_datasets(self) -> MenuResult:
+        """Download datasets from R2."""
+        show_section_header("データセットをR2からダウンロード")
+
+        try:
+            # Get datasets list and filter remote-only ones
+            result = self.api.list_datasets()
+            datasets = result.get("datasets", [])
+
+            # Filter to show remote datasets (source=r2 and not downloaded)
+            remote_datasets = []
+            for d in datasets:
+                if isinstance(d, dict):
+                    source = d.get("source", "")
+                    if source == "r2":
+                        remote_datasets.append(d)
+
+            if not remote_datasets:
+                print(f"{Colors.muted('R2にダウンロード可能なデータセットがありません')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"ダウンロード可能なデータセット: {len(remote_datasets)}個\n")
+
+            choices = []
+            for d in remote_datasets:
+                dataset_id = d.get("id", "unknown")
+                size = format_size(d.get("sync", {}).get("size_bytes", 0))
+                ds_type = d.get("dataset_type", "?")
+                choices.append(Choice(
+                    value=dataset_id,
+                    name=f"{dataset_id} [{ds_type}] ({size})",
+                ))
+
+            selected = inquirer.checkbox(
+                message="ダウンロードするデータセットを選択:",
+                choices=choices,
+                style=hacker_style,
+                instruction="(Spaceで選択/解除、Enterで確定)",
+                keybindings={"toggle": [{"key": "space"}]},
+            ).execute()
+
+            if not selected:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Confirm
+            print(f"\n{Colors.CYAN}選択されたデータセット:{Colors.RESET}")
+            for dataset_id in selected:
+                print(f"  - {dataset_id}")
+
+            confirm = inquirer.confirm(
+                message=f"{len(selected)}個のデータセットをダウンロードしますか?",
+                default=True,
+                style=hacker_style,
+            ).execute()
+
+            if not confirm:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Execute downloads with WebSocket progress
+            print(f"\n{Colors.CYAN}ダウンロード中...{Colors.RESET}\n")
+
+            console = Console()
+            current_item = {"id": "", "file": "", "done": 0, "total": 0, "size": 0, "transferred": 0}
+            completed_items = []
+
+            def make_progress_table():
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Label", style="cyan")
+                table.add_column("Value")
+
+                if current_item["id"]:
+                    table.add_row("データセット:", current_item["id"])
+                    if current_item["file"]:
+                        size_str = format_size(current_item["size"]) if current_item["size"] else ""
+                        if current_item["size"] > 0:
+                            pct = (current_item["transferred"] / current_item["size"]) * 100
+                            transferred_str = format_size(current_item["transferred"])
+                            progress_str = f"{transferred_str} / {size_str} ({pct:.1f}%)"
+                        else:
+                            progress_str = size_str
+                        table.add_row("ファイル:", current_item["file"])
+                        table.add_row("転送:", progress_str)
+                    if current_item["total"] > 0:
+                        table.add_row("ファイル数:", f"{current_item['done']}/{current_item['total']}")
+
+                if completed_items:
+                    table.add_row("完了:", f"{len(completed_items)}/{len(selected)} データセット")
+
+                return Panel(table, title="📥 ダウンロード進捗", border_style="cyan")
+
+            def progress_callback(data):
+                msg_type = data.get("type", "")
+                if msg_type == "start":
+                    current_item["id"] = data.get("item_id", "")
+                    current_item["total"] = data.get("total_files", 0)
+                    current_item["done"] = 0
+                    current_item["file"] = ""
+                    current_item["transferred"] = 0
+                elif msg_type == "downloading":
+                    current_item["file"] = data.get("current_file", "")
+                    current_item["size"] = data.get("file_size", 0)
+                    current_item["done"] = data.get("files_done", 0)
+                    current_item["transferred"] = 0
+                elif msg_type == "progress":
+                    current_item["file"] = data.get("current_file", "")
+                    current_item["size"] = data.get("file_size", 0)
+                    current_item["transferred"] = data.get("bytes_transferred", 0)
+                elif msg_type == "downloaded":
+                    current_item["done"] = data.get("files_done", 0)
+                    current_item["transferred"] = current_item["size"]
+                elif msg_type == "complete":
+                    completed_items.append(data.get("item_id", ""))
+                    current_item["id"] = ""
+                    current_item["file"] = ""
+                    current_item["transferred"] = 0
+
+            try:
+                with Live(make_progress_table(), console=console, refresh_per_second=4) as live:
+                    def update_display(data):
+                        progress_callback(data)
+                        live.update(make_progress_table())
+
+                    result = self.api.sync_with_progress(
+                        action="download",
+                        entry_type="datasets",
+                        item_ids=selected,
+                        progress_callback=update_display,
+                    )
+
+                success_count = result.get("success_count", 0)
+                failed_count = result.get("failed_count", 0)
+                results = result.get("results", {})
+            except Exception as e:
+                print(f"{Colors.error('Error:')} {e}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"\n{Colors.success('ダウンロード完了')}")
+            print(f"  成功: {success_count}")
+            print(f"  失敗: {failed_count}")
+
+            if failed_count > 0:
+                print(f"\n{Colors.error('失敗したデータセット:')}")
+                for item_id, info in results.items():
+                    if isinstance(info, dict) and not info.get("success"):
+                        error_msg = info.get("error", "Unknown error")
+                        print(f"  - {item_id}: {error_msg}")
+
+        except Exception as e:
+            print(f"{Colors.error('Error:')} {e}")
+
+        input(f"\n{Colors.muted('Press Enter to continue...')}")
+        return MenuResult.CONTINUE
+
+    def _upload_models(self) -> MenuResult:
+        """Upload models to R2."""
+        show_section_header("モデルをR2にアップロード")
+
+        try:
+            # Get models list and filter local ones
+            result = self.api.list_models()
+            models = result.get("models", [])
+
+            # Filter to show local models that aren't synced
+            local_models = []
+            for m in models:
+                if isinstance(m, dict):
+                    source = m.get("source", "")
+                    # Local models (not from r2)
+                    if source != "r2":
+                        local_models.append(m)
+
+            if not local_models:
+                print(f"{Colors.muted('アップロード可能なローカルモデルがありません')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"アップロード可能なモデル: {len(local_models)}個\n")
+
+            choices = []
+            for m in local_models:
+                model_id = m.get("id", "unknown")
+                size = format_size(m.get("sync", {}).get("size_bytes", 0))
+                policy = m.get("policy_type", "?")
+                choices.append(Choice(
+                    value=model_id,
+                    name=f"{model_id} [{policy}] ({size})",
+                ))
+
+            selected = inquirer.checkbox(
+                message="アップロードするモデルを選択:",
+                choices=choices,
+                style=hacker_style,
+                instruction="(Spaceで選択/解除、Enterで確定)",
+                keybindings={"toggle": [{"key": "space"}]},
+            ).execute()
+
+            if not selected:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Confirm
+            print(f"\n{Colors.CYAN}選択されたモデル:{Colors.RESET}")
+            for model_id in selected:
+                print(f"  - {model_id}")
+
+            confirm = inquirer.confirm(
+                message=f"{len(selected)}個のモデルをアップロードしますか?",
+                default=True,
+                style=hacker_style,
+            ).execute()
+
+            if not confirm:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Execute uploads with WebSocket progress
+            print(f"\n{Colors.CYAN}アップロード中...{Colors.RESET}\n")
+
+            console = Console()
+            current_item = {"id": "", "file": "", "done": 0, "total": 0, "size": 0, "transferred": 0}
+            completed_items = []
+
+            def make_progress_table():
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Label", style="cyan")
+                table.add_column("Value")
+
+                if current_item["id"]:
+                    table.add_row("モデル:", current_item["id"])
+                    if current_item["file"]:
+                        size_str = format_size(current_item["size"]) if current_item["size"] else ""
+                        if current_item["size"] > 0:
+                            pct = (current_item["transferred"] / current_item["size"]) * 100
+                            transferred_str = format_size(current_item["transferred"])
+                            progress_str = f"{transferred_str} / {size_str} ({pct:.1f}%)"
+                        else:
+                            progress_str = size_str
+                        table.add_row("ファイル:", current_item["file"])
+                        table.add_row("転送:", progress_str)
+                    if current_item["total"] > 0:
+                        table.add_row("ファイル数:", f"{current_item['done']}/{current_item['total']}")
+
+                if completed_items:
+                    table.add_row("完了:", f"{len(completed_items)}/{len(selected)} モデル")
+
+                return Panel(table, title="📤 アップロード進捗", border_style="green")
+
+            def progress_callback(data):
+                msg_type = data.get("type", "")
+                if msg_type == "start":
+                    current_item["id"] = data.get("item_id", "")
+                    current_item["total"] = data.get("total_files", 0)
+                    current_item["done"] = 0
+                    current_item["file"] = ""
+                    current_item["transferred"] = 0
+                elif msg_type == "uploading":
+                    current_item["file"] = data.get("current_file", "")
+                    current_item["size"] = data.get("file_size", 0)
+                    current_item["done"] = data.get("files_done", 0)
+                    current_item["transferred"] = 0
+                elif msg_type == "progress":
+                    current_item["file"] = data.get("current_file", "")
+                    current_item["size"] = data.get("file_size", 0)
+                    current_item["transferred"] = data.get("bytes_transferred", 0)
+                elif msg_type == "uploaded":
+                    current_item["done"] = data.get("files_done", 0)
+                    current_item["transferred"] = current_item["size"]
+                elif msg_type == "complete":
+                    completed_items.append(data.get("item_id", ""))
+                    current_item["id"] = ""
+                    current_item["file"] = ""
+                    current_item["transferred"] = 0
+
+            try:
+                with Live(make_progress_table(), console=console, refresh_per_second=4) as live:
+                    def update_display(data):
+                        progress_callback(data)
+                        live.update(make_progress_table())
+
+                    result = self.api.sync_with_progress(
+                        action="upload",
+                        entry_type="models",
+                        item_ids=selected,
+                        progress_callback=update_display,
+                    )
+
+                success_count = result.get("success_count", 0)
+                failed_count = result.get("failed_count", 0)
+                results = result.get("results", {})
+            except Exception as e:
+                print(f"{Colors.error('Error:')} {e}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"\n{Colors.success('アップロード完了')}")
+            print(f"  成功: {success_count}")
+            print(f"  失敗: {failed_count}")
+
+            if failed_count > 0:
+                print(f"\n{Colors.error('失敗したモデル:')}")
+                for item_id, info in results.items():
+                    if isinstance(info, dict) and not info.get("success"):
+                        error_msg = info.get("error", "Unknown error")
+                        print(f"  - {item_id}: {error_msg}")
+
+        except Exception as e:
+            print(f"{Colors.error('Error:')} {e}")
+
+        input(f"\n{Colors.muted('Press Enter to continue...')}")
+        return MenuResult.CONTINUE
+
+    def _upload_datasets(self) -> MenuResult:
+        """Upload datasets to R2."""
+        show_section_header("データセットをR2にアップロード")
+
+        try:
+            # Get datasets list and filter local ones
+            result = self.api.list_datasets()
+            datasets = result.get("datasets", [])
+
+            # Filter to show local datasets
+            local_datasets = []
+            for d in datasets:
+                if isinstance(d, dict):
+                    source = d.get("source", "")
+                    if source != "r2":
+                        local_datasets.append(d)
+
+            if not local_datasets:
+                print(f"{Colors.muted('アップロード可能なローカルデータセットがありません')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"アップロード可能なデータセット: {len(local_datasets)}個\n")
+
+            choices = []
+            for d in local_datasets:
+                dataset_id = d.get("id", "unknown")
+                size = format_size(d.get("sync", {}).get("size_bytes", 0))
+                ds_type = d.get("dataset_type", "?")
+                choices.append(Choice(
+                    value=dataset_id,
+                    name=f"{dataset_id} [{ds_type}] ({size})",
+                ))
+
+            selected = inquirer.checkbox(
+                message="アップロードするデータセットを選択:",
+                choices=choices,
+                style=hacker_style,
+                instruction="(Spaceで選択/解除、Enterで確定)",
+                keybindings={"toggle": [{"key": "space"}]},
+            ).execute()
+
+            if not selected:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Confirm
+            print(f"\n{Colors.CYAN}選択されたデータセット:{Colors.RESET}")
+            for dataset_id in selected:
+                print(f"  - {dataset_id}")
+
+            confirm = inquirer.confirm(
+                message=f"{len(selected)}個のデータセットをアップロードしますか?",
+                default=True,
+                style=hacker_style,
+            ).execute()
+
+            if not confirm:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Execute uploads with WebSocket progress
+            print(f"\n{Colors.CYAN}アップロード中...{Colors.RESET}\n")
+
+            console = Console()
+            current_item = {"id": "", "file": "", "done": 0, "total": 0, "size": 0, "transferred": 0}
+            completed_items = []
+
+            def make_progress_table():
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Label", style="cyan")
+                table.add_column("Value")
+
+                if current_item["id"]:
+                    table.add_row("データセット:", current_item["id"])
+                    if current_item["file"]:
+                        size_str = format_size(current_item["size"]) if current_item["size"] else ""
+                        if current_item["size"] > 0:
+                            pct = (current_item["transferred"] / current_item["size"]) * 100
+                            transferred_str = format_size(current_item["transferred"])
+                            progress_str = f"{transferred_str} / {size_str} ({pct:.1f}%)"
+                        else:
+                            progress_str = size_str
+                        table.add_row("ファイル:", current_item["file"])
+                        table.add_row("転送:", progress_str)
+                    if current_item["total"] > 0:
+                        table.add_row("ファイル数:", f"{current_item['done']}/{current_item['total']}")
+
+                if completed_items:
+                    table.add_row("完了:", f"{len(completed_items)}/{len(selected)} データセット")
+
+                return Panel(table, title="📤 アップロード進捗", border_style="green")
+
+            def progress_callback(data):
+                msg_type = data.get("type", "")
+                if msg_type == "start":
+                    current_item["id"] = data.get("item_id", "")
+                    current_item["total"] = data.get("total_files", 0)
+                    current_item["done"] = 0
+                    current_item["file"] = ""
+                    current_item["transferred"] = 0
+                elif msg_type == "uploading":
+                    current_item["file"] = data.get("current_file", "")
+                    current_item["size"] = data.get("file_size", 0)
+                    current_item["done"] = data.get("files_done", 0)
+                    current_item["transferred"] = 0
+                elif msg_type == "progress":
+                    current_item["file"] = data.get("current_file", "")
+                    current_item["size"] = data.get("file_size", 0)
+                    current_item["transferred"] = data.get("bytes_transferred", 0)
+                elif msg_type == "uploaded":
+                    current_item["done"] = data.get("files_done", 0)
+                    current_item["transferred"] = current_item["size"]
+                elif msg_type == "complete":
+                    completed_items.append(data.get("item_id", ""))
+                    current_item["id"] = ""
+                    current_item["file"] = ""
+                    current_item["transferred"] = 0
+
+            try:
+                with Live(make_progress_table(), console=console, refresh_per_second=4) as live:
+                    def update_display(data):
+                        progress_callback(data)
+                        live.update(make_progress_table())
+
+                    result = self.api.sync_with_progress(
+                        action="upload",
+                        entry_type="datasets",
+                        item_ids=selected,
+                        progress_callback=update_display,
+                    )
+
+                success_count = result.get("success_count", 0)
+                failed_count = result.get("failed_count", 0)
+                results = result.get("results", {})
+            except Exception as e:
+                print(f"{Colors.error('Error:')} {e}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"\n{Colors.success('アップロード完了')}")
+            print(f"  成功: {success_count}")
+            print(f"  失敗: {failed_count}")
+
+            if failed_count > 0:
+                print(f"\n{Colors.error('失敗したデータセット:')}")
+                for item_id, info in results.items():
+                    if isinstance(info, dict) and not info.get("success"):
+                        error_msg = info.get("error", "Unknown error")
+                        print(f"  - {item_id}: {error_msg}")
+
+        except Exception as e:
+            print(f"{Colors.error('Error:')} {e}")
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE

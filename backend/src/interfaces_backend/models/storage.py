@@ -295,6 +295,7 @@ class ArchiveResponse(BaseModel):
 class StorageUsageResponse(BaseModel):
     """Response for storage usage endpoint."""
 
+    # Local storage (downloaded to disk)
     datasets_count: int = 0
     datasets_size_bytes: int = 0
     models_count: int = 0
@@ -302,6 +303,12 @@ class StorageUsageResponse(BaseModel):
     archive_count: int = 0
     archive_size_bytes: int = 0
     total_size_bytes: int = 0
+    # Remote storage (on R2, not downloaded)
+    remote_datasets_count: int = 0
+    remote_datasets_size_bytes: int = 0
+    remote_models_count: int = 0
+    remote_models_size_bytes: int = 0
+    remote_total_size_bytes: int = 0
 
 
 class ArchiveListResponse(BaseModel):

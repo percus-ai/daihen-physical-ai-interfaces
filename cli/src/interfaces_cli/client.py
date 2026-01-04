@@ -471,6 +471,12 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
+    def regenerate_manifest(self) -> Dict[str, Any]:
+        """POST /api/storage/sync/manifest/regenerate - Regenerate manifest from R2 and local."""
+        response = self._client.post("/api/storage/sync/manifest/regenerate", timeout=120.0)
+        response.raise_for_status()
+        return response.json()
+
     def list_legacy_models(self) -> Dict[str, Any]:
         """GET /api/storage/migration/legacy/models - List legacy models."""
         response = self._client.get("/api/storage/migration/legacy/models")
@@ -601,6 +607,90 @@ class PhiClient:
                         progress_callback({"type": "error", "item_id": item_id, "error": str(e)})
         except Exception as e:
             raise Exception(f"Migration failed: {e}")
+
+        return result
+
+    def sync_with_progress(
+        self,
+        action: str,
+        entry_type: str,
+        item_ids: List[str],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Sync items (download/upload) with real-time progress via WebSocket.
+
+        Args:
+            action: 'download' or 'upload'
+            entry_type: 'models' or 'datasets'
+            item_ids: List of item IDs to sync
+            progress_callback: Called with progress updates
+
+        Returns:
+            Final result with success_count, failed_count, results
+        """
+        import websocket
+
+        # Convert http URL to ws URL
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/storage/ws/sync"
+
+        result = {"success_count": 0, "failed_count": 0, "results": {}}
+
+        try:
+            ws = websocket.create_connection(ws_url)
+
+            # Send sync request
+            ws.send(json.dumps({
+                "action": action,
+                "entry_type": entry_type,
+                "item_ids": item_ids,
+            }))
+
+            # Receive progress updates until done
+            while True:
+                message = ws.recv()
+                data = json.loads(message)
+
+                if progress_callback:
+                    progress_callback(data)
+
+                if data.get("type") == "done":
+                    result = data
+                    break
+                elif data.get("type") == "error" and "item_id" not in data:
+                    # Global error
+                    raise Exception(data.get("error", "Unknown error"))
+
+            ws.close()
+        except ImportError:
+            # websocket-client not installed, fall back to HTTP
+            if progress_callback:
+                progress_callback({"type": "fallback", "message": "WebSocket not available, using HTTP"})
+            for item_id in item_ids:
+                if progress_callback:
+                    progress_callback({"type": "start", "item_id": item_id})
+                try:
+                    if action == "download":
+                        if entry_type == "models":
+                            self.download_model(item_id)
+                        else:
+                            self.download_dataset(item_id)
+                    else:  # upload
+                        if entry_type == "models":
+                            self.upload_model(item_id)
+                        else:
+                            self.upload_dataset(item_id)
+                    result["results"][item_id] = {"success": True, "error": ""}
+                    result["success_count"] += 1
+                    if progress_callback:
+                        progress_callback({"type": "complete", "item_id": item_id})
+                except Exception as e:
+                    result["results"][item_id] = {"success": False, "error": str(e)}
+                    result["failed_count"] += 1
+                    if progress_callback:
+                        progress_callback({"type": "error", "item_id": item_id, "error": str(e)})
+        except Exception as e:
+            raise Exception(f"Sync failed: {e}")
 
         return result
 

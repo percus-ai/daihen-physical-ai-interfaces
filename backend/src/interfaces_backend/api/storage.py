@@ -77,6 +77,7 @@ async def list_datasets(
 ):
     """List all datasets."""
     manifest = _get_manifest()
+    manifest.reload()  # Reload to pick up any external changes
 
     if include_archived:
         active = manifest.list_datasets(source=source, status=DataStatus.ACTIVE)
@@ -233,6 +234,7 @@ async def list_models(
 ):
     """List all models."""
     manifest = _get_manifest()
+    manifest.reload()  # Reload to pick up any external changes
 
     if include_archived:
         active = manifest.list_models(source=source, status=DataStatus.ACTIVE)
@@ -408,6 +410,7 @@ async def import_model_from_hf(
 async def get_storage_usage():
     """Get storage usage statistics."""
     manifest = _get_manifest()
+    manifest.reload()  # Reload to pick up any external changes
     stats = manifest.get_storage_stats()
     return StorageUsageResponse(**stats)
 
@@ -452,6 +455,22 @@ async def pull_manifest(merge: bool = Query(True, description="Merge with local 
         raise HTTPException(status_code=500, detail="Manifest pull failed")
 
     return {"success": True, "message": "Manifest pulled from R2"}
+
+
+@router.post("/sync/manifest/regenerate")
+async def regenerate_manifest():
+    """Regenerate manifest by scanning R2 and local storage."""
+    sync = _get_sync_service()
+    stats = sync.regenerate_manifest()
+
+    return {
+        "success": True,
+        "message": "Manifest regenerated",
+        "remote_models": stats.get("remote_models", 0),
+        "remote_datasets": stats.get("remote_datasets", 0),
+        "local_models": stats.get("local_models", 0),
+        "local_datasets": stats.get("local_datasets", 0),
+    }
 
 
 # --- Search ---
@@ -661,6 +680,146 @@ async def websocket_migration(websocket: WebSocket):
         logger.info("WebSocket client disconnected")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "error": str(e)})
+        except Exception:
+            pass
+
+
+@router.websocket("/ws/sync")
+async def websocket_sync(websocket: WebSocket):
+    """WebSocket endpoint for sync operations (download/upload) with real-time progress.
+
+    Client sends JSON messages:
+    - {"action": "download", "entry_type": "models"|"datasets", "item_ids": [...]}
+    - {"action": "upload", "entry_type": "models"|"datasets", "item_ids": [...]}
+
+    Server sends progress updates:
+    - {"type": "start", "item_id": "...", "total_files": N, "total_size": M}
+    - {"type": "downloading", "item_id": "...", "current_file": "...", "file_size": N, "bytes_transferred": M}
+    - {"type": "downloaded", "item_id": "...", "current_file": "...", "files_done": M, "total_files": N}
+    - {"type": "complete", "item_id": "...", "total_files": N, "total_size": M}
+    - {"type": "error", "item_id": "...", "error": "..."}
+    - {"type": "done", "success_count": N, "failed_count": M, "results": {...}}
+    """
+    await websocket.accept()
+
+    try:
+        while True:
+            # Wait for sync request
+            data = await websocket.receive_json()
+
+            action = data.get("action")
+            if action not in ("download", "upload"):
+                await websocket.send_json({"type": "error", "error": "Unknown action. Use 'download' or 'upload'"})
+                continue
+
+            entry_type = data.get("entry_type", "models")
+            item_ids = data.get("item_ids", [])
+
+            if not item_ids:
+                await websocket.send_json({"type": "error", "error": "No items specified"})
+                continue
+
+            # Get sync service
+            sync = _get_sync_service()
+
+            # Queue for progress updates from thread
+            progress_queue: asyncio.Queue = asyncio.Queue()
+
+            # Capture event loop for use in thread callback
+            main_loop = asyncio.get_running_loop()
+
+            def progress_callback(progress: dict):
+                """Callback to put progress in queue (called from thread)."""
+                asyncio.run_coroutine_threadsafe(
+                    progress_queue.put(progress),
+                    main_loop
+                )
+
+            async def run_sync():
+                """Run sync operation in thread pool."""
+                results = {}
+                success_count = 0
+                failed_count = 0
+
+                loop = asyncio.get_event_loop()
+
+                for item_id in item_ids:
+                    # Run in thread pool to avoid blocking
+                    if action == "download":
+                        if entry_type == "models":
+                            success, error = await loop.run_in_executor(
+                                _executor,
+                                lambda iid=item_id: sync.download_model_with_progress(
+                                    iid, progress_callback
+                                )
+                            )
+                        else:
+                            success, error = await loop.run_in_executor(
+                                _executor,
+                                lambda iid=item_id: sync.download_dataset_with_progress(
+                                    iid, progress_callback
+                                )
+                            )
+                    else:  # upload
+                        if entry_type == "models":
+                            success, error = await loop.run_in_executor(
+                                _executor,
+                                lambda iid=item_id: sync.upload_model_with_progress(
+                                    iid, progress_callback
+                                )
+                            )
+                        else:
+                            success, error = await loop.run_in_executor(
+                                _executor,
+                                lambda iid=item_id: sync.upload_dataset_with_progress(
+                                    iid, progress_callback
+                                )
+                            )
+
+                    results[item_id] = {"success": success, "error": error}
+                    if success:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+
+                # Signal completion
+                await progress_queue.put({
+                    "type": "done",
+                    "success_count": success_count,
+                    "failed_count": failed_count,
+                    "results": results,
+                })
+
+            # Start sync task
+            sync_task = asyncio.create_task(run_sync())
+
+            # Forward progress updates to WebSocket
+            try:
+                while True:
+                    # Get progress with timeout to check if task is done
+                    try:
+                        progress = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                        await websocket.send_json(progress)
+
+                        if progress.get("type") == "done":
+                            break
+                    except asyncio.TimeoutError:
+                        if sync_task.done():
+                            # Check for any remaining items in queue
+                            while not progress_queue.empty():
+                                progress = await progress_queue.get()
+                                await websocket.send_json(progress)
+                            break
+            except Exception as e:
+                logger.error(f"Error forwarding progress: {e}")
+                await websocket.send_json({"type": "error", "error": str(e)})
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket sync client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket sync error: {e}")
         try:
             await websocket.send_json({"type": "error", "error": str(e)})
         except Exception:
