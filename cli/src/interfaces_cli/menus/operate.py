@@ -22,7 +22,6 @@ class OperateMenu(BaseMenu):
         return [
             Choice(value="teleop", name="🎮 [TELEOP] テレオペレーション"),
             Choice(value="inference", name="🤖 [INFERENCE] AI推論実行"),
-            Choice(value="sessions", name="📋 [SESSIONS] アクティブセッション"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
@@ -30,46 +29,6 @@ class OperateMenu(BaseMenu):
             return self.submenu(TeleopMenu)
         if choice == "inference":
             return self.submenu(InferenceMenu)
-        if choice == "sessions":
-            return self._show_sessions()
-        return MenuResult.CONTINUE
-
-    def _show_sessions(self) -> MenuResult:
-        """Show active sessions."""
-        show_section_header("Active Sessions")
-
-        try:
-            # Teleop sessions
-            teleop = self.api.list_teleop_sessions()
-            teleop_sessions = teleop.get("sessions", [])
-            print(f"{Colors.CYAN}Teleop Sessions:{Colors.RESET}")
-            if teleop_sessions:
-                for s in teleop_sessions:
-                    session_id = s.get("session_id", "unknown")
-                    mode = s.get("mode", "?")
-                    running = s.get("is_running", False)
-                    status = Colors.success("running") if running else Colors.muted("stopped")
-                    print(f"  - {session_id}: {mode} ({status})")
-            else:
-                print(f"  {Colors.muted('No active teleop sessions')}")
-
-            # Inference sessions
-            inference = self.api.list_inference_sessions()
-            inf_sessions = inference.get("sessions", [])
-            print(f"\n{Colors.CYAN}Inference Sessions:{Colors.RESET}")
-            if inf_sessions:
-                for s in inf_sessions:
-                    session_id = s.get("session_id", "unknown")
-                    model = s.get("model_id", "unknown")
-                    device = s.get("device", "?")
-                    print(f"  - {session_id}: {model} ({device})")
-            else:
-                print(f"  {Colors.muted('No active inference sessions')}")
-
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
-
-        input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE
 
 
@@ -367,35 +326,29 @@ class TeleopMenu(BaseMenu):
 
 
 class InferenceMenu(BaseMenu):
-    """Inference model selection."""
+    """Inference - Run models on robot."""
 
     title = "AI推論"
 
     def get_choices(self) -> List[Choice]:
         return [
-            Choice(value="load", name="📂 [LOAD] モデル読み込み"),
-            Choice(value="unload", name="📤 [UNLOAD] モデルアンロード"),
+            Choice(value="run", name="🚀 [RUN] モデル実行"),
             Choice(value="models", name="📦 [MODELS] 利用可能モデル一覧"),
-            Choice(value="sessions", name="📋 [SESSIONS] アクティブセッション"),
             Choice(value="compat", name="🔍 [COMPAT] デバイス互換性チェック"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
-        if choice == "load":
-            return self._load_model()
-        if choice == "unload":
-            return self._unload_model()
+        if choice == "run":
+            return self._run_model()
         if choice == "models":
             return self._list_models()
-        if choice == "sessions":
-            return self._list_sessions()
         if choice == "compat":
             return self._check_compatibility()
         return MenuResult.CONTINUE
 
-    def _load_model(self) -> MenuResult:
-        """Load a model for inference."""
-        show_section_header("Load Model")
+    def _run_model(self) -> MenuResult:
+        """Run a model on robot."""
+        show_section_header("Run Model")
 
         try:
             # Get available models
@@ -404,94 +357,132 @@ class InferenceMenu(BaseMenu):
 
             if not models:
                 print(f"{Colors.warning('No models available.')}")
-                print(f"{Colors.muted('Train a model first or import from HuggingFace.')}")
+                print(f"{Colors.muted('Download a model from R2 or train one first.')}")
                 input(f"\n{Colors.muted('Press Enter to continue...')}")
                 return MenuResult.CONTINUE
 
-            choices = []
+            # Select model
+            model_choices = []
             for m in models:
                 if isinstance(m, dict):
                     model_id = m.get("model_id", m.get("name", "unknown"))
                     policy = m.get("policy_type", "?")
-                    is_loaded = m.get("is_loaded", False)
-                    loaded_str = " (loaded)" if is_loaded else ""
-                    choices.append(Choice(value=model_id, name=f"{model_id} [{policy}]{loaded_str}"))
+                    source = m.get("source", "local")
+                    size_mb = m.get("size_mb", 0)
+                    model_choices.append(Choice(
+                        value=model_id,
+                        name=f"{model_id} [{policy}] ({source}, {size_mb:.0f}MB)"
+                    ))
                 else:
-                    choices.append(Choice(value=m, name=m))
-            choices.append(Choice(value="__back__", name="« Cancel"))
+                    model_choices.append(Choice(value=m, name=m))
+            model_choices.append(Choice(value="__back__", name="« Cancel"))
 
-            selected = inquirer.select(
+            selected_model = inquirer.select(
                 message="Select model:",
-                choices=choices,
+                choices=model_choices,
                 style=hacker_style,
             ).execute()
 
-            if selected == "__back__":
+            if selected_model == "__back__":
                 return MenuResult.CONTINUE
 
-            # Select device
+            # Get available projects from storage (./data/projects/)
+            try:
+                projects_result = self.api.list_storage_projects()
+                projects = projects_result.get("projects", [])
+            except Exception:
+                projects = []
+
+            if not projects:
+                print(f"{Colors.warning('プロジェクトが見つかりません')}")
+                print(f"{Colors.muted('R2 Sync > プロジェクトをダウンロード でプロジェクトを取得してください')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Show projects with robot_type info
+            project_choices = []
+            for p in projects:
+                project_id = p.get("id", "unknown")
+                display_name = p.get("display_name", project_id)
+                robot_type_hint = p.get("robot_type", "?")
+                project_choices.append(Choice(
+                    value=project_id,
+                    name=f"{display_name} [{robot_type_hint}]"
+                ))
+            project_choices.append(Choice(value="__back__", name="« Cancel"))
+
+            selected_project = inquirer.select(
+                message="Select project:",
+                choices=project_choices,
+                style=hacker_style,
+            ).execute()
+
+            if selected_project == "__back__":
+                return MenuResult.CONTINUE
+
+            # Get project details to extract robot_type
+            project_info = None
+            robot_type = "so101"  # default
+            try:
+                project_info = self.api.get_storage_project(selected_project)
+                robot_type = project_info.get("robot_type", "so101")
+            except Exception:
+                pass
+
+            # Episodes
+            episodes = inquirer.text(
+                message="Number of episodes:",
+                default="1",
+                style=hacker_style,
+            ).execute()
+
+            # Device
             device = inquirer.select(
                 message="Device:",
                 choices=[
-                    Choice(value="auto", name="Auto (recommended)"),
+                    Choice(value=None, name="Auto (recommended)"),
                     Choice(value="cuda", name="CUDA (GPU)"),
+                    Choice(value="mps", name="MPS (Apple Silicon)"),
                     Choice(value="cpu", name="CPU"),
                 ],
                 style=hacker_style,
             ).execute()
 
-            # Load the model
-            result = self.api.load_inference_model({
-                "model_id": selected,
-                "device": device,
-            })
-            session = result.get("session", {})
-            print(f"\n{Colors.success('Model loaded')}")
-            print(f"  Model: {selected}")
-            print(f"  Session: {session.get('session_id', 'N/A')}")
-            print(f"  Device: {session.get('device', device)}")
-            print(f"  Message: {result.get('message', '')}")
+            # Confirm
+            project_display = project_info.get("display_name", selected_project) if project_info else selected_project
+            print(f"\n{Colors.CYAN}Configuration:{Colors.RESET}")
+            print(f"  Model: {selected_model}")
+            print(f"  Project: {project_display}")
+            print(f"  Episodes: {episodes}")
+            print(f"  Robot: {robot_type}")
+            print(f"  Device: {device or 'auto'}")
 
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
-
-        input(f"\n{Colors.muted('Press Enter to continue...')}")
-        return MenuResult.CONTINUE
-
-    def _unload_model(self) -> MenuResult:
-        """Unload current model."""
-        show_section_header("Unload Model")
-
-        try:
-            # List active sessions to select
-            result = self.api.list_inference_sessions()
-            sessions = result.get("sessions", [])
-
-            if not sessions:
-                print(f"{Colors.muted('No active inference sessions.')}")
-                input(f"\n{Colors.muted('Press Enter to continue...')}")
-                return MenuResult.CONTINUE
-
-            choices = []
-            for s in sessions:
-                session_id = s.get("session_id", "unknown")
-                model_id = s.get("model_id", "?")
-                device = s.get("device", "?")
-                choices.append(Choice(value=session_id, name=f"{session_id}: {model_id} ({device})"))
-            choices.append(Choice(value="__back__", name="« Cancel"))
-
-            selected = inquirer.select(
-                message="Select session to unload:",
-                choices=choices,
+            confirm = inquirer.confirm(
+                message="Start inference?",
+                default=True,
                 style=hacker_style,
             ).execute()
 
-            if selected == "__back__":
+            if not confirm:
                 return MenuResult.CONTINUE
 
-            result = self.api.unload_inference_model(selected)
-            print(f"{Colors.success('Model unloaded')}")
-            print(f"  Session: {result.get('session_id', selected)}")
+            # Run inference
+            print(f"\n{Colors.CYAN}Starting inference...{Colors.RESET}\n")
+
+            result = self.api.run_inference({
+                "model_id": selected_model,
+                "project": selected_project,
+                "episodes": int(episodes),
+                "robot_type": robot_type,
+                "device": device,
+            })
+
+            if result.get("success"):
+                print(f"\n{Colors.success('Inference completed successfully!')}")
+            else:
+                print(f"\n{Colors.error('Inference failed')}")
+                print(f"  Return code: {result.get('return_code', 'unknown')}")
+
             print(f"  Message: {result.get('message', '')}")
 
         except Exception as e:
@@ -515,10 +506,9 @@ class InferenceMenu(BaseMenu):
                     if isinstance(m, dict):
                         model_id = m.get("model_id", m.get("name", "unknown"))
                         policy = m.get("policy_type", "?")
-                        is_loaded = m.get("is_loaded", False)
+                        source = m.get("source", "local")
                         size_mb = m.get("size_mb", 0)
-                        loaded_str = Colors.success(" (loaded)") if is_loaded else ""
-                        print(f"  - {model_id} [{policy}]{loaded_str}")
+                        print(f"  - {model_id} [{policy}] ({source})")
                         if m.get("local_path"):
                             print(f"      Path: {m.get('local_path')}")
                         if size_mb:
@@ -527,40 +517,7 @@ class InferenceMenu(BaseMenu):
                         print(f"  - {m}")
             else:
                 print(f"{Colors.muted('No models available.')}")
-
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
-
-        input(f"\n{Colors.muted('Press Enter to continue...')}")
-        return MenuResult.CONTINUE
-
-    def _list_sessions(self) -> MenuResult:
-        """List inference sessions."""
-        show_section_header("Inference Sessions")
-
-        try:
-            result = self.api.list_inference_sessions()
-            sessions = result.get("sessions", [])
-            total = result.get("total", len(sessions))
-
-            if sessions:
-                print(f"{Colors.CYAN}Active Sessions ({total}):{Colors.RESET}\n")
-                for s in sessions:
-                    session_id = s.get("session_id", "unknown")
-                    model_id = s.get("model_id", "unknown")
-                    policy_type = s.get("policy_type", "?")
-                    device = s.get("device", "?")
-                    memory_mb = s.get("memory_mb", 0)
-                    created_at = s.get("created_at", "")
-                    print(f"  - {session_id}")
-                    print(f"      Model: {model_id} [{policy_type}]")
-                    print(f"      Device: {device}")
-                    if memory_mb:
-                        print(f"      Memory: {memory_mb:.1f} MB")
-                    print(f"      Created: {created_at}")
-                    print()
-            else:
-                print(f"{Colors.muted('No active inference sessions.')}")
+                print(f"{Colors.muted('Download models from R2 Storage menu.')}")
 
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")
@@ -580,7 +537,7 @@ class InferenceMenu(BaseMenu):
             for d in devices:
                 device = d.get("device", "unknown")
                 available = d.get("available", False)
-                icon = Colors.success("*") if available else Colors.error("*")
+                icon = Colors.success("✓") if available else Colors.error("✗")
                 print(f"  {icon} {device}")
                 if d.get("memory_total_mb"):
                     print(f"      Memory: {d.get('memory_total_mb'):.0f} MB total, {d.get('memory_free_mb', 0):.0f} MB free")

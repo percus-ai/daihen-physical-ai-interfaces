@@ -98,3 +98,24 @@ class InferenceDeviceCompatibilityResponse(BaseModel):
 
     devices: List[InferenceDeviceCompatibility]
     recommended: str = Field("cpu", description="Recommended device")
+
+
+class InferenceRunRequest(BaseModel):
+    """Request to run inference on robot."""
+
+    model_id: str = Field(..., description="Model ID to run")
+    project: str = Field(..., description="Project name")
+    episodes: int = Field(1, description="Number of episodes to run")
+    robot_type: str = Field("so101", description="Robot type (so101/so100/koch)")
+    device: Optional[str] = Field(None, description="Device: cuda, mps, cpu (auto if None)")
+
+
+class InferenceRunResponse(BaseModel):
+    """Response for run inference endpoint."""
+
+    success: bool
+    model_id: str
+    project: str
+    message: str
+    return_code: int = Field(0, description="Process return code")
+    output: Optional[str] = Field(None, description="Process output (if captured)")

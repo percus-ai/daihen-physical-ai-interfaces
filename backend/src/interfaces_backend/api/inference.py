@@ -1,35 +1,30 @@
 """Inference API router."""
 
+import os
+import subprocess
 import sys
-import uuid
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
 from interfaces_backend.models.inference import (
     InferenceModelInfo,
     InferenceModelsResponse,
-    InferenceLoadRequest,
-    InferenceLoadResponse,
-    InferenceSession,
-    InferenceUnloadRequest,
-    InferenceUnloadResponse,
-    InferencePredictRequest,
-    InferencePredictResponse,
-    InferenceSessionsResponse,
     InferenceDeviceCompatibility,
     InferenceDeviceCompatibilityResponse,
+    InferenceRunRequest,
+    InferenceRunResponse,
 )
 
 router = APIRouter(prefix="/api/inference", tags=["inference"])
 
-# In-memory session storage
-_sessions: Dict[str, dict] = {}
+# Models directory (integrated with storage system)
+DATA_DIR = Path(os.environ.get("PHI_DATA_DIR", Path.cwd() / "data"))
+MODELS_DIR = DATA_DIR / "models"
 
-# Models directory
-MODELS_DIR = Path.cwd() / "models"
+# Archive scripts directory (for execute_policy_on_robot.py)
+ARCHIVE_SCRIPTS_DIR = Path.cwd() / "archive" / "scripts" / "framework"
 
 
 def _get_percus_inference():
@@ -46,25 +41,6 @@ def _get_percus_inference():
                 from percus_ai.inference import PolicyExecutor, detect_device
 
                 return PolicyExecutor, detect_device
-            except ImportError:
-                pass
-    return None, None
-
-
-def _get_storage_hub():
-    """Import percus_ai.storage.hub if available."""
-    try:
-        from percus_ai.storage import list_local_models, get_local_model_info
-
-        return list_local_models, get_local_model_info
-    except ImportError:
-        features_path = Path(__file__).resolve().parents[5] / "features"
-        if features_path.exists() and str(features_path) not in sys.path:
-            sys.path.insert(0, str(features_path))
-            try:
-                from percus_ai.storage import list_local_models, get_local_model_info
-
-                return list_local_models, get_local_model_info
             except ImportError:
                 pass
     return None, None
@@ -90,22 +66,33 @@ def _detect_device() -> str:
 
 
 def _list_models() -> list[dict]:
-    """List available models for inference."""
-    list_local_models, get_local_model_info = _get_storage_hub()
+    """List available models for inference from storage directories."""
+    import json
 
-    if list_local_models:
-        try:
-            models = list_local_models(MODELS_DIR)
-            return [m.to_dict() for m in models]
-        except Exception:
-            pass
-
-    # Fallback: scan models directory
     if not MODELS_DIR.exists():
         return []
 
     models = []
-    for model_dir in MODELS_DIR.iterdir():
+
+    # Scan subdirectories: r2/, hub/, and direct models
+    subdirs_to_scan = []
+
+    # Add r2 models
+    r2_dir = MODELS_DIR / "r2"
+    if r2_dir.exists():
+        subdirs_to_scan.extend(r2_dir.iterdir())
+
+    # Add hub models
+    hub_dir = MODELS_DIR / "hub"
+    if hub_dir.exists():
+        subdirs_to_scan.extend(hub_dir.iterdir())
+
+    # Add direct models (for backward compatibility)
+    for item in MODELS_DIR.iterdir():
+        if item.is_dir() and item.name not in ("r2", "hub"):
+            subdirs_to_scan.append(item)
+
+    for model_dir in subdirs_to_scan:
         if not model_dir.is_dir():
             continue
 
@@ -114,16 +101,22 @@ def _list_models() -> list[dict]:
             continue
 
         try:
-            import json
-
             with open(config_file) as f:
                 config = json.load(f)
+
+            # Determine source from path
+            source = "local"
+            if "r2" in model_dir.parts:
+                source = "r2"
+            elif "hub" in model_dir.parts:
+                source = "hub"
 
             models.append({
                 "model_id": model_dir.name,
                 "name": model_dir.name,
                 "policy_type": config.get("type", "unknown"),
                 "local_path": str(model_dir),
+                "source": source,
                 "size_mb": sum(
                     f.stat().st_size for f in model_dir.rglob("*") if f.is_file()
                 ) / (1024 * 1024),
@@ -139,9 +132,6 @@ async def list_inference_models():
     """List models available for inference."""
     models_data = _list_models()
 
-    # Mark loaded models
-    loaded_model_ids = {s["model_id"] for s in _sessions.values()}
-
     models = []
     for m in models_data:
         models.append(
@@ -151,206 +141,11 @@ async def list_inference_models():
                 policy_type=m.get("policy_type", "unknown"),
                 local_path=m.get("local_path"),
                 size_mb=m.get("size_mb", 0.0),
-                is_loaded=m.get("model_id", m.get("name", "")) in loaded_model_ids,
+                is_loaded=False,  # No longer tracking loaded state
             )
         )
 
     return InferenceModelsResponse(models=models, total=len(models))
-
-
-@router.post("/load", response_model=InferenceLoadResponse)
-async def load_model(request: InferenceLoadRequest):
-    """Load a model for inference.
-
-    Creates an inference session that can be used for predictions.
-    """
-    model_id = request.model_id
-    device = request.device
-
-    # Check if model exists
-    model_path = MODELS_DIR / model_id
-    if not model_path.exists():
-        raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
-
-    # Determine device
-    if device == "auto":
-        device = _detect_device()
-
-    # Check if model is already loaded
-    for session_id, session in _sessions.items():
-        if session["model_id"] == model_id:
-            return InferenceLoadResponse(
-                session=InferenceSession(
-                    session_id=session_id,
-                    model_id=model_id,
-                    policy_type=session.get("policy_type", "unknown"),
-                    device=session.get("device", device),
-                    memory_mb=session.get("memory_mb", 0.0),
-                    created_at=session.get("created_at", ""),
-                ),
-                message="Model already loaded",
-            )
-
-    # Create session
-    session_id = str(uuid.uuid4())[:8]
-    now = datetime.now().isoformat()
-
-    # Try to load model
-    PolicyExecutor, _ = _get_percus_inference()
-    policy_type = "unknown"
-    memory_mb = 0.0
-
-    if PolicyExecutor:
-        try:
-            # Note: Actual model loading would happen here
-            # For now, we just record the session
-            config_file = model_path / "config.json"
-            if config_file.exists():
-                import json
-
-                with open(config_file) as f:
-                    config = json.load(f)
-                policy_type = config.get("type", "unknown")
-        except Exception:
-            pass
-
-    session_data = {
-        "session_id": session_id,
-        "model_id": model_id,
-        "model_path": str(model_path),
-        "policy_type": policy_type,
-        "device": device,
-        "memory_mb": memory_mb,
-        "created_at": now,
-        "executor": None,  # Would hold PolicyExecutor instance
-    }
-    _sessions[session_id] = session_data
-
-    return InferenceLoadResponse(
-        session=InferenceSession(
-            session_id=session_id,
-            model_id=model_id,
-            policy_type=policy_type,
-            device=device,
-            memory_mb=memory_mb,
-            created_at=now,
-        ),
-        message="Model loaded successfully",
-    )
-
-
-@router.post("/unload", response_model=InferenceUnloadResponse)
-async def unload_model(request: InferenceUnloadRequest):
-    """Unload a model and free resources."""
-    session_id = request.session_id
-
-    if session_id not in _sessions:
-        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-
-    # Clean up executor if present
-    session = _sessions[session_id]
-    if session.get("executor"):
-        try:
-            del session["executor"]
-        except Exception:
-            pass
-
-    del _sessions[session_id]
-
-    return InferenceUnloadResponse(
-        session_id=session_id,
-        success=True,
-        message="Model unloaded",
-    )
-
-
-@router.post("/predict", response_model=InferencePredictResponse)
-async def predict(request: InferencePredictRequest):
-    """Run inference on observation data."""
-    import time
-
-    session_id = request.session_id
-
-    if session_id not in _sessions:
-        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-
-    session = _sessions[session_id]
-    start_time = time.perf_counter()
-
-    # Run prediction
-    action = {}
-    executor = session.get("executor")
-
-    if executor:
-        try:
-            action = executor.predict(request.observation)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
-    else:
-        # Placeholder: return empty action
-        action = {"joints": [0.0] * 6}
-
-    inference_time_ms = (time.perf_counter() - start_time) * 1000
-
-    return InferencePredictResponse(
-        session_id=session_id,
-        action=action,
-        inference_time_ms=inference_time_ms,
-    )
-
-
-@router.get("/sessions", response_model=InferenceSessionsResponse)
-async def list_sessions():
-    """List active inference sessions."""
-    sessions = [
-        InferenceSession(
-            session_id=s["session_id"],
-            model_id=s["model_id"],
-            policy_type=s.get("policy_type", "unknown"),
-            device=s.get("device", "cpu"),
-            memory_mb=s.get("memory_mb", 0.0),
-            created_at=s.get("created_at", ""),
-        )
-        for s in _sessions.values()
-    ]
-
-    return InferenceSessionsResponse(sessions=sessions, total=len(sessions))
-
-
-@router.get("/sessions/{session_id}", response_model=InferenceSession)
-async def get_session(session_id: str):
-    """Get inference session details."""
-    if session_id not in _sessions:
-        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-
-    s = _sessions[session_id]
-    return InferenceSession(
-        session_id=s["session_id"],
-        model_id=s["model_id"],
-        policy_type=s.get("policy_type", "unknown"),
-        device=s.get("device", "cpu"),
-        memory_mb=s.get("memory_mb", 0.0),
-        created_at=s.get("created_at", ""),
-    )
-
-
-@router.post("/sessions/{session_id}/reset")
-async def reset_session(session_id: str):
-    """Reset inference session state."""
-    if session_id not in _sessions:
-        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-
-    session = _sessions[session_id]
-
-    # Reset executor state if present
-    executor = session.get("executor")
-    if executor and hasattr(executor, "reset"):
-        try:
-            executor.reset()
-        except Exception:
-            pass
-
-    return {"session_id": session_id, "message": "Session reset"}
 
 
 @router.get("/device-compatibility", response_model=InferenceDeviceCompatibilityResponse)
@@ -425,3 +220,89 @@ async def get_device_compatibility():
         devices=devices,
         recommended=recommended,
     )
+
+
+def _find_model_path(model_id: str) -> Optional[Path]:
+    """Find model path in storage directories."""
+    # Check R2 models
+    r2_path = MODELS_DIR / "r2" / model_id
+    if r2_path.exists():
+        return r2_path
+
+    # Check Hub models
+    hub_path = MODELS_DIR / "hub" / model_id
+    if hub_path.exists():
+        return hub_path
+
+    # Check direct models directory
+    direct_path = MODELS_DIR / model_id
+    if direct_path.exists():
+        return direct_path
+
+    return None
+
+
+@router.post("/run", response_model=InferenceRunResponse)
+async def run_inference(request: InferenceRunRequest):
+    """Run inference on robot with the specified model.
+
+    This directly executes the policy on the robot using subprocess,
+    similar to archive's ./daihen CLI.
+    """
+    model_id = request.model_id
+    project = request.project
+    episodes = request.episodes
+    robot_type = request.robot_type
+    device = request.device
+
+    # Find model path
+    model_path = _find_model_path(model_id)
+    if not model_path:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model not found: {model_id}. Check if it's downloaded in {MODELS_DIR}",
+        )
+
+    # Check if execute_policy_on_robot.py exists
+    execute_script = ARCHIVE_SCRIPTS_DIR / "execute_policy_on_robot.py"
+    if not execute_script.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=f"Execute script not found: {execute_script}",
+        )
+
+    # Build command
+    cmd = [
+        "python",
+        str(execute_script),
+        "--project", project,
+        "--policy-path", str(model_path),
+        "--episodes", str(episodes),
+        "--robot-type", robot_type,
+    ]
+
+    if device:
+        cmd.extend(["--device", device])
+
+    # Execute
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=Path.cwd(),
+            capture_output=False,  # Let output flow to terminal
+            text=True,
+        )
+
+        return InferenceRunResponse(
+            success=result.returncode == 0,
+            model_id=model_id,
+            project=project,
+            message="Inference completed" if result.returncode == 0 else "Inference failed",
+            return_code=result.returncode,
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to run inference: {str(e)}",
+        )

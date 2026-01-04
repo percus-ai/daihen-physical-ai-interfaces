@@ -188,6 +188,12 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
+    def run_inference(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/inference/run - Run inference on robot."""
+        response = self._client.post("/api/inference/run", json=data)
+        response.raise_for_status()
+        return response.json()
+
     # =========================================================================
     # Platform
     # =========================================================================
@@ -432,6 +438,44 @@ class PhiClient:
     def list_archive(self) -> Dict[str, Any]:
         """GET /api/storage/archive - List archived items."""
         response = self._client.get("/api/storage/archive")
+        response.raise_for_status()
+        return response.json()
+
+    # Storage Projects
+
+    def list_storage_projects(self) -> Dict[str, Any]:
+        """GET /api/storage/projects - List projects."""
+        response = self._client.get("/api/storage/projects")
+        response.raise_for_status()
+        return response.json()
+
+    def get_storage_project(self, project_id: str) -> Dict[str, Any]:
+        """GET /api/storage/projects/{project_id} - Get project details."""
+        response = self._client.get(f"/api/storage/projects/{project_id}")
+        response.raise_for_status()
+        return response.json()
+
+    def upload_storage_project(self, project_id: str) -> Dict[str, Any]:
+        """POST /api/storage/projects/{project_id}/upload - Upload project to R2."""
+        response = self._client.post(f"/api/storage/projects/{project_id}/upload")
+        response.raise_for_status()
+        return response.json()
+
+    def download_storage_project(self, project_id: str) -> Dict[str, Any]:
+        """POST /api/storage/projects/{project_id}/download - Download project from R2."""
+        response = self._client.post(f"/api/storage/projects/{project_id}/download")
+        response.raise_for_status()
+        return response.json()
+
+    def list_remote_projects(self) -> Dict[str, Any]:
+        """GET /api/storage/projects/remote/list - List projects on R2."""
+        response = self._client.get("/api/storage/projects/remote/list")
+        response.raise_for_status()
+        return response.json()
+
+    def sync_storage_projects(self) -> Dict[str, Any]:
+        """POST /api/storage/projects/sync - Sync projects from R2."""
+        response = self._client.post("/api/storage/projects/sync")
         response.raise_for_status()
         return response.json()
 

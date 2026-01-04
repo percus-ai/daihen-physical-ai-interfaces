@@ -194,9 +194,35 @@ class ManifestEntry(BaseModel):
 class ProjectEntry(BaseModel):
     """Project entry in manifest."""
 
-    path: str = Field(..., description="Relative path")
+    path: str = Field(..., description="Relative path to project file")
+    source: DataSource = Field(DataSource.R2, description="Data source")
+    hash: Optional[str] = Field(None, description="Content hash")
+    size_bytes: int = Field(0, description="Size in bytes")
+    status: DataStatus = Field(DataStatus.ACTIVE, description="Status")
     datasets: List[str] = Field(default_factory=list, description="Dataset IDs")
     models: List[str] = Field(default_factory=list, description="Model IDs")
+
+
+class ProjectMetadata(BaseModel):
+    """Project metadata parsed from YAML config."""
+
+    id: str = Field(..., description="Project ID (filename without .yaml)")
+    name: str = Field(..., description="Project name")
+    display_name: str = Field(..., description="Human readable display name")
+    description: Optional[str] = Field(None, description="Description")
+    version: str = Field("1.0", description="Version")
+    robot_type: str = Field("so101", description="Robot type")
+    # Recording settings
+    episode_time_s: int = Field(20, description="Episode time in seconds")
+    reset_time_s: int = Field(10, description="Reset time in seconds")
+    # Camera settings
+    cameras: Dict[str, Any] = Field(default_factory=dict, description="Camera settings")
+    # Arm settings
+    arms: Dict[str, Any] = Field(default_factory=dict, description="Arm settings")
+    # Sync info
+    source: DataSource = Field(DataSource.R2, description="Data source")
+    hash: Optional[str] = Field(None, description="Content hash")
+    size_bytes: int = Field(0, description="Size in bytes")
 
 
 class Manifest(BaseModel):

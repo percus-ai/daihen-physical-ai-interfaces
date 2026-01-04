@@ -18,6 +18,7 @@ from interfaces_backend.models.storage import (
     DownloadResponse,
     ModelListResponse,
     ModelMetadata,
+    ProjectMetadata,
     PublishRequest,
     PublishResponse,
     StorageUsageResponse,
@@ -428,6 +429,68 @@ async def list_archived():
         models=models,
         total=len(datasets) + len(models),
     )
+
+
+# --- Projects ---
+
+
+@router.get("/projects")
+async def list_projects():
+    """List all projects."""
+    manifest = _get_manifest()
+    manifest.reload()
+    projects = manifest.list_projects()
+    return {"projects": [p.model_dump() for p in projects], "total": len(projects)}
+
+
+@router.get("/projects/{project_id}")
+async def get_project(project_id: str):
+    """Get project details."""
+    manifest = _get_manifest()
+    project = manifest.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+    return project.model_dump()
+
+
+@router.post("/projects/{project_id}/upload")
+async def upload_project(project_id: str):
+    """Upload project config to R2."""
+    sync = _get_sync_service()
+    success, error = sync.upload_project(project_id)
+
+    if not success:
+        raise HTTPException(status_code=500, detail=error or "Upload failed")
+
+    return {"success": True, "project_id": project_id, "message": "Project uploaded"}
+
+
+@router.post("/projects/{project_id}/download")
+async def download_project(project_id: str):
+    """Download project config from R2."""
+    sync = _get_sync_service()
+    success, error = sync.download_project(project_id)
+
+    if not success:
+        raise HTTPException(status_code=500, detail=error or "Download failed")
+
+    return {"success": True, "project_id": project_id, "message": "Project downloaded"}
+
+
+@router.get("/projects/remote/list")
+async def list_remote_projects():
+    """List projects available on R2."""
+    sync = _get_sync_service()
+    projects = sync.list_remote_projects()
+    return {"projects": projects, "total": len(projects)}
+
+
+@router.post("/projects/sync")
+async def sync_projects():
+    """Sync all projects from R2 (download missing ones)."""
+    sync = _get_sync_service()
+    downloaded, errors = sync.sync_projects_from_r2()
+    return {"downloaded": downloaded, "errors": errors}
 
 
 # --- Sync Operations ---

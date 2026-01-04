@@ -372,6 +372,9 @@ class R2SyncMenu(BaseMenu):
             Separator("─── アップロード ───"),
             Choice(value="upload_models", name="📤 モデルをアップロード"),
             Choice(value="upload_datasets", name="📤 データセットをアップロード"),
+            Separator("─── プロジェクト ───"),
+            Choice(value="download_projects", name="📥 プロジェクトをダウンロード"),
+            Choice(value="upload_projects", name="📤 プロジェクトをアップロード"),
             Separator("─── マニフェスト管理 ───"),
             Choice(value="regenerate", name="🔄 マニフェストを再生成"),
             Choice(value="push", name="📤 マニフェストをR2にPush"),
@@ -389,6 +392,10 @@ class R2SyncMenu(BaseMenu):
             return self._upload_models()
         if choice == "upload_datasets":
             return self._upload_datasets()
+        if choice == "download_projects":
+            return self._download_projects()
+        if choice == "upload_projects":
+            return self._upload_projects()
 
         show_section_header(f"R2 Sync: {choice}")
 
@@ -1093,6 +1100,144 @@ class R2SyncMenu(BaseMenu):
                     if isinstance(info, dict) and not info.get("success"):
                         error_msg = info.get("error", "Unknown error")
                         print(f"  - {item_id}: {error_msg}")
+
+        except Exception as e:
+            print(f"{Colors.error('Error:')} {e}")
+
+        input(f"\n{Colors.muted('Press Enter to continue...')}")
+        return MenuResult.CONTINUE
+
+    def _download_projects(self) -> MenuResult:
+        """Download projects from R2."""
+        show_section_header("プロジェクトをR2からダウンロード")
+
+        try:
+            # List remote projects
+            print(f"{Colors.CYAN}R2のプロジェクトを検索中...{Colors.RESET}\n")
+            result = self.api.list_remote_projects()
+            remote_projects = result.get("projects", [])
+
+            if not remote_projects:
+                print(f"{Colors.muted('R2にプロジェクトがありません')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Get local projects to filter out already downloaded ones
+            local_result = self.api.list_storage_projects()
+            local_projects = local_result.get("projects", [])
+            local_ids = {p.get("id") for p in local_projects}
+
+            # Filter to not-yet-downloaded projects
+            choices = []
+            for p in remote_projects:
+                project_id = p.get("id", "unknown")
+                size = format_size(p.get("size_bytes", 0))
+                downloaded = "✓" if project_id in local_ids else ""
+                choices.append(Choice(
+                    value=project_id,
+                    name=f"{project_id} ({size}) {downloaded}",
+                ))
+
+            if not choices:
+                print(f"{Colors.muted('ダウンロード可能なプロジェクトがありません')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"見つかったプロジェクト: {len(remote_projects)}個\n")
+
+            selected = inquirer.checkbox(
+                message="ダウンロードするプロジェクトを選択:",
+                choices=choices,
+                style=hacker_style,
+                instruction="(Spaceで選択/解除、Enterで確定)",
+                keybindings={"toggle": [{"key": "space"}]},
+            ).execute()
+
+            if not selected:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Download each project
+            print(f"\n{Colors.CYAN}ダウンロード中...{Colors.RESET}\n")
+
+            success_count = 0
+            failed_count = 0
+            for project_id in selected:
+                try:
+                    self.api.download_storage_project(project_id)
+                    print(f"  {Colors.success('✓')} {project_id}")
+                    success_count += 1
+                except Exception as e:
+                    print(f"  {Colors.error('✗')} {project_id}: {e}")
+                    failed_count += 1
+
+            print(f"\n{Colors.success('ダウンロード完了')}")
+            print(f"  成功: {success_count}")
+            print(f"  失敗: {failed_count}")
+
+        except Exception as e:
+            print(f"{Colors.error('Error:')} {e}")
+
+        input(f"\n{Colors.muted('Press Enter to continue...')}")
+        return MenuResult.CONTINUE
+
+    def _upload_projects(self) -> MenuResult:
+        """Upload projects to R2."""
+        show_section_header("プロジェクトをR2にアップロード")
+
+        try:
+            # List local projects
+            result = self.api.list_storage_projects()
+            projects = result.get("projects", [])
+
+            if not projects:
+                print(f"{Colors.muted('ローカルにプロジェクトがありません')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            print(f"見つかったプロジェクト: {len(projects)}個\n")
+
+            choices = []
+            for p in projects:
+                project_id = p.get("id", "unknown")
+                display_name = p.get("display_name", project_id)
+                robot_type = p.get("robot_type", "?")
+                choices.append(Choice(
+                    value=project_id,
+                    name=f"{display_name} ({project_id}) [{robot_type}]",
+                ))
+
+            selected = inquirer.checkbox(
+                message="アップロードするプロジェクトを選択:",
+                choices=choices,
+                style=hacker_style,
+                instruction="(Spaceで選択/解除、Enterで確定)",
+                keybindings={"toggle": [{"key": "space"}]},
+            ).execute()
+
+            if not selected:
+                print(f"{Colors.muted('キャンセルされました')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return MenuResult.CONTINUE
+
+            # Upload each project
+            print(f"\n{Colors.CYAN}アップロード中...{Colors.RESET}\n")
+
+            success_count = 0
+            failed_count = 0
+            for project_id in selected:
+                try:
+                    self.api.upload_storage_project(project_id)
+                    print(f"  {Colors.success('✓')} {project_id}")
+                    success_count += 1
+                except Exception as e:
+                    print(f"  {Colors.error('✗')} {project_id}: {e}")
+                    failed_count += 1
+
+            print(f"\n{Colors.success('アップロード完了')}")
+            print(f"  成功: {success_count}")
+            print(f"  失敗: {failed_count}")
 
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")

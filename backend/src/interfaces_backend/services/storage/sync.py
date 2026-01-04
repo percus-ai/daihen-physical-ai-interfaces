@@ -1681,3 +1681,124 @@ class R2SyncService:
             )
 
         self.manifest.register_dataset(metadata)
+
+    # --- Project Sync ---
+
+    def list_remote_projects(self) -> List[Dict]:
+        """List projects available on R2.
+
+        Returns:
+            List of project info dicts with id and size_bytes
+        """
+        try:
+            prefix = self._get_prefix()
+            projects_path = f"s3://{self.bucket}/{prefix}projects/"
+            objects = self.s3.list_objects(projects_path)
+
+            projects = []
+            for obj in objects:
+                key = obj.get("Key", "")
+                if key.endswith(".yaml"):
+                    # Extract project_id from path like "v2/projects/project_id.yaml"
+                    filename = key.split("/")[-1]
+                    project_id = filename.replace(".yaml", "")
+                    projects.append({
+                        "id": project_id,
+                        "size_bytes": obj.get("Size", 0),
+                        "key": key,
+                    })
+
+            return projects
+        except Exception as e:
+            logger.error(f"Failed to list remote projects: {e}")
+            return []
+
+    def download_project(self, project_id: str) -> Tuple[bool, str]:
+        """Download a project config from R2.
+
+        Args:
+            project_id: Project ID to download
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            prefix = self._get_prefix()
+            remote_path = f"s3://{self.bucket}/{prefix}projects/{project_id}.yaml"
+
+            # Check if exists
+            objects = self.s3.list_objects(remote_path)
+            if not objects:
+                return False, f"Project not found on R2: {project_id}"
+
+            # Download
+            local_path = self.manifest.get_project_path(project_id)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+
+            bucket, key = self.s3.parse_s3_path(remote_path)
+            self.s3.client.download_file(bucket, key, str(local_path))
+
+            # Register in manifest
+            size_bytes = local_path.stat().st_size
+            self.manifest.register_project(project_id)
+
+            logger.info(f"Downloaded project: {project_id}")
+            return True, ""
+        except Exception as e:
+            msg = str(e)
+            logger.error(f"Failed to download project {project_id}: {msg}")
+            return False, msg
+
+    def upload_project(self, project_id: str) -> Tuple[bool, str]:
+        """Upload a project config to R2.
+
+        Args:
+            project_id: Project ID to upload
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            local_path = self.manifest.get_project_path(project_id)
+            if not local_path.exists():
+                return False, f"Local project not found: {project_id}"
+
+            prefix = self._get_prefix()
+            remote_path = f"s3://{self.bucket}/{prefix}projects/{project_id}.yaml"
+
+            bucket, key = self.s3.parse_s3_path(remote_path)
+            self.s3.client.upload_file(str(local_path), bucket, key)
+
+            # Register in manifest
+            self.manifest.register_project(project_id)
+
+            logger.info(f"Uploaded project: {project_id}")
+            return True, ""
+        except Exception as e:
+            msg = str(e)
+            logger.error(f"Failed to upload project {project_id}: {msg}")
+            return False, msg
+
+    def sync_projects_from_r2(self) -> Tuple[int, int]:
+        """Sync all projects from R2 (download missing ones).
+
+        Returns:
+            Tuple of (downloaded_count, error_count)
+        """
+        downloaded = 0
+        errors = 0
+
+        remote_projects = self.list_remote_projects()
+
+        for proj in remote_projects:
+            project_id = proj["id"]
+            local_path = self.manifest.get_project_path(project_id)
+
+            if not local_path.exists():
+                success, _ = self.download_project(project_id)
+                if success:
+                    downloaded += 1
+                else:
+                    errors += 1
+
+        return downloaded, errors

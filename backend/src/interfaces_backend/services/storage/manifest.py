@@ -15,6 +15,7 @@ from interfaces_backend.models.storage import (
     ManifestEntry,
     ModelMetadata,
     ProjectEntry,
+    ProjectMetadata,
 )
 from interfaces_backend.services.storage.hash import compute_directory_hash, compute_directory_size
 
@@ -519,18 +520,126 @@ class ManifestManager:
 
     # --- Project Operations ---
 
-    def register_project(self, project_id: str, path: Optional[str] = None) -> ProjectEntry:
-        """Register a new project."""
-        project_path = path or f"projects/{project_id}"
-        full_path = self.base_path / project_path
-        full_path.mkdir(parents=True, exist_ok=True)
+    def get_project_path(self, project_id: str) -> Path:
+        """Get the local path for a project config file."""
+        return self.base_path / "projects" / f"{project_id}.yaml"
 
-        entry = ProjectEntry(path=project_path)
+    def get_project(self, project_id: str) -> Optional[ProjectMetadata]:
+        """Get project metadata by ID."""
+        import yaml
+
+        entry = self.manifest.projects.get(project_id)
+        yaml_path = self.get_project_path(project_id)
+
+        if not yaml_path.exists():
+            if entry:
+                # Remote-only project
+                return ProjectMetadata(
+                    id=project_id,
+                    name=project_id,
+                    display_name=project_id,
+                    source=entry.source,
+                    hash=entry.hash,
+                    size_bytes=entry.size_bytes,
+                )
+            return None
+
+        try:
+            with open(yaml_path, "r") as f:
+                data = yaml.safe_load(f)
+
+            project_info = data.get("project", {})
+            recording = data.get("recording", {})
+            cameras = data.get("cameras", {})
+            arms = data.get("arms", {})
+
+            return ProjectMetadata(
+                id=project_id,
+                name=project_info.get("name", project_id),
+                display_name=project_info.get("display_name", project_id),
+                description=project_info.get("description"),
+                version=project_info.get("version", "1.0"),
+                robot_type=project_info.get("robot_type", "so101"),
+                episode_time_s=recording.get("episode_time_s", 20),
+                reset_time_s=recording.get("reset_time_s", 10),
+                cameras=cameras,
+                arms=arms,
+                source=entry.source if entry else DataSource.R2,
+                hash=entry.hash if entry else None,
+                size_bytes=entry.size_bytes if entry else yaml_path.stat().st_size,
+            )
+        except Exception as e:
+            logger.error(f"Failed to load project {project_id}: {e}")
+            return None
+
+    def list_projects(self, status: DataStatus = DataStatus.ACTIVE) -> List[ProjectMetadata]:
+        """List all projects matching criteria."""
+        import yaml
+
+        results = []
+
+        # First, scan local projects directory
+        projects_dir = self.base_path / "projects"
+        if projects_dir.exists():
+            for yaml_file in projects_dir.glob("*.yaml"):
+                project_id = yaml_file.stem
+                metadata = self.get_project(project_id)
+                if metadata:
+                    results.append(metadata)
+
+        # Add remote-only projects from manifest
+        for project_id, entry in self.manifest.projects.items():
+            if entry.status != status:
+                continue
+            # Check if already in results
+            if any(p.id == project_id for p in results):
+                continue
+            # Remote-only project
+            results.append(ProjectMetadata(
+                id=project_id,
+                name=project_id,
+                display_name=project_id,
+                source=entry.source,
+                hash=entry.hash,
+                size_bytes=entry.size_bytes,
+            ))
+
+        return results
+
+    def register_project(self, project_id: str, path: Optional[str] = None) -> ProjectEntry:
+        """Register a local project in the manifest."""
+        yaml_path = self.get_project_path(project_id)
+        project_path = path or f"projects/{project_id}.yaml"
+
+        size_bytes = yaml_path.stat().st_size if yaml_path.exists() else 0
+
+        entry = ProjectEntry(
+            path=project_path,
+            source=DataSource.R2,
+            size_bytes=size_bytes,
+            status=DataStatus.ACTIVE,
+        )
         self.manifest.projects[project_id] = entry
         self.manifest.last_updated = _now_iso()
         self.save()
 
         logger.info(f"Registered project: {project_id}")
+        return entry
+
+    def register_project_remote(self, project_id: str, size_bytes: int = 0, hash: Optional[str] = None) -> ProjectEntry:
+        """Register a remote-only project in the manifest."""
+        entry = ProjectEntry(
+            path=f"projects/{project_id}.yaml",
+            source=DataSource.R2,
+            size_bytes=size_bytes,
+            hash=hash,
+            status=DataStatus.ACTIVE,
+        )
+        self.manifest.projects[project_id] = entry
+        self.manifest.last_updated = _now_iso()
+        self.save()
+
+        logger.info(f"Registered remote project: {project_id}")
         return entry
 
     def link_dataset_to_project(self, dataset_id: str, project_id: str) -> bool:
