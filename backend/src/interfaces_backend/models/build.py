@@ -37,6 +37,7 @@ class BundledTorchStatusResponse(BaseModel):
     exists: bool = Field(..., description="Whether bundled-torch exists")
     pytorch_version: Optional[str] = Field(None, description="PyTorch version")
     torchvision_version: Optional[str] = Field(None, description="torchvision version")
+    numpy_version: Optional[str] = Field(None, description="numpy version used for build")
     pytorch_path: Optional[str] = Field(None, description="PyTorch source path")
     torchvision_path: Optional[str] = Field(None, description="torchvision source path")
     is_valid: bool = Field(False, description="Whether build is valid (has .so files)")

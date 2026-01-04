@@ -56,6 +56,13 @@ class BuildMenu(BaseMenu):
                     table.add_row("PyTorch:", status["pytorch_version"])
                 if status.get("torchvision_version"):
                     table.add_row("torchvision:", status["torchvision_version"])
+                if status.get("numpy_version"):
+                    numpy_ver = status["numpy_version"]
+                    # Highlight if numpy 2.x (compatible with lerobot)
+                    if numpy_ver.startswith("2."):
+                        table.add_row("numpy:", f"{numpy_ver} (lerobot compatible)")
+                    else:
+                        table.add_row("numpy:", f"{numpy_ver} [bold red](needs rebuild for lerobot)[/bold red]")
                 if status.get("pytorch_path"):
                     table.add_row("Path:", status["pytorch_path"])
 

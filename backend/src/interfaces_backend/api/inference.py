@@ -1,12 +1,14 @@
 """Inference API router."""
 
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+import yaml
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from interfaces_backend.models.inference import (
     InferenceModelInfo,
@@ -23,8 +25,73 @@ router = APIRouter(prefix="/api/inference", tags=["inference"])
 DATA_DIR = Path(os.environ.get("PHI_DATA_DIR", Path.cwd() / "data"))
 MODELS_DIR = DATA_DIR / "models"
 
-# Archive scripts directory (for execute_policy_on_robot.py)
-ARCHIVE_SCRIPTS_DIR = Path.cwd() / "archive" / "scripts" / "framework"
+# Repository root detection
+def _find_repo_root() -> Path:
+    """Find repository root by looking for data/.env or .git directory."""
+    current = Path.cwd()
+    for _ in range(10):
+        if (current / "data" / ".env").exists():
+            return current
+        if (current / "envs" / "policy_map.yaml").exists():
+            return current
+        git_path = current / ".git"
+        if git_path.exists() and git_path.is_dir():
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    # Fallback: assume backend is in interfaces/backend relative to root
+    return Path(__file__).resolve().parents[5]
+
+
+_REPO_ROOT = _find_repo_root()
+
+# Environment scripts (now in features/percus_ai/environment/)
+RUN_IN_ENV_SCRIPT = _REPO_ROOT / "features" / "percus_ai" / "environment" / "run_in_env.sh"
+POLICY_MAP_FILE = _REPO_ROOT / "envs" / "policy_map.yaml"
+
+
+def _get_policy_type(model_path: Path) -> Optional[str]:
+    """Get policy type from model's config.json."""
+    config_path = model_path / "config.json"
+    if not config_path.exists():
+        # Search subdirectories (e.g. HuggingFace format)
+        for p in model_path.glob("**/config.json"):
+            config_path = p
+            break
+
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+                return config.get("type")
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def _get_env_for_policy(policy_type: str) -> str:
+    """Get environment name for policy type from policy_map.yaml."""
+    if not POLICY_MAP_FILE.exists():
+        return "act"  # Default fallback
+
+    try:
+        with open(POLICY_MAP_FILE) as f:
+            policy_map = yaml.safe_load(f)
+
+        environments = policy_map.get("environments", {})
+        for env_config in environments.values():
+            policies = env_config.get("policies", [])
+            if policy_type in policies:
+                # Return short name (without .venv- prefix)
+                venv = env_config["venv"]
+                return venv.replace(".venv-", "")
+
+        # Return default environment
+        return policy_map.get("default_environment", "act")
+    except Exception:
+        return "act"
 
 
 def _get_percus_inference():
@@ -233,8 +300,9 @@ def _find_model_path(model_id: str) -> Optional[Path]:
 async def run_inference(request: InferenceRunRequest):
     """Run inference on robot with the specified model.
 
-    This directly executes the policy on the robot using subprocess,
-    similar to archive's ./daihen CLI.
+    Uses run_in_env.sh to execute percus_ai.inference.cli in the appropriate
+    policy environment (e.g., .venv-pi0 for pi05 models) with bundled-torch
+    PYTHONPATH injection.
     """
     model_id = request.model_id
     project = request.project
@@ -250,18 +318,25 @@ async def run_inference(request: InferenceRunRequest):
             detail=f"Model not found: {model_id}. Check if it's downloaded in {MODELS_DIR}",
         )
 
-    # Check if execute_policy_on_robot.py exists
-    execute_script = ARCHIVE_SCRIPTS_DIR / "execute_policy_on_robot.py"
-    if not execute_script.exists():
+    # Detect policy type and get appropriate environment
+    policy_type = _get_policy_type(model_path)
+    if not policy_type:
+        policy_type = "act"  # Default fallback
+    env_name = _get_env_for_policy(policy_type)
+
+    # Check if run_in_env.sh exists
+    if not RUN_IN_ENV_SCRIPT.exists():
         raise HTTPException(
             status_code=500,
-            detail=f"Execute script not found: {execute_script}",
+            detail=f"Environment script not found: {RUN_IN_ENV_SCRIPT}",
         )
 
-    # Build command
+    # Build command using run_in_env.sh
+    # Format: run_in_env.sh <env_name> python -m percus_ai.inference.executor [args...]
     cmd = [
-        "python",
-        str(execute_script),
+        str(RUN_IN_ENV_SCRIPT),
+        env_name,
+        "python", "-m", "percus_ai.inference.executor",
         "--project", project,
         "--policy-path", str(model_path),
         "--episodes", str(episodes),
@@ -271,11 +346,11 @@ async def run_inference(request: InferenceRunRequest):
     if device:
         cmd.extend(["--device", device])
 
-    # Execute
+    # Execute (run_in_env.sh handles PYTHONPATH for features and bundled-torch)
     try:
         result = subprocess.run(
             cmd,
-            cwd=Path.cwd(),
+            cwd=_REPO_ROOT,
             capture_output=False,  # Let output flow to terminal
             text=True,
         )
@@ -284,7 +359,7 @@ async def run_inference(request: InferenceRunRequest):
             success=result.returncode == 0,
             model_id=model_id,
             project=project,
-            message="Inference completed" if result.returncode == 0 else "Inference failed",
+            message=f"Inference completed (env: {env_name}, policy: {policy_type})" if result.returncode == 0 else f"Inference failed (env: {env_name})",
             return_code=result.returncode,
         )
 
@@ -293,3 +368,151 @@ async def run_inference(request: InferenceRunRequest):
             status_code=500,
             detail=f"Failed to run inference: {str(e)}",
         )
+
+
+@router.websocket("/ws/run")
+async def websocket_run_inference(websocket: WebSocket):
+    """WebSocket endpoint for running inference with real-time output streaming.
+
+    Client sends:
+        {
+            "model_id": "...",
+            "project": "...",
+            "episodes": 1,
+            "robot_type": "so101",
+            "device": "cuda" | "mps" | "cpu" | null
+        }
+
+    Server sends:
+        {"type": "start", "model_id": "...", "env": "...", "policy": "..."}
+        {"type": "output", "line": "..."}  # stdout lines
+        {"type": "error_output", "line": "..."}  # stderr lines
+        {"type": "complete", "success": true, "return_code": 0}
+        {"type": "error", "error": "..."}
+    """
+    import asyncio
+
+    await websocket.accept()
+
+    try:
+        # Receive run request
+        data = await websocket.receive_json()
+
+        model_id = data.get("model_id")
+        project = data.get("project")
+        episodes = data.get("episodes", 1)
+        robot_type = data.get("robot_type", "so101")
+        device = data.get("device")
+
+        if not model_id or not project:
+            await websocket.send_json({
+                "type": "error",
+                "error": "model_id and project are required"
+            })
+            await websocket.close()
+            return
+
+        # Find model path
+        model_path = _find_model_path(model_id)
+        if not model_path:
+            await websocket.send_json({
+                "type": "error",
+                "error": f"Model not found: {model_id}"
+            })
+            await websocket.close()
+            return
+
+        # Detect policy type and get appropriate environment
+        policy_type = _get_policy_type(model_path)
+        if not policy_type:
+            policy_type = "act"
+        env_name = _get_env_for_policy(policy_type)
+
+        # Check if run_in_env.sh exists
+        if not RUN_IN_ENV_SCRIPT.exists():
+            await websocket.send_json({
+                "type": "error",
+                "error": f"Environment script not found: {RUN_IN_ENV_SCRIPT}"
+            })
+            await websocket.close()
+            return
+
+        # Build command
+        cmd = [
+            str(RUN_IN_ENV_SCRIPT),
+            env_name,
+            "python", "-m", "percus_ai.inference.executor",
+            "--project", project,
+            "--policy-path", str(model_path),
+            "--episodes", str(episodes),
+            "--robot-type", robot_type,
+        ]
+
+        if device:
+            cmd.extend(["--device", device])
+
+        # Send start notification
+        await websocket.send_json({
+            "type": "start",
+            "model_id": model_id,
+            "project": project,
+            "env": env_name,
+            "policy": policy_type,
+        })
+
+        # Run subprocess with output streaming
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=_REPO_ROOT,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        async def read_stream(stream, output_type):
+            """Read from stream and send to websocket."""
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                try:
+                    text = line.decode("utf-8", errors="replace").rstrip()
+                    if text:
+                        await websocket.send_json({
+                            "type": output_type,
+                            "line": text,
+                        })
+                except Exception:
+                    pass
+
+        # Read stdout and stderr concurrently
+        await asyncio.gather(
+            read_stream(process.stdout, "output"),
+            read_stream(process.stderr, "error_output"),
+        )
+
+        # Wait for process to complete
+        return_code = await process.wait()
+
+        # Send completion notification
+        await websocket.send_json({
+            "type": "complete",
+            "success": return_code == 0,
+            "return_code": return_code,
+            "message": f"Inference completed (env: {env_name}, policy: {policy_type})" if return_code == 0 else f"Inference failed (env: {env_name})",
+        })
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "error": str(e),
+            })
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass

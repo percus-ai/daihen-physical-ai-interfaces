@@ -4,6 +4,10 @@ from typing import TYPE_CHECKING, Any, List
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
+from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
+from rich.text import Text
 
 from interfaces_cli.banner import show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
@@ -466,24 +470,78 @@ class InferenceMenu(BaseMenu):
             if not confirm:
                 return MenuResult.CONTINUE
 
-            # Run inference
+            # Run inference with WebSocket progress
             print(f"\n{Colors.CYAN}Starting inference...{Colors.RESET}\n")
 
-            result = self.api.run_inference({
-                "model_id": selected_model,
-                "project": selected_project,
-                "episodes": int(episodes),
-                "robot_type": robot_type,
-                "device": device,
-            })
+            console = Console()
+            output_lines = []
+            max_display_lines = 20
+            status_info = {"env": "", "policy": "", "started": False}
 
-            if result.get("success"):
+            def make_output_panel():
+                """Create output display panel."""
+                text = Text()
+
+                if status_info["started"]:
+                    text.append(f"Environment: {status_info['env']}  ", style="cyan")
+                    text.append(f"Policy: {status_info['policy']}\n\n", style="cyan")
+
+                # Show last N lines
+                display_lines = output_lines[-max_display_lines:]
+                for line in display_lines:
+                    text.append(line + "\n")
+
+                return Panel(text, title="🤖 推論実行中", border_style="cyan")
+
+            def progress_callback(data):
+                """Handle progress updates from WebSocket."""
+                msg_type = data.get("type", "")
+
+                if msg_type == "start":
+                    status_info["env"] = data.get("env", "")
+                    status_info["policy"] = data.get("policy", "")
+                    status_info["started"] = True
+                    output_lines.append(f"[開始] Model: {data.get('model_id', '')}")
+                    output_lines.append(f"       Project: {data.get('project', '')}")
+                elif msg_type == "output":
+                    line = data.get("line", "")
+                    if line:
+                        output_lines.append(line)
+                elif msg_type == "error_output":
+                    line = data.get("line", "")
+                    if line:
+                        output_lines.append(f"[stderr] {line}")
+
+            try:
+                with Live(make_output_panel(), console=console, refresh_per_second=4) as live:
+                    def update_display(data):
+                        progress_callback(data)
+                        live.update(make_output_panel())
+
+                    result = self.api.run_inference_with_progress(
+                        data={
+                            "model_id": selected_model,
+                            "project": selected_project,
+                            "episodes": int(episodes),
+                            "robot_type": robot_type,
+                            "device": device,
+                        },
+                        progress_callback=update_display,
+                    )
+            except Exception as e:
+                result = {"type": "error", "error": str(e)}
+
+            if result.get("type") == "complete" and result.get("success"):
                 print(f"\n{Colors.success('Inference completed successfully!')}")
             else:
                 print(f"\n{Colors.error('Inference failed')}")
-                print(f"  Return code: {result.get('return_code', 'unknown')}")
+                if result.get("return_code"):
+                    print(f"  Return code: {result.get('return_code')}")
+                if result.get("error"):
+                    print(f"  Error: {result.get('error')}")
 
-            print(f"  Message: {result.get('message', '')}")
+            if result.get("message"):
+                print(f"  Message: {result.get('message')}")
 
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")

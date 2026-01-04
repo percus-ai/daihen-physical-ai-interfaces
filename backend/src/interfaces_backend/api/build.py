@@ -83,6 +83,7 @@ async def get_bundled_torch_status():
         exists=status.exists,
         pytorch_version=status.pytorch_version,
         torchvision_version=status.torchvision_version,
+        numpy_version=status.numpy_version,
         pytorch_path=status.pytorch_path,
         torchvision_path=status.torchvision_path,
         is_valid=status.is_valid,

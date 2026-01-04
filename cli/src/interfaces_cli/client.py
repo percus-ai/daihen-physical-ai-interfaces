@@ -190,9 +190,63 @@ class PhiClient:
 
     def run_inference(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/inference/run - Run inference on robot."""
-        response = self._client.post("/api/inference/run", json=data)
+        response = self._client.post("/api/inference/run", json=data, timeout=600.0)
         response.raise_for_status()
         return response.json()
+
+    def run_inference_with_progress(
+        self,
+        data: Dict[str, Any],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Run inference via WebSocket with real-time output streaming.
+
+        Args:
+            data: Dict with model_id, project, episodes, robot_type, device
+            progress_callback: Called with each message from WebSocket
+
+        Returns:
+            Final result with type='complete' or type='error'
+        """
+        import websocket
+
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/inference/ws/run"
+
+        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
+
+        try:
+            ws = websocket.create_connection(ws_url, timeout=None)  # No timeout for long-running inference
+
+            # Send inference request
+            ws.send(json.dumps(data))
+
+            # Receive messages until done
+            while True:
+                message = ws.recv()
+                msg_data = json.loads(message)
+
+                if progress_callback:
+                    progress_callback(msg_data)
+
+                if msg_data.get("type") in ("complete", "error"):
+                    result = msg_data
+                    break
+
+            ws.close()
+        except ImportError:
+            if progress_callback:
+                progress_callback({
+                    "type": "error",
+                    "error": "websocket-client not installed"
+                })
+            result = {"type": "error", "error": "websocket-client not installed"}
+        except Exception as e:
+            if progress_callback:
+                progress_callback({"type": "error", "error": str(e)})
+            result = {"type": "error", "error": str(e)}
+
+        return result
 
     # =========================================================================
     # Platform
