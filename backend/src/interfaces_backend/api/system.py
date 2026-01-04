@@ -74,17 +74,18 @@ async def health_check():
         ))
         overall_status = "degraded"
 
-    # Check PyTorch/CUDA
-    try:
-        import torch
-        cuda_status = "running" if torch.cuda.is_available() else "stopped"
-        cuda_msg = f"CUDA {torch.version.cuda}" if torch.cuda.is_available() else "CPU only"
+    # Check PyTorch/CUDA (via subprocess to avoid numpy conflicts)
+    from interfaces_backend.utils.torch_info import get_torch_info
+    torch_info = get_torch_info()
+    if torch_info.get("torch_version"):
+        cuda_status = "running" if torch_info.get("cuda_available") else "stopped"
+        cuda_msg = f"CUDA {torch_info.get('cuda_version')}" if torch_info.get("cuda_available") else "CPU only"
         services.append(ServiceStatus(
             name="pytorch",
-            status=cuda_status if torch.cuda.is_available() else "running",
+            status=cuda_status if torch_info.get("cuda_available") else "running",
             message=cuda_msg,
         ))
-    except ImportError:
+    else:
         services.append(ServiceStatus(
             name="pytorch",
             status="stopped",
@@ -278,11 +279,10 @@ async def get_system_info():
     except ImportError:
         pass
 
-    try:
-        import torch
-        pytorch_version = torch.__version__
-    except ImportError:
-        pass
+    # Get PyTorch version via subprocess
+    from interfaces_backend.utils.torch_info import get_torch_info
+    torch_info = get_torch_info()
+    pytorch_version = torch_info.get("torch_version")
 
     return SystemInfoResponse(
         info=SystemInfo(
@@ -305,80 +305,69 @@ async def get_system_info():
 
 @router.get("/gpu", response_model=GpuResponse)
 async def get_gpu_info():
-    """Get GPU information."""
+    """Get GPU information using nvidia-smi (no torch import needed)."""
+    import subprocess
+
     gpus = []
     cuda_version = None
     driver_version = None
     available = False
 
+    # Get CUDA version from torch info (via subprocess)
+    from interfaces_backend.utils.torch_info import get_torch_info
+    torch_info = get_torch_info()
+    if torch_info.get("cuda_available"):
+        available = True
+        cuda_version = torch_info.get("cuda_version")
+
+    # Get GPU info via nvidia-smi
     try:
-        import torch
-
-        if torch.cuda.is_available():
+        # Get driver version
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            driver_version = result.stdout.strip().split("\n")[0]
             available = True
-            cuda_version = torch.version.cuda
 
-            # Get driver version if nvidia-smi available
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    driver_version = result.stdout.strip().split("\n")[0]
-            except Exception:
-                pass
+        # Get detailed GPU info
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n"):
+                if not line.strip():
+                    continue
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 7:
+                    try:
+                        def parse_float(val: str) -> float | None:
+                            if val == "[N/A]" or val == "N/A":
+                                return None
+                            return float(val)
 
-            # Get GPU info for each device
-            for i in range(torch.cuda.device_count()):
-                props = torch.cuda.get_device_properties(i)
-                memory_total = props.total_memory / (1024 * 1024)
-
-                try:
-                    memory_allocated = torch.cuda.memory_allocated(i) / (1024 * 1024)
-                    memory_free = memory_total - memory_allocated
-                except Exception:
-                    memory_allocated = 0
-                    memory_free = memory_total
-
-                # Get utilization and temperature via nvidia-smi
-                utilization = 0.0
-                temperature = None
-                try:
-                    import subprocess
-                    result = subprocess.run(
-                        [
-                            "nvidia-smi",
-                            f"--id={i}",
-                            "--query-gpu=utilization.gpu,temperature.gpu",
-                            "--format=csv,noheader,nounits",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if result.returncode == 0:
-                        parts = result.stdout.strip().split(",")
-                        if len(parts) >= 2:
-                            utilization = float(parts[0].strip())
-                            temperature = float(parts[1].strip())
-                except Exception:
-                    pass
-
-                gpus.append(GpuInfo(
-                    device_id=i,
-                    name=props.name,
-                    memory_total_mb=memory_total,
-                    memory_used_mb=memory_allocated,
-                    memory_free_mb=memory_free,
-                    utilization_percent=utilization,
-                    temperature_c=temperature,
-                ))
-
-    except ImportError:
+                        gpus.append(GpuInfo(
+                            device_id=int(parts[0]),
+                            name=parts[1],
+                            memory_total_mb=parse_float(parts[2]),
+                            memory_used_mb=parse_float(parts[3]),
+                            memory_free_mb=parse_float(parts[4]),
+                            utilization_percent=parse_float(parts[5]) or 0.0,
+                            temperature_c=parse_float(parts[6]),
+                        ))
+                    except (ValueError, IndexError):
+                        pass
+    except Exception:
         pass
 
     return GpuResponse(

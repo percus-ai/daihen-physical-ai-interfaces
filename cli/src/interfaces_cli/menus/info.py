@@ -341,16 +341,15 @@ class InfoMenu(BaseMenu):
         except ImportError:
             pass
 
-        # Check for PyTorch
-        try:
-            import torch
+        # Check for PyTorch (via subprocess to avoid numpy conflicts with bundled-torch)
+        from interfaces_cli.banner import check_system_info
+        torch_info = check_system_info()
+        if torch_info.get("torch_version"):
             print(f"\n{Colors.CYAN}ML Libraries:{Colors.RESET}")
-            print(f"  PyTorch: {torch.__version__}")
-            print(f"  CUDA available: {'Yes' if torch.cuda.is_available() else 'No'}")
-            if torch.cuda.is_available():
-                print(f"  CUDA version: {torch.version.cuda}")
-        except ImportError:
-            pass
+            print(f"  PyTorch: {torch_info['torch_version']}")
+            print(f"  CUDA available: {'Yes' if torch_info.get('cuda_available') else 'No'}")
+            if torch_info.get("cuda_available"):
+                print(f"  CUDA version: {torch_info.get('cuda_version', 'N/A')}")
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE

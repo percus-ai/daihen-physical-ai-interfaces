@@ -52,16 +52,13 @@ def _detect_device() -> str:
     if detect_device:
         return detect_device()
 
-    # Fallback detection
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            return "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
-    except ImportError:
-        pass
+    # Fallback detection (via subprocess to avoid numpy conflicts)
+    from interfaces_backend.utils.torch_info import get_torch_info
+    torch_info = get_torch_info()
+    if torch_info.get("cuda_available"):
+        return "cuda"
+    elif torch_info.get("mps_available"):
+        return "mps"
     return "cpu"
 
 
@@ -157,18 +154,15 @@ async def get_device_compatibility():
     cuda_available = False
     cuda_memory_total = None
     cuda_memory_free = None
-    try:
-        import torch
 
-        if torch.cuda.is_available():
-            cuda_available = True
-            cuda_memory_total = torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
-            cuda_memory_free = (
-                torch.cuda.get_device_properties(0).total_memory
-                - torch.cuda.memory_allocated(0)
-            ) / (1024 * 1024)
-    except ImportError:
-        pass
+    # Get CUDA/MPS info via subprocess to avoid numpy conflicts
+    from interfaces_backend.utils.torch_info import get_torch_info
+    torch_info = get_torch_info()
+
+    if torch_info.get("cuda_available"):
+        cuda_available = True
+        cuda_memory_total = torch_info.get("cuda_memory_total")
+        cuda_memory_free = torch_info.get("cuda_memory_free")
 
     devices.append(
         InferenceDeviceCompatibility(
@@ -180,14 +174,7 @@ async def get_device_compatibility():
     )
 
     # Check MPS (Apple Silicon)
-    mps_available = False
-    try:
-        import torch
-
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            mps_available = True
-    except ImportError:
-        pass
+    mps_available = torch_info.get("mps_available", False)
 
     devices.append(
         InferenceDeviceCompatibility(

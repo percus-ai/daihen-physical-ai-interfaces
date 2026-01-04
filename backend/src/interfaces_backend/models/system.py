@@ -94,9 +94,9 @@ class GpuInfo(BaseModel):
 
     device_id: int = Field(..., description="GPU device ID")
     name: str = Field(..., description="GPU name")
-    memory_total_mb: float = Field(0.0, description="Total memory in MB")
-    memory_used_mb: float = Field(0.0, description="Used memory in MB")
-    memory_free_mb: float = Field(0.0, description="Free memory in MB")
+    memory_total_mb: Optional[float] = Field(None, description="Total memory in MB")
+    memory_used_mb: Optional[float] = Field(None, description="Used memory in MB")
+    memory_free_mb: Optional[float] = Field(None, description="Free memory in MB")
     utilization_percent: float = Field(0.0, description="GPU utilization percentage")
     temperature_c: Optional[float] = Field(None, description="Temperature in Celsius")
 

@@ -2,6 +2,7 @@
 
 import os
 import platform
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -81,10 +82,18 @@ _system_info_cache: Optional[Dict[str, Any]] = None
 
 
 def check_system_info() -> Dict[str, Any]:
-    """Check system info (PyTorch, CUDA, GPU). Cached after first call."""
+    """Check system info (PyTorch, CUDA, GPU). Cached after first call.
+
+    Uses subprocess to avoid importing torch directly, which prevents
+    numpy version conflicts with bundled-torch.
+    """
     global _system_info_cache
     if _system_info_cache is not None:
         return _system_info_cache
+
+    import json
+    import os
+    import subprocess
 
     info: Dict[str, Any] = {
         "torch_version": None,
@@ -96,27 +105,60 @@ def check_system_info() -> Dict[str, Any]:
         "error": None,
     }
 
+    # Build PYTHONPATH with bundled-torch if it exists
+    bundled_torch = Path.home() / ".cache" / "daihen-physical-ai" / "bundled-torch"
+    env = os.environ.copy()
+    if (bundled_torch / "pytorch").is_dir():
+        pytorch_path = str(bundled_torch / "pytorch")
+        torchvision_path = str(bundled_torch / "torchvision")
+        env["PYTHONPATH"] = f"{pytorch_path}:{torchvision_path}:{env.get('PYTHONPATH', '')}"
+
+    # Python code to run in subprocess
+    torch_check_code = '''
+import json
+import sys
+info = {
+    "torch_version": None,
+    "cuda_available": None,
+    "cuda_version": None,
+    "gpu_name": None,
+    "gpu_count": 0,
+    "mps_available": None,
+    "error": None,
+}
+try:
+    import torch
+    info["torch_version"] = torch.__version__
+    info["cuda_available"] = torch.cuda.is_available()
+    if info["cuda_available"]:
+        info["cuda_version"] = torch.version.cuda or "N/A"
+        info["gpu_count"] = torch.cuda.device_count()
+        if info["gpu_count"] > 0:
+            info["gpu_name"] = torch.cuda.get_device_name(0)
+    else:
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            info["mps_available"] = True
+except ImportError:
+    info["error"] = "PyTorch not installed"
+except Exception as e:
+    info["error"] = str(e)
+print(json.dumps(info))
+'''
+
     try:
-        import torch
-
-        info["torch_version"] = torch.__version__
-        info["cuda_available"] = torch.cuda.is_available()
-
-        if info["cuda_available"]:
-            info["cuda_version"] = torch.version.cuda or "N/A"
-            info["gpu_count"] = torch.cuda.device_count()
-            if info["gpu_count"] > 0:
-                info["gpu_name"] = torch.cuda.get_device_name(0)
-            else:
-                info["gpu_name"] = "Unknown"
+        result = subprocess.run(
+            [sys.executable, "-c", torch_check_code],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            info = json.loads(result.stdout.strip())
         else:
-            # MPS (Apple Silicon) check
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                info["mps_available"] = True
-            else:
-                info["mps_available"] = False
-    except ImportError:
-        info["error"] = "PyTorch not installed"
+            info["error"] = "PyTorch not installed"
+    except subprocess.TimeoutExpired:
+        info["error"] = "Timeout checking PyTorch"
     except Exception as e:
         info["error"] = str(e)
 

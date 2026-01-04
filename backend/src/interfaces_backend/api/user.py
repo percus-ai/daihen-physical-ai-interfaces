@@ -461,20 +461,22 @@ async def validate_environment():
     if not python_ok:
         errors.append("Python 3.10 or higher is required")
 
-    # Check PyTorch
-    try:
-        import torch
-        torch_version = torch.__version__
-        cuda_available = torch.cuda.is_available()
+    # Check PyTorch (via subprocess to avoid numpy conflicts)
+    from interfaces_backend.utils.torch_info import get_torch_info
+    torch_info = get_torch_info()
+    if torch_info.get("torch_version"):
+        torch_version = torch_info["torch_version"]
+        cuda_available = torch_info.get("cuda_available", False)
+        cuda_version = torch_info.get("cuda_version")
         checks.append(EnvironmentCheckResult(
             name="PyTorch",
             passed=True,
-            message=f"PyTorch {torch_version}" + (f" (CUDA: {torch.version.cuda})" if cuda_available else " (CPU only)"),
+            message=f"PyTorch {torch_version}" + (f" (CUDA: {cuda_version})" if cuda_available else " (CPU only)"),
             details={"version": torch_version, "cuda_available": cuda_available},
         ))
         if not cuda_available:
             warnings.append("CUDA not available - GPU acceleration disabled")
-    except ImportError:
+    else:
         checks.append(EnvironmentCheckResult(
             name="PyTorch",
             passed=False,
