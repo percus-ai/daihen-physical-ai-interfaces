@@ -27,7 +27,9 @@ def _get_torch_builder():
         return TorchBuilder
     except ImportError:
         # Try adding features path
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
             try:
@@ -46,7 +48,9 @@ def _get_platform():
 
         return Platform.detect()
     except ImportError:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
             try:

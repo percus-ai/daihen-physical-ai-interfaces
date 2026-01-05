@@ -21,31 +21,19 @@ from interfaces_backend.models.inference import (
 
 router = APIRouter(prefix="/api/inference", tags=["inference"])
 
+# Import path utilities
+from interfaces_backend.utils.paths import (
+    get_data_dir,
+    get_models_dir,
+    get_project_root,
+    get_features_path,
+)
+
 # Models directory (integrated with storage system)
-DATA_DIR = Path(os.environ.get("PHI_DATA_DIR", Path.cwd() / "data"))
-MODELS_DIR = DATA_DIR / "models"
+MODELS_DIR = get_models_dir()
 
-# Repository root detection
-def _find_repo_root() -> Path:
-    """Find repository root by looking for data/.env or .git directory."""
-    current = Path.cwd()
-    for _ in range(10):
-        if (current / "data" / ".env").exists():
-            return current
-        if (current / "envs" / "policy_map.yaml").exists():
-            return current
-        git_path = current / ".git"
-        if git_path.exists() and git_path.is_dir():
-            return current
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-    # Fallback: assume backend is in interfaces/backend relative to root
-    return Path(__file__).resolve().parents[5]
-
-
-_REPO_ROOT = _find_repo_root()
+# Repository root
+_REPO_ROOT = get_project_root()
 
 # Environment scripts (now in features/percus_ai/environment/)
 RUN_IN_ENV_SCRIPT = _REPO_ROOT / "features" / "percus_ai" / "environment" / "run_in_env.sh"
@@ -101,7 +89,7 @@ def _get_percus_inference():
 
         return PolicyExecutor, detect_device
     except ImportError:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
             try:

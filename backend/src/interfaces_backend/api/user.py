@@ -33,7 +33,9 @@ def _get_user_config_module():
         from percus_ai.core.config import UserConfig, DeviceConfig
         return UserConfig, DeviceConfig
     except ImportError:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
             try:

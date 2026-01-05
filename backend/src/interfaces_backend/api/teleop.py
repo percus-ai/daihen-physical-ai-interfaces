@@ -44,7 +44,9 @@ def _get_teleop_module():
         )
         return SimpleTeleoperation, VisualTeleoperation, BimanualTeleoperation, RobotPreset
     except ImportError:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
             try:
@@ -66,7 +68,9 @@ def _get_remote_teleop():
         from percus_ai.teleop.remote import run_leader_server, run_follower_server
         return run_leader_server, run_follower_server
     except ImportError:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
             try:

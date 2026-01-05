@@ -84,7 +84,9 @@ def _get_motor_bus(port: str, arm_type: str = "so101"):
     except ImportError:
         # Try alternate import path
         try:
-            features_path = Path(__file__).resolve().parents[5] / "features"
+            from interfaces_backend.utils.paths import get_features_path
+
+            features_path = get_features_path()
             if features_path.exists() and str(features_path) not in sys.path:
                 sys.path.insert(0, str(features_path))
             from lerobot.common.robot_devices.motors.feetech import FeetechMotorsBus
@@ -177,7 +179,9 @@ def _get_calibration_module():
         )
         return CalibrationData, MotorCalibrationData, load_calibration, save_calibration, list_calibrations, calibrate_arm
     except ImportError:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
             try:

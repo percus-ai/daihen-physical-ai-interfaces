@@ -110,7 +110,9 @@ async def health_check():
 
     # Check percus_ai
     try:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
         import percus_ai
@@ -265,7 +267,9 @@ async def get_system_info():
     pytorch_version = None
 
     try:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
         import percus_ai

@@ -24,7 +24,9 @@ def _get_environment_manager():
 
         return EnvironmentManager
     except ImportError:
-        features_path = Path(__file__).resolve().parents[5] / "features"
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
             sys.path.insert(0, str(features_path))
             try:
@@ -50,9 +52,11 @@ def _get_platform_module():
 @router.get("", response_model=ConfigResponse)
 async def get_config():
     """Get application configuration."""
+    from interfaces_backend.utils.paths import get_data_dir
+
     return ConfigResponse(
         config=AppConfig(
-            data_dir=os.environ.get("PHI_DATA_DIR", "data/"),
+            data_dir=str(get_data_dir()),
             robot_type=os.environ.get("PHI_ROBOT_TYPE", "so101"),
             hf_token_set=bool(os.environ.get("HF_TOKEN")),
             wandb_token_set=bool(os.environ.get("WANDB_API_KEY")),
