@@ -2,12 +2,17 @@
 
 import sys
 import uuid
+import asyncio
 import threading
+import time
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+
+logger = logging.getLogger(__name__)
 
 from interfaces_backend.models.teleop import (
     TeleopStartRequest,
@@ -483,3 +488,273 @@ async def list_remote_sessions():
     ]
 
     return RemoteSessionsResponse(leaders=leaders, followers=followers)
+
+
+# --- WebSocket Visual Teleoperation ---
+
+
+def _get_motor_bus_module():
+    """Import motor bus utilities."""
+    try:
+        from percus_ai.teleop.common import create_motor_bus, MotorState, RobotPreset
+        return create_motor_bus, MotorState, RobotPreset
+    except ImportError:
+        from interfaces_backend.utils.paths import get_features_path
+
+        features_path = get_features_path()
+        if features_path.exists() and str(features_path) not in sys.path:
+            sys.path.insert(0, str(features_path))
+            try:
+                from percus_ai.teleop.common import create_motor_bus, MotorState, RobotPreset
+                return create_motor_bus, MotorState, RobotPreset
+            except ImportError:
+                pass
+    return None, None, None
+
+
+@router.websocket("/ws/visual")
+async def websocket_visual_teleop(websocket: WebSocket):
+    """WebSocket endpoint for visual teleoperation with real-time motor state streaming.
+
+    Client sends JSON messages:
+    - {"action": "start", "leader_port": "/dev/ttyACM0", "follower_port": "/dev/ttyACM1",
+       "robot_preset": "so101", "fps": 60}
+    - {"action": "stop"}
+
+    Server sends JSON messages:
+    - {"type": "state", "leader_states": {...}, "follower_states": {...},
+       "iteration": N, "elapsed": X.X, "actual_fps": Y.Y, "errors": N}
+    - {"type": "connected", "message": "..."}
+    - {"type": "stopped", "message": "..."}
+    - {"type": "error", "error": "..."}
+    """
+    await websocket.accept()
+    logger.info("Visual teleop WebSocket connected")
+
+    create_motor_bus, MotorState, RobotPreset = _get_motor_bus_module()
+
+    if create_motor_bus is None:
+        await websocket.send_json({
+            "type": "error",
+            "error": "Motor bus module not available. Install percus_ai[teleop].",
+        })
+        await websocket.close()
+        return
+
+    leader_bus = None
+    follower_bus = None
+    running = False
+    stop_requested = False
+
+    def read_motor_state(bus, motor_name: str) -> dict:
+        """Read motor state from bus and return as dict."""
+        state = {"error": None}
+        try:
+            state["position"] = bus.read("Present_Position", motor_name, normalize=False)
+            try:
+                state["load"] = bus.read("Present_Load", motor_name, normalize=False)
+            except Exception:
+                state["load"] = None
+            try:
+                state["temperature"] = bus.read("Present_Temperature", motor_name, normalize=False)
+            except Exception:
+                state["temperature"] = None
+            try:
+                voltage = bus.read("Present_Voltage", motor_name, normalize=False)
+                state["voltage"] = voltage / 10.0 if voltage is not None else None
+            except Exception:
+                state["voltage"] = None
+            try:
+                state["speed"] = bus.read("Present_Velocity", motor_name, normalize=False)
+            except Exception:
+                state["speed"] = None
+            try:
+                state["current"] = bus.read("Present_Current", motor_name, normalize=False)
+            except Exception:
+                state["current"] = None
+        except Exception as e:
+            state["error"] = str(e)
+        return state
+
+    try:
+        while True:
+            # Wait for message with timeout to allow checking stop flag
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=0.05)
+            except asyncio.TimeoutError:
+                # No message, continue loop if running
+                if running and not stop_requested:
+                    # Read and send motor states
+                    loop_start = time.time()
+
+                    leader_states = {}
+                    follower_states = {}
+                    errors_count = 0
+
+                    for motor_name in leader_bus.motors.keys():
+                        leader_states[motor_name] = read_motor_state(leader_bus, motor_name)
+                        if leader_states[motor_name].get("error"):
+                            errors_count += 1
+
+                    for motor_name in leader_bus.motors.keys():
+                        leader_state = leader_states[motor_name]
+                        if leader_state.get("position") is not None and not leader_state.get("error"):
+                            try:
+                                follower_bus.write(
+                                    "Goal_Position",
+                                    motor_name,
+                                    leader_state["position"],
+                                    normalize=False,
+                                )
+                            except Exception:
+                                errors_count += 1
+
+                        follower_states[motor_name] = read_motor_state(follower_bus, motor_name)
+                        if follower_states[motor_name].get("error"):
+                            errors_count += 1
+
+                    iteration += 1
+                    elapsed = time.time() - start_time
+                    actual_fps = iteration / elapsed if elapsed > 0 else 0
+
+                    await websocket.send_json({
+                        "type": "state",
+                        "leader_states": leader_states,
+                        "follower_states": follower_states,
+                        "iteration": iteration,
+                        "elapsed": elapsed,
+                        "actual_fps": actual_fps,
+                        "target_fps": target_fps,
+                        "errors": errors_count,
+                    })
+
+                    # Maintain control frequency
+                    loop_time = time.time() - loop_start
+                    sleep_time = dt - loop_time
+                    if sleep_time > 0:
+                        await asyncio.sleep(sleep_time)
+
+                continue
+
+            action = data.get("action")
+
+            if action == "start":
+                if running:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Already running. Stop first.",
+                    })
+                    continue
+
+                leader_port = data.get("leader_port")
+                follower_port = data.get("follower_port")
+                robot_preset_str = data.get("robot_preset", "so101")
+                target_fps = data.get("fps", 60)
+                dt = 1.0 / target_fps
+
+                preset = RobotPreset.SO101
+                if robot_preset_str.lower() == "so100":
+                    preset = RobotPreset.SO100
+
+                try:
+                    leader_bus = create_motor_bus(leader_port, preset)
+                    follower_bus = create_motor_bus(follower_port, preset)
+
+                    leader_bus.connect()
+                    follower_bus.connect()
+
+                    motor_names = list(leader_bus.motors.keys())
+
+                    await websocket.send_json({
+                        "type": "connected",
+                        "message": f"Connected to both arms. Motors: {motor_names}",
+                        "motor_names": motor_names,
+                    })
+
+                    running = True
+                    stop_requested = False
+                    iteration = 0
+                    start_time = time.time()
+
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": f"Failed to connect: {e}",
+                    })
+                    # Cleanup
+                    if leader_bus:
+                        try:
+                            leader_bus.disconnect()
+                        except Exception:
+                            pass
+                        leader_bus = None
+                    if follower_bus:
+                        try:
+                            follower_bus.disconnect()
+                        except Exception:
+                            pass
+                        follower_bus = None
+
+            elif action == "stop":
+                if running:
+                    stop_requested = True
+                    running = False
+
+                    # Disconnect
+                    if leader_bus:
+                        try:
+                            leader_bus.disconnect()
+                        except Exception:
+                            pass
+                        leader_bus = None
+                    if follower_bus:
+                        try:
+                            follower_bus.disconnect()
+                        except Exception:
+                            pass
+                        follower_bus = None
+
+                    elapsed = time.time() - start_time if start_time else 0
+                    await websocket.send_json({
+                        "type": "stopped",
+                        "message": "Teleoperation stopped",
+                        "total_iterations": iteration,
+                        "duration": elapsed,
+                        "average_fps": iteration / elapsed if elapsed > 0 else 0,
+                    })
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Not running",
+                    })
+
+            else:
+                await websocket.send_json({
+                    "type": "error",
+                    "error": f"Unknown action: {action}",
+                })
+
+    except WebSocketDisconnect:
+        logger.info("Visual teleop WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"Visual teleop WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "error": str(e),
+            })
+        except Exception:
+            pass
+    finally:
+        # Cleanup
+        if leader_bus:
+            try:
+                leader_bus.disconnect()
+            except Exception:
+                pass
+        if follower_bus:
+            try:
+                follower_bus.disconnect()
+            except Exception:
+                pass
+        logger.info("Visual teleop WebSocket cleanup complete")

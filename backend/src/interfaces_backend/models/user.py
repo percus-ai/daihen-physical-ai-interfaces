@@ -1,6 +1,6 @@
 """User API models."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -41,8 +41,9 @@ class UserConfigUpdateRequest(BaseModel):
 class CameraDeviceConfig(BaseModel):
     """Camera device configuration."""
 
-    id: int = Field(..., description="Camera ID (index or device number)")
+    id: Union[int, str] = Field(..., description="Camera ID (index or device path)")
     type: str = Field("opencv", description="Camera type: opencv, realsense, usb")
+    friendly_name: Optional[str] = Field(None, description="Human-readable camera name")
     width: int = Field(640, description="Frame width")
     height: int = Field(480, description="Frame height")
     fps: int = Field(30, description="Frames per second")

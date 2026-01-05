@@ -18,6 +18,13 @@ class RecordMenu(BaseMenu):
 
     title = "データ録画"
 
+    def _get_device_config(self) -> dict:
+        """Get user device configuration."""
+        try:
+            return self.api.get_user_devices()
+        except Exception:
+            return {}
+
     def get_choices(self) -> List[Choice]:
         return [
             Choice(value="new", name="🎬 [NEW] 新規録画セッション"),
@@ -74,6 +81,12 @@ class RecordMenu(BaseMenu):
         show_section_header(f"New Recording: {project_id}")
 
         try:
+            # Get device config for defaults
+            devices = self._get_device_config()
+            leader_config = devices.get("leader_right") or {}
+            follower_config = devices.get("follower_right") or {}
+            cameras_config = devices.get("cameras") or {}
+
             # Get username
             username = inquirer.text(
                 message="Username:",
@@ -91,29 +104,32 @@ class RecordMenu(BaseMenu):
                 style=hacker_style,
             ).execute()
 
-            # Get ports
+            # Get ports (with defaults from config)
+            default_leader = leader_config.get("port") or "/dev/ttyUSB0"
+            default_follower = follower_config.get("port") or "/dev/ttyUSB1"
+
             leader_port = inquirer.text(
                 message="Leader arm port:",
-                default="/dev/ttyUSB0",
+                default=default_leader,
                 style=hacker_style,
             ).execute()
 
             follower_port = inquirer.text(
                 message="Follower arm port:",
-                default="/dev/ttyUSB1",
+                default=default_follower,
                 style=hacker_style,
             ).execute()
 
-            # Arm IDs
+            # Arm IDs (auto-generate from device type)
             leader_id = inquirer.text(
                 message="Leader ID:",
-                default="leader",
+                default="leader_right",
                 style=hacker_style,
             ).execute()
 
             follower_id = inquirer.text(
                 message="Follower ID:",
-                default="follower",
+                default="follower_right",
                 style=hacker_style,
             ).execute()
 
@@ -151,14 +167,53 @@ class RecordMenu(BaseMenu):
 
             # Camera configuration
             print(f"\n{Colors.CYAN}Camera Configuration:{Colors.RESET}")
-            use_camera = inquirer.confirm(
-                message="Add camera?",
-                default=True,
+
+            cameras = []
+
+            # If cameras are configured, offer to use them
+            if cameras_config:
+                use_configured = inquirer.confirm(
+                    message=f"Use configured cameras ({len(cameras_config)} available)?",
+                    default=True,
+                    style=hacker_style,
+                ).execute()
+
+                if use_configured:
+                    # Let user select which configured cameras to use
+                    camera_choices = [
+                        Choice(value=name, name=f"{name} ({cam.get('id')}) - {cam.get('friendly_name', '')}")
+                        for name, cam in cameras_config.items()
+                    ]
+                    selected_cameras = inquirer.checkbox(
+                        message="Select cameras to use:",
+                        choices=camera_choices,
+                        style=hacker_style,
+                    ).execute()
+
+                    for cam_name in selected_cameras:
+                        cam = cameras_config.get(cam_name, {})
+                        cam_id = cam.get("id", "0")
+                        cam_type = cam.get("type", "OpenCV").lower()
+                        if cam_type == "opencv":
+                            cam_type = "opencv"
+                        cameras.append({
+                            "camera_id": cam_name,
+                            "camera_type": cam_type,
+                            "index_or_path": int(cam_id) if cam_id.isdigit() else cam_id,
+                            "width": cam.get("width", 640),
+                            "height": cam.get("height", 480),
+                            "fps": cam.get("fps", 30),
+                            "warmup_s": 2.0,
+                        })
+
+            # Allow adding custom cameras
+            add_custom = inquirer.confirm(
+                message="Add custom camera?" if cameras else "Add camera?",
+                default=not cameras,
                 style=hacker_style,
             ).execute()
 
-            cameras = []
-            while use_camera:
+            while add_custom:
                 camera_id = inquirer.text(
                     message="Camera ID (e.g., 'top', 'wrist'):",
                     default="top",
@@ -208,7 +263,7 @@ class RecordMenu(BaseMenu):
                     "warmup_s": 2.0,
                 })
 
-                use_camera = inquirer.confirm(
+                add_custom = inquirer.confirm(
                     message="Add another camera?",
                     default=False,
                     style=hacker_style,

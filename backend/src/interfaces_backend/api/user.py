@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/user", tags=["user"])
 
 # Config file paths
 USER_CONFIG_PATH = Path.home() / ".config" / "percus_ai" / "config.yaml"
-DEVICES_CONFIG_PATH = Path.cwd() / "user_devices.json"
+DEVICES_CONFIG_PATH = Path.cwd() / "data" / "user_devices.json"
 
 
 def _get_user_config_module():
@@ -349,6 +349,7 @@ async def get_device_config():
         cameras[name] = CameraDeviceConfig(
             id=cam.get("id", 0),
             type=cam.get("type", "opencv"),
+            friendly_name=cam.get("friendly_name"),
             width=cam.get("width", 640),
             height=cam.get("height", 480),
             fps=cam.get("fps", 30),
@@ -418,6 +419,7 @@ async def update_device_config(request: DeviceConfigUpdateRequest):
         cameras[name] = CameraDeviceConfig(
             id=cam.get("id", 0),
             type=cam.get("type", "opencv"),
+            friendly_name=cam.get("friendly_name"),
             width=cam.get("width", 640),
             height=cam.get("height", 480),
             fps=cam.get("fps", 30),
