@@ -1167,7 +1167,24 @@ class PhiClient:
         result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
 
         try:
-            ws = websocket.create_connection(ws_url, timeout=None)
+            # Create WebSocket with keepalive settings for long-running builds
+            ws = websocket.create_connection(
+                ws_url,
+                timeout=None,  # No recv timeout
+                skip_utf8_validation=True,
+                enable_multithread=True,
+            )
+            # Set socket keepalive to detect dead connections
+            import socket
+            sock = ws.sock
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # Linux-specific keepalive settings
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
+            except (AttributeError, OSError):
+                pass  # Not available on all platforms
 
             # Send build request
             ws.send(json.dumps({
@@ -1180,6 +1197,10 @@ class PhiClient:
             while True:
                 message = ws.recv()
                 data = json.loads(message)
+
+                # Skip heartbeat messages (keepalive from server)
+                if data.get("type") == "heartbeat":
+                    continue
 
                 if progress_callback:
                     progress_callback(data)

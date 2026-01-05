@@ -192,12 +192,17 @@ async def websocket_bundled_torch_build(websocket: WebSocket):
                         except asyncio.TimeoutError:
                             if clean_task.done():
                                 break
+                except WebSocketDisconnect:
+                    logger.info("WebSocket disconnected during clean")
                 except Exception as e:
                     logger.error(f"Error during clean: {e}")
-                    await websocket.send_json({
-                        "type": "error",
-                        "error": str(e),
-                    })
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": str(e),
+                        })
+                    except Exception:
+                        pass
                 continue
 
             elif action == "build":
@@ -259,7 +264,10 @@ async def websocket_bundled_torch_build(websocket: WebSocket):
                 # Start build task
                 build_task = asyncio.create_task(run_build())
 
-                # Forward progress updates to WebSocket
+                # Forward progress updates to WebSocket with heartbeat
+                ws_closed = False
+                last_heartbeat = asyncio.get_event_loop().time()
+                heartbeat_interval = 30  # Send heartbeat every 30 seconds
                 try:
                     while True:
                         try:
@@ -267,22 +275,36 @@ async def websocket_bundled_torch_build(websocket: WebSocket):
                                 progress_queue.get(), timeout=1.0
                             )
                             await websocket.send_json(progress)
+                            last_heartbeat = asyncio.get_event_loop().time()
 
                             if progress.get("type") in ("complete", "error"):
                                 break
                         except asyncio.TimeoutError:
+                            # Send heartbeat to keep connection alive
+                            now = asyncio.get_event_loop().time()
+                            if now - last_heartbeat >= heartbeat_interval:
+                                await websocket.send_json({"type": "heartbeat"})
+                                last_heartbeat = now
+
                             if build_task.done():
                                 # Check for any remaining items in queue
                                 while not progress_queue.empty():
                                     progress = await progress_queue.get()
                                     await websocket.send_json(progress)
                                 break
+                except WebSocketDisconnect:
+                    ws_closed = True
+                    logger.info("WebSocket disconnected during build")
                 except Exception as e:
                     logger.error(f"Error forwarding progress: {e}")
-                    await websocket.send_json({
-                        "type": "error",
-                        "error": str(e),
-                    })
+                    if not ws_closed:
+                        try:
+                            await websocket.send_json({
+                                "type": "error",
+                                "error": str(e),
+                            })
+                        except Exception:
+                            ws_closed = True
 
             else:
                 await websocket.send_json({

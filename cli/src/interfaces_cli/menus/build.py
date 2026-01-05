@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, List
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from interfaces_cli.banner import show_section_header
@@ -147,9 +148,9 @@ class BuildMenu(BaseMenu):
 
             def make_progress_panel():
                 """Create progress panel."""
-                table = Table(show_header=False, box=None)
-                table.add_column("Key", style="cyan", width=12)
-                table.add_column("Value")
+                table = Table(show_header=False, box=None, expand=True)
+                table.add_column("Key", style="cyan", width=12, no_wrap=True)
+                table.add_column("Value", overflow="ellipsis", no_wrap=True)
 
                 step_name = current_step["step"].replace("_", " ").title()
                 table.add_row("Step:", step_name or "Starting...")
@@ -161,8 +162,7 @@ class BuildMenu(BaseMenu):
                     table.add_row("", "")
                     table.add_row("Log:", "")
                     for line in log_lines[-3:]:
-                        truncated = line[:80] + "..." if len(line) > 80 else line
-                        table.add_row("", Colors.muted(truncated))
+                        table.add_row("", Colors.muted(line))
 
                 return Panel(table, title="Build Progress", border_style="cyan")
 
@@ -194,12 +194,20 @@ class BuildMenu(BaseMenu):
                 elif msg_type == "error":
                     current_step["message"] = f"Error: {data.get('error', 'Unknown')}"
 
-            # Run build with live progress
-            with console.status("[cyan]Building...", spinner="dots") as status_spinner:
+            # Run build with live progress display
+            from rich.live import Live
+
+            result = {"type": "error", "error": "Unknown"}
+
+            with Live(make_progress_panel(), refresh_per_second=2, console=console) as live:
+                def live_progress_callback(data):
+                    progress_callback(data)
+                    live.update(make_progress_panel())
+
                 result = self.api.build_bundled_torch_ws(
                     pytorch_version=pytorch_version,
                     torchvision_version=torchvision_version,
-                    progress_callback=progress_callback,
+                    progress_callback=live_progress_callback,
                 )
 
             # Show result

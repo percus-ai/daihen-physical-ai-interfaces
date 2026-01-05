@@ -16,6 +16,10 @@ class MainMenu(BaseMenu):
     title = "メインメニュー"
     show_back = False  # Main menu doesn't show back option
 
+    def before_show(self) -> None:
+        """Reset display when showing main menu."""
+        self.app.show_header()
+
     def get_choices(self) -> List[Choice]:
         """Get main menu choices."""
         return [
