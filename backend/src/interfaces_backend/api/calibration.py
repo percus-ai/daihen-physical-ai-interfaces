@@ -84,7 +84,7 @@ def _get_motor_bus(port: str, arm_type: str = "so101"):
     except ImportError:
         # Try alternate import path
         try:
-            from interfaces_backend.utils.paths import get_features_path
+            from percus_ai.storage import get_features_path
 
             features_path = get_features_path()
             if features_path.exists() and str(features_path) not in sys.path:
@@ -179,7 +179,7 @@ def _get_calibration_module():
         )
         return CalibrationData, MotorCalibrationData, load_calibration, save_calibration, list_calibrations, calibrate_arm
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:

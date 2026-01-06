@@ -27,7 +27,7 @@ def _get_torch_builder():
         return TorchBuilder
     except ImportError:
         # Try adding features path
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
@@ -48,7 +48,7 @@ def _get_platform():
 
         return Platform.detect()
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:

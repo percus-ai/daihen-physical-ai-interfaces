@@ -18,7 +18,7 @@ def _get_platform_module():
         return Platform
     except ImportError:
         # Try adding features path
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:

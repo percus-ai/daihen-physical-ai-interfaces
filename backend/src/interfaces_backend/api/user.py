@@ -19,12 +19,13 @@ from interfaces_backend.models.user import (
     EnvironmentCheckResult,
     EnvironmentValidationResponse,
 )
+from percus_ai.storage import get_user_config_path, get_user_devices_path
 
 router = APIRouter(prefix="/api/user", tags=["user"])
 
 # Config file paths
-USER_CONFIG_PATH = Path.home() / ".config" / "percus_ai" / "config.yaml"
-DEVICES_CONFIG_PATH = Path.cwd() / "data" / "user_devices.json"
+USER_CONFIG_PATH = get_user_config_path()
+DEVICES_CONFIG_PATH = get_user_devices_path()
 
 
 def _get_user_config_module():
@@ -33,7 +34,7 @@ def _get_user_config_module():
         from percus_ai.core.config import UserConfig, DeviceConfig
         return UserConfig, DeviceConfig
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:

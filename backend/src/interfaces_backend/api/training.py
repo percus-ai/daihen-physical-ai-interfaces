@@ -22,11 +22,12 @@ from interfaces_backend.models.training import (
     JobCreateResponse,
     InstanceStatusResponse,
 )
+from percus_ai.storage import get_jobs_dir, get_configs_dir, get_project_root
 
 router = APIRouter(prefix="/api/training", tags=["training"])
 
-# Jobs directory - configurable via environment
-JOBS_DIR = Path.home() / ".percus" / "jobs"
+# Jobs directory
+JOBS_DIR = get_jobs_dir()
 
 # Remote scripts directory - contains setup_env.sh, train_lerobot_entry.py, etc.
 # These scripts are deployed to remote instances for training
@@ -1078,7 +1079,7 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
 # --- Training Configs API ---
 
 # Configs directory
-CONFIGS_DIR = Path.cwd() / "training_configs"
+CONFIGS_DIR = get_configs_dir()
 
 
 def _get_config_file(config_id: str) -> Path:

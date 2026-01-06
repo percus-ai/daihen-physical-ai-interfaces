@@ -22,6 +22,7 @@ from interfaces_backend.models.system import (
     GpuInfo,
     GpuResponse,
 )
+from percus_ai.storage import get_datasets_dir, get_storage_root
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -59,7 +60,7 @@ async def health_check():
 
     # Check database/storage
     try:
-        datasets_dir = Path.cwd() / "datasets"
+        datasets_dir = get_datasets_dir()
         if datasets_dir.exists() or not datasets_dir.exists():  # Just check access
             services.append(ServiceStatus(
                 name="storage",
@@ -110,7 +111,7 @@ async def health_check():
 
     # Check percus_ai
     try:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
@@ -163,7 +164,7 @@ async def get_resources():
         memory_percent = mem.percent
 
         # Disk
-        disk = psutil.disk_usage(str(Path.cwd()))
+        disk = psutil.disk_usage(str(get_storage_root()))
         disk_total_gb = disk.total / (1024 ** 3)
         disk_used_gb = disk.used / (1024 ** 3)
         disk_percent = disk.percent
@@ -175,7 +176,7 @@ async def get_resources():
         # Try to get disk info
         try:
             import shutil
-            total, used, free = shutil.disk_usage(Path.cwd())
+            total, used, free = shutil.disk_usage(get_storage_root())
             disk_total_gb = total / (1024 ** 3)
             disk_used_gb = used / (1024 ** 3)
             disk_percent = (used / total) * 100 if total > 0 else 0
@@ -267,7 +268,7 @@ async def get_system_info():
     pytorch_version = None
 
     try:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:

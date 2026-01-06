@@ -15,7 +15,7 @@ from interfaces_backend.models.project import (
     ProjectStatsModel,
     ProjectValidateResponse,
 )
-from interfaces_backend.utils.paths import (
+from percus_ai.storage import (
     get_projects_dir,
     get_datasets_dir,
     get_models_dir,
@@ -31,7 +31,7 @@ def _get_project_manager():
         from percus_ai.core.project import ProjectManager
         return ProjectManager()
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
@@ -50,7 +50,7 @@ def _get_config_loader():
         from percus_ai.core.project import ConfigLoader
         return ConfigLoader()
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:

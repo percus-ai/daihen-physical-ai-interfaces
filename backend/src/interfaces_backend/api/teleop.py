@@ -49,7 +49,7 @@ def _get_teleop_module():
         )
         return SimpleTeleoperation, VisualTeleoperation, BimanualTeleoperation, RobotPreset
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
@@ -73,7 +73,7 @@ def _get_remote_teleop():
         from percus_ai.teleop.remote import run_leader_server, run_follower_server
         return run_leader_server, run_follower_server
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
@@ -499,7 +499,7 @@ def _get_motor_bus_module():
         from percus_ai.teleop.common import create_motor_bus, MotorState, RobotPreset
         return create_motor_bus, MotorState, RobotPreset
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:

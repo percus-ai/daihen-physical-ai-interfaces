@@ -8,28 +8,27 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
 
+from percus_ai.storage import (
+    DatasetMetadata,
+    DataSource,
+    DataStatus,
+    HuggingFaceService,
+    ManifestManager,
+    ModelMetadata,
+    R2SyncService,
+)
 from interfaces_backend.models.storage import (
     ArchiveListResponse,
     ArchiveResponse,
     DatasetListResponse,
-    DatasetMetadata,
-    DataSource,
-    DataStatus,
     DownloadResponse,
     ModelListResponse,
-    ModelMetadata,
-    ProjectMetadata,
     PublishRequest,
     PublishResponse,
     StorageUsageResponse,
     SyncRequest,
     SyncStatusResponse,
     UploadResponse,
-)
-from interfaces_backend.services.storage import (
-    HuggingFaceService,
-    ManifestManager,
-    R2SyncService,
 )
 
 logger = logging.getLogger(__name__)

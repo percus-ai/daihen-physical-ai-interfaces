@@ -22,7 +22,7 @@ from interfaces_backend.models.inference import (
 router = APIRouter(prefix="/api/inference", tags=["inference"])
 
 # Import path utilities
-from interfaces_backend.utils.paths import (
+from percus_ai.storage import (
     get_data_dir,
     get_models_dir,
     get_project_root,

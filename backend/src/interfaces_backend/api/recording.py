@@ -17,7 +17,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from interfaces_backend.utils.paths import get_datasets_dir, get_projects_dir, get_data_dir
+from percus_ai.storage import get_datasets_dir, get_projects_dir, get_user_devices_path, get_user_config_path
 
 router = APIRouter(prefix="/api/recording", tags=["recording"])
 
@@ -83,33 +83,20 @@ def _load_project_config(project_name: str) -> dict:
 
 def _load_device_config() -> dict:
     """Load device configuration from user_devices.json."""
-    # Try multiple locations
-    candidates = [
-        get_data_dir() / "user_devices.json",
-        Path.cwd() / "user_devices.json",
-        Path.cwd() / "data" / "user_devices.json",
-    ]
+    path = get_user_devices_path()
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
-    for path in candidates:
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-
-    raise FileNotFoundError("user_devices.json not found")
+    raise FileNotFoundError(f"user_devices.json not found at {path}")
 
 
 def _load_user_config() -> dict:
     """Load user configuration."""
-    candidates = [
-        get_data_dir() / "user_config.yaml",
-        Path.cwd() / "user_config.yaml",
-        Path.cwd() / "data" / "user_config.yaml",
-    ]
-
-    for path in candidates:
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f)
+    path = get_user_config_path()
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
 
     # Return defaults
     return {

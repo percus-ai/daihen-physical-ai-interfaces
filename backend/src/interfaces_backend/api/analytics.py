@@ -1,12 +1,14 @@
 """Analytics API router."""
 
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter
 
+from percus_ai.storage import get_datasets_dir, get_models_dir, get_configs_dir, get_storage_root
 from interfaces_backend.models.analytics import (
     OverviewStats,
     OverviewResponse,
@@ -20,10 +22,10 @@ from interfaces_backend.models.analytics import (
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
-# Standard directories
-DATASETS_DIR = Path.cwd() / "datasets"
-MODELS_DIR = Path.cwd() / "models"
-TRAINING_CONFIGS_DIR = Path.cwd() / "training_configs"
+# Standard directories from storage paths
+DATASETS_DIR = get_datasets_dir()
+MODELS_DIR = get_models_dir()
+TRAINING_CONFIGS_DIR = get_configs_dir()
 
 
 def _get_dir_size(path: Path) -> float:
@@ -289,8 +291,7 @@ async def get_storage_stats():
 
     # Get available disk space
     try:
-        import shutil
-        total, used, free = shutil.disk_usage(Path.cwd())
+        total, used, free = shutil.disk_usage(get_storage_root())
         available_gb = free / (1024 * 1024 * 1024)
         used_percentage = (used / total) * 100 if total > 0 else 0
     except Exception:

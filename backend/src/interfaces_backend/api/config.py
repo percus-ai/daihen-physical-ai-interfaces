@@ -24,7 +24,7 @@ def _get_environment_manager():
 
         return EnvironmentManager
     except ImportError:
-        from interfaces_backend.utils.paths import get_features_path
+        from percus_ai.storage import get_features_path
 
         features_path = get_features_path()
         if features_path.exists() and str(features_path) not in sys.path:
@@ -52,7 +52,7 @@ def _get_platform_module():
 @router.get("", response_model=ConfigResponse)
 async def get_config():
     """Get application configuration."""
-    from interfaces_backend.utils.paths import get_data_dir
+    from percus_ai.storage import get_data_dir
 
     return ConfigResponse(
         config=AppConfig(
