@@ -1,10 +1,18 @@
 """FastAPI server entrypoint."""
 
 import argparse
+import logging
 from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
+
+from interfaces_backend.core.logging import setup_file_logging
+
+# Configure logging with console and file output
+setup_file_logging(app_name="backend", console_level=logging.INFO)
+# Set specific loggers to INFO level
+logging.getLogger("interfaces_backend").setLevel(logging.INFO)
 
 
 def _find_repo_root() -> Path:

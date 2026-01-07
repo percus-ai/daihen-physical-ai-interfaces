@@ -7,9 +7,10 @@ from InquirerPy.base.control import Choice
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
-from interfaces_cli.banner import show_section_header
+from interfaces_cli.banner import format_size, show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
 from interfaces_cli.styles import Colors, hacker_style
 
@@ -135,9 +136,47 @@ class RecordMenu(BaseMenu):
                 "started": False,
                 "num_episodes": num_episodes,
             }
+            upload_info = {
+                "active": False,
+                "current_file": "",
+                "file_size": 0,
+                "bytes_transferred": 0,
+                "files_done": 0,
+                "total_files": 0,
+                "total_size": 0,
+            }
 
             def make_output_panel():
                 """Create output display panel."""
+                # If uploading, show upload progress panel
+                if upload_info["active"]:
+                    table = Table(show_header=False, box=None, padding=(0, 1))
+                    table.add_column("Label", style="cyan")
+                    table.add_column("Value")
+
+                    table.add_row("プロジェクト:", status_info['project'])
+
+                    if upload_info["current_file"]:
+                        # File progress
+                        if upload_info["file_size"] > 0:
+                            pct = (upload_info["bytes_transferred"] / upload_info["file_size"]) * 100
+                            transferred_str = format_size(upload_info["bytes_transferred"])
+                            size_str = format_size(upload_info["file_size"])
+                            progress_str = f"{transferred_str} / {size_str} ({pct:.1f}%)"
+                        else:
+                            progress_str = format_size(upload_info["file_size"]) if upload_info["file_size"] else "..."
+                        table.add_row("ファイル:", upload_info["current_file"])
+                        table.add_row("転送:", progress_str)
+
+                    if upload_info["total_files"] > 0:
+                        table.add_row("ファイル数:", f"{upload_info['files_done']}/{upload_info['total_files']}")
+
+                    if upload_info["total_size"] > 0:
+                        table.add_row("合計サイズ:", format_size(upload_info["total_size"]))
+
+                    return Panel(table, title="📤 R2へアップロード中", border_style="green")
+
+                # Normal recording panel
                 text = Text()
 
                 if status_info["started"]:
@@ -161,7 +200,33 @@ class RecordMenu(BaseMenu):
 
             def on_progress(msg):
                 """Handle progress messages from WebSocket."""
-                msg_type = msg.get("type")
+                msg_type = msg.get("type", "")
+
+                # Handle upload progress messages
+                if msg_type.startswith("upload_"):
+                    upload_type = msg_type[7:]  # Remove "upload_" prefix
+                    if upload_type == "start":
+                        upload_info["active"] = True
+                        upload_info["total_files"] = msg.get("total_files", 0)
+                        upload_info["total_size"] = msg.get("total_size", 0)
+                        upload_info["files_done"] = 0
+                    elif upload_type == "uploading":
+                        upload_info["current_file"] = msg.get("current_file", "")
+                        upload_info["file_size"] = msg.get("file_size", 0)
+                        upload_info["files_done"] = msg.get("files_done", 0)
+                        upload_info["bytes_transferred"] = 0
+                    elif upload_type == "progress":
+                        upload_info["current_file"] = msg.get("current_file", "")
+                        upload_info["file_size"] = msg.get("file_size", 0)
+                        upload_info["bytes_transferred"] = msg.get("bytes_transferred", 0)
+                    elif upload_type == "uploaded":
+                        upload_info["files_done"] = msg.get("files_done", 0)
+                        upload_info["bytes_transferred"] = upload_info["file_size"]
+                    elif upload_type in ("complete", "error"):
+                        upload_info["active"] = False
+                    return
+
+                # Handle recording progress messages
                 if msg_type == "start":
                     status_info["started"] = True
                     status_info["output_path"] = msg.get("output_path", "N/A")
@@ -191,15 +256,32 @@ class RecordMenu(BaseMenu):
             except Exception as e:
                 result = {"type": "error", "error": str(e)}
 
-            if result.get("type") == "complete" and result.get("success"):
-                print(f"\n{Colors.success('Recording completed!')}")
-            elif result.get("type") == "stopped":
+            result_type = result.get("type", "unknown")
+            if result_type == "complete":
+                if result.get("success"):
+                    print(f"\n{Colors.success('Recording completed!')}")
+                    # Show upload status
+                    upload_status = result.get("upload_status")
+                    if upload_status == "success":
+                        print(f"  {Colors.success('✓ R2へのアップロード完了')}")
+                    elif upload_status == "failed":
+                        print(f"  {Colors.warning('⚠ R2へのアップロード失敗')}")
+                else:
+                    print(f"\n{Colors.warning('Recording failed')}")
+                    print(f"  Return code: {result.get('return_code', 'N/A')}")
+                print(f"  Message: {result.get('message', 'N/A')}")
+                print(f"  Output: {result.get('output_path', 'N/A')}")
+            elif result_type == "stopped":
                 print(f"\n{Colors.warning('Recording stopped')}")
+                print(f"  Message: {result.get('message', 'N/A')}")
+            elif result_type == "error":
+                print(f"\n{Colors.error('Recording error!')}")
+                print(f"  Error: {result.get('error', 'Unknown error')}")
             else:
-                print(f"\n{Colors.warning('Recording ended')}")
-
-            print(f"  Message: {result.get('message', 'N/A')}")
-            print(f"  Output: {result.get('output_path', 'N/A')}")
+                # Unexpected result type - show all info for debugging
+                print(f"\n{Colors.warning('Recording ended unexpectedly')}")
+                print(f"  Result type: {result_type}")
+                print(f"  Result: {result}")
 
         except KeyboardInterrupt:
             print(f"\n{Colors.warning('Recording interrupted.')}")

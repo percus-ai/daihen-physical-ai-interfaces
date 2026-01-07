@@ -6,10 +6,22 @@ Usage:
     phi projects  # List projects
 """
 
+import logging
+import os
 import sys
 from typing import Optional
 
 import typer
+
+from interfaces_cli.core.logging import setup_file_logging
+
+# Configure logging for CLI with console and file output
+log_level = os.environ.get("PHI_LOG_LEVEL", "WARNING").upper()
+console_level = getattr(logging, log_level, logging.WARNING)
+setup_file_logging(app_name="cli", console_level=console_level)
+# Set specific loggers to DEBUG when verbose
+if log_level == "DEBUG":
+    logging.getLogger("interfaces_cli").setLevel(logging.DEBUG)
 from rich import print as rprint
 
 from interfaces_cli.client import PhiClient

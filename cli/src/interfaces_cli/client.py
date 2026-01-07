@@ -361,6 +361,7 @@ class PhiClient:
         ws_url = f"{ws_url}/api/recording/ws/record"
 
         result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
+        last_received_msg: Dict[str, Any] = {}
 
         try:
             ws = websocket.create_connection(ws_url, timeout=None)
@@ -375,18 +376,42 @@ class PhiClient:
             ws.send(json.dumps(request_data))
 
             # Receive messages until done
+            import sys
             while True:
-                message = ws.recv()
-                msg_data = json.loads(message)
+                try:
+                    message = ws.recv()
+                    if not message:
+                        continue
+                    msg_data = json.loads(message)
+                    last_received_msg = msg_data
 
-                if progress_callback:
-                    progress_callback(msg_data)
+                    # Debug: log all received messages
+                    msg_type = msg_data.get("type", "unknown")
+                    if msg_type in ("complete", "error", "stopped", "start"):
+                        print(f"[DEBUG] Received {msg_type} message: {msg_data}", file=sys.stderr)
 
-                if msg_data.get("type") in ("complete", "error", "stopped"):
-                    result = msg_data
+                    if progress_callback:
+                        progress_callback(msg_data)
+
+                    if msg_data.get("type") in ("complete", "error", "stopped"):
+                        result = msg_data
+                        break
+                except websocket.WebSocketConnectionClosedException:
+                    # Connection closed by server
+                    print(f"[DEBUG] WebSocket connection closed. last_received_msg: {last_received_msg}", file=sys.stderr)
+                    if last_received_msg.get("type") in ("complete", "error", "stopped"):
+                        result = last_received_msg
+                    else:
+                        result = {
+                            "type": "error",
+                            "error": "Connection closed unexpectedly",
+                            "last_message": last_received_msg,
+                        }
                     break
-
-            ws.close()
+            try:
+                ws.close()
+            except Exception:
+                pass
         except ImportError:
             if progress_callback:
                 progress_callback({
@@ -394,11 +419,23 @@ class PhiClient:
                     "error": "websocket-client not installed"
                 })
             result = {"type": "error", "error": "websocket-client not installed"}
+        except websocket.WebSocketConnectionClosedException:
+            # Connection closed during setup or early
+            result = {
+                "type": "error",
+                "error": "Connection closed by server",
+                "last_message": last_received_msg,
+            }
+            if progress_callback:
+                progress_callback(result)
         except Exception as e:
             if progress_callback:
                 progress_callback({"type": "error", "error": str(e)})
             result = {"type": "error", "error": str(e)}
 
+        # Debug: print the actual result being returned
+        import sys
+        print(f"\n[DEBUG] record_ws returning: {result}", file=sys.stderr)
         return result
 
     def list_recordings(self) -> Dict[str, Any]:

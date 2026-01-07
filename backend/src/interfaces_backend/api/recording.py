@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,9 @@ from percus_ai.storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Thread pool for R2 sync operations
+_upload_executor = ThreadPoolExecutor(max_workers=2)
 
 # Global instances for R2 sync
 _manifest_manager: Optional[ManifestManager] = None
@@ -516,11 +520,14 @@ async def websocket_record(websocket: WebSocket):
     global _active_recording_process
 
     await websocket.accept()
+    logger.info("WebSocket /ws/record accepted")
     config_file = None
 
     try:
         # Receive recording request
+        logger.info("Waiting for recording request...")
         data = await websocket.receive_json()
+        logger.info(f"Received recording request: {data}")
 
         # Handle stop action
         if data.get("action") == "stop":
@@ -547,8 +554,11 @@ async def websocket_record(websocket: WebSocket):
 
         # Load configurations
         try:
+            logger.info(f"Loading project config for: {project_name}")
             project_config = _load_project_config(project_name)
+            logger.info(f"Loaded project config: {project_config.get('project', {}).get('name', 'N/A')}")
         except FileNotFoundError as e:
+            logger.error(f"Project config not found: {e}")
             await websocket.send_json({
                 "type": "error",
                 "error": str(e)
@@ -557,8 +567,11 @@ async def websocket_record(websocket: WebSocket):
             return
 
         try:
+            logger.info("Loading device config...")
             device_config = _load_device_config()
+            logger.info(f"Loaded device config: {list(device_config.keys())}")
         except FileNotFoundError as e:
+            logger.error(f"Device config not found: {e}")
             await websocket.send_json({
                 "type": "error",
                 "error": str(e)
@@ -567,6 +580,7 @@ async def websocket_record(websocket: WebSocket):
             return
 
         user_config = _load_user_config()
+        logger.info(f"Loaded user config: username={user_config.get('username', 'N/A')}")
         username = username or user_config.get("username", "user")
         fps = user_config.get("default_fps", 30)
 
@@ -664,6 +678,9 @@ async def websocket_record(websocket: WebSocket):
         env = os.environ.copy()
         env.pop("PYTHONPATH", None)
 
+        logger.info(f"Starting recording: cmd={cmd}")
+        logger.info(f"Output path: {output_path}")
+
         # Send start notification
         await websocket.send_json({
             "type": "start",
@@ -671,6 +688,7 @@ async def websocket_record(websocket: WebSocket):
             "output_path": str(output_path),
             "num_episodes": num_episodes,
         })
+        logger.info("Sent start notification to WebSocket")
 
         # Run subprocess with output streaming
         process = await asyncio.create_subprocess_exec(
@@ -680,6 +698,7 @@ async def websocket_record(websocket: WebSocket):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        logger.info(f"Subprocess started with PID: {process.pid}")
 
         _active_recording_process = process
 
@@ -743,27 +762,93 @@ async def websocket_record(websocket: WebSocket):
 
         success = return_code == 0
         message = "Recording completed" if success else f"Recording failed (exit code: {return_code})"
+        logger.info(f"Recording finished with return_code={return_code}, success={success}")
 
         # Auto-upload to R2 if enabled and recording succeeded
         upload_status = None
-        if success and user_config.get("auto_upload_after_recording", True):
+        auto_upload_enabled = user_config.get("auto_upload_after_recording", True)
+        logger.info(f"Auto-upload check: success={success}, auto_upload_enabled={auto_upload_enabled}")
+
+        if success and auto_upload_enabled:
             try:
-                await websocket.send_json({
-                    "type": "uploading",
-                    "message": "Uploading to R2...",
-                })
+                logger.info("Starting auto-upload to R2...")
                 sync_service = _get_sync_service()
                 dataset_id = f"{project_id}/{session_name}"
-                sync_service.upload_dataset(dataset_id)
-                message = "Recording completed and uploaded to R2"
-                upload_status = "success"
-                logger.info(f"Auto-uploaded dataset {dataset_id} to R2")
+                logger.info(f"Uploading dataset: {dataset_id}")
+
+                # Queue for progress updates from thread
+                progress_queue: asyncio.Queue = asyncio.Queue()
+                main_loop = asyncio.get_running_loop()
+
+                def progress_callback(progress: dict):
+                    """Callback to put progress in queue (called from thread)."""
+                    asyncio.run_coroutine_threadsafe(
+                        progress_queue.put(progress),
+                        main_loop
+                    )
+
+                async def run_upload():
+                    """Run upload in thread pool."""
+                    loop = asyncio.get_event_loop()
+                    return await loop.run_in_executor(
+                        _upload_executor,
+                        lambda: sync_service.upload_dataset_with_progress(
+                            dataset_id, progress_callback
+                        )
+                    )
+
+                # Start upload task
+                upload_task = asyncio.create_task(run_upload())
+
+                # Forward progress updates to WebSocket
+                while True:
+                    try:
+                        progress = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                        # Forward progress to client with upload prefix
+                        # Create a copy without "type" to avoid overwriting the prefixed type
+                        progress_data = {k: v for k, v in progress.items() if k != "type"}
+                        await websocket.send_json({
+                            "type": f"upload_{progress.get('type', 'progress')}",
+                            **progress_data,
+                        })
+
+                        if progress.get("type") in ("complete", "error"):
+                            break
+                    except asyncio.TimeoutError:
+                        if upload_task.done():
+                            # Drain remaining queue items
+                            while not progress_queue.empty():
+                                progress = await progress_queue.get()
+                                progress_data = {k: v for k, v in progress.items() if k != "type"}
+                                await websocket.send_json({
+                                    "type": f"upload_{progress.get('type', 'progress')}",
+                                    **progress_data,
+                                })
+                            break
+
+                # Get result
+                try:
+                    upload_success, upload_error = await upload_task
+                    if upload_success:
+                        message = "Recording completed and uploaded to R2"
+                        upload_status = "success"
+                        logger.info(f"Auto-uploaded dataset {dataset_id} to R2")
+                    else:
+                        message = f"Recording completed but upload failed: {upload_error}"
+                        upload_status = "failed"
+                        logger.error(f"Auto-upload failed for {dataset_id}: {upload_error}")
+                except Exception as e:
+                    logger.error(f"Auto-upload task failed for {dataset_id}: {e}")
+                    message = f"Recording completed but upload failed: {e}"
+                    upload_status = "failed"
+
             except Exception as e:
                 logger.error(f"Auto-upload failed for {project_id}/{session_name}: {e}")
                 message = f"Recording completed but upload failed: {e}"
                 upload_status = "failed"
 
         # Send completion notification
+        logger.info(f"Sending complete notification: success={success}, message={message}")
         await websocket.send_json({
             "type": "complete",
             "success": success,
@@ -772,13 +857,16 @@ async def websocket_record(websocket: WebSocket):
             "message": message,
             "upload_status": upload_status,
         })
+        logger.info("Complete notification sent")
 
     except WebSocketDisconnect:
         # Client disconnected, terminate process if running
+        logger.info("WebSocket disconnected by client")
         if _active_recording_process and _active_recording_process.returncode is None:
             _active_recording_process.terminate()
         _active_recording_process = None
     except Exception as e:
+        logger.exception(f"WebSocket handler error: {e}")
         try:
             await websocket.send_json({
                 "type": "error",
@@ -793,6 +881,8 @@ async def websocket_record(websocket: WebSocket):
         if config_file and os.path.exists(config_file):
             os.remove(config_file)
         try:
+            # Small delay to ensure final message is transmitted before closing
+            await asyncio.sleep(0.2)
             await websocket.close()
         except Exception:
             pass
