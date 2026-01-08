@@ -710,7 +710,93 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
 
     This endpoint creates a cloud instance and starts training.
     The job runs in the background by default.
+
+    Can be called with either:
+    - config_id: Load settings from saved config file
+    - Direct fields: Provide name, dataset, policy, etc. directly
     """
+    # If config_id is provided, load config and populate request fields
+    if request.config_id:
+        config_data = _load_config(request.config_id)
+        if not config_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Config not found: {request.config_id}",
+            )
+
+        # Import models for building request from config
+        from interfaces_backend.models.training import (
+            DatasetConfig,
+            PolicyConfig,
+            TrainingParams,
+            CloudConfig,
+        )
+
+        # Build request from config data
+        dataset_cfg = config_data.get("dataset", {})
+        policy_cfg = config_data.get("policy", {})
+        training_cfg = config_data.get("training", {})
+        verda_cfg = config_data.get("verda", {})
+        output_cfg = config_data.get("output", {})
+        wandb_cfg = config_data.get("wandb", {})
+
+        # Use config_id as job name if not provided
+        job_id = request.name or request.config_id
+
+        # Build dataset config
+        request.dataset = DatasetConfig(
+            id=dataset_cfg.get("id", ""),
+            source=dataset_cfg.get("source", "r2"),
+            hf_repo_id=dataset_cfg.get("hf_repo_id"),
+        )
+
+        # Build policy config
+        request.policy = PolicyConfig(
+            type=policy_cfg.get("type", "act"),
+            pretrained_path=policy_cfg.get("pretrained_path"),
+            compile_model=policy_cfg.get("compile_model"),
+            gradient_checkpointing=policy_cfg.get("gradient_checkpointing"),
+            dtype=policy_cfg.get("dtype"),
+        )
+
+        # Build training params
+        request.training = TrainingParams(
+            steps=training_cfg.get("steps"),
+            batch_size=training_cfg.get("batch_size"),
+            save_freq=training_cfg.get("save_freq"),
+        )
+
+        # Build cloud config
+        request.cloud = CloudConfig(
+            gpu_model=verda_cfg.get("gpu_model", "H100"),
+            gpus_per_instance=verda_cfg.get("gpus_per_instance", 1),
+            storage_size=verda_cfg.get("storage_size"),
+            location=verda_cfg.get("location", "auto"),
+            is_spot=verda_cfg.get("is_spot", True),
+        )
+
+        # Other settings
+        request.checkpoint_repo_id = output_cfg.get("checkpoint_repo_id")
+        request.wandb_enable = wandb_cfg.get("enable", True)
+    else:
+        # Validate required fields when not using config_id
+        if not request.name:
+            raise HTTPException(
+                status_code=422,
+                detail="Either config_id or name must be provided",
+            )
+        if not request.dataset:
+            raise HTTPException(
+                status_code=422,
+                detail="Either config_id or dataset must be provided",
+            )
+        if not request.policy:
+            raise HTTPException(
+                status_code=422,
+                detail="Either config_id or policy must be provided",
+            )
+        job_id = request.name
+
     # Check if Verda credentials are available
     client = _get_verda_client()
     if not client:
@@ -720,7 +806,6 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
             "Set DATACRUNCH_CLIENT_ID and DATACRUNCH_CLIENT_SECRET.",
         )
 
-    job_id = request.name
     now = datetime.now().isoformat()
 
     # Check for duplicate job_id
@@ -871,6 +956,7 @@ def _find_location(
 ) -> str:
     """Find available location."""
     known_locations = ["FIN-01", "FIN-02", "FIN-03", "ICE-01"]
+    instance_mode = "Spot" if is_spot else "On-demand"
 
     if preferred and preferred.lower() != "auto":
         try:
@@ -884,10 +970,11 @@ def _find_location(
             pass
         raise HTTPException(
             status_code=400,
-            detail=f"Location '{preferred}' not available for {instance_type}",
+            detail=f"Location '{preferred}' not available for {instance_type} ({instance_mode})",
         )
 
     # Find any available location
+    checked_locations = []
     for loc in known_locations:
         try:
             if client.instances.is_available(
@@ -896,12 +983,17 @@ def _find_location(
                 location_code=loc,
             ):
                 return loc
+            checked_locations.append(loc)
         except Exception:
             continue
 
     raise HTTPException(
         status_code=503,
-        detail=f"No location available for {instance_type}",
+        detail=(
+            f"No {instance_mode} instance available for {instance_type}. "
+            f"Checked locations: {', '.join(checked_locations) or 'none'}. "
+            f"Try again later, use on-demand (is_spot: false), or choose a different GPU."
+        ),
     )
 
 

@@ -118,6 +118,7 @@ def main():
         host=args.host,
         port=args.port,
         reload=args.reload,
+        log_config=None,  # Use our logging config instead of uvicorn's default
     )
 
 

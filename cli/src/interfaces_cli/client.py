@@ -1043,7 +1043,14 @@ class PhiClient:
     def create_training_job(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/training/jobs - Create and start job."""
         response = self._client.post("/api/training/jobs", json=data)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            # Try to get detailed error message from response body
+            try:
+                error_data = response.json()
+                detail = error_data.get("detail", str(error_data))
+            except Exception:
+                detail = response.text or response.reason_phrase
+            raise Exception(f"[{response.status_code}] {detail}")
         return response.json()
 
     def stop_training_job(self, job_id: str) -> Dict[str, Any]:

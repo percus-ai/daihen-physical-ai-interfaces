@@ -715,6 +715,11 @@ async def websocket_record(websocket: WebSocket):
                             "type": output_type,
                             "line": text,
                         })
+                        # Log subprocess output to file
+                        if output_type == "error_output":
+                            logger.error(f"[subprocess] {text}")
+                        else:
+                            logger.debug(f"[subprocess] {text}")
                 except Exception:
                     pass
 

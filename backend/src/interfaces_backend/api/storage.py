@@ -111,7 +111,7 @@ async def list_datasets(
             source=ds.source,
             status=ds.status,
             dataset_type=ds.dataset_type.value if ds.dataset_type else "recorded",
-            episode_count=ds.episode_count or 0,
+            episode_count=ds.recording.episode_count if ds.recording else 0,
             size_bytes=ds.sync.size_bytes if ds.sync else 0,
             is_local=is_local,
             created_at=ds.created_at,

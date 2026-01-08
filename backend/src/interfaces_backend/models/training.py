@@ -157,11 +157,15 @@ class CloudConfig(BaseModel):
 
 
 class JobCreateRequest(BaseModel):
-    """Request to create a new training job."""
+    """Request to create a new training job.
 
-    name: str = Field(..., description="Job name/ID")
-    dataset: DatasetConfig
-    policy: PolicyConfig
+    Either provide config_id to load from saved config, or provide all fields directly.
+    """
+
+    config_id: Optional[str] = Field(None, description="Config ID to load settings from")
+    name: Optional[str] = Field(None, description="Job name/ID (required if no config_id)")
+    dataset: Optional[DatasetConfig] = Field(None, description="Dataset config (required if no config_id)")
+    policy: Optional[PolicyConfig] = Field(None, description="Policy config (required if no config_id)")
     training: TrainingParams = Field(default_factory=TrainingParams)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     checkpoint_repo_id: Optional[str] = Field(None, description="HF repo for checkpoint upload")

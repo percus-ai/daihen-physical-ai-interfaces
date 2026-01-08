@@ -413,9 +413,12 @@ class NewTrainingMenu(BaseMenu):
                 message="Policy type:",
                 choices=[
                     Choice(value="act", name="ACT - Action Chunking Transformer"),
-                    Choice(value="pi0", name="Pi0 - Physical Intelligence"),
-                    Choice(value="smolvla", name="SmolVLA - Small VLA"),
                     Choice(value="diffusion", name="Diffusion Policy"),
+                    Choice(value="pi0", name="π0 - Physical Intelligence"),
+                    Choice(value="pi05", name="π0.5 - Open-World VLA Model"),
+                    Choice(value="groot", name="GR00T N1.5 - NVIDIA Isaac GR00T"),
+                    Choice(value="smolvla", name="SmolVLA - Small VLA"),
+                    Choice(value="vla0", name="VLA-0 - Vision-Language-Action"),
                     Choice(value="__back__", name="« Cancel"),
                 ],
                 style=hacker_style,
@@ -501,13 +504,22 @@ class NewTrainingMenu(BaseMenu):
                 style=hacker_style,
             ).execute()
 
-            # Create config with nested structure
+            # Create config with nested structure matching TrainingConfigModel
+            config_name = f"{policy}_{dataset}_{steps}steps"
             result = self.api.create_training_config({
                 "config": {
-                    "policy_type": policy,
-                    "dataset_repo_id": dataset,
-                    "num_train_steps": steps,
-                    "batch_size": batch_size,
+                    "name": config_name,
+                    "dataset": {
+                        "id": dataset,
+                        "source": "r2",
+                    },
+                    "policy": {
+                        "type": policy,
+                    },
+                    "training": {
+                        "steps": steps,
+                        "batch_size": batch_size,
+                    },
                 }
             })
 
@@ -552,10 +564,14 @@ class NewTrainingMenu(BaseMenu):
             # Get config details
             config_result = self.api.get_training_config(config_id)
             config_data = config_result.get("config", {})
-            print(f"  Policy: {config_data.get('policy_type', 'N/A')}")
-            print(f"  Dataset: {config_data.get('dataset_repo_id', 'N/A')}")
-            print(f"  Steps: {config_data.get('num_train_steps', 0):,}")
-            print(f"  Batch Size: {config_data.get('batch_size', 0)}")
+            policy_type = config_data.get("policy", {}).get("type", "N/A")
+            dataset_id = config_data.get("dataset", {}).get("id", "N/A")
+            steps = config_data.get("training", {}).get("steps", 0) or 0
+            batch_size = config_data.get("training", {}).get("batch_size", 0) or 0
+            print(f"  Policy: {policy_type}")
+            print(f"  Dataset: {dataset_id}")
+            print(f"  Steps: {steps:,}")
+            print(f"  Batch Size: {batch_size}")
 
             confirm = inquirer.confirm(
                 message="Start training job?",
@@ -616,11 +632,15 @@ class TrainingConfigsMenu(BaseMenu):
         try:
             config_result = self.api.get_training_config(config_id)
             config_data = config_result.get("config", {})
+            policy_type = config_data.get("policy", {}).get("type", "N/A")
+            dataset_id = config_data.get("dataset", {}).get("id", "N/A")
+            steps = config_data.get("training", {}).get("steps", 0) or 0
+            batch_size = config_data.get("training", {}).get("batch_size", 0) or 0
             print(f"  ID: {config_result.get('config_id', 'N/A')}")
-            print(f"  Policy: {config_data.get('policy_type', 'N/A')}")
-            print(f"  Dataset: {config_data.get('dataset_repo_id', 'N/A')}")
-            print(f"  Steps: {config_data.get('num_train_steps', 0):,}")
-            print(f"  Batch Size: {config_data.get('batch_size', 0)}")
+            print(f"  Policy: {policy_type}")
+            print(f"  Dataset: {dataset_id}")
+            print(f"  Steps: {steps:,}")
+            print(f"  Batch Size: {batch_size}")
             print(f"  Created: {config_result.get('created_at', 'N/A')}")
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")
