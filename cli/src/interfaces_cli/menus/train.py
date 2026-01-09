@@ -1,6 +1,15 @@
-"""Train menu - Model training operations."""
+"""Train menu - Model training operations.
 
-from typing import TYPE_CHECKING, Any, Dict, List
+This module implements the training CLI with:
+- New training wizard (7 steps)
+- Continue training wizard (6 steps)
+- Training jobs management
+- Training configs management
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
@@ -15,6 +24,209 @@ from interfaces_cli.styles import Colors, hacker_style
 
 if TYPE_CHECKING:
     from interfaces_cli.app import PhiApplication
+
+
+# =============================================================================
+# Policy Configuration Constants
+# =============================================================================
+
+
+@dataclass
+class PretrainedModel:
+    """Pretrained model option."""
+
+    path: str
+    name: str
+    description: str = ""
+
+
+@dataclass
+class PolicyTypeInfo:
+    """Policy type configuration."""
+
+    display_name: str
+    skip_pretrained: bool = False
+    pretrained_models: List[PretrainedModel] = field(default_factory=list)
+    default_steps: int = 100000
+    default_batch_size: int = 32
+    default_save_freq: int = 10000
+    recommended_storage: int = 100
+    recommended_gpu: str = "H100"
+    torch_nightly: bool = False
+    compile_model: Optional[bool] = None
+    gradient_checkpointing: Optional[bool] = None
+    dtype: Optional[str] = None
+
+
+POLICY_TYPES: Dict[str, PolicyTypeInfo] = {
+    "act": PolicyTypeInfo(
+        display_name="ACT (Action Chunking Transformer)",
+        skip_pretrained=True,
+        default_steps=200000,
+        default_batch_size=64,
+        recommended_storage=100,
+    ),
+    "diffusion": PolicyTypeInfo(
+        display_name="Diffusion Policy",
+        skip_pretrained=True,
+        default_steps=200000,
+        default_batch_size=32,
+        recommended_storage=100,
+    ),
+    "pi0": PolicyTypeInfo(
+        display_name="π0 (Physical Intelligence)",
+        pretrained_models=[
+            PretrainedModel("lerobot/pi0_base", "π0 Base (推奨)", "標準ベースモデル"),
+        ],
+        default_steps=100000,
+        default_batch_size=32,
+        recommended_storage=200,
+        compile_model=True,
+        gradient_checkpointing=True,
+        dtype="bfloat16",
+    ),
+    "pi05": PolicyTypeInfo(
+        display_name="π0.5 (Open-World VLA Model)",
+        pretrained_models=[
+            PretrainedModel("lerobot/pi05_base", "π0.5 Base (推奨)", "標準ベースモデル"),
+            PretrainedModel("lerobot/pi05_libero", "π0.5 Libero", "Liberoベンチマーク向け"),
+        ],
+        default_steps=3000,
+        default_batch_size=32,
+        recommended_storage=200,
+        compile_model=True,
+        gradient_checkpointing=True,
+        dtype="bfloat16",
+    ),
+    "groot": PolicyTypeInfo(
+        display_name="GR00T N1.5 (NVIDIA Isaac GR00T)",
+        skip_pretrained=True,  # Auto-loads base model
+        default_steps=30000,
+        default_batch_size=32,
+        recommended_storage=200,
+    ),
+    "smolvla": PolicyTypeInfo(
+        display_name="SmolVLA (Small VLA)",
+        pretrained_models=[
+            PretrainedModel("lerobot/smolvla_base", "SmolVLA Base (推奨)", "標準ベースモデル"),
+        ],
+        default_steps=300000,
+        default_batch_size=32,
+        recommended_storage=100,
+    ),
+    "vla0": PolicyTypeInfo(
+        display_name="VLA-0 (Vision-Language-Action)",
+        pretrained_models=[
+            PretrainedModel("", "VLA-0 Base", "Qwen2.5-VLベース"),
+        ],
+        default_steps=100000,
+        default_batch_size=8,
+        recommended_storage=200,
+    ),
+}
+
+
+GPU_MODELS = [
+    ("B300", "262GB VRAM - Blackwell Ultra (torch nightly必須)", True),
+    ("B200", "180GB VRAM - Blackwell (torch nightly必須)", True),
+    ("H200", "141GB VRAM - Hopper 大容量", False),
+    ("H100", "80GB VRAM - Hopper 標準 (推奨)", False),
+    ("A100", "80GB VRAM - Ampere コスパ良", False),
+    ("L40S", "48GB VRAM - Ada Lovelace", False),
+    ("RTX6000ADA", "48GB VRAM - RTX 6000 Ada", False),
+    ("RTXA6000", "48GB VRAM - RTX A6000", False),
+]
+
+GPU_COUNTS = [1, 2, 4, 8]
+
+
+# =============================================================================
+# Wizard State Dataclasses
+# =============================================================================
+
+
+@dataclass
+class NewTrainingState:
+    """State for new training wizard."""
+
+    # Step 1: Policy
+    policy_type: Optional[str] = None
+
+    # Step 2: Pretrained model
+    pretrained_path: Optional[str] = None
+    skip_pretrained: bool = False
+
+    # Step 3: Dataset
+    dataset_id: Optional[str] = None
+
+    # Step 4: Training params
+    steps: int = 100000
+    batch_size: int = 32
+    save_freq: int = 10000
+
+    # Step 5: Verda settings
+    gpu_model: str = "H100"
+    gpu_count: int = 1
+    storage_size: int = 100
+    is_spot: bool = True
+    torch_nightly: bool = False
+
+    # Step 6: Job naming
+    author: Optional[str] = None
+    comment: Optional[str] = None
+    job_name: Optional[str] = None
+
+    def generate_job_name(self) -> str:
+        """Generate job name from state."""
+        parts = []
+        if self.policy_type:
+            parts.append(self.policy_type)
+        if self.dataset_id:
+            # Use first part of dataset ID
+            ds_short = self.dataset_id.split("/")[-1][:20]
+            parts.append(ds_short)
+        if self.author:
+            parts.append(self.author)
+        date_str = datetime.now().strftime("%Y%m%d")
+        parts.append(date_str)
+        if self.comment:
+            parts.append(self.comment)
+        return "_".join(parts)
+
+
+@dataclass
+class ContinueTrainingState:
+    """State for continue training wizard."""
+
+    # Step 1: Policy filter
+    policy_filter: Optional[str] = None
+
+    # Step 2: Checkpoint
+    checkpoint_job_name: Optional[str] = None
+    checkpoint_step: Optional[int] = None
+    checkpoint_policy_type: Optional[str] = None
+    original_dataset_id: Optional[str] = None
+
+    # Step 3: Dataset
+    use_original_dataset: bool = True
+    dataset_id: Optional[str] = None
+
+    # Step 4: Training params
+    additional_steps: int = 50000
+    batch_size: int = 32
+    save_freq: int = 10000
+
+    # Step 5: Verda settings
+    gpu_model: str = "H100"
+    gpu_count: int = 1
+    storage_size: int = 100
+    is_spot: bool = True
+    torch_nightly: bool = False
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
 
 
 def download_dataset_with_progress(
@@ -42,7 +254,6 @@ def download_dataset_with_progress(
         table.add_row("データセット:", dataset_id)
 
         if current["file"]:
-            # File progress
             if current["size"] > 0:
                 pct = (current["transferred"] / current["size"]) * 100
                 transferred_str = format_size(current["transferred"])
@@ -109,6 +320,11 @@ def download_dataset_with_progress(
         return {"success": False, "error": str(e)}
 
 
+# =============================================================================
+# Main Train Menu
+# =============================================================================
+
+
 class TrainMenu(BaseMenu):
     """Train menu - Model training operations."""
 
@@ -117,48 +333,1396 @@ class TrainMenu(BaseMenu):
     def get_choices(self) -> List[Choice]:
         return [
             Choice(value="jobs", name="📋 [JOBS] 学習ジョブ一覧"),
-            Choice(value="new", name="🚀 [NEW] 新規学習ジョブ"),
+            Choice(value="new", name="🚀 [NEW] 新規学習"),
+            Choice(value="continue", name="🔄 [CONTINUE] 継続学習"),
             Choice(value="configs", name="⚙️  [CONFIGS] 学習設定管理"),
-            Choice(value="stats", name="📊 [STATS] 学習統計"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
         if choice == "jobs":
             return self.submenu(TrainingJobsMenu)
         if choice == "new":
-            return self.submenu(NewTrainingMenu)
+            return self.submenu(TrainingWizard)
+        if choice == "continue":
+            return self.submenu(ContinueTrainingWizard)
         if choice == "configs":
             return self.submenu(TrainingConfigsMenu)
-        if choice == "stats":
-            return self._show_stats()
         return MenuResult.CONTINUE
 
-    def _show_stats(self) -> MenuResult:
-        """Show training statistics."""
-        show_section_header("Training Statistics")
+
+# =============================================================================
+# Training Wizard (7 Steps) - 新規学習
+# =============================================================================
+
+
+class TrainingWizard(BaseMenu):
+    """Training wizard - 7 step process for new training."""
+
+    title = "新規学習"
+
+    def __init__(self, app: "PhiApplication"):
+        super().__init__(app)
+        self.state = NewTrainingState()
+
+    def get_choices(self) -> List[Choice]:
+        # This menu runs as a wizard, not a choice menu
+        return []
+
+    def show(self) -> MenuResult:
+        """Override show to run wizard flow instead of choice menu."""
+        return self.run()
+
+    def run(self) -> MenuResult:
+        """Run the wizard steps."""
+        steps = [
+            ("Step 1/7: ポリシータイプ選択", self._step1_policy_type),
+            ("Step 2/7: 事前学習済みモデル選択", self._step2_pretrained_model),
+            ("Step 3/7: データセット選択", self._step3_dataset),
+            ("Step 4/7: 学習パラメータ設定", self._step4_training_params),
+            ("Step 5/7: Verda設定", self._step5_verda_settings),
+            ("Step 6/7: ジョブ名設定", self._step6_job_naming),
+            ("Step 7/7: 確認", self._step7_confirmation),
+        ]
+
+        current_step = 0
+        skipped_steps: set[int] = set()  # Track skipped steps for back navigation
+
+        while current_step < len(steps):
+            step_name, step_func = steps[current_step]
+            show_section_header(step_name)
+
+            result = step_func()
+
+            if result == "back":
+                if current_step == 0:
+                    return MenuResult.BACK
+                current_step -= 1
+                # Skip over previously skipped steps when going backward
+                while current_step > 0 and current_step in skipped_steps:
+                    current_step -= 1
+            elif result == "skip":
+                skipped_steps.add(current_step)  # Remember this step was skipped
+                current_step += 1
+            elif result == "next":
+                skipped_steps.discard(current_step)  # Clear if completed normally
+                current_step += 1
+            elif result == "goto_verda":
+                # Go back to Step 5 (Verda settings) - index 4
+                current_step = 4
+            elif result == "cancel":
+                return MenuResult.BACK
+            elif result == "done":
+                return MenuResult.BACK
+
+        return MenuResult.BACK
+
+    def handle_choice(self, choice: Any) -> MenuResult:
+        return MenuResult.CONTINUE
+
+    def _step1_policy_type(self) -> str:
+        """Step 1: Select policy type."""
+        choices = []
+        for key, info in POLICY_TYPES.items():
+            choices.append(Choice(value=key, name=f"  {info.display_name}"))
+        choices.append(Choice(value="__back__", name="← 戻る"))
+
+        policy = inquirer.select(
+            message="ポリシータイプを選択:",
+            choices=choices,
+            style=hacker_style,
+        ).execute()
+
+        if policy == "__back__":
+            return "back"
+
+        self.state.policy_type = policy
+        policy_info = POLICY_TYPES[policy]
+        self.state.skip_pretrained = policy_info.skip_pretrained
+        self.state.steps = policy_info.default_steps
+        self.state.batch_size = policy_info.default_batch_size
+        self.state.save_freq = policy_info.default_save_freq
+        self.state.storage_size = policy_info.recommended_storage
+        self.state.torch_nightly = policy_info.torch_nightly
+
+        return "next"
+
+    def _step2_pretrained_model(self) -> str:
+        """Step 2: Select pretrained model (conditional)."""
+        if not self.state.policy_type:
+            return "back"
+
+        policy_info = POLICY_TYPES[self.state.policy_type]
+
+        # Skip for policies that don't need pretrained model
+        if policy_info.skip_pretrained:
+            self.state.pretrained_path = None
+            print(f"{Colors.muted('このポリシーは事前学習済みモデルを使用しません。')}")
+            print(f"{Colors.muted('スキップして次へ進みます...')}")
+            return "skip"
+
+        if not policy_info.pretrained_models:
+            self.state.pretrained_path = None
+            return "skip"
+
+        choices = []
+        for model in policy_info.pretrained_models:
+            desc = f" - {model.description}" if model.description else ""
+            choices.append(Choice(value=model.path, name=f"  {model.name}{desc}"))
+        choices.append(Choice(value="__custom__", name="  カスタムパスを入力..."))
+        choices.append(Choice(value="__back__", name="← 戻る"))
+
+        selection = inquirer.select(
+            message="事前学習済みモデルを選択:",
+            choices=choices,
+            style=hacker_style,
+        ).execute()
+
+        if selection == "__back__":
+            return "back"
+
+        if selection == "__custom__":
+            custom_path = inquirer.text(
+                message="モデルパスを入力:",
+                style=hacker_style,
+            ).execute()
+            if not custom_path:
+                return "back"
+            self.state.pretrained_path = custom_path
+        else:
+            self.state.pretrained_path = selection
+
+        return "next"
+
+    def _step3_dataset(self) -> str:
+        """Step 3: Select dataset."""
+        try:
+            datasets = self.api.list_datasets()
+            ds_list = datasets.get("datasets", [])
+        except Exception as e:
+            print(f"{Colors.error('データセット取得エラー:')} {e}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return "back"
+
+        if not ds_list:
+            print(f"{Colors.warning('利用可能なデータセットがありません。')}")
+            print(f"{Colors.muted('R2ストレージメニューからデータセットをアップロードしてください。')}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return "back"
+
+        ds_lookup = {}
+        choices = []
+        for d in ds_list:
+            if isinstance(d, dict):
+                ds_id = d.get("id", "unknown")
+                is_local = d.get("is_local", True)
+                size = format_size(d.get("size_bytes", 0))
+                status = "✓" if is_local else "☁"
+                choices.append(Choice(value=ds_id, name=f"  {status} {ds_id} ({size})"))
+                ds_lookup[ds_id] = d
+            else:
+                choices.append(Choice(value=d, name=f"  {d}"))
+                ds_lookup[d] = {"id": d, "is_local": True}
+
+        choices.append(Choice(value="__back__", name="← 戻る"))
+
+        print(f"{Colors.muted('✓=ローカル, ☁=R2リモート')}")
+        dataset = inquirer.select(
+            message="データセットを選択:",
+            choices=choices,
+            style=hacker_style,
+        ).execute()
+
+        if dataset == "__back__":
+            return "back"
+
+        # Check if dataset needs download
+        ds_info = ds_lookup.get(dataset, {})
+        if not ds_info.get("is_local", True):
+            print(f"\n{Colors.warning('このデータセットはローカルにダウンロードされていません。')}")
+            should_download = inquirer.confirm(
+                message="R2からダウンロードしますか?",
+                default=True,
+                style=hacker_style,
+            ).execute()
+
+            if not should_download:
+                return "back"
+
+            print()
+            download_result = download_dataset_with_progress(self.api, dataset)
+            if download_result.get("success"):
+                print(f"\n{Colors.success('データセットのダウンロードが完了しました。')}")
+            else:
+                error = download_result.get("error", "Unknown error")
+                print(f"\n{Colors.error(f'ダウンロードエラー: {error}')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return "back"
+
+        self.state.dataset_id = dataset
+        return "next"
+
+    def _step4_training_params(self) -> str:
+        """Step 4: Training parameters."""
+        print(f"{Colors.muted('現在の設定 (Enterでデフォルト値を使用)')}")
+        print()
 
         try:
-            stats = self.api.get_analytics_training()
+            steps = inquirer.number(
+                message="Training steps:",
+                default=self.state.steps,
+                min_allowed=100,
+                max_allowed=1000000,
+                style=hacker_style,
+            ).execute()
+            self.state.steps = int(steps)
 
-            print(f"{Colors.CYAN}Jobs Summary:{Colors.RESET}")
-            print(f"  Total: {stats.get('total_jobs', 0)}")
-            print(f"  Running: {stats.get('running_jobs', 0)}")
-            print(f"  Completed: {stats.get('completed_jobs', 0)}")
-            print(f"  Failed: {stats.get('failed_jobs', 0)}")
+            batch_size = inquirer.number(
+                message="Batch size:",
+                default=self.state.batch_size,
+                min_allowed=1,
+                max_allowed=256,
+                style=hacker_style,
+            ).execute()
+            self.state.batch_size = int(batch_size)
 
-            print(f"\n{Colors.CYAN}Resources:{Colors.RESET}")
-            print(f"  Total GPU Hours: {stats.get('total_gpu_hours', 0):.1f}")
-            print(f"  Avg Job Duration: {stats.get('avg_duration_hours', 0):.1f}h")
+            save_freq = inquirer.number(
+                message="Save frequency (steps):",
+                default=self.state.save_freq,
+                min_allowed=100,
+                max_allowed=100000,
+                style=hacker_style,
+            ).execute()
+            self.state.save_freq = int(save_freq)
+
+        except KeyboardInterrupt:
+            return "back"
+
+        # Confirm or go back
+        action = inquirer.select(
+            message="",
+            choices=[
+                Choice(value="next", name="次へ →"),
+                Choice(value="back", name="← 戻る"),
+            ],
+            style=hacker_style,
+        ).execute()
+
+        return action
+
+    def _step5_verda_settings(self) -> str:
+        """Step 5: Verda cloud settings."""
+        # Fetch GPU availability via WebSocket with real-time display
+        gpu_availability = {}  # key: (gpu_model, gpu_count) -> {"spot": bool, "ondemand": bool}
+        gpu_status = {name: "?" for name, _, _ in GPU_MODELS}  # Track status for each GPU
+
+        def get_status_icon(gpu_name: str) -> str:
+            """Get status icon for a GPU."""
+            key = (gpu_name, 1)
+            if key in gpu_availability:
+                spot_ok = gpu_availability[key]["spot"]
+                ondemand_ok = gpu_availability[key]["ondemand"]
+                if spot_ok:
+                    return "✓"
+                elif ondemand_ok:
+                    return "△"
+                else:
+                    return "✗"
+            return gpu_status.get(gpu_name, "?")
+
+        def print_gpu_status():
+            """Print current GPU availability status."""
+            status_parts = []
+            for gpu_name, _, _ in GPU_MODELS:
+                icon = get_status_icon(gpu_name)
+                status_parts.append(f"{icon} {gpu_name}")
+            return " | ".join(status_parts)
+
+        try:
+            # Use Rich Live for real-time updates
+            console = Console()
+            with Live(console=console, refresh_per_second=4, transient=True) as live:
+                live.update(f"[dim]GPU空き状況を確認中... {print_gpu_status()}[/dim]")
+
+                def on_checking(gpu_model: str) -> None:
+                    gpu_status[gpu_model] = "…"
+                    live.update(f"[dim]GPU空き状況を確認中... {print_gpu_status()}[/dim]")
+
+                def on_result(gpu_model: str, gpu_count: int, spot_available: bool, ondemand_available: bool) -> None:
+                    key = (gpu_model, gpu_count)
+                    gpu_availability[key] = {
+                        "spot": spot_available,
+                        "ondemand": ondemand_available,
+                    }
+                    live.update(f"[dim]GPU空き状況を確認中... {print_gpu_status()}[/dim]")
+
+                def on_error(error: str) -> None:
+                    live.update(f"[yellow]⚠ GPU空き状況の取得に失敗: {error}[/yellow]")
+
+                self.api.get_gpu_availability_ws(
+                    on_checking=on_checking,
+                    on_result=on_result,
+                    on_error=on_error,
+                )
+
+            # Print final status
+            print(f"{Colors.muted('GPU空き状況:')} {print_gpu_status()}")
 
         except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
+            print(f"{Colors.warning('⚠ GPU空き状況の取得に失敗:')} {e}")
+
+        # GPU Model selection with availability indicators
+        gpu_choices = []
+        for gpu_name, gpu_desc, needs_nightly in GPU_MODELS:
+            nightly_note = " ⚠" if needs_nightly else ""
+            is_default = " (推奨)" if gpu_name == "H100" else ""
+
+            # Check availability for this GPU (check count=1 as default indicator)
+            # Priority: spot > ondemand > none > unknown
+            avail_key = (gpu_name, 1)
+            if avail_key in gpu_availability:
+                spot_ok = gpu_availability[avail_key]["spot"]
+                ondemand_ok = gpu_availability[avail_key]["ondemand"]
+                if spot_ok:
+                    avail_icon = "✓"  # Spot available (best - cheapest)
+                elif ondemand_ok:
+                    avail_icon = "△"  # On-demand only
+                else:
+                    avail_icon = "✗"  # Not available
+            else:
+                avail_icon = "?"  # Unknown
+
+            gpu_choices.append(Choice(
+                value=gpu_name,
+                name=f"{avail_icon} {gpu_name}: {gpu_desc}{nightly_note}{is_default}"
+            ))
+        gpu_choices.append(Choice(value="__back__", name="← 戻る"))
+
+        print(f"{Colors.muted('✓=スポット空き △=オンデマンドのみ ✗=空きなし ?=不明')}")
+        gpu_model = inquirer.select(
+            message="GPUモデル:",
+            choices=gpu_choices,
+            default="H100",
+            style=hacker_style,
+        ).execute()
+
+        if gpu_model == "__back__":
+            return "back"
+
+        self.state.gpu_model = gpu_model
+
+        # Auto-set torch_nightly for Blackwell GPUs
+        for name, _, needs_nightly in GPU_MODELS:
+            if name == gpu_model and needs_nightly:
+                self.state.torch_nightly = True
+                print(f"{Colors.warning('⚠ Blackwell GPUのため、torch nightlyを自動有効化します')}")
+                break
+
+        # GPU Count with availability indicators
+        # Priority: spot > ondemand > none > unknown
+        gpu_count_choices = []
+        for n in GPU_COUNTS:
+            avail_key = (gpu_model, n)
+            if avail_key in gpu_availability:
+                spot_ok = gpu_availability[avail_key]["spot"]
+                ondemand_ok = gpu_availability[avail_key]["ondemand"]
+                if spot_ok:
+                    avail_icon = "✓"  # Spot available
+                elif ondemand_ok:
+                    avail_icon = "△"  # On-demand only
+                else:
+                    avail_icon = "✗"  # Not available
+            else:
+                avail_icon = "?"  # Unknown
+            gpu_count_choices.append(Choice(
+                value=n,
+                name=f"{avail_icon} {n} GPU{'s' if n > 1 else ''}"
+            ))
+
+        gpu_count = inquirer.select(
+            message="GPU数:",
+            choices=gpu_count_choices,
+            default=1,
+            style=hacker_style,
+        ).execute()
+        self.state.gpu_count = gpu_count
+
+        # Storage size
+        try:
+            storage = inquirer.number(
+                message="ストレージサイズ (GB):",
+                default=self.state.storage_size,
+                min_allowed=50,
+                max_allowed=1000,
+                style=hacker_style,
+            ).execute()
+            self.state.storage_size = int(storage)
+        except KeyboardInterrupt:
+            return "back"
+
+        # Instance type with availability check
+        avail_key = (gpu_model, gpu_count)
+        spot_available = gpu_availability.get(avail_key, {}).get("spot", True)
+        ondemand_available = gpu_availability.get(avail_key, {}).get("ondemand", True)
+
+        instance_choices = []
+        spot_label = "  スポット (低コスト、中断リスクあり)"
+        ondemand_label = "  オンデマンド (高コスト、安定)"
+
+        if not spot_available:
+            spot_label = "✗ スポット (現在空きなし)"
+        if not ondemand_available:
+            ondemand_label = "✗ オンデマンド (現在空きなし)"
+
+        instance_choices.append(Choice(value=True, name=spot_label))
+        instance_choices.append(Choice(value=False, name=ondemand_label))
+
+        # Default to on-demand if spot not available
+        default_is_spot = True if spot_available else False
+
+        instance_type = inquirer.select(
+            message="インスタンスタイプ:",
+            choices=instance_choices,
+            default=default_is_spot,
+            style=hacker_style,
+        ).execute()
+        self.state.is_spot = instance_type
+
+        # Warn if selected type is not available
+        if instance_type and not spot_available:
+            print(f"{Colors.warning('⚠ 選択したスポットインスタンスは現在空きがありません。')}")
+            print(f"{Colors.warning('  ジョブ作成時にエラーになる可能性があります。')}")
+        elif not instance_type and not ondemand_available:
+            print(f"{Colors.warning('⚠ 選択したオンデマンドインスタンスは現在空きがありません。')}")
+            print(f"{Colors.warning('  ジョブ作成時にエラーになる可能性があります。')}")
+
+        # Confirm or go back
+        action = inquirer.select(
+            message="",
+            choices=[
+                Choice(value="next", name="次へ →"),
+                Choice(value="back", name="← 戻る"),
+            ],
+            style=hacker_style,
+        ).execute()
+
+        return action
+
+    def _step6_job_naming(self) -> str:
+        """Step 6: Job naming."""
+        # Use framework username as default
+        default_author = self.state.author
+        if not default_author:
+            try:
+                user_config = self.api.get_user_config()
+                # API returns flat structure: {"username": "...", "email": "...", ...}
+                default_author = user_config.get("username", "")
+            except Exception:
+                default_author = ""
+
+        try:
+            author = inquirer.text(
+                message="作者名:",
+                default=default_author,
+                style=hacker_style,
+            ).execute()
+            self.state.author = author if author else None
+
+            comment = inquirer.text(
+                message="コメント (オプション):",
+                default=self.state.comment or "",
+                style=hacker_style,
+            ).execute()
+            self.state.comment = comment if comment else None
+
+        except KeyboardInterrupt:
+            return "back"
+
+        # Generate and show preview
+        self.state.job_name = self.state.generate_job_name()
+        print(f"\n{Colors.CYAN}プレビュー:{Colors.RESET}")
+        print(f"  {self.state.job_name}")
+
+        # Confirm or go back
+        action = inquirer.select(
+            message="",
+            choices=[
+                Choice(value="next", name="確認画面へ →"),
+                Choice(value="back", name="← 戻る"),
+            ],
+            style=hacker_style,
+        ).execute()
+
+        return action
+
+    def _step7_confirmation(self) -> str:
+        """Step 7: Confirmation and start."""
+        # Display summary
+        print(f"\n{Colors.CYAN}=== 学習設定 ==={Colors.RESET}")
+        print(f"  ポリシー: {POLICY_TYPES.get(self.state.policy_type, {}).display_name if self.state.policy_type else 'N/A'}")
+        if self.state.pretrained_path:
+            print(f"  事前学習: {self.state.pretrained_path}")
+        print(f"  データセット: {self.state.dataset_id}")
+        print(f"  ステップ数: {self.state.steps:,}")
+        print(f"  バッチサイズ: {self.state.batch_size}")
+        print(f"  保存頻度: {self.state.save_freq:,} steps")
+
+        print(f"\n{Colors.CYAN}=== Verda設定 ==={Colors.RESET}")
+        print(f"  GPU: {self.state.gpu_model} x {self.state.gpu_count}")
+        print(f"  ストレージ: {self.state.storage_size}GB")
+        print(f"  インスタンス: {'スポット' if self.state.is_spot else 'オンデマンド'}")
+        if self.state.torch_nightly:
+            print(f"  torch nightly: 有効")
+
+        print(f"\n{Colors.CYAN}=== ジョブ名 ==={Colors.RESET}")
+        print(f"  {self.state.job_name}")
+
+        # Action selection
+        action = inquirer.select(
+            message="",
+            choices=[
+                Choice(value="start", name="🚀 学習を開始"),
+                Choice(value="back", name="← 編集"),
+                Choice(value="cancel", name="✕ キャンセル"),
+            ],
+            style=hacker_style,
+        ).execute()
+
+        if action == "back":
+            return "back"
+        if action == "cancel":
+            return "cancel"
+
+        # Start training
+        return self._start_training()
+
+    def _start_training(self) -> str:
+        """Start the training job with real-time progress via WebSocket."""
+        # Build request payload
+        policy_info = POLICY_TYPES.get(self.state.policy_type, PolicyTypeInfo(display_name=""))
+
+        payload = {
+            "name": self.state.job_name,
+            "dataset": {
+                "id": self.state.dataset_id,
+                "source": "r2",
+            },
+            "policy": {
+                "type": self.state.policy_type,
+            },
+            "training": {
+                "steps": self.state.steps,
+                "batch_size": self.state.batch_size,
+                "save_freq": self.state.save_freq,
+            },
+            "cloud": {
+                "gpu_model": self.state.gpu_model,
+                "gpus_per_instance": self.state.gpu_count,
+                "storage_size": self.state.storage_size,
+                "is_spot": self.state.is_spot,
+            },
+            "wandb_enable": True,
+        }
+
+        # Add pretrained path if specified
+        if self.state.pretrained_path:
+            payload["policy"]["pretrained_path"] = self.state.pretrained_path
+
+        # Add policy-specific settings
+        if policy_info.compile_model is not None:
+            payload["policy"]["compile_model"] = policy_info.compile_model
+        if policy_info.gradient_checkpointing is not None:
+            payload["policy"]["gradient_checkpointing"] = policy_info.gradient_checkpointing
+        if policy_info.dtype:
+            payload["policy"]["dtype"] = policy_info.dtype
+
+        # Progress state for Rich Live display
+        console = Console()
+        current = {
+            "phase": "",
+            "message": "",
+            "elapsed": 0,
+            "timeout": 0,
+            "attempt": 0,
+            "max_attempts": 0,
+            "instance_type": "",
+            "location": "",
+            "instance_id": "",
+            "ip": "",
+            "file": "",
+        }
+
+        def make_progress_panel():
+            """Create progress panel for Live display."""
+            table = Table(show_header=False, box=None, padding=(0, 1))
+            table.add_column("Label", style="cyan")
+            table.add_column("Value")
+
+            table.add_row("ジョブ名:", self.state.job_name or "")
+            table.add_row("状態:", current["message"])
+
+            if current.get("instance_type"):
+                table.add_row("インスタンス:", current["instance_type"])
+            if current.get("location"):
+                table.add_row("ロケーション:", current["location"])
+            if current.get("instance_id"):
+                table.add_row("インスタンスID:", current["instance_id"][:16] + "...")
+
+            if current.get("elapsed") and current.get("timeout"):
+                pct = (current["elapsed"] / current["timeout"]) * 100
+                table.add_row("待機:", f"{current['elapsed']}s / {current['timeout']}s ({pct:.0f}%)")
+
+            if current.get("attempt") and current.get("max_attempts"):
+                table.add_row("試行:", f"{current['attempt']}/{current['max_attempts']}")
+
+            if current.get("ip"):
+                table.add_row("IP:", current["ip"])
+
+            if current.get("file"):
+                table.add_row("ファイル:", current["file"])
+
+            return Panel(table, title="🚀 ジョブ作成中", border_style="cyan")
+
+        def progress_callback(data: Dict[str, Any]) -> None:
+            """Handle progress updates from WebSocket."""
+            msg_type = data.get("type", "")
+            current["message"] = data.get("message", "")
+
+            if msg_type == "instance_selected":
+                current["instance_type"] = data.get("instance_type", "")
+            elif msg_type == "location_found":
+                current["location"] = data.get("location", "")
+            elif msg_type == "instance_created":
+                current["instance_id"] = data.get("instance_id", "")
+            elif msg_type == "waiting_ip":
+                current["elapsed"] = data.get("elapsed", 0)
+                current["timeout"] = data.get("timeout", 900)
+            elif msg_type == "ip_assigned":
+                current["ip"] = data.get("ip", "")
+                current["elapsed"] = 0
+                current["timeout"] = 0
+            elif msg_type == "connecting_ssh":
+                current["attempt"] = data.get("attempt", 0)
+                current["max_attempts"] = data.get("max_attempts", 30)
+                if "elapsed" in data:
+                    current["elapsed"] = data["elapsed"]
+                    current["timeout"] = 300
+            elif msg_type == "ssh_ready":
+                current["attempt"] = 0
+                current["max_attempts"] = 0
+                current["elapsed"] = 0
+                current["timeout"] = 0
+            elif msg_type == "deploying":
+                current["file"] = data.get("file", "")
+
+        try:
+            with Live(make_progress_panel(), console=console, refresh_per_second=4) as live:
+                def update_display(data: Dict[str, Any]) -> None:
+                    progress_callback(data)
+                    live.update(make_progress_panel())
+
+                result = self.api.create_training_job_ws(payload, update_display)
+
+            # Check result
+            if result.get("type") == "complete":
+                job_id = result.get("job_id", "")
+                print(f"\n{Colors.success('✓ 学習ジョブを開始しました!')}")
+                print(f"  ジョブID: {job_id}")
+                print(f"  インスタンスID: {result.get('instance_id', 'N/A')}")
+                print(f"  IP: {result.get('ip', 'N/A')}")
+                print(f"  ステータス: {result.get('status', 'running')}")
+
+                # Ask if user wants to stream logs
+                if job_id:
+                    stream = inquirer.confirm(
+                        message="ログをストリーミングしますか? (Ctrl+Cで終了)",
+                        default=True,
+                        style=hacker_style,
+                    ).execute()
+
+                    if stream:
+                        self._stream_logs_after_create(job_id)
+                        return "done"
+
+            elif result.get("type") == "error":
+                error_msg = result.get("error", "Unknown error")
+                print(f"\n{Colors.error('エラー:')} {error_msg}")
+
+                # Check if it's a GPU availability error
+                if "No Spot instance available" in error_msg or "No instance available" in error_msg.lower():
+                    # Offer to go back to GPU selection
+                    action = inquirer.select(
+                        message="",
+                        choices=[
+                            Choice(value="goto_verda", name="🔧 GPU設定へ戻る"),
+                            Choice(value="cancel", name="✕ 中止"),
+                        ],
+                        style=hacker_style,
+                    ).execute()
+                    return action
+            else:
+                print(f"\n{Colors.warning('予期しない結果:')} {result}")
+
+        except Exception as e:
+            error_str = str(e)
+            print(f"\n{Colors.error('エラー:')} {error_str}")
+
+            # Check if it's a GPU availability error
+            if "No Spot instance available" in error_str or "No instance available" in error_str.lower():
+                # Offer to go back to GPU selection
+                action = inquirer.select(
+                    message="",
+                    choices=[
+                        Choice(value="goto_verda", name="🔧 GPU設定へ戻る"),
+                        Choice(value="cancel", name="✕ 中止"),
+                    ],
+                    style=hacker_style,
+                ).execute()
+                return action
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
+        return "done"
+
+    def _stream_logs_after_create(self, job_id: str) -> None:
+        """Stream logs after job creation via WebSocket."""
+        print(f"\n{Colors.CYAN}ログストリーミング中... (Ctrl+Cで終了){Colors.RESET}\n")
+
+        def on_log(line: str) -> None:
+            print(f"  {line}")
+
+        def on_status(status: str, message: str) -> None:
+            if status == "connected":
+                print(f"{Colors.success('SSH接続完了')}\n")
+            else:
+                print(f"\n{Colors.info(message)}")
+
+        def on_error(error: str) -> None:
+            print(f"\n{Colors.error('エラー:')} {error}")
+
+        try:
+            self.api.stream_training_job_logs_ws(
+                job_id,
+                on_log=on_log,
+                on_status=on_status,
+                on_error=on_error,
+            )
+        except KeyboardInterrupt:
+            print(f"\n{Colors.muted('ストリーミング終了')}")
+
+
+# =============================================================================
+# Continue Training Wizard (6 Steps)
+# =============================================================================
+
+
+class ContinueTrainingWizard(BaseMenu):
+    """Continue training wizard - 6 step process."""
+
+    title = "継続学習"
+
+    def __init__(self, app: "PhiApplication"):
+        super().__init__(app)
+        self.state = ContinueTrainingState()
+
+    def get_choices(self) -> List[Choice]:
+        return []
+
+    def show(self) -> MenuResult:
+        """Override show to run wizard flow instead of choice menu."""
+        return self.run()
+
+    def run(self) -> MenuResult:
+        """Run the wizard steps."""
+        steps = [
+            ("Step 1/6: ポリシータイプフィルター", self._step1_policy_filter),
+            ("Step 2/6: チェックポイント選択", self._step2_checkpoint_selection),
+            ("Step 3/6: データセット選択", self._step3_dataset_selection),
+            ("Step 4/6: 追加学習パラメータ", self._step4_training_params),
+            ("Step 5/6: Verda設定", self._step5_verda_settings),
+            ("Step 6/6: 確認", self._step6_confirmation),
+        ]
+
+        current_step = 0
+        while current_step < len(steps):
+            step_name, step_func = steps[current_step]
+            show_section_header(step_name)
+
+            result = step_func()
+
+            if result == "back":
+                if current_step == 0:
+                    return MenuResult.BACK
+                current_step -= 1
+            elif result == "next":
+                current_step += 1
+            elif result == "goto_verda":
+                # Go back to Step 5 (Verda settings) - index 4
+                current_step = 4
+            elif result == "cancel":
+                return MenuResult.BACK
+            elif result == "done":
+                return MenuResult.BACK
+
+        return MenuResult.BACK
+
+    def handle_choice(self, choice: Any) -> MenuResult:
         return MenuResult.CONTINUE
+
+    def _step1_policy_filter(self) -> str:
+        """Step 1: Policy type filter."""
+        choices = [Choice(value=None, name="  すべて表示")]
+        for key, info in POLICY_TYPES.items():
+            choices.append(Choice(value=key, name=f"  {info.display_name}"))
+        choices.append(Choice(value="__back__", name="← 戻る"))
+
+        policy_filter = inquirer.select(
+            message="ポリシータイプでフィルター:",
+            choices=choices,
+            style=hacker_style,
+        ).execute()
+
+        if policy_filter == "__back__":
+            return "back"
+
+        self.state.policy_filter = policy_filter
+        return "next"
+
+    def _step2_checkpoint_selection(self) -> str:
+        """Step 2: Checkpoint selection."""
+        try:
+            result = self.api.list_training_checkpoints(
+                policy_type=self.state.policy_filter
+            )
+            checkpoints = result.get("checkpoints", [])
+        except Exception as e:
+            print(f"{Colors.error('チェックポイント取得エラー:')} {e}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return "back"
+
+        if not checkpoints:
+            print(f"{Colors.warning('利用可能なチェックポイントがありません。')}")
+            if self.state.policy_filter:
+                print(f"{Colors.muted('フィルターを変更するか、新規学習を行ってください。')}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return "back"
+
+        # Display checkpoint table
+        print(f"\n{Colors.muted('ポリシー    モデル名                      ステップ      作成日時')}")
+        print(f"{Colors.muted('─' * 70)}")
+
+        choices = []
+        for cp in checkpoints[:20]:
+            job_name = cp.get("job_name", "unknown")
+            policy_type = cp.get("policy_type", "?")
+            step = cp.get("step", 0)
+            created_at = cp.get("created_at", "")[:10]
+            dataset_id = cp.get("dataset_id", "")
+
+            # Format display
+            policy_display = policy_type[:10].ljust(10)
+            job_display = job_name[:30].ljust(30)
+            step_display = f"{step:,}".rjust(12)
+
+            choices.append(Choice(
+                value=job_name,
+                name=f"  {policy_display} {job_display} {step_display}  {created_at}"
+            ))
+
+        choices.append(Choice(value="__back__", name="← 戻る"))
+
+        selection = inquirer.select(
+            message="チェックポイントを選択:",
+            choices=choices,
+            style=hacker_style,
+        ).execute()
+
+        if selection == "__back__":
+            return "back"
+
+        # Get checkpoint details
+        selected_cp = next((cp for cp in checkpoints if cp.get("job_name") == selection), None)
+        if selected_cp:
+            self.state.checkpoint_job_name = selection
+            self.state.checkpoint_step = selected_cp.get("step", 0)
+            self.state.checkpoint_policy_type = selected_cp.get("policy_type")
+            self.state.original_dataset_id = selected_cp.get("dataset_id")
+
+            # Set defaults based on checkpoint
+            if self.state.checkpoint_policy_type:
+                policy_info = POLICY_TYPES.get(self.state.checkpoint_policy_type, PolicyTypeInfo(display_name=""))
+                self.state.batch_size = policy_info.default_batch_size
+                self.state.save_freq = policy_info.default_save_freq
+                self.state.storage_size = policy_info.recommended_storage
+
+        return "next"
+
+    def _step3_dataset_selection(self) -> str:
+        """Step 3: Dataset selection with compatibility check."""
+        choices = [
+            Choice(
+                value="original",
+                name=f"  元のデータセットを使用 ({self.state.original_dataset_id})"
+            ),
+            Choice(value="new", name="  新しいデータセットを指定"),
+            Choice(value="__back__", name="← 戻る"),
+        ]
+
+        selection = inquirer.select(
+            message="データセット:",
+            choices=choices,
+            style=hacker_style,
+        ).execute()
+
+        if selection == "__back__":
+            return "back"
+
+        if selection == "original":
+            self.state.use_original_dataset = True
+            self.state.dataset_id = self.state.original_dataset_id
+            return "next"
+
+        # New dataset selection
+        self.state.use_original_dataset = False
+
+        try:
+            datasets = self.api.list_datasets()
+            ds_list = datasets.get("datasets", [])
+        except Exception as e:
+            print(f"{Colors.error('データセット取得エラー:')} {e}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return "back"
+
+        if not ds_list:
+            print(f"{Colors.warning('利用可能なデータセットがありません。')}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return "back"
+
+        ds_lookup = {}
+        ds_choices = []
+        for d in ds_list:
+            if isinstance(d, dict):
+                ds_id = d.get("id", "unknown")
+                is_local = d.get("is_local", True)
+                size = format_size(d.get("size_bytes", 0))
+                status = "✓" if is_local else "☁"
+                ds_choices.append(Choice(value=ds_id, name=f"  {status} {ds_id} ({size})"))
+                ds_lookup[ds_id] = d
+
+        ds_choices.append(Choice(value="__back__", name="← 戻る"))
+
+        print(f"{Colors.muted('✓=ローカル, ☁=R2リモート')}")
+        dataset = inquirer.select(
+            message="データセットを選択:",
+            choices=ds_choices,
+            style=hacker_style,
+        ).execute()
+
+        if dataset == "__back__":
+            return "back"
+
+        # Compatibility check
+        print(f"\n{Colors.CYAN}互換性チェック実行中...{Colors.RESET}")
+        try:
+            compat_result = self.api.check_dataset_compatibility(
+                checkpoint_job_name=self.state.checkpoint_job_name,
+                dataset_id=dataset
+            )
+
+            is_compatible = compat_result.get("is_compatible", False)
+            errors = compat_result.get("errors", [])
+            warnings = compat_result.get("warnings", [])
+
+            if errors:
+                print(f"\n{Colors.error('❌ 互換性エラー')}")
+                for err in errors:
+                    print(f"  • {err}")
+                print(f"\n{Colors.muted('このデータセットは継続学習に使用できません。')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return "back"
+
+            if warnings:
+                print(f"\n{Colors.warning('⚠ 警告')}")
+                for warn in warnings:
+                    print(f"  • {warn}")
+
+                proceed = inquirer.confirm(
+                    message="続行しますか?",
+                    default=True,
+                    style=hacker_style,
+                ).execute()
+
+                if not proceed:
+                    return "back"
+            else:
+                print(f"{Colors.success('✓ 互換性チェック: OK')}")
+
+        except Exception as e:
+            print(f"{Colors.warning('⚠ 互換性チェックをスキップします:')} {e}")
+
+        # Check if dataset needs download
+        ds_info = ds_lookup.get(dataset, {})
+        if not ds_info.get("is_local", True):
+            print(f"\n{Colors.warning('このデータセットはローカルにダウンロードされていません。')}")
+            should_download = inquirer.confirm(
+                message="R2からダウンロードしますか?",
+                default=True,
+                style=hacker_style,
+            ).execute()
+
+            if not should_download:
+                return "back"
+
+            print()
+            download_result = download_dataset_with_progress(self.api, dataset)
+            if not download_result.get("success"):
+                error = download_result.get("error", "Unknown error")
+                print(f"\n{Colors.error(f'ダウンロードエラー: {error}')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return "back"
+
+        self.state.dataset_id = dataset
+        return "next"
+
+    def _step4_training_params(self) -> str:
+        """Step 4: Training parameters."""
+        print(f"{Colors.muted(f'現在のステップ: {self.state.checkpoint_step:,}')}")
+        print()
+
+        try:
+            additional = inquirer.number(
+                message="追加ステップ数:",
+                default=self.state.additional_steps,
+                min_allowed=100,
+                max_allowed=1000000,
+                style=hacker_style,
+            ).execute()
+            self.state.additional_steps = int(additional)
+
+            total_steps = self.state.checkpoint_step + self.state.additional_steps
+            print(f"{Colors.muted(f'  → 合計: {total_steps:,} ステップ')}")
+
+            batch_size = inquirer.number(
+                message="Batch size:",
+                default=self.state.batch_size,
+                min_allowed=1,
+                max_allowed=256,
+                style=hacker_style,
+            ).execute()
+            self.state.batch_size = int(batch_size)
+
+            save_freq = inquirer.number(
+                message="Save frequency (steps):",
+                default=self.state.save_freq,
+                min_allowed=100,
+                max_allowed=100000,
+                style=hacker_style,
+            ).execute()
+            self.state.save_freq = int(save_freq)
+
+        except KeyboardInterrupt:
+            return "back"
+
+        action = inquirer.select(
+            message="",
+            choices=[
+                Choice(value="next", name="次へ →"),
+                Choice(value="back", name="← 戻る"),
+            ],
+            style=hacker_style,
+        ).execute()
+
+        return action
+
+    def _step5_verda_settings(self) -> str:
+        """Step 5: Verda settings."""
+        # Fetch GPU availability via WebSocket with real-time display
+        gpu_availability = {}  # key: (gpu_model, gpu_count) -> {"spot": bool, "ondemand": bool}
+        gpu_status = {name: "?" for name, _, _ in GPU_MODELS}  # Track status for each GPU
+
+        def get_status_icon(gpu_name: str) -> str:
+            """Get status icon for a GPU."""
+            key = (gpu_name, 1)
+            if key in gpu_availability:
+                spot_ok = gpu_availability[key]["spot"]
+                ondemand_ok = gpu_availability[key]["ondemand"]
+                if spot_ok:
+                    return "✓"
+                elif ondemand_ok:
+                    return "△"
+                else:
+                    return "✗"
+            return gpu_status.get(gpu_name, "?")
+
+        def print_gpu_status():
+            """Print current GPU availability status."""
+            status_parts = []
+            for gpu_name, _, _ in GPU_MODELS:
+                icon = get_status_icon(gpu_name)
+                status_parts.append(f"{icon} {gpu_name}")
+            return " | ".join(status_parts)
+
+        try:
+            # Use Rich Live for real-time updates
+            console = Console()
+            with Live(console=console, refresh_per_second=4, transient=True) as live:
+                live.update(f"[dim]GPU空き状況を確認中... {print_gpu_status()}[/dim]")
+
+                def on_checking(gpu_model: str) -> None:
+                    gpu_status[gpu_model] = "…"
+                    live.update(f"[dim]GPU空き状況を確認中... {print_gpu_status()}[/dim]")
+
+                def on_result(gpu_model: str, gpu_count: int, spot_available: bool, ondemand_available: bool) -> None:
+                    key = (gpu_model, gpu_count)
+                    gpu_availability[key] = {
+                        "spot": spot_available,
+                        "ondemand": ondemand_available,
+                    }
+                    live.update(f"[dim]GPU空き状況を確認中... {print_gpu_status()}[/dim]")
+
+                def on_error(error: str) -> None:
+                    live.update(f"[yellow]⚠ GPU空き状況の取得に失敗: {error}[/yellow]")
+
+                self.api.get_gpu_availability_ws(
+                    on_checking=on_checking,
+                    on_result=on_result,
+                    on_error=on_error,
+                )
+
+            # Print final status
+            print(f"{Colors.muted('GPU空き状況:')} {print_gpu_status()}")
+
+        except Exception as e:
+            print(f"{Colors.warning('⚠ GPU空き状況の取得に失敗:')} {e}")
+
+        # GPU Model selection with availability indicators
+        # Priority: spot > ondemand > none > unknown
+        gpu_choices = []
+        for gpu_name, gpu_desc, needs_nightly in GPU_MODELS:
+            nightly_note = " ⚠" if needs_nightly else ""
+            is_default = " (推奨)" if gpu_name == "H100" else ""
+
+            # Check availability for this GPU (check count=1 as default indicator)
+            avail_key = (gpu_name, 1)
+            if avail_key in gpu_availability:
+                spot_ok = gpu_availability[avail_key]["spot"]
+                ondemand_ok = gpu_availability[avail_key]["ondemand"]
+                if spot_ok:
+                    avail_icon = "✓"  # Spot available (best - cheapest)
+                elif ondemand_ok:
+                    avail_icon = "△"  # On-demand only
+                else:
+                    avail_icon = "✗"  # Not available
+            else:
+                avail_icon = "?"  # Unknown
+
+            gpu_choices.append(Choice(
+                value=gpu_name,
+                name=f"{avail_icon} {gpu_name}: {gpu_desc}{nightly_note}{is_default}"
+            ))
+        gpu_choices.append(Choice(value="__back__", name="← 戻る"))
+
+        print(f"{Colors.muted('✓=スポット空き △=オンデマンドのみ ✗=空きなし ?=不明')}")
+        gpu_model = inquirer.select(
+            message="GPUモデル:",
+            choices=gpu_choices,
+            default="H100",
+            style=hacker_style,
+        ).execute()
+
+        if gpu_model == "__back__":
+            return "back"
+
+        self.state.gpu_model = gpu_model
+
+        # Auto-set torch_nightly for Blackwell GPUs
+        for name, _, needs_nightly in GPU_MODELS:
+            if name == gpu_model and needs_nightly:
+                self.state.torch_nightly = True
+                print(f"{Colors.warning('⚠ Blackwell GPUのため、torch nightlyを自動有効化します')}")
+                break
+
+        # GPU Count with availability indicators
+        # Priority: spot > ondemand > none > unknown
+        gpu_count_choices = []
+        for n in GPU_COUNTS:
+            avail_key = (gpu_model, n)
+            if avail_key in gpu_availability:
+                spot_ok = gpu_availability[avail_key]["spot"]
+                ondemand_ok = gpu_availability[avail_key]["ondemand"]
+                if spot_ok:
+                    avail_icon = "✓"  # Spot available
+                elif ondemand_ok:
+                    avail_icon = "△"  # On-demand only
+                else:
+                    avail_icon = "✗"  # Not available
+            else:
+                avail_icon = "?"  # Unknown
+            gpu_count_choices.append(Choice(
+                value=n,
+                name=f"{avail_icon} {n} GPU{'s' if n > 1 else ''}"
+            ))
+
+        gpu_count = inquirer.select(
+            message="GPU数:",
+            choices=gpu_count_choices,
+            default=1,
+            style=hacker_style,
+        ).execute()
+        self.state.gpu_count = gpu_count
+
+        # Storage size
+        try:
+            storage = inquirer.number(
+                message="ストレージサイズ (GB):",
+                default=self.state.storage_size,
+                min_allowed=50,
+                max_allowed=1000,
+                style=hacker_style,
+            ).execute()
+            self.state.storage_size = int(storage)
+        except KeyboardInterrupt:
+            return "back"
+
+        # Instance type with availability check
+        avail_key = (gpu_model, gpu_count)
+        spot_available = gpu_availability.get(avail_key, {}).get("spot", True)
+        ondemand_available = gpu_availability.get(avail_key, {}).get("ondemand", True)
+
+        instance_choices = []
+        spot_label = "  スポット (低コスト、中断リスクあり)"
+        ondemand_label = "  オンデマンド (高コスト、安定)"
+
+        if not spot_available:
+            spot_label = "✗ スポット (現在空きなし)"
+        if not ondemand_available:
+            ondemand_label = "✗ オンデマンド (現在空きなし)"
+
+        instance_choices.append(Choice(value=True, name=spot_label))
+        instance_choices.append(Choice(value=False, name=ondemand_label))
+
+        # Default to on-demand if spot not available
+        default_is_spot = True if spot_available else False
+
+        instance_type = inquirer.select(
+            message="インスタンスタイプ:",
+            choices=instance_choices,
+            default=default_is_spot,
+            style=hacker_style,
+        ).execute()
+        self.state.is_spot = instance_type
+
+        # Warn if selected type is not available
+        if instance_type and not spot_available:
+            print(f"{Colors.warning('⚠ 選択したスポットインスタンスは現在空きがありません。')}")
+            print(f"{Colors.warning('  ジョブ作成時にエラーになる可能性があります。')}")
+        elif not instance_type and not ondemand_available:
+            print(f"{Colors.warning('⚠ 選択したオンデマンドインスタンスは現在空きがありません。')}")
+            print(f"{Colors.warning('  ジョブ作成時にエラーになる可能性があります。')}")
+
+        action = inquirer.select(
+            message="",
+            choices=[
+                Choice(value="next", name="次へ →"),
+                Choice(value="back", name="← 戻る"),
+            ],
+            style=hacker_style,
+        ).execute()
+
+        return action
+
+    def _step6_confirmation(self) -> str:
+        """Step 6: Confirmation and start."""
+        total_steps = self.state.checkpoint_step + self.state.additional_steps
+
+        print(f"\n{Colors.CYAN}=== 継続学習設定 ==={Colors.RESET}")
+        print(f"  ベースモデル: {self.state.checkpoint_job_name}")
+        print(f"  現在ステップ: {self.state.checkpoint_step:,}")
+        print(f"  データセット: {self.state.dataset_id}")
+        print(f"  追加ステップ: {self.state.additional_steps:,}")
+        print(f"  最終ステップ: {total_steps:,}")
+        print(f"  バッチサイズ: {self.state.batch_size}")
+
+        print(f"\n{Colors.CYAN}=== Verda設定 ==={Colors.RESET}")
+        print(f"  GPU: {self.state.gpu_model} x {self.state.gpu_count}")
+        print(f"  ストレージ: {self.state.storage_size}GB")
+        print(f"  インスタンス: {'スポット' if self.state.is_spot else 'オンデマンド'}")
+
+        action = inquirer.select(
+            message="",
+            choices=[
+                Choice(value="start", name="🚀 学習を開始"),
+                Choice(value="back", name="← 編集"),
+                Choice(value="cancel", name="✕ キャンセル"),
+            ],
+            style=hacker_style,
+        ).execute()
+
+        if action == "back":
+            return "back"
+        if action == "cancel":
+            return "cancel"
+
+        return self._start_continue_training()
+
+    def _start_continue_training(self) -> str:
+        """Start the continue training job."""
+        try:
+            payload = {
+                "type": "continue",
+                "checkpoint": {
+                    "job_name": self.state.checkpoint_job_name,
+                    "step": self.state.checkpoint_step,
+                },
+                "dataset": {
+                    "id": self.state.dataset_id,
+                    "use_original": self.state.use_original_dataset,
+                },
+                "training": {
+                    "additional_steps": self.state.additional_steps,
+                    "batch_size": self.state.batch_size,
+                    "save_freq": self.state.save_freq,
+                },
+                "cloud": {
+                    "gpu_model": self.state.gpu_model,
+                    "gpus_per_instance": self.state.gpu_count,
+                    "storage_size": self.state.storage_size,
+                    "is_spot": self.state.is_spot,
+                },
+            }
+
+            result = self.api.create_continue_training_job(payload)
+
+            print(f"\n{Colors.success('✓ 継続学習ジョブを開始しました!')}")
+            print(f"  ジョブID: {result.get('job_id', 'N/A')}")
+            print(f"  ステータス: {result.get('status', 'starting')}")
+
+        except Exception as e:
+            error_str = str(e)
+            print(f"\n{Colors.error('エラー:')} {error_str}")
+
+            # Check if it's a GPU availability error
+            if "No Spot instance available" in error_str or "No instance available" in error_str.lower():
+                # Offer to go back to GPU selection
+                action = inquirer.select(
+                    message="",
+                    choices=[
+                        Choice(value="goto_verda", name="🔧 GPU設定へ戻る"),
+                        Choice(value="cancel", name="✕ 中止"),
+                    ],
+                    style=hacker_style,
+                ).execute()
+                return action
+
+        input(f"\n{Colors.muted('Press Enter to continue...')}")
+        return "done"
+
+
+# =============================================================================
+# Training Jobs Menu (Existing functionality preserved)
+# =============================================================================
 
 
 class TrainingJobsMenu(BaseMenu):
-    """View training jobs."""
+    """View and manage training jobs."""
 
     title = "学習ジョブ"
 
@@ -170,42 +1734,46 @@ class TrainingJobsMenu(BaseMenu):
             for job in jobs[:15]:
                 job_id = job.get("job_id", "unknown")
                 status = job.get("status", "unknown")
-                config = job.get("config", {})
-                policy = config.get("policy_type", "?") if isinstance(config, dict) else "?"
-                progress = job.get("progress", 0)
+                config_name = job.get("config_name", "")
+                mode = job.get("mode", "train")
+                gpu_model = job.get("gpu_model", "")
                 status_icon = self._status_icon(status)
-                progress_str = f"{progress:.0%}" if status == "running" else status
-                choices.append(Choice(
-                    value=job_id,
-                    name=f"{status_icon} {job_id[:12]}... [{policy}] {progress_str}"
-                ))
+
+                # Build display string
+                mode_icon = "🔄" if mode == "resume_hub" else ""
+                gpu_info = f"[{gpu_model}]" if gpu_model else ""
+                display = f"{status_icon} {job_id[:20]}... {mode_icon}{gpu_info} ({status})"
+
+                choices.append(Choice(value=job_id, name=display))
         except Exception:
             pass
 
         if not choices:
-            choices.append(Choice(value="__none__", name="(No training jobs)"))
+            choices.append(Choice(value="__none__", name="(学習ジョブなし)"))
 
-        choices.append(Choice(value="__refresh__", name="Refresh"))
-        choices.append(Choice(value="__check_all__", name="Check All Status"))
+        choices.append(Choice(value="__refresh__", name="🔄 更新"))
+        choices.append(Choice(value="__check_all__", name="📊 全ステータス確認"))
 
         return choices
 
     def _status_icon(self, status: str) -> str:
-        """Get status icon."""
+        """Get status icon (no ANSI colors - InquirerPy doesn't support them in Choice.name)."""
         icons = {
-            "running": Colors.warning("●"),
-            "completed": Colors.success("●"),
-            "failed": Colors.error("●"),
-            "queued": Colors.muted("○"),
-            "stopped": Colors.muted("◌"),
+            "starting": "◐",
+            "deploying": "◑",
+            "running": "🔄",
+            "completed": "✓",
+            "failed": "✗",
+            "stopped": "◌",
+            "terminated": "◌",
         }
-        return icons.get(status, Colors.muted("?"))
+        return icons.get(status, "?")
 
     def handle_choice(self, choice: Any) -> MenuResult:
         if choice == "__none__":
             return MenuResult.BACK
         if choice == "__refresh__":
-            return MenuResult.CONTINUE  # Will refresh the menu
+            return MenuResult.CONTINUE
         if choice == "__check_all__":
             return self._check_all_status()
 
@@ -213,383 +1781,331 @@ class TrainingJobsMenu(BaseMenu):
 
     def _check_all_status(self) -> MenuResult:
         """Check status of all jobs."""
-        show_section_header("Checking All Jobs")
+        show_section_header("全ジョブステータス確認")
 
         try:
             result = self.api.check_training_jobs_status()
             updates = result.get("updates", [])
-            print(f"{Colors.success('Status check complete')}")
-            print(f"  Jobs updated: {len(updates)}")
+            checked = result.get("checked_count", 0)
+
+            print(f"{Colors.success('ステータス確認完了')}")
+            print(f"  確認: {checked} ジョブ")
+            print(f"  更新: {len(updates)} ジョブ")
+
+            if updates:
+                print(f"\n{Colors.CYAN}更新されたジョブ:{Colors.RESET}")
+                for update in updates[:10]:
+                    print(f"  {update.get('job_id', '')}: {update.get('old_status')} → {update.get('new_status')}")
+
         except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
+            print(f"{Colors.error('エラー:')} {e}")
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE
 
     def _show_job_detail(self, job_id: str) -> MenuResult:
-        """Show job details and actions."""
-        show_section_header(f"Training Job")
+        """Show job details and actions using unified WebSocket session."""
+        show_section_header("学習ジョブ詳細")
 
-        try:
-            result = self.api.get_training_job(job_id)
-            job = result.get("job", result)
-            progress_info = result.get("progress", {})
-            print(f"  ID: {job.get('job_id', 'N/A')}")
-            print(f"  Status: {job.get('status', 'N/A')}")
-            config = job.get("config", {})
-            if isinstance(config, dict):
-                print(f"  Policy: {config.get('policy_type', 'N/A')}")
-                print(f"  Dataset: {config.get('dataset_repo_id', 'N/A')}")
-            print(f"  Steps: {progress_info.get('current_step', 0):,} / {progress_info.get('total_steps', 0):,}")
-            progress_val = progress_info.get('progress', 0) or 0
-            print(f"  Progress: {progress_val:.1%}")
-            if progress_info.get('loss') is not None:
-                print(f"  Loss: {progress_info.get('loss', 0):.6f}")
-            print(f"  Created: {job.get('created_at', 'N/A')}")
+        # Create WebSocket session for unified SSH connection
+        session = self.api.create_job_session_ws(job_id)
 
-            status = job.get('status', '')
-
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
+        if not session.connect():
+            print(f"{Colors.error('エラー:')} WebSocket接続に失敗しました")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return MenuResult.CONTINUE
 
-        # Build action choices based on status
-        action_choices = [
-            Choice(value="logs", name="View Logs"),
-            Choice(value="progress", name="View Progress"),
-        ]
-        if status == "running":
-            action_choices.append(Choice(value="stop", name="Stop Job"))
-        if status in ("completed", "failed", "stopped"):
-            action_choices.append(Choice(value="delete", name="Delete Job"))
-        if status == "running":
-            action_choices.append(Choice(value="instance", name="Instance Status"))
-        action_choices.append(Choice(value="back", name="« Back"))
+        try:
+            # State tracking
+            job_info = {}
+            remote_status = None
+            progress_info = {}
+            ssh_connected = False
+            ssh_error = None
+            job_info_displayed = False
 
-        action = inquirer.select(
-            message="Action:",
-            choices=action_choices,
-            style=hacker_style,
-        ).execute()
+            # Receive initial messages with progressive display
+            print(f"  {Colors.muted('読み込み中...')}", end="\r")
 
-        if action == "logs":
-            self._show_job_logs(job_id)
-        elif action == "progress":
-            self._show_job_progress(job_id)
-        elif action == "stop":
-            self._stop_job(job_id)
-        elif action == "delete":
-            self._delete_job(job_id)
-        elif action == "instance":
-            self._show_instance_status(job_id)
+            while True:
+                msg = session.receive(timeout=0.5)
+                if msg is None:
+                    continue
+
+                msg_type = msg.get("type", "")
+
+                if msg_type == "job_info":
+                    job_info = msg.get("data", {})
+                    # Display job info immediately (progressive loading)
+                    print(f"  ID: {job_info.get('job_id', 'N/A')}                    ")
+                    print(f"  ステータス: {job_info.get('status', 'N/A')}")
+                    print(f"  設定名: {job_info.get('config_name', 'N/A')}")
+                    print(f"  モード: {job_info.get('mode', 'train')}")
+                    if job_info.get('gpu_model'):
+                        gpu_count = job_info.get('gpu_count', 1)
+                        print(f"  GPU: {job_info.get('gpu_model')} x {gpu_count}")
+                    if job_info.get('ip'):
+                        print(f"  IP: {job_info.get('ip')}")
+                    print(f"  作成: {job_info.get('created_at', 'N/A')}")
+                    job_info_displayed = True
+                    # Show loading indicator for remote info
+                    print(f"  {Colors.muted('リモート情報取得中...')}", end="\r")
+
+                elif msg_type == "ssh_connecting":
+                    if job_info_displayed:
+                        print(f"  {Colors.muted('SSH接続中...')}          ", end="\r")
+
+                elif msg_type == "ssh_connected":
+                    ssh_connected = True
+                    if job_info_displayed:
+                        print(f"  {Colors.muted('情報取得中...')}          ", end="\r")
+
+                elif msg_type == "ssh_error":
+                    ssh_error = msg.get("error", "Unknown error")
+                    if job_info_displayed:
+                        print(f"  {Colors.muted(f'リモート情報: 取得不可')}          ")
+                    break
+
+                elif msg_type == "remote_status":
+                    remote_status = msg.get("status")
+
+                elif msg_type == "progress":
+                    progress_info = {"step": msg.get("step", "N/A"), "loss": msg.get("loss", "N/A")}
+                    # Display remote info (overwrite loading line)
+                    if remote_status:
+                        status_icon = "✓" if remote_status == "running" else "✗"
+                        print(f"  プロセス: {status_icon} {remote_status}          ")
+                    step = progress_info.get('step', 'N/A')
+                    loss = progress_info.get('loss', 'N/A')
+                    print(f"  進捗: Step {step}, Loss: {loss}")
+                    break  # Got all initial info
+
+                elif msg_type == "heartbeat":
+                    continue
+
+                elif msg_type == "error":
+                    print(f"\n{Colors.error('エラー:')} {msg.get('error', 'Unknown error')}")
+                    session.close()
+                    input(f"\n{Colors.muted('Press Enter to continue...')}")
+                    return MenuResult.CONTINUE
+
+            status = job_info.get('status', '')
+
+            # Build action choices
+            action_choices = []
+
+            if status == "running":
+                action_choices.append(Choice(value="stream_logs", name="📜 ログをストリーミング (Ctrl+Cで終了)"))
+                action_choices.append(Choice(value="stop", name="⏹ ジョブを停止"))
+                action_choices.append(Choice(value="refresh", name="🔄 更新"))
+            else:
+                action_choices.append(Choice(value="logs", name="📜 ログを表示 (最新30行)"))
+
+            if status in ("completed", "failed", "stopped", "terminated"):
+                action_choices.append(Choice(value="delete", name="🗑 ジョブを削除"))
+
+            action_choices.append(Choice(value="back", name="← 戻る"))
+
+            action = inquirer.select(
+                message="アクション:",
+                choices=action_choices,
+                style=hacker_style,
+            ).execute()
+
+            if action == "logs":
+                session.close()
+                self._show_job_logs(job_id)
+            elif action == "stream_logs":
+                # Use the same session for log streaming
+                self._stream_job_logs_with_session(session)
+                session.close()
+            elif action == "stop":
+                session.close()
+                self._stop_job(job_id)
+            elif action == "delete":
+                session.close()
+                self._delete_job(job_id)
+            elif action == "refresh":
+                session.close()
+                return self._show_job_detail(job_id)  # Recursive refresh
+            else:
+                session.close()
+
+        except KeyboardInterrupt:
+            session.close()
+            print(f"\n{Colors.muted('中断されました')}")
+        except Exception as e:
+            session.close()
+            print(f"{Colors.error('エラー:')} {e}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
 
         return MenuResult.CONTINUE
 
     def _show_job_logs(self, job_id: str) -> None:
-        """Show job logs."""
-        print(f"\n{Colors.CYAN}Logs:{Colors.RESET}")
+        """Show job logs (for non-running jobs)."""
+        print(f"\n{Colors.CYAN}ログ:{Colors.RESET}")
         try:
             result = self.api.get_training_job_logs(job_id)
             logs = result.get("logs", "")
             if logs:
-                # logs is a string, split by newlines and show last 20 lines
                 lines = logs.strip().split("\n") if isinstance(logs, str) else logs
-                for line in lines[-20:]:
+                for line in lines[-30:]:
                     print(f"  {line}")
             else:
-                print(f"  {Colors.muted('No logs available')}")
+                print(f"  {Colors.muted('ログなし')}")
         except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
+            print(f"{Colors.error('エラー:')} {e}")
         input(f"\n{Colors.muted('Press Enter to continue...')}")
 
-    def _show_job_progress(self, job_id: str) -> None:
-        """Show job progress."""
-        print(f"\n{Colors.CYAN}Progress:{Colors.RESET}")
+    def _stream_job_logs_with_session(self, session) -> None:
+        """Stream job logs using existing WebSocket session (no new SSH connection)."""
+        print(f"\n{Colors.CYAN}ログストリーミング中... (Ctrl+Cで終了){Colors.RESET}\n")
+
+        # Start log streaming via existing session
+        if not session.start_logs():
+            print(f"{Colors.error('ログストリーミングの開始に失敗しました')}")
+            return
+
         try:
-            result = self.api.get_training_job_progress(job_id)
-            print(f"  Step: {result.get('current_step', 0):,} / {result.get('total_steps', 0):,}")
-            print(f"  Progress: {result.get('progress', 0):.1%}")
-            print(f"  Loss: {result.get('loss', 'N/A')}")
-            print(f"  ETA: {result.get('eta', 'N/A')}")
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
+            while True:
+                msg = session.receive(timeout=1.0)
+                if msg is None:
+                    continue
+
+                msg_type = msg.get("type", "")
+
+                if msg_type == "log":
+                    print(f"  {msg.get('line', '')}")
+                elif msg_type == "log_stream_started":
+                    pass  # Already started
+                elif msg_type == "log_stream_stopped":
+                    print(f"\n{Colors.info('ログストリーム終了')}")
+                    break
+                elif msg_type == "job_status_changed":
+                    status = msg.get("status", "")
+                    print(f"\n{Colors.info(f'ジョブ状態が変更されました: {status}')}")
+                    break
+                elif msg_type == "heartbeat":
+                    continue
+                elif msg_type == "progress":
+                    # Show progress updates while streaming
+                    step = msg.get("step", "N/A")
+                    loss = msg.get("loss", "N/A")
+                    print(f"  {Colors.muted(f'[進捗: Step {step}, Loss: {loss}]')}")
+                elif msg_type == "error" or msg_type == "ssh_error":
+                    print(f"\n{Colors.error('エラー:')} {msg.get('error', 'Unknown error')}")
+                    break
+
+        except KeyboardInterrupt:
+            session.stop_logs()
+            print(f"\n{Colors.muted('ストリーミング終了')}")
+
         input(f"\n{Colors.muted('Press Enter to continue...')}")
+
+    def _stream_job_logs(self, job_id: str) -> None:
+        """Stream job logs in real-time via WebSocket (legacy, creates new session)."""
+        # Create new session and use it for streaming
+        session = self.api.create_job_session_ws(job_id)
+
+        if not session.connect():
+            print(f"{Colors.error('エラー:')} WebSocket接続に失敗しました")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return
+
+        print(f"\n{Colors.CYAN}ログストリーミング中... (Ctrl+Cで終了){Colors.RESET}\n")
+
+        try:
+            # Wait for SSH connection
+            while True:
+                msg = session.receive(timeout=1.0)
+                if msg is None:
+                    continue
+
+                msg_type = msg.get("type", "")
+
+                if msg_type == "job_info":
+                    pass  # Skip job info
+                elif msg_type == "ssh_connecting":
+                    print(f"  {Colors.muted('SSH接続中...')}")
+                elif msg_type == "ssh_connected":
+                    print(f"{Colors.success('SSH接続完了')}\n")
+                    break
+                elif msg_type == "ssh_error":
+                    print(f"{Colors.error('SSH接続エラー:')} {msg.get('error', '')}")
+                    session.close()
+                    input(f"\n{Colors.muted('Press Enter to continue...')}")
+                    return
+                elif msg_type == "error":
+                    print(f"{Colors.error('エラー:')} {msg.get('error', '')}")
+                    session.close()
+                    input(f"\n{Colors.muted('Press Enter to continue...')}")
+                    return
+
+            # Skip remote_status and progress
+            msg = session.receive(timeout=1.0)  # remote_status
+            msg = session.receive(timeout=1.0)  # progress
+
+            # Now stream logs
+            self._stream_job_logs_with_session(session)
+
+        except KeyboardInterrupt:
+            print(f"\n{Colors.muted('ストリーミング終了')}")
+        finally:
+            session.close()
 
     def _stop_job(self, job_id: str) -> None:
         """Stop a running job."""
         confirm = inquirer.confirm(
-            message="Stop this training job?",
+            message="このジョブを停止しますか?",
             default=False,
             style=hacker_style,
         ).execute()
+
         if confirm:
             try:
                 self.api.stop_training_job(job_id)
-                print(f"{Colors.success('Job stopped')}")
+                print(f"{Colors.success('ジョブを停止しました')}")
             except Exception as e:
-                print(f"{Colors.error('Error:')} {e}")
+                print(f"{Colors.error('エラー:')} {e}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
 
     def _delete_job(self, job_id: str) -> None:
-        """Delete a job."""
+        """Delete a job and terminate the remote instance."""
         confirm = inquirer.confirm(
-            message="Delete this training job?",
+            message="このジョブを削除しますか？（リモートインスタンスも終了します）",
             default=False,
             style=hacker_style,
         ).execute()
+
         if confirm:
             try:
-                self.api.delete_training_job(job_id)
-                print(f"{Colors.success('Job deleted')}")
+                result = self.api.delete_training_job(job_id)
+                message = result.get("message", "ジョブを削除しました")
+                print(f"{Colors.success(message)}")
             except Exception as e:
-                print(f"{Colors.error('Error:')} {e}")
+                print(f"{Colors.error('エラー:')} {e}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
 
     def _show_instance_status(self, job_id: str) -> None:
         """Show instance status."""
-        print(f"\n{Colors.CYAN}Instance Status:{Colors.RESET}")
+        print(f"\n{Colors.CYAN}インスタンス状態:{Colors.RESET}")
         try:
             result = self.api.get_training_instance_status(job_id)
-            print(f"  Instance: {result.get('instance_status', 'N/A')}")
-            print(f"  Job Status: {result.get('job_status', 'N/A')}")
+            print(f"  インスタンス: {result.get('instance_status', 'N/A')}")
+            print(f"  ジョブ状態: {result.get('job_status', 'N/A')}")
             print(f"  GPU: {result.get('gpu_model', 'N/A')}")
             if result.get('ip'):
                 print(f"  IP: {result.get('ip')}")
             if result.get('remote_process_status'):
-                print(f"  Process: {result.get('remote_process_status')}")
+                print(f"  プロセス: {result.get('remote_process_status')}")
         except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
+            print(f"{Colors.error('エラー:')} {e}")
         input(f"\n{Colors.muted('Press Enter to continue...')}")
 
 
-class NewTrainingMenu(BaseMenu):
-    """New training job configuration."""
-
-    title = "新規学習ジョブ"
-
-    def get_choices(self) -> List[Choice]:
-        # List available configs
-        choices = []
-        try:
-            result = self.api.list_training_configs()
-            configs = result.get("configs", [])
-            for c in configs[:10]:
-                config_id = c.get("config_id", "unknown")
-                config_data = c.get("config", {})
-                policy = config_data.get("policy_type", "?") if isinstance(config_data, dict) else "?"
-                dataset = config_data.get("dataset_repo_id", "?") if isinstance(config_data, dict) else "?"
-                choices.append(Choice(
-                    value=config_id,
-                    name=f"{config_id} [{policy}] - {dataset}"
-                ))
-        except Exception:
-            pass
-
-        if not choices:
-            choices.append(Choice(value="__none__", name="(No saved configs)"))
-
-        choices.append(Choice(value="__create__", name="+ Create New Config"))
-
-        return choices
-
-    def handle_choice(self, choice: Any) -> MenuResult:
-        if choice == "__none__":
-            # Go to create
-            return self._create_config()
-        if choice == "__create__":
-            return self._create_config()
-
-        # Start training from config
-        return self._start_from_config(choice)
-
-    def _create_config(self) -> MenuResult:
-        """Create a new training config."""
-        show_section_header("Create Training Config")
-
-        try:
-            # Select policy type
-            policy = inquirer.select(
-                message="Policy type:",
-                choices=[
-                    Choice(value="act", name="ACT - Action Chunking Transformer"),
-                    Choice(value="diffusion", name="Diffusion Policy"),
-                    Choice(value="pi0", name="π0 - Physical Intelligence"),
-                    Choice(value="pi05", name="π0.5 - Open-World VLA Model"),
-                    Choice(value="groot", name="GR00T N1.5 - NVIDIA Isaac GR00T"),
-                    Choice(value="smolvla", name="SmolVLA - Small VLA"),
-                    Choice(value="vla0", name="VLA-0 - Vision-Language-Action"),
-                    Choice(value="__back__", name="« Cancel"),
-                ],
-                style=hacker_style,
-            ).execute()
-
-            if policy == "__back__":
-                return MenuResult.CONTINUE
-
-            # Select dataset (local + R2 remote)
-            datasets = self.api.list_datasets()
-            ds_list = datasets.get("datasets", [])
-            if not ds_list:
-                print(f"{Colors.warning('No datasets available.')}")
-                print(f"{Colors.muted('Upload datasets from R2 Storage menu or record new ones.')}")
-                input(f"\n{Colors.muted('Press Enter to continue...')}")
-                return MenuResult.CONTINUE
-
-            # Build dataset lookup
-            ds_lookup = {}
-
-            ds_choices = []
-            for d in ds_list:
-                if isinstance(d, dict):
-                    ds_id = d.get("id", "unknown")
-                    is_local = d.get("is_local", True)
-                    size = format_size(d.get("size_bytes", 0))
-                    # Status indicator: ✓ for local, ☁ for remote
-                    status = "✓" if is_local else "☁"
-                    ds_choices.append(Choice(value=ds_id, name=f"{status} {ds_id} ({size})"))
-                    ds_lookup[ds_id] = d
-                else:
-                    ds_choices.append(Choice(value=d, name=d))
-                    ds_lookup[d] = {"id": d, "is_local": True}
-            ds_choices.append(Choice(value="__back__", name="« Cancel"))
-
-            dataset = inquirer.select(
-                message="Dataset (✓=local, ☁=R2 remote):",
-                choices=ds_choices,
-                style=hacker_style,
-            ).execute()
-
-            if dataset == "__back__":
-                return MenuResult.CONTINUE
-
-            # Check if dataset needs to be downloaded
-            ds_info = ds_lookup.get(dataset, {})
-            if not ds_info.get("is_local", True):
-                print(f"\n{Colors.warning('このデータセットはローカルにダウンロードされていません。')}")
-                should_download = inquirer.confirm(
-                    message="R2からダウンロードしますか?",
-                    default=True,
-                    style=hacker_style,
-                ).execute()
-
-                if not should_download:
-                    return MenuResult.CONTINUE
-
-                # Download dataset with WebSocket progress
-                print()
-                download_result = download_dataset_with_progress(self.api, dataset)
-                if download_result.get("success"):
-                    print(f"\n{Colors.success('データセットのダウンロードが完了しました。')}")
-                else:
-                    error = download_result.get("error", "Unknown error")
-                    print(f"\n{Colors.error(f'ダウンロードエラー: {error}')}")
-                    input(f"\n{Colors.muted('Press Enter to continue...')}")
-                    return MenuResult.CONTINUE
-
-            # Get training parameters
-            steps = inquirer.number(
-                message="Training steps:",
-                default=100000,
-                min_allowed=1000,
-                max_allowed=1000000,
-                style=hacker_style,
-            ).execute()
-
-            batch_size = inquirer.number(
-                message="Batch size:",
-                default=32,
-                min_allowed=1,
-                max_allowed=256,
-                style=hacker_style,
-            ).execute()
-
-            # Create config with nested structure matching TrainingConfigModel
-            config_name = f"{policy}_{dataset}_{steps}steps"
-            result = self.api.create_training_config({
-                "config": {
-                    "name": config_name,
-                    "dataset": {
-                        "id": dataset,
-                        "source": "r2",
-                    },
-                    "policy": {
-                        "type": policy,
-                    },
-                    "training": {
-                        "steps": steps,
-                        "batch_size": batch_size,
-                    },
-                }
-            })
-
-            config_id = result.get("config_id", "unknown")
-            print(f"\n{Colors.success('Config created!')}")
-            print(f"  Config ID: {config_id}")
-
-            # Ask to start training
-            start = inquirer.confirm(
-                message="Start training now?",
-                default=True,
-                style=hacker_style,
-            ).execute()
-
-            if start:
-                job_result = self.api.create_training_job({"config_id": config_id})
-                print(f"\n{Colors.success('Training job started!')}")
-                print(f"  Job ID: {job_result.get('job_id', 'N/A')}")
-
-        except KeyboardInterrupt:
-            return MenuResult.CONTINUE
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
-
-        input(f"\n{Colors.muted('Press Enter to continue...')}")
-        return MenuResult.CONTINUE
-
-    def _start_from_config(self, config_id: str) -> MenuResult:
-        """Start training from a saved config."""
-        show_section_header(f"Start Training: {config_id}")
-
-        try:
-            # Validate config first
-            validation = self.api.validate_training_config(config_id)
-            if not validation.get("is_valid", False):
-                print(f"{Colors.warning('Config has issues:')}")
-                for issue in validation.get("issues", []):
-                    print(f"  - {issue}")
-                input(f"\n{Colors.muted('Press Enter to continue...')}")
-                return MenuResult.CONTINUE
-
-            # Get config details
-            config_result = self.api.get_training_config(config_id)
-            config_data = config_result.get("config", {})
-            policy_type = config_data.get("policy", {}).get("type", "N/A")
-            dataset_id = config_data.get("dataset", {}).get("id", "N/A")
-            steps = config_data.get("training", {}).get("steps", 0) or 0
-            batch_size = config_data.get("training", {}).get("batch_size", 0) or 0
-            print(f"  Policy: {policy_type}")
-            print(f"  Dataset: {dataset_id}")
-            print(f"  Steps: {steps:,}")
-            print(f"  Batch Size: {batch_size}")
-
-            confirm = inquirer.confirm(
-                message="Start training job?",
-                default=True,
-                style=hacker_style,
-            ).execute()
-
-            if confirm:
-                result = self.api.create_training_job({"config_id": config_id})
-                print(f"\n{Colors.success('Training job started!')}")
-                print(f"  Job ID: {result.get('job_id', 'N/A')}")
-                print(f"  Status: {result.get('status', 'queued')}")
-
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
-
-        input(f"\n{Colors.muted('Press Enter to continue...')}")
-        return MenuResult.CONTINUE
+# =============================================================================
+# Training Configs Menu (Existing functionality preserved)
+# =============================================================================
 
 
 class TrainingConfigsMenu(BaseMenu):
@@ -605,56 +2121,70 @@ class TrainingConfigsMenu(BaseMenu):
             for c in configs[:15]:
                 config_id = c.get("config_id", "unknown")
                 config_data = c.get("config", {})
-                policy = config_data.get("policy_type", "?") if isinstance(config_data, dict) else "?"
-                dataset = config_data.get("dataset_repo_id", "?") if isinstance(config_data, dict) else "?"
+
+                if isinstance(config_data, dict):
+                    policy = config_data.get("policy", {}).get("type", "?")
+                    dataset = config_data.get("dataset", {}).get("id", "?")
+                else:
+                    policy = "?"
+                    dataset = "?"
+
                 choices.append(Choice(
                     value=config_id,
-                    name=f"{config_id} [{policy}] - {dataset}"
+                    name=f"  {config_id} [{policy}] - {dataset}"
                 ))
         except Exception:
             pass
 
         if not choices:
-            choices.append(Choice(value="__none__", name="(No configs)"))
+            choices.append(Choice(value="__none__", name="(設定なし)"))
+
+        choices.append(Choice(value="__create__", name="+ 新規設定を作成"))
 
         return choices
 
     def handle_choice(self, choice: Any) -> MenuResult:
         if choice == "__none__":
             return MenuResult.BACK
+        if choice == "__create__":
+            # Redirect to training wizard
+            return self.submenu(TrainingWizard)
 
         return self._show_config_detail(choice)
 
     def _show_config_detail(self, config_id: str) -> MenuResult:
         """Show config details and actions."""
-        show_section_header(f"Config: {config_id}")
+        show_section_header(f"設定: {config_id}")
 
         try:
             config_result = self.api.get_training_config(config_id)
             config_data = config_result.get("config", {})
+
             policy_type = config_data.get("policy", {}).get("type", "N/A")
             dataset_id = config_data.get("dataset", {}).get("id", "N/A")
             steps = config_data.get("training", {}).get("steps", 0) or 0
             batch_size = config_data.get("training", {}).get("batch_size", 0) or 0
+
             print(f"  ID: {config_result.get('config_id', 'N/A')}")
-            print(f"  Policy: {policy_type}")
-            print(f"  Dataset: {dataset_id}")
-            print(f"  Steps: {steps:,}")
-            print(f"  Batch Size: {batch_size}")
-            print(f"  Created: {config_result.get('created_at', 'N/A')}")
+            print(f"  ポリシー: {policy_type}")
+            print(f"  データセット: {dataset_id}")
+            print(f"  ステップ数: {steps:,}")
+            print(f"  バッチサイズ: {batch_size}")
+            print(f"  作成: {config_result.get('created_at', 'N/A')}")
+
         except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
+            print(f"{Colors.error('エラー:')} {e}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return MenuResult.CONTINUE
 
         action = inquirer.select(
-            message="Action:",
+            message="アクション:",
             choices=[
-                Choice(value="validate", name="Validate Config"),
-                Choice(value="dryrun", name="Dry Run"),
-                Choice(value="start", name="Start Training"),
-                Choice(value="delete", name="Delete Config"),
-                Choice(value="back", name="« Back"),
+                Choice(value="validate", name="✓ 検証"),
+                Choice(value="dryrun", name="🔍 ドライラン"),
+                Choice(value="start", name="🚀 学習開始"),
+                Choice(value="delete", name="🗑 削除"),
+                Choice(value="back", name="← 戻る"),
             ],
             style=hacker_style,
         ).execute()
@@ -663,43 +2193,43 @@ class TrainingConfigsMenu(BaseMenu):
             try:
                 result = self.api.validate_training_config(config_id)
                 if result.get("is_valid"):
-                    print(f"{Colors.success('Config is valid')}")
+                    print(f"{Colors.success('設定は有効です')}")
                 else:
-                    print(f"{Colors.warning('Issues found:')}")
+                    print(f"{Colors.warning('問題が見つかりました:')}")
                     for issue in result.get("issues", []):
                         print(f"  - {issue}")
             except Exception as e:
-                print(f"{Colors.error('Error:')} {e}")
+                print(f"{Colors.error('エラー:')} {e}")
 
         elif action == "dryrun":
             try:
                 result = self.api.dry_run_training(config_id)
-                print(f"{Colors.success('Dry run complete')}")
-                print(f"  Estimated time: {result.get('estimated_time', 'N/A')}")
-                print(f"  Estimated cost: ${result.get('estimated_cost', 0):.2f}")
+                print(f"{Colors.success('ドライラン完了')}")
+                print(f"  推定時間: {result.get('estimated_time', 'N/A')}")
+                print(f"  推定コスト: ${result.get('estimated_cost', 0):.2f}")
             except Exception as e:
-                print(f"{Colors.error('Error:')} {e}")
+                print(f"{Colors.error('エラー:')} {e}")
 
         elif action == "start":
             try:
                 result = self.api.create_training_job({"config_id": config_id})
-                print(f"{Colors.success('Training job started!')}")
-                print(f"  Job ID: {result.get('job_id', 'N/A')}")
+                print(f"{Colors.success('学習ジョブを開始しました!')}")
+                print(f"  ジョブID: {result.get('job_id', 'N/A')}")
             except Exception as e:
-                print(f"{Colors.error('Error:')} {e}")
+                print(f"{Colors.error('エラー:')} {e}")
 
         elif action == "delete":
             confirm = inquirer.confirm(
-                message=f"Delete config {config_id}?",
+                message=f"設定 {config_id} を削除しますか?",
                 default=False,
                 style=hacker_style,
             ).execute()
             if confirm:
                 try:
                     self.api.delete_training_config(config_id)
-                    print(f"{Colors.success('Config deleted')}")
+                    print(f"{Colors.success('設定を削除しました')}")
                 except Exception as e:
-                    print(f"{Colors.error('Error:')} {e}")
+                    print(f"{Colors.error('エラー:')} {e}")
 
         if action != "back":
             input(f"\n{Colors.muted('Press Enter to continue...')}")

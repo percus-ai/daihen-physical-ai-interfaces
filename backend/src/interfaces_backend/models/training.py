@@ -197,3 +197,149 @@ class InstanceStatusResponse(BaseModel):
     gpus_per_instance: Optional[int] = None
     created_at: Optional[str] = None
     message: str = ""
+
+
+# --- Checkpoint Models (for continue training) ---
+
+
+class CheckpointDatasetInfo(BaseModel):
+    """Dataset information embedded in checkpoint for compatibility checking."""
+
+    camera_names: list[str] = Field(default_factory=list, description="Camera names used in training")
+    action_dim: int = Field(0, description="Action dimension")
+    state_dim: int = Field(0, description="State dimension")
+
+
+class CheckpointInfo(BaseModel):
+    """Checkpoint information for listing."""
+
+    job_name: str = Field(..., description="Training job name")
+    policy_type: str = Field(..., description="Policy type (act, pi0, smolvla, etc.)")
+    step: int = Field(..., description="Latest/selected step number")
+    dataset_id: str = Field(..., description="Training dataset ID")
+    dataset_info: CheckpointDatasetInfo = Field(
+        default_factory=CheckpointDatasetInfo,
+        description="Dataset compatibility info"
+    )
+    created_at: str = Field(..., description="Job creation timestamp")
+    size_mb: float = Field(0.0, description="Total checkpoint size in MB")
+    pretrained_path: Optional[str] = Field(None, description="Base pretrained model path")
+    author: Optional[str] = Field(None, description="Author name")
+
+
+class CheckpointListResponse(BaseModel):
+    """Response for checkpoint list endpoint."""
+
+    checkpoints: list[CheckpointInfo]
+    total: int
+
+
+class CheckpointDetailResponse(BaseModel):
+    """Response for checkpoint detail endpoint."""
+
+    job_name: str
+    policy_type: str
+    dataset_id: str
+    dataset_info: CheckpointDatasetInfo = Field(default_factory=CheckpointDatasetInfo)
+    pretrained_path: Optional[str] = None
+    available_steps: list[int] = Field(default_factory=list, description="All available step numbers")
+    latest_step: int = Field(0, description="Latest step number")
+    created_at: str = ""
+    size_mb: float = 0.0
+    author: Optional[str] = None
+
+
+class CheckpointDownloadRequest(BaseModel):
+    """Request to download a checkpoint."""
+
+    step: Optional[int] = Field(None, description="Specific step to download (None for latest)")
+    target_path: Optional[str] = Field(None, description="Custom target path (optional)")
+
+
+class CheckpointDownloadResponse(BaseModel):
+    """Response for checkpoint download."""
+
+    success: bool
+    job_name: str
+    step: int
+    target_path: str
+    message: str
+
+
+class DatasetCompatibilityCheckRequest(BaseModel):
+    """Request for dataset compatibility check."""
+
+    checkpoint_job_name: str = Field(..., description="Source checkpoint job name")
+    dataset_id: str = Field(..., description="Target dataset ID to check")
+
+
+class DatasetCompatibilityCheckResponse(BaseModel):
+    """Result of dataset compatibility check for continue training."""
+
+    is_compatible: bool = Field(..., description="Whether datasets are compatible")
+    errors: list[str] = Field(default_factory=list, description="Critical errors (blocking)")
+    warnings: list[str] = Field(default_factory=list, description="Warnings (non-blocking)")
+    checkpoint_info: CheckpointDatasetInfo = Field(default_factory=CheckpointDatasetInfo)
+    dataset_info: CheckpointDatasetInfo = Field(default_factory=CheckpointDatasetInfo)
+
+
+# --- Continue Training Models ---
+
+
+class ContinueCheckpointConfig(BaseModel):
+    """Checkpoint reference for continue training."""
+
+    job_name: str = Field(..., description="Source checkpoint job name")
+    step: Optional[int] = Field(None, description="Specific step (None for latest)")
+
+
+class ContinueDatasetConfig(BaseModel):
+    """Dataset config for continue training."""
+
+    id: str = Field(..., description="Dataset ID")
+    use_original: bool = Field(True, description="Use original training dataset")
+
+
+class ContinueTrainingParams(BaseModel):
+    """Training params for continue training."""
+
+    additional_steps: int = Field(..., description="Additional steps to train")
+    batch_size: Optional[int] = Field(None, description="Batch size")
+    save_freq: Optional[int] = Field(None, description="Checkpoint save frequency")
+
+
+class JobCreateContinueRequest(BaseModel):
+    """Request to create a continue training job."""
+
+    type: str = Field("continue", description="Job type: must be 'continue'")
+    checkpoint: ContinueCheckpointConfig = Field(..., description="Source checkpoint")
+    dataset: ContinueDatasetConfig = Field(..., description="Dataset config")
+    training: ContinueTrainingParams = Field(..., description="Training params")
+    cloud: CloudConfig = Field(default_factory=CloudConfig)
+    wandb_enable: bool = Field(True, description="Enable W&B logging")
+    author: Optional[str] = Field(None, description="Author name")
+
+
+# =============================================================================
+# GPU Availability
+# =============================================================================
+
+
+class GpuAvailabilityInfo(BaseModel):
+    """GPU availability information for a specific configuration."""
+
+    gpu_model: str = Field(..., description="GPU model name (e.g., 'H100', 'A100')")
+    gpu_count: int = Field(..., description="Number of GPUs")
+    instance_type: str = Field(..., description="Verda instance type")
+    spot_available: bool = Field(..., description="Spot instance available")
+    ondemand_available: bool = Field(..., description="On-demand instance available")
+    spot_locations: list[str] = Field(default_factory=list, description="Locations with spot availability")
+    ondemand_locations: list[str] = Field(default_factory=list, description="Locations with on-demand availability")
+    spot_price_per_hour: Optional[float] = Field(None, description="Spot price per hour")
+
+
+class GpuAvailabilityResponse(BaseModel):
+    """Response for GPU availability check."""
+
+    available: list[GpuAvailabilityInfo] = Field(default_factory=list)
+    checked_at: datetime = Field(default_factory=datetime.now)

@@ -1028,6 +1028,92 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
+    def get_gpu_availability(self) -> Dict[str, Any]:
+        """GET /api/training/gpu-availability - Check GPU availability.
+
+        Returns availability info for all GPU model/count combinations.
+        """
+        response = self._client.get("/api/training/gpu-availability")
+        response.raise_for_status()
+        return response.json()
+
+    def get_gpu_availability_ws(
+        self,
+        on_checking: Optional[Callable[[str], None]] = None,
+        on_result: Optional[Callable[[str, int, bool, bool], None]] = None,
+        on_complete: Optional[Callable[[], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Stream GPU availability check via WebSocket.
+
+        Results are streamed in real-time as each GPU check completes.
+
+        Args:
+            on_checking: Callback when starting to check a GPU (gpu_model)
+            on_result: Callback with result (gpu_model, gpu_count, spot_available, ondemand_available)
+            on_complete: Callback when all checks are done
+            on_error: Callback on error
+
+        Returns:
+            Dict with all results: {"available": [...], "cached": bool}
+        """
+        import socket
+        import websocket
+
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/training/ws/gpu-availability"
+
+        results: Dict[str, Any] = {"available": [], "cached": False}
+
+        try:
+            ws = websocket.create_connection(ws_url, timeout=60)
+            sock = ws.sock
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+            while True:
+                message = ws.recv()
+                msg_data = json.loads(message)
+                msg_type = msg_data.get("type", "")
+
+                if msg_type == "cached":
+                    results["cached"] = True
+                elif msg_type == "checking":
+                    if on_checking:
+                        on_checking(msg_data.get("gpu_model", ""))
+                elif msg_type == "result":
+                    gpu_model = msg_data.get("gpu_model", "")
+                    gpu_count = msg_data.get("gpu_count", 1)
+                    spot_available = msg_data.get("spot_available", False)
+                    ondemand_available = msg_data.get("ondemand_available", False)
+
+                    results["available"].append({
+                        "gpu_model": gpu_model,
+                        "gpu_count": gpu_count,
+                        "spot_available": spot_available,
+                        "ondemand_available": ondemand_available,
+                    })
+
+                    if on_result:
+                        on_result(gpu_model, gpu_count, spot_available, ondemand_available)
+                elif msg_type == "complete":
+                    if on_complete:
+                        on_complete()
+                    break
+                elif msg_type == "error":
+                    if on_error:
+                        on_error(msg_data.get("error", "Unknown error"))
+                    break
+
+            ws.close()
+        except ImportError:
+            if on_error:
+                on_error("websocket-client not installed")
+        except Exception as e:
+            if on_error:
+                on_error(str(e))
+
+        return results
+
     def list_training_jobs(self) -> Dict[str, Any]:
         """GET /api/training/jobs - List training jobs."""
         response = self._client.get("/api/training/jobs")
@@ -1071,6 +1157,92 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
+    def stream_training_job_logs_ws(
+        self,
+        job_id: str,
+        on_log: Optional[Callable[[str], None]] = None,
+        on_status: Optional[Callable[[str, str], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Stream job logs in real-time via WebSocket.
+
+        Connects to WebSocket endpoint and receives log lines as they arrive.
+        SSH connection is maintained on server side.
+
+        Args:
+            job_id: Training job ID
+            on_log: Callback for each log line
+            on_status: Callback for status changes (status, message)
+            on_error: Callback for errors
+        """
+        import socket
+        import websocket
+
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/training/ws/jobs/{job_id}/logs"
+
+        try:
+            ws = websocket.create_connection(
+                ws_url,
+                timeout=None,
+                skip_utf8_validation=True,
+                enable_multithread=True,
+            )
+            # Set socket keepalive
+            sock = ws.sock
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
+            except (AttributeError, OSError):
+                pass
+
+            while True:
+                message = ws.recv()
+                msg_data = json.loads(message)
+                msg_type = msg_data.get("type", "")
+
+                if msg_type == "heartbeat":
+                    continue
+                elif msg_type == "log":
+                    if on_log:
+                        on_log(msg_data.get("line", ""))
+                elif msg_type == "connected":
+                    if on_status:
+                        on_status("connected", msg_data.get("message", ""))
+                elif msg_type == "status":
+                    if on_status:
+                        on_status(msg_data.get("status", ""), msg_data.get("message", ""))
+                    # End stream on terminal status
+                    if msg_data.get("status") not in ("connected",):
+                        break
+                elif msg_type == "error":
+                    if on_error:
+                        on_error(msg_data.get("error", "Unknown error"))
+                    break
+
+            ws.close()
+        except ImportError:
+            if on_error:
+                on_error("websocket-client not installed")
+        except Exception as e:
+            if on_error:
+                on_error(str(e))
+
+    def create_job_session_ws(self, job_id: str) -> "JobSessionWebSocket":
+        """Create a unified WebSocket session for job details and log streaming.
+
+        This maintains a single SSH connection for the entire session,
+        providing immediate local job info followed by SSH-dependent data.
+
+        Returns:
+            JobSessionWebSocket instance for managing the session
+        """
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/training/ws/jobs/{job_id}/session"
+        return JobSessionWebSocket(ws_url, job_id)
+
     def get_training_job_progress(self, job_id: str) -> Dict[str, Any]:
         """GET /api/training/jobs/{job_id}/progress - Get progress."""
         response = self._client.get(f"/api/training/jobs/{job_id}/progress")
@@ -1086,6 +1258,156 @@ class PhiClient:
     def check_training_jobs_status(self) -> Dict[str, Any]:
         """POST /api/training/jobs/check-status - Check all jobs."""
         response = self._client.post("/api/training/jobs/check-status")
+        response.raise_for_status()
+        return response.json()
+
+    def create_continue_training_job(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/training/jobs/continue - Create continue training job."""
+        response = self._client.post("/api/training/jobs/continue", json=data)
+        if response.status_code >= 400:
+            try:
+                error_data = response.json()
+                detail = error_data.get("detail", str(error_data))
+            except Exception:
+                detail = response.text or response.reason_phrase
+            raise Exception(f"[{response.status_code}] {detail}")
+        return response.json()
+
+    def create_training_job_ws(
+        self,
+        data: Dict[str, Any],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Create training job with real-time progress via WebSocket.
+
+        This method uses WebSocket to stream progress updates during job creation,
+        including instance provisioning, IP assignment, SSH connection, and deployment.
+
+        Args:
+            data: Job creation request dict:
+                {
+                    "name": "job_name",
+                    "dataset": {"id": "...", "source": "r2"},
+                    "policy": {"type": "act", "pretrained_path": null},
+                    "training": {"steps": 100000, "batch_size": 32},
+                    "cloud": {"gpu_model": "H100", "gpus_per_instance": 1, "is_spot": true},
+                    "checkpoint_repo_id": null,
+                    "wandb_enable": true
+                }
+            progress_callback: Called with progress updates. Receives dict with:
+                - type: "start", "validating", "validated", "selecting_instance",
+                        "instance_selected", "finding_location", "location_found",
+                        "creating_instance", "instance_created", "waiting_ip",
+                        "ip_assigned", "connecting_ssh", "ssh_ready", "deploying",
+                        "starting_training", "complete", "error", "heartbeat"
+                - Additional fields depending on type (message, elapsed, timeout, etc.)
+
+        Returns:
+            Final result dict with job_id, instance_id, ip, status on success,
+            or error on failure.
+        """
+        import socket
+        import websocket
+
+        # Convert http URL to ws URL
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/training/ws/create-job"
+
+        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
+
+        try:
+            # Create WebSocket with keepalive settings for long-running operations
+            ws = websocket.create_connection(
+                ws_url,
+                timeout=None,  # No recv timeout (job creation can take 20+ minutes)
+                skip_utf8_validation=True,
+                enable_multithread=True,
+            )
+            # Set socket keepalive to detect dead connections
+            sock = ws.sock
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # Linux-specific keepalive settings
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
+            except (AttributeError, OSError):
+                pass  # Not available on all platforms
+
+            # Send job creation request
+            ws.send(json.dumps(data))
+
+            # Receive progress updates until done
+            while True:
+                message = ws.recv()
+                msg_data = json.loads(message)
+
+                # Skip heartbeat messages (keepalive from server)
+                if msg_data.get("type") == "heartbeat":
+                    continue
+
+                if progress_callback:
+                    progress_callback(msg_data)
+
+                if msg_data.get("type") in ("complete", "error"):
+                    result = msg_data
+                    break
+
+            ws.close()
+        except ImportError:
+            # websocket-client not installed
+            error_msg = "websocket-client not installed. Run: pip install websocket-client"
+            if progress_callback:
+                progress_callback({"type": "error", "error": error_msg})
+            result = {"type": "error", "error": error_msg}
+        except Exception as e:
+            if progress_callback:
+                progress_callback({"type": "error", "error": str(e)})
+            result = {"type": "error", "error": str(e)}
+
+        return result
+
+    # =========================================================================
+    # Training Checkpoints
+    # =========================================================================
+
+    def list_training_checkpoints(self, policy_type: Optional[str] = None) -> Dict[str, Any]:
+        """GET /api/training/checkpoints - List checkpoints."""
+        params = {}
+        if policy_type:
+            params["policy_type"] = policy_type
+        response = self._client.get("/api/training/checkpoints", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    def get_training_checkpoint(self, job_name: str) -> Dict[str, Any]:
+        """GET /api/training/checkpoints/{job_name} - Get checkpoint details."""
+        response = self._client.get(f"/api/training/checkpoints/{job_name}")
+        response.raise_for_status()
+        return response.json()
+
+    def download_training_checkpoint(
+        self, job_name: str, step: Optional[int] = None, target_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """POST /api/training/checkpoints/{job_name}/download - Download checkpoint."""
+        data: Dict[str, Any] = {}
+        if step is not None:
+            data["step"] = step
+        if target_path is not None:
+            data["target_path"] = target_path
+        response = self._client.post(f"/api/training/checkpoints/{job_name}/download", json=data)
+        response.raise_for_status()
+        return response.json()
+
+    def check_dataset_compatibility(
+        self, checkpoint_job_name: str, dataset_id: str
+    ) -> Dict[str, Any]:
+        """POST /api/training/checkpoints/compatibility-check - Check dataset compatibility."""
+        data = {
+            "checkpoint_job_name": checkpoint_job_name,
+            "dataset_id": dataset_id,
+        }
+        response = self._client.post("/api/training/checkpoints/compatibility-check", json=data)
         response.raise_for_status()
         return response.json()
 
@@ -1368,3 +1690,136 @@ class PhiClient:
             result = {"type": "error", "error": str(e)}
 
         return result
+
+
+class JobSessionWebSocket:
+    """Unified WebSocket session for job details and log streaming.
+
+    Maintains a single SSH connection on the server side for the entire session.
+
+    Usage:
+        session = api.create_job_session_ws(job_id)
+        session.connect()
+
+        # Receive messages
+        while True:
+            msg = session.receive()
+            if msg["type"] == "job_info":
+                # Local job info (immediate)
+                ...
+            elif msg["type"] == "ssh_connected":
+                # SSH connected, remote info follows
+                ...
+            elif msg["type"] == "progress":
+                # Training progress
+                ...
+            elif msg["type"] == "log":
+                # Log line (when streaming)
+                ...
+
+        # Start/stop log streaming
+        session.start_logs()
+        session.stop_logs()
+
+        # Refresh status/progress
+        session.refresh()
+
+        session.close()
+    """
+
+    def __init__(self, ws_url: str, job_id: str):
+        self.ws_url = ws_url
+        self.job_id = job_id
+        self._ws = None
+        self._connected = False
+
+    def connect(self) -> bool:
+        """Connect to WebSocket server."""
+        import socket
+        import websocket
+
+        try:
+            self._ws = websocket.create_connection(
+                self.ws_url,
+                timeout=None,
+                skip_utf8_validation=True,
+                enable_multithread=True,
+            )
+            # Set socket keepalive
+            sock = self._ws.sock
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
+            except (AttributeError, OSError):
+                pass
+            self._connected = True
+            return True
+        except Exception:
+            return False
+
+    def receive(self, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Receive a message from the server.
+
+        Args:
+            timeout: Timeout in seconds (None for blocking)
+
+        Returns:
+            Message dict or None if timeout/error
+        """
+        if not self._ws:
+            return None
+
+        try:
+            if timeout is not None:
+                self._ws.settimeout(timeout)
+            message = self._ws.recv()
+            return json.loads(message)
+        except Exception:
+            return None
+
+    def send_action(self, action: str) -> bool:
+        """Send an action to the server."""
+        if not self._ws:
+            return False
+        try:
+            self._ws.send(json.dumps({"action": action}))
+            return True
+        except Exception:
+            return False
+
+    def start_logs(self) -> bool:
+        """Request log streaming to start."""
+        return self.send_action("start_logs")
+
+    def stop_logs(self) -> bool:
+        """Request log streaming to stop."""
+        return self.send_action("stop_logs")
+
+    def refresh(self) -> bool:
+        """Request status/progress refresh."""
+        return self.send_action("refresh")
+
+    def close(self) -> None:
+        """Close the WebSocket connection."""
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+            self._connected = False
+
+    @property
+    def is_connected(self) -> bool:
+        """Check if connected."""
+        return self._connected and self._ws is not None
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False

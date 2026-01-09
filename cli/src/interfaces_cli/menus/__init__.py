@@ -3,7 +3,7 @@
 from interfaces_cli.menus.main_menu import MainMenu
 from interfaces_cli.menus.operate import InferenceMenu, OperateMenu, TeleopMenu
 from interfaces_cli.menus.record import RecordMenu
-from interfaces_cli.menus.train import NewTrainingMenu, TrainMenu, TrainingJobsMenu
+from interfaces_cli.menus.train import TrainMenu, TrainingJobsMenu
 from interfaces_cli.menus.storage import (
     DatasetsMenu,
     HuggingFaceMenu,
@@ -31,7 +31,6 @@ __all__ = [
     "RecordMenu",
     # Train
     "TrainMenu",
-    "NewTrainingMenu",
     "TrainingJobsMenu",
     # Storage
     "StorageMenu",
