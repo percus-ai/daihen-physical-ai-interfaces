@@ -41,6 +41,8 @@ from interfaces_backend.models.training import (
     GpuAvailabilityResponse,
 )
 from percus_ai.storage import get_jobs_dir, get_configs_dir, get_project_root, get_models_dir
+from percus_ai.training.ssh.client import SSHConnection
+from percus_ai.training.ssh.executor import RemoteExecutor
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/training", tags=["training"])
@@ -51,88 +53,36 @@ _executor = ThreadPoolExecutor(max_workers=2)
 # Jobs directory
 JOBS_DIR = get_jobs_dir()
 
-# Remote scripts directory - contains setup_env.sh, train_lerobot_entry.py, etc.
+# Remote scripts directory - contains setup_env.sh, entry.py, etc.
 # These scripts are deployed to remote instances for training
-REMOTE_SCRIPTS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "archive" / "verda_cloud" / "remote"
+REMOTE_SCRIPTS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "features" / "percus_ai" / "training" / "remote"
 
 
 # --- SSH utilities for remote deployment ---
+# Uses SSHConnection from percus_ai.training.ssh.client for consistency with executor.py
 
 
-def _connect_ssh(ip: str, user: str, private_key_path: str, timeout: int = 30) -> "paramiko.SSHClient":
-    """Create an SSH client connected to the remote host.
+def _create_ssh_connection(
+    ip: str,
+    user: str,
+    private_key_path: str,
+    timeout: int = 300,
+) -> SSHConnection:
+    """Create and connect an SSHConnection to the remote host.
 
-    This is a strict version that raises exceptions on failure, for use in deployment.
-    Supports RSA, Ed25519, and ECDSA keys.
+    Args:
+        ip: Remote host IP address
+        user: SSH username
+        private_key_path: Path to SSH private key file
+        timeout: Connection timeout in seconds
+
+    Returns:
+        Connected SSHConnection instance
     """
-    import paramiko
-
-    # Expand ~ in private key path
     key_path = Path(private_key_path).expanduser()
-    if not key_path.exists():
-        raise FileNotFoundError(f"SSH private key not found: {key_path}")
-
-    # Try different key types
-    pkey = None
-    for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
-        try:
-            pkey = key_cls.from_private_key_file(str(key_path))
-            break
-        except Exception:
-            continue
-
-    if not pkey:
-        raise ValueError(f"Could not load SSH key from {key_path}")
-
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        hostname=ip,
-        username=user,
-        pkey=pkey,
-        timeout=timeout,
-        look_for_keys=False,
-        allow_agent=False,
-    )
-    return client
-
-
-def _upload_file_via_sftp(
-    ssh_client: "paramiko.SSHClient",
-    local_path: Path,
-    remote_path: str,
-) -> None:
-    """Upload a file via SFTP."""
-    sftp = ssh_client.open_sftp()
-    try:
-        sftp.put(str(local_path), remote_path)
-    finally:
-        sftp.close()
-
-
-def _upload_content_via_sftp(
-    ssh_client: "paramiko.SSHClient",
-    content: str,
-    remote_path: str,
-) -> None:
-    """Upload string content as a file via SFTP."""
-    sftp = ssh_client.open_sftp()
-    try:
-        with sftp.file(remote_path, "w") as f:
-            f.write(content)
-    finally:
-        sftp.close()
-
-
-def _run_ssh_command(
-    ssh_client: "paramiko.SSHClient",
-    command: str,
-    timeout: Optional[int] = None,
-) -> tuple[int, str, str]:
-    """Run a command via SSH and return (exit_code, stdout, stderr)."""
-    stdin, stdout, stderr = ssh_client.exec_command(command, timeout=timeout)
-    exit_code = stdout.channel.recv_exit_status()
-    return exit_code, stdout.read().decode(), stderr.read().decode()
+    conn = SSHConnection(host=ip, user=user, private_key_path=key_path)
+    conn.connect(timeout_sec=timeout)
+    return conn
 
 
 def _generate_training_config_yaml(request: "JobCreateRequest", job_id: str) -> str:
@@ -228,6 +178,11 @@ def _generate_env_file(job_id: str, instance_id: str, auto_delete: bool = True) 
     if r2_bucket:
         lines.append(f"R2_BUCKET={r2_bucket}")
         lines.append(f"S3_BUCKET={r2_bucket}")
+
+    # GitHub token for private repo access (physical-ai-features)
+    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if gh_token:
+        lines.append(f"GH_TOKEN={gh_token}")
 
     return "\n".join(lines) + "\n"
 
@@ -339,67 +294,59 @@ def _list_jobs(days: int = 7) -> list[dict]:
     return jobs
 
 
-# --- SSH utilities (optional, requires paramiko) ---
+# --- SSH utilities for job monitoring (uses SSHConnection) ---
+
+# tmux session name for training jobs (consistent with job startup)
+TMUX_SESSION_NAME = "instance_setup"
 
 
-def _get_ssh_client(job_data: dict, timeout: int = 30):
-    """Get SSH client for job instance."""
-    try:
-        import paramiko
-    except ImportError:
-        return None
+def _get_ssh_connection_for_job(job_data: dict, timeout: int = 30) -> Optional[SSHConnection]:
+    """Get SSHConnection for job instance.
 
+    Args:
+        job_data: Job data dict containing ip, ssh_user, ssh_private_key
+        timeout: Connection timeout in seconds
+
+    Returns:
+        Connected SSHConnection or None if connection fails
+    """
     ip = job_data.get("ip")
     if not ip:
         return None
 
     try:
-        # Load private key
         key_path = Path(job_data.get("ssh_private_key", "~/.ssh/id_rsa")).expanduser()
-        pkey = None
-        for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
-            try:
-                pkey = key_cls.from_private_key_file(str(key_path))
-                break
-            except Exception:
-                continue
-
-        if not pkey:
-            return None
-
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=ip,
-            username=job_data.get("ssh_user", "root"),
-            pkey=pkey,
-            timeout=timeout,
+        conn = SSHConnection(
+            host=ip,
+            user=job_data.get("ssh_user", "root"),
+            private_key_path=key_path,
         )
-        return client
+        conn.connect(timeout_sec=timeout)
+        return conn
     except Exception:
         return None
 
 
 def _check_remote_status(job_data: dict) -> str:
     """Check remote process status via SSH."""
-    ssh = _get_ssh_client(job_data)
-    if not ssh:
+    conn = _get_ssh_connection_for_job(job_data)
+    if not conn:
         return "unreachable"
 
     try:
-        cmd = "tmux has-session -t lerobot_train 2>/dev/null && echo 'running' || echo 'stopped'"
-        stdin, stdout, stderr = ssh.exec_command(cmd)
-        return stdout.read().decode().strip()
+        cmd = f"tmux has-session -t {TMUX_SESSION_NAME} 2>/dev/null && echo 'running' || echo 'stopped'"
+        exit_code, stdout, stderr = conn.exec_command(cmd)
+        return stdout.strip()
     except Exception:
         return "error"
     finally:
-        ssh.close()
+        conn.disconnect()
 
 
 def _get_remote_logs(job_data: dict, lines: int = 100) -> Optional[str]:
     """Get remote logs via SSH."""
-    ssh = _get_ssh_client(job_data)
-    if not ssh:
+    conn = _get_ssh_connection_for_job(job_data)
+    if not conn:
         return None
 
     try:
@@ -407,18 +354,18 @@ def _get_remote_logs(job_data: dict, lines: int = 100) -> Optional[str]:
         remote_base_dir = job_data.get("remote_base_dir", "/root")
         log_file = f"{remote_base_dir}/lerobot_run/setup_env_{mode}.log"
         cmd = f"tail -n {lines} {log_file} 2>/dev/null || echo '[Log file not found]'"
-        stdin, stdout, stderr = ssh.exec_command(cmd)
-        return stdout.read().decode()
+        exit_code, stdout, stderr = conn.exec_command(cmd)
+        return stdout
     except Exception:
         return None
     finally:
-        ssh.close()
+        conn.disconnect()
 
 
 def _get_remote_progress(job_data: dict) -> Optional[dict]:
     """Get training progress via SSH."""
-    ssh = _get_ssh_client(job_data)
-    if not ssh:
+    conn = _get_ssh_connection_for_job(job_data)
+    if not conn:
         return None
 
     try:
@@ -428,13 +375,13 @@ def _get_remote_progress(job_data: dict) -> Optional[dict]:
 
         # Get step info
         cmd = f"grep -oE 'step:[0-9]+|Step [0-9]+|optimization_step=[0-9]+' {log_file} 2>/dev/null | tail -1 || true"
-        stdin, stdout, stderr = ssh.exec_command(cmd)
-        step_line = stdout.read().decode().strip()
+        exit_code, stdout, stderr = conn.exec_command(cmd)
+        step_line = stdout.strip()
 
         # Get loss info
         cmd = f"grep -oE 'loss[^=]*=[0-9.]+|Loss: [0-9.]+' {log_file} 2>/dev/null | tail -1 || true"
-        stdin, stdout, stderr = ssh.exec_command(cmd)
-        loss_line = stdout.read().decode().strip()
+        exit_code, stdout, stderr = conn.exec_command(cmd)
+        loss_line = stdout.strip()
 
         return {
             "step": step_line or "N/A",
@@ -443,23 +390,23 @@ def _get_remote_progress(job_data: dict) -> Optional[dict]:
     except Exception:
         return None
     finally:
-        ssh.close()
+        conn.disconnect()
 
 
 def _stop_remote_job(job_data: dict) -> bool:
     """Stop remote training job via SSH."""
-    ssh = _get_ssh_client(job_data)
-    if not ssh:
+    conn = _get_ssh_connection_for_job(job_data)
+    if not conn:
         return False
 
     try:
-        cmd = "tmux kill-session -t lerobot_train 2>/dev/null || true"
-        ssh.exec_command(cmd)
+        cmd = f"tmux kill-session -t {TMUX_SESSION_NAME} 2>/dev/null || true"
+        conn.exec_command(cmd)
         return True
     except Exception:
         return False
     finally:
-        ssh.close()
+        conn.disconnect()
 
 
 # --- API Endpoints ---
@@ -1601,21 +1548,21 @@ def _create_job_with_progress(
         job_data["status"] = "deploying"
         _save_job(job_data)
 
-        # SSH deployment
+        # SSH deployment using SSHConnection and RemoteExecutor
         ssh_user = "root"
         remote_base_dir = "/root"
         remote_run_dir = f"{remote_base_dir}/lerobot_run"
 
         # Wait for SSH (up to 5 minutes)
         emit_progress({"type": "connecting_ssh", "message": "SSH接続中...", "attempt": 0, "max_attempts": 30})
-        ssh_client = None
+        conn: Optional[SSHConnection] = None
         start_time = time.time()
         ssh_deadline = start_time + 300
         attempt = 0
         while time.time() < ssh_deadline:
             attempt += 1
             try:
-                ssh_client = _connect_ssh(ip, ssh_user, ssh_private_key)
+                conn = _create_ssh_connection(ip, ssh_user, ssh_private_key)
                 break
             except Exception:
                 elapsed = int(time.time() - start_time)
@@ -1628,7 +1575,7 @@ def _create_job_with_progress(
                 })
                 time.sleep(10)
 
-        if not ssh_client:
+        if not conn:
             job_data["status"] = "failed"
             job_data["error_message"] = "SSH接続タイムアウト"
             job_data["completed_at"] = datetime.now().isoformat()
@@ -1641,22 +1588,22 @@ def _create_job_with_progress(
         try:
             # Create remote directory
             emit_progress({"type": "deploying", "message": "リモートディレクトリを作成中..."})
-            _run_ssh_command(ssh_client, f"mkdir -p {remote_run_dir}")
+            conn.mkdir_p(remote_run_dir)
 
             # Upload remote scripts
             emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "setup_env.sh"})
             setup_env_path = REMOTE_SCRIPTS_DIR / "setup_env.sh"
             read_config_path = REMOTE_SCRIPTS_DIR / "read_train_config.py"
-            train_entry_path = REMOTE_SCRIPTS_DIR / "train_lerobot_entry.py"
+            entry_path = REMOTE_SCRIPTS_DIR / "entry.py"
 
             if setup_env_path.exists():
-                _upload_file_via_sftp(ssh_client, setup_env_path, f"{remote_run_dir}/setup_env.sh")
+                conn.upload_file(setup_env_path, f"{remote_run_dir}/setup_env.sh")
             emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "read_train_config.py"})
             if read_config_path.exists():
-                _upload_file_via_sftp(ssh_client, read_config_path, f"{remote_run_dir}/read_train_config.py")
-            emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "train_lerobot_entry.py"})
-            if train_entry_path.exists():
-                _upload_file_via_sftp(ssh_client, train_entry_path, f"{remote_run_dir}/train_lerobot_entry.py")
+                conn.upload_file(read_config_path, f"{remote_run_dir}/read_train_config.py")
+            emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "entry.py"})
+            if entry_path.exists():
+                conn.upload_file(entry_path, f"{remote_run_dir}/entry.py")
 
             # Generate and upload training config YAML
             emit_progress({"type": "deploying", "message": "学習設定をアップロード中...", "file": "train.remote.yaml"})
@@ -1673,33 +1620,35 @@ def _create_job_with_progress(
                 wandb_enable=wandb_enable,
             )
             config_yaml = _generate_training_config_yaml(request, job_id)
-            _upload_content_via_sftp(ssh_client, config_yaml, f"{remote_run_dir}/train.remote.yaml")
+            conn.upload_content(config_yaml, f"{remote_run_dir}/train.remote.yaml")
 
             # Generate and upload .env file
             emit_progress({"type": "deploying", "message": "環境変数をアップロード中...", "file": ".env"})
             env_content = _generate_env_file(job_id, instance_id)
-            _upload_content_via_sftp(ssh_client, env_content, f"{remote_run_dir}/.env")
+            conn.upload_content(env_content, f"{remote_run_dir}/.env")
 
             # Generate and upload instance_info.env
             emit_progress({"type": "deploying", "message": "インスタンス情報をアップロード中...", "file": "instance_info.env"})
             instance_info = _generate_instance_info_env(job_id, instance_id, auto_delete=True)
-            _upload_content_via_sftp(ssh_client, instance_info, f"{remote_run_dir}/instance_info.env")
+            conn.upload_content(instance_info, f"{remote_run_dir}/instance_info.env")
 
             # Make setup script executable
-            _run_ssh_command(ssh_client, f"chmod +x {remote_run_dir}/setup_env.sh")
+            conn.exec_command(f"chmod +x {remote_run_dir}/setup_env.sh")
 
-            # Start training
+            # Start training using RemoteExecutor with tmux
             emit_progress({"type": "starting_training", "message": "学習を開始中..."})
-            start_cmd = (
-                f"cd {remote_run_dir} && "
-                f"nohup bash setup_env.sh train > /dev/null 2>&1 &"
+            executor = RemoteExecutor(conn, remote_base_dir=remote_run_dir)
+            success = executor.run_background(
+                "bash setup_env.sh train",
+                session_name=TMUX_SESSION_NAME,
             )
-            _run_ssh_command(ssh_client, start_cmd)
+            if not success:
+                emit_progress({"type": "training_log", "message": "警告: tmuxセッションの開始を確認できませんでした"})
 
             # Stream log file in real-time using tail -f
             log_file = f"{remote_run_dir}/setup_env_train.log"
-            max_stream_time = 15  # seconds
-            lines_to_show = 5  # Show at least this many lines before completing
+            max_stream_time = 30  # seconds (increased for real-time feedback)
+            lines_to_show = 10  # Show more lines before completing
             lines_received = 0
             start_time = time.time()
             log_file_found = False
@@ -1708,12 +1657,11 @@ def _create_job_with_progress(
                 # Wait for log file to exist (max 5 seconds)
                 emit_progress({"type": "training_log", "message": "ログファイル待機中..."})
                 for i in range(10):
-                    check_result = _run_ssh_command(
-                        ssh_client,
+                    exit_code, stdout, stderr = conn.exec_command(
                         f"test -f {log_file} && echo 'exists' || echo 'not_exists'",
                         timeout=2
                     )
-                    if "exists" in check_result:
+                    if "exists" in stdout:
                         log_file_found = True
                         emit_progress({"type": "training_log", "message": "ログストリーミング開始..."})
                         break
@@ -1723,7 +1671,7 @@ def _create_job_with_progress(
                     emit_progress({"type": "training_log", "message": "ログファイル作成待ち (バックグラウンドで起動中)..."})
 
                 # Use tail -f to stream logs in real-time
-                transport = ssh_client.get_transport()
+                transport = conn.client.get_transport()
                 channel = transport.open_session()
                 # Use tail -F (capital F) to handle file that doesn't exist yet
                 channel.exec_command(f"tail -F {log_file} 2>/dev/null")
@@ -1781,7 +1729,7 @@ def _create_job_with_progress(
             }
 
         finally:
-            ssh_client.close()
+            conn.disconnect()
 
     except HTTPException as e:
         emit_progress({"type": "error", "error": e.detail})
@@ -1976,14 +1924,14 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
             # Upload remote scripts
             setup_env_path = REMOTE_SCRIPTS_DIR / "setup_env.sh"
             read_config_path = REMOTE_SCRIPTS_DIR / "read_train_config.py"
-            train_entry_path = REMOTE_SCRIPTS_DIR / "train_lerobot_entry.py"
+            entry_path = REMOTE_SCRIPTS_DIR / "entry.py"
 
             if setup_env_path.exists():
                 _upload_file_via_sftp(ssh_client, setup_env_path, f"{remote_run_dir}/setup_env.sh")
             if read_config_path.exists():
                 _upload_file_via_sftp(ssh_client, read_config_path, f"{remote_run_dir}/read_train_config.py")
-            if train_entry_path.exists():
-                _upload_file_via_sftp(ssh_client, train_entry_path, f"{remote_run_dir}/train_lerobot_entry.py")
+            if entry_path.exists():
+                _upload_file_via_sftp(ssh_client, entry_path, f"{remote_run_dir}/entry.py")
 
             # Generate and upload training config YAML
             config_yaml = _generate_training_config_yaml(request, job_id)
@@ -2835,7 +2783,7 @@ async def dry_run_training_config(config_id: str):
             ".env",
             "train.remote.yaml",
             "setup_env.sh",
-            "train_lerobot_entry.py",
+            "entry.py",
         ],
         remote_command=f"bash ./setup_env.sh train",
     )
@@ -2998,16 +2946,16 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
         await websocket.close()
         return
 
-    ssh_client = None
+    ssh_conn: Optional[SSHConnection] = None
     try:
         # Connect SSH in thread pool
         loop = asyncio.get_event_loop()
-        ssh_client = await loop.run_in_executor(
+        ssh_conn = await loop.run_in_executor(
             _executor,
-            lambda: _get_ssh_client(job_data, timeout=30)
+            lambda: _get_ssh_connection_for_job(job_data, timeout=30)
         )
 
-        if not ssh_client:
+        if not ssh_conn:
             await websocket.send_json({"type": "error", "error": "SSH接続に失敗しました"})
             await websocket.close()
             return
@@ -3020,7 +2968,7 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
         log_file = f"{remote_base_dir}/lerobot_run/setup_env_{mode}.log"
 
         # Start tail -f in a channel
-        transport = ssh_client.get_transport()
+        transport = ssh_conn.client.get_transport()
         channel = transport.open_session()
         channel.exec_command(f"tail -f {log_file} 2>/dev/null")
         channel.setblocking(0)
@@ -3080,9 +3028,9 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
         except Exception:
             pass
     finally:
-        if ssh_client:
+        if ssh_conn:
             try:
-                ssh_client.close()
+                ssh_conn.disconnect()
             except Exception:
                 pass
 
@@ -3151,28 +3099,28 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
     # Start SSH connection
     await websocket.send_json({"type": "ssh_connecting"})
 
-    ssh_client = None
+    ssh_conn: Optional[SSHConnection] = None
     log_channel = None
     is_streaming_logs = False
 
     try:
         # Connect SSH in thread pool
         loop = asyncio.get_event_loop()
-        ssh_client = await loop.run_in_executor(
+        ssh_conn = await loop.run_in_executor(
             _executor,
-            lambda: _get_ssh_client(job_data, timeout=30)
+            lambda: _get_ssh_connection_for_job(job_data, timeout=30)
         )
 
-        if not ssh_client:
+        if not ssh_conn:
             await websocket.send_json({"type": "ssh_error", "error": "SSH接続に失敗しました"})
             await _run_session_loop_no_ssh(websocket, job_id)
             return
 
         await websocket.send_json({"type": "ssh_connected"})
 
-        # Get initial remote status and progress
-        await _send_remote_status(websocket, ssh_client)
-        await _send_progress(websocket, ssh_client, job_data)
+        # Get initial remote status and progress (pass raw paramiko client to helper functions)
+        await _send_remote_status(websocket, ssh_conn.client)
+        await _send_progress(websocket, ssh_conn.client, job_data)
 
         # Determine log file path for later use
         mode = job_data.get("mode", "train")
@@ -3196,7 +3144,7 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
 
                 if action == "start_logs" and not is_streaming_logs:
                     # Start log streaming using same SSH connection
-                    transport = ssh_client.get_transport()
+                    transport = ssh_conn.client.get_transport()
                     if transport and transport.is_active():
                         log_channel = transport.open_session()
                         log_channel.exec_command(f"tail -f {log_file} 2>/dev/null")
@@ -3217,8 +3165,8 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
 
                 elif action == "refresh":
                     # Refresh status and progress
-                    await _send_remote_status(websocket, ssh_client)
-                    await _send_progress(websocket, ssh_client, job_data)
+                    await _send_remote_status(websocket, ssh_conn.client)
+                    await _send_progress(websocket, ssh_conn.client, job_data)
 
             except asyncio.TimeoutError:
                 pass  # No message received, continue
@@ -3250,7 +3198,7 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
 
             # Update progress every 10 seconds (if not streaming logs)
             if not is_streaming_logs and now - last_progress_update > 10:
-                await _send_progress(websocket, ssh_client, job_data)
+                await _send_progress(websocket, ssh_conn.client, job_data)
                 last_progress_update = now
 
             # Check job status periodically
@@ -3280,9 +3228,9 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
                 log_channel.close()
             except Exception:
                 pass
-        if ssh_client:
+        if ssh_conn:
             try:
-                ssh_client.close()
+                ssh_conn.disconnect()
             except Exception:
                 pass
 
@@ -3342,7 +3290,7 @@ async def _send_remote_status(websocket: WebSocket, ssh_client) -> None:
         loop = asyncio.get_event_loop()
         status = await loop.run_in_executor(
             _executor,
-            lambda: _exec_ssh_command(ssh_client, "tmux has-session -t lerobot_train 2>/dev/null && echo 'running' || echo 'stopped'")
+            lambda: _exec_ssh_command(ssh_client, f"tmux has-session -t {TMUX_SESSION_NAME} 2>/dev/null && echo 'running' || echo 'stopped'")
         )
         await websocket.send_json({
             "type": "remote_status",
