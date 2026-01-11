@@ -140,3 +140,44 @@ class ArchiveListResponse(BaseModel):
     datasets: List[DatasetMetadata] = Field(default_factory=list)
     models: List[ModelMetadata] = Field(default_factory=list)
     total: int = 0
+
+
+# --- Dataset Projects and Sessions (R2 as source of truth) ---
+
+
+class DatasetProjectInfo(BaseModel):
+    """Dataset project (top-level directory) information."""
+
+    id: str = Field(..., description="Project ID (e.g., '0001_black_cube_to_tray')")
+    name: str = Field(..., description="Project name")
+    session_count: int = Field(0, description="Number of sessions in this project")
+    total_size_bytes: int = Field(0, description="Total size in bytes")
+
+
+class DatasetProjectListResponse(BaseModel):
+    """Response for dataset project list endpoint."""
+
+    projects: List[DatasetProjectInfo]
+    total: int
+
+
+class DatasetSessionInfo(BaseModel):
+    """Dataset session information."""
+
+    id: str = Field(..., description="Full session ID (e.g., 'project/session_name')")
+    session_name: str = Field(..., description="Session name (e.g., '20260107_180132_watanabe')")
+    project_id: str = Field(..., description="Parent project ID")
+    author: Optional[str] = Field(None, description="Author (extracted from session name)")
+    created_at: Optional[str] = Field(None, description="Creation timestamp (extracted from session name)")
+    size_bytes: int = Field(0, description="Size in bytes")
+    episode_count: int = Field(0, description="Number of episodes")
+    is_local: bool = Field(False, description="Session is downloaded locally")
+    is_eval: bool = Field(False, description="Session is an evaluation session (eval_*)")
+
+
+class DatasetSessionListResponse(BaseModel):
+    """Response for dataset session list endpoint."""
+
+    project_id: str
+    sessions: List[DatasetSessionInfo]
+    total: int

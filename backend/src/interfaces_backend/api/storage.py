@@ -22,6 +22,10 @@ from interfaces_backend.models.storage import (
     ArchiveResponse,
     DatasetInfo,
     DatasetListResponse,
+    DatasetProjectInfo,
+    DatasetProjectListResponse,
+    DatasetSessionInfo,
+    DatasetSessionListResponse,
     DownloadResponse,
     ModelListResponse,
     PublishRequest,
@@ -146,6 +150,97 @@ async def list_datasets(
             logger.debug(f"Failed to list remote datasets: {e}")
 
     return DatasetListResponse(datasets=datasets_info, total=len(datasets_info))
+
+
+# --- Dataset Projects and Sessions (R2 as source of truth) ---
+
+
+@router.get("/dataset-projects", response_model=DatasetProjectListResponse)
+async def list_dataset_projects():
+    """List dataset projects from R2 (source of truth).
+
+    Returns top-level directories under datasets/ in R2.
+    Each project contains multiple recording sessions.
+    """
+    sync = _get_sync_service()
+    manifest = _get_manifest()
+
+    try:
+        projects = sync.list_dataset_projects()
+    except Exception as e:
+        logger.error(f"Failed to list dataset projects from R2: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list projects: {e}")
+
+    project_infos = [
+        DatasetProjectInfo(
+            id=p.get("id", ""),
+            name=p.get("name", p.get("id", "")),
+            session_count=p.get("session_count", 0),
+            total_size_bytes=p.get("total_size_bytes", 0),
+        )
+        for p in projects
+    ]
+
+    return DatasetProjectListResponse(projects=project_infos, total=len(project_infos))
+
+
+@router.get("/dataset-projects/{project_id}/sessions", response_model=DatasetSessionListResponse)
+async def list_project_sessions(
+    project_id: str,
+    exclude_eval: bool = Query(True, description="Exclude eval_* sessions"),
+    sort: str = Query("date_desc", description="Sort order: date_asc or date_desc"),
+):
+    """List sessions within a project from R2.
+
+    Args:
+        project_id: Project ID (e.g., '0001_black_cube_to_tray')
+        exclude_eval: If True, exclude evaluation sessions (eval_* prefix)
+        sort: Sort order by date - 'date_asc' (oldest first) or 'date_desc' (newest first)
+    """
+    sync = _get_sync_service()
+    manifest = _get_manifest()
+
+    try:
+        sessions = sync.list_project_sessions(
+            project_id=project_id,
+            exclude_eval=exclude_eval,
+            sort=sort,
+        )
+    except Exception as e:
+        logger.error(f"Failed to list sessions for project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {e}")
+
+    # Check local availability for each session
+    session_infos = []
+    for s in sessions:
+        session_id = s.get("id", "")
+        is_local = False
+
+        # Check if session exists in local manifest
+        entry = manifest.manifest.datasets.get(session_id)
+        if entry:
+            local_path = manifest.base_path / entry.path
+            is_local = local_path.exists()
+
+        session_infos.append(
+            DatasetSessionInfo(
+                id=session_id,
+                session_name=s.get("session_name", ""),
+                project_id=project_id,
+                author=s.get("author"),
+                created_at=s.get("created_at"),
+                size_bytes=s.get("size_bytes", 0),
+                episode_count=s.get("episode_count", 0),
+                is_local=is_local,
+                is_eval=s.get("is_eval", False),
+            )
+        )
+
+    return DatasetSessionListResponse(
+        project_id=project_id,
+        sessions=session_infos,
+        total=len(session_infos),
+    )
 
 
 @router.get("/datasets/{dataset_id}", response_model=DatasetMetadata)

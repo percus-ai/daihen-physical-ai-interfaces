@@ -472,6 +472,42 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
+    def list_dataset_projects(self) -> Dict[str, Any]:
+        """GET /api/storage/dataset-projects - List dataset projects from R2.
+
+        Returns top-level directories under datasets/ in R2.
+        Each project contains multiple recording sessions.
+
+        Returns:
+            Dict with "projects" list and "total" count
+        """
+        response = self._client.get("/api/storage/dataset-projects")
+        response.raise_for_status()
+        return response.json()
+
+    def list_project_sessions(
+        self,
+        project_id: str,
+        exclude_eval: bool = True,
+        sort: str = "date_desc",
+    ) -> Dict[str, Any]:
+        """GET /api/storage/dataset-projects/{project_id}/sessions - List sessions in a project.
+
+        Args:
+            project_id: Project ID (e.g., '0001_black_cube_to_tray')
+            exclude_eval: If True, exclude evaluation sessions (eval_* prefix)
+            sort: Sort order by date - 'date_asc' (oldest first) or 'date_desc' (newest first)
+
+        Returns:
+            Dict with "project_id", "sessions" list, and "total" count
+        """
+        response = self._client.get(
+            f"/api/storage/dataset-projects/{project_id}/sessions",
+            params={"exclude_eval": exclude_eval, "sort": sort},
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_dataset(self, dataset_id: str) -> Dict[str, Any]:
         """GET /api/storage/datasets/{dataset_id} - Get dataset."""
         response = self._client.get(f"/api/storage/datasets/{dataset_id}")

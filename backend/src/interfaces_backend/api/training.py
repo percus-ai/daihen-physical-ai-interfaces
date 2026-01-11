@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import yaml
+from datacrunch import DataCrunchClient
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from interfaces_backend.models.training import (
@@ -234,12 +235,7 @@ def _get_verda_client():
     if not client_id or not client_secret:
         return None
 
-    try:
-        from datacrunch import DataCrunchClient
-
-        return DataCrunchClient(client_id, client_secret)
-    except ImportError:
-        return None
+    return DataCrunchClient(client_id, client_secret)
 
 
 def _check_instance_via_api(instance_id: str) -> Optional[str]:
@@ -866,11 +862,15 @@ async def stop_job(job_id: str):
     )
 
 
-def _delete_verda_instance(instance_id: str) -> bool:
-    """Delete Verda instance.
+def _delete_verda_instance(instance_id: str, wait_timeout: int = 30) -> bool:
+    """Delete Verda instance and verify deletion.
+
+    Args:
+        instance_id: The Verda instance ID to delete
+        wait_timeout: Maximum seconds to wait for deletion confirmation
 
     Returns:
-        True if instance was deleted or already gone, False if deletion failed
+        True if instance was deleted or is being deleted, False if deletion failed
     """
     client = _get_verda_client()
     if not client:
@@ -880,18 +880,47 @@ def _delete_verda_instance(instance_id: str) -> bool:
     try:
         # Check if instance exists first
         instance = client.instances.get_by_id(instance_id)
-        if instance.status in ("offline", "deleted"):
-            logger.info(f"Instance {instance_id} already terminated (status: {instance.status})")
+        current_status = instance.status
+        logger.info(f"Instance {instance_id} current status: {current_status}")
+
+        if current_status in ("offline", "deleted", "deleting"):
+            logger.info(f"Instance {instance_id} already terminated or deleting (status: {current_status})")
             return True
 
-        # Delete the instance
-        client.instances.action(instance_id, "delete")
-        logger.info(f"Deleted Verda instance {instance_id}")
+        # Send delete request
+        logger.info(f"Sending delete request for instance {instance_id}")
+        client.instances.action(instance_id, client.constants.instance_actions.DELETE)
+
+        # Wait and verify deletion status
+        deadline = time.time() + wait_timeout
+        while time.time() < deadline:
+            time.sleep(2)
+            try:
+                instance = client.instances.get_by_id(instance_id)
+                new_status = instance.status
+                logger.info(f"Instance {instance_id} status after delete request: {new_status}")
+
+                if new_status in ("deleted", "deleting", "offline"):
+                    logger.info(f"Instance {instance_id} deletion confirmed (status: {new_status})")
+                    return True
+            except Exception as check_error:
+                # Instance not found - likely deleted
+                logger.info(f"Instance {instance_id} no longer found (likely deleted): {check_error}")
+                return True
+
+        # Timeout - deletion may still be in progress
+        logger.warning(f"Instance {instance_id} deletion not confirmed within {wait_timeout}s, but request was sent")
         return True
+
     except Exception as e:
-        # Instance might already be deleted or not found
-        logger.warning(f"Failed to delete instance {instance_id}: {e}")
-        return True  # Consider it success if instance doesn't exist
+        error_msg = str(e).lower()
+        # Check if it's a "not found" error - instance already deleted
+        if "not found" in error_msg or "404" in error_msg:
+            logger.info(f"Instance {instance_id} not found (already deleted)")
+            return True
+        # Actual error - deletion failed
+        logger.error(f"Failed to delete instance {instance_id}: {e}")
+        return False
 
 
 @router.delete("/jobs/{job_id}", response_model=JobActionResponse)
@@ -1452,6 +1481,18 @@ def _create_job_with_progress(
         emit_progress({"type": "error", "error": "Verda認証情報が設定されていません"})
         return {"success": False, "error": "Verda認証情報が設定されていません"}
 
+    # Track instance_id for cleanup on failure
+    instance_id: Optional[str] = None
+
+    def cleanup_instance_on_failure(error_msg: str) -> dict:
+        """Clean up instance if creation succeeded but subsequent steps failed."""
+        nonlocal instance_id
+        if instance_id:
+            emit_progress({"type": "cleanup", "message": f"エラー発生のためインスタンスを削除中: {instance_id}"})
+            logger.warning(f"Cleaning up instance {instance_id} due to failure: {error_msg}")
+            _delete_verda_instance(instance_id)
+        return {"success": False, "error": error_msg}
+
     try:
         # Select instance type
         emit_progress({"type": "selecting_instance", "message": "インスタンスタイプを選択中..."})
@@ -1545,7 +1586,7 @@ def _create_job_with_progress(
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
             emit_progress({"type": "error", "error": "IP取得タイムアウト (15分)"})
-            return {"success": False, "error": "IP取得タイムアウト (15分)"}
+            return cleanup_instance_on_failure("IP取得タイムアウト (15分)")
 
         emit_progress({"type": "ip_assigned", "message": f"IP取得完了: {ip}", "ip": ip})
 
@@ -1587,7 +1628,7 @@ def _create_job_with_progress(
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
             emit_progress({"type": "error", "error": "SSH接続タイムアウト (5分)"})
-            return {"success": False, "error": "SSH接続タイムアウト (5分)"}
+            return cleanup_instance_on_failure("SSH接続タイムアウト (5分)")
 
         emit_progress({"type": "ssh_ready", "message": "SSH接続完了"})
 
@@ -1739,10 +1780,10 @@ def _create_job_with_progress(
 
     except HTTPException as e:
         emit_progress({"type": "error", "error": e.detail})
-        return {"success": False, "error": e.detail}
+        return cleanup_instance_on_failure(e.detail)
     except Exception as e:
         emit_progress({"type": "error", "error": str(e)})
-        return {"success": False, "error": str(e)}
+        return cleanup_instance_on_failure(str(e))
 
 
 @router.websocket("/ws/create-job")
@@ -1874,6 +1915,11 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
 
     instance_id = job_data["instance_id"]
 
+    def cleanup_on_failure(error_msg: str) -> None:
+        """Clean up instance on deployment failure."""
+        logger.warning(f"Cleaning up instance {instance_id} due to failure: {error_msg}")
+        _delete_verda_instance(instance_id)
+
     try:
         # Wait for IP (up to 15 minutes)
         ip = None
@@ -1890,8 +1936,10 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
 
         if not ip:
             job_data["status"] = "failed"
+            job_data["error_message"] = "IP取得タイムアウト"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
+            cleanup_on_failure("IP取得タイムアウト")
             return
 
         # Update job with IP
@@ -1917,9 +1965,10 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
 
         if not conn:
             job_data["status"] = "failed"
-            job_data["error_message"] = "SSH connection failed"
+            job_data["error_message"] = "SSH接続タイムアウト"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
+            cleanup_on_failure("SSH接続タイムアウト")
             return
 
         try:
@@ -1971,6 +2020,7 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
         job_data["error_message"] = str(e)
         job_data["completed_at"] = datetime.now().isoformat()
         _save_job(job_data)
+        cleanup_on_failure(str(e))
 
 
 # --- Checkpoint API ---
@@ -1983,8 +2033,15 @@ def _get_checkpoint_index_manager():
     global _checkpoint_index_manager
     if _checkpoint_index_manager is None:
         try:
-            from percus_ai.storage import CheckpointIndexManager, R2SyncService
-            r2_service = R2SyncService()
+            import os
+
+            from percus_ai.storage import CheckpointIndexManager, ManifestManager, R2SyncService
+
+            manifest = ManifestManager()
+            manifest.init_directories()
+            bucket = os.getenv("R2_BUCKET", "percus-data")
+            version = os.getenv("R2_VERSION", "v2")
+            r2_service = R2SyncService(manifest, bucket, version=version)
             _checkpoint_index_manager = CheckpointIndexManager(r2_service)
         except Exception as e:
             raise HTTPException(

@@ -156,8 +156,10 @@ class NewTrainingState:
     pretrained_path: Optional[str] = None
     skip_pretrained: bool = False
 
-    # Step 3: Dataset
-    dataset_id: Optional[str] = None
+    # Step 3: Dataset (2-stage selection: project -> session)
+    project_id: Optional[str] = None  # e.g., "0001_black_cube_to_tray"
+    session_name: Optional[str] = None  # e.g., "20260107_180132_watanabe"
+    dataset_id: Optional[str] = None  # Full ID: project_id/session_name
     dataset_short_id: Optional[str] = None  # 6-char alphanumeric ID for job naming
 
     # Step 4: Training params
@@ -498,50 +500,134 @@ class TrainingWizard(BaseMenu):
         return "next"
 
     def _step3_dataset(self) -> str:
-        """Step 3: Select dataset."""
+        """Step 3: Select dataset (2-stage: project -> session).
+
+        Uses R2 as the source of truth for available datasets.
+        Stage 1: Select a project (top-level directory)
+        Stage 2: Select a session within that project
+        """
+        # Stage 1: Select project
+        project_result = self._step3a_select_project()
+        if project_result in ("back", "cancel"):
+            return project_result
+
+        # Stage 2: Select session within project
+        session_result = self._step3b_select_session()
+        if session_result == "back":
+            # Go back to project selection
+            return self._step3_dataset()
+        elif session_result == "cancel":
+            return "back"
+
+        return session_result
+
+    def _step3a_select_project(self) -> str:
+        """Step 3a: Select dataset project from R2."""
+        print(f"{Colors.muted('R2からプロジェクト一覧を取得中...')}")
+
         try:
-            datasets = self.api.list_datasets()
-            ds_list = datasets.get("datasets", [])
+            result = self.api.list_dataset_projects()
+            projects = result.get("projects", [])
         except Exception as e:
-            print(f"{Colors.error('データセット取得エラー:')} {e}")
+            print(f"{Colors.error('プロジェクト取得エラー:')} {e}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return "back"
 
-        if not ds_list:
-            print(f"{Colors.warning('利用可能なデータセットがありません。')}")
-            print(f"{Colors.muted('R2ストレージメニューからデータセットをアップロードしてください。')}")
+        if not projects:
+            print(f"{Colors.warning('R2に利用可能なデータセットがありません。')}")
+            print(f"{Colors.muted('データを収録してR2にアップロードしてください。')}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return "back"
 
-        ds_lookup = {}
         choices = []
-        for d in ds_list:
-            if isinstance(d, dict):
-                ds_id = d.get("id", "unknown")
-                is_local = d.get("is_local", True)
-                size = format_size(d.get("size_bytes", 0))
-                status = "✓" if is_local else "☁"
-                choices.append(Choice(value=ds_id, name=f"  {status} {ds_id} ({size})"))
-                ds_lookup[ds_id] = d
-            else:
-                choices.append(Choice(value=d, name=f"  {d}"))
-                ds_lookup[d] = {"id": d, "is_local": True}
+        for p in projects:
+            proj_id = p.get("id", "unknown")
+            proj_name = p.get("name", proj_id)
+            session_count = p.get("session_count", 0)
+            total_size = format_size(p.get("total_size_bytes", 0))
+
+            # Display format: project_name (N sessions, size)
+            display = f"  {proj_name} ({session_count} sessions, {total_size})"
+            choices.append(Choice(value=proj_id, name=display))
 
         choices.append(Choice(value="__back__", name="← 戻る"))
 
-        print(f"{Colors.muted('✓=ローカル, ☁=R2リモート')}")
-        dataset = inquirer.select(
-            message="データセットを選択:",
+        project = inquirer.select(
+            message="プロジェクトを選択:",
             choices=choices,
             style=hacker_style,
         ).execute()
 
-        if dataset == "__back__":
+        if project == "__back__":
             return "back"
 
+        self.state.project_id = project
+        return "next"
+
+    def _step3b_select_session(self) -> str:
+        """Step 3b: Select session within the selected project."""
+        if not self.state.project_id:
+            return "back"
+
+        print(f"{Colors.muted(f'プロジェクト {self.state.project_id} のセッション一覧を取得中...')}")
+
+        try:
+            result = self.api.list_project_sessions(
+                project_id=self.state.project_id,
+                exclude_eval=True,  # Exclude eval_* sessions by default
+                sort="date_desc",   # Newest first
+            )
+            sessions = result.get("sessions", [])
+        except Exception as e:
+            print(f"{Colors.error('セッション取得エラー:')} {e}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return "back"
+
+        if not sessions:
+            print(f"{Colors.warning('このプロジェクトには利用可能なセッションがありません。')}")
+            input(f"\n{Colors.muted('Press Enter to continue...')}")
+            return "back"
+
+        session_lookup = {}
+        choices = []
+        for s in sessions:
+            session_id = s.get("id", "unknown")
+            session_name = s.get("session_name", "")
+            author = s.get("author", "")
+            size = format_size(s.get("size_bytes", 0))
+            episode_count = s.get("episode_count", 0)
+            is_local = s.get("is_local", False)
+
+            # Status icon: ✓=local, ☁=remote
+            status = "✓" if is_local else "☁"
+
+            # Display format: status session_name (author, episodes, size)
+            if author:
+                display = f"  {status} {session_name} ({author}, {episode_count} eps, {size})"
+            else:
+                display = f"  {status} {session_name} ({episode_count} eps, {size})"
+
+            choices.append(Choice(value=session_id, name=display))
+            session_lookup[session_id] = s
+
+        choices.append(Choice(value="__back__", name="← 戻る (プロジェクト選択へ)"))
+
+        print(f"{Colors.muted('✓=ローカル, ☁=R2リモート (新しい順)')}")
+        session = inquirer.select(
+            message="セッションを選択:",
+            choices=choices,
+            style=hacker_style,
+        ).execute()
+
+        if session == "__back__":
+            self.state.project_id = None
+            return "back"
+
+        # Get session info
+        session_info = session_lookup.get(session, {})
+
         # Check if dataset needs download
-        ds_info = ds_lookup.get(dataset, {})
-        if not ds_info.get("is_local", True):
+        if not session_info.get("is_local", False):
             print(f"\n{Colors.warning('このデータセットはローカルにダウンロードされていません。')}")
             should_download = inquirer.confirm(
                 message="R2からダウンロードしますか?",
@@ -553,7 +639,7 @@ class TrainingWizard(BaseMenu):
                 return "back"
 
             print()
-            download_result = download_dataset_with_progress(self.api, dataset)
+            download_result = download_dataset_with_progress(self.api, session)
             if download_result.get("success"):
                 print(f"\n{Colors.success('データセットのダウンロードが完了しました。')}")
             else:
@@ -562,9 +648,11 @@ class TrainingWizard(BaseMenu):
                 input(f"\n{Colors.muted('Press Enter to continue...')}")
                 return "back"
 
-        self.state.dataset_id = dataset
-        # Get short_id from dataset info for job naming
-        self.state.dataset_short_id = ds_info.get("short_id")
+        # Store selected dataset info
+        self.state.dataset_id = session
+        self.state.session_name = session_info.get("session_name")
+        self.state.dataset_short_id = session_info.get("short_id")
+
         return "next"
 
     def _step4_training_params(self) -> str:
