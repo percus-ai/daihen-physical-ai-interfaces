@@ -49,7 +49,7 @@ class PolicyTypeInfo:
     pretrained_models: List[PretrainedModel] = field(default_factory=list)
     default_steps: int = 100000
     default_batch_size: int = 32
-    default_save_freq: int = 10000
+    default_save_freq: int = 5000
     recommended_storage: int = 100
     recommended_gpu: str = "H100"
     torch_nightly: bool = False
@@ -165,7 +165,7 @@ class NewTrainingState:
     # Step 4: Training params
     steps: int = 100000
     batch_size: int = 32
-    save_freq: int = 10000
+    save_freq: int = 5000
 
     # Step 5: Verda settings
     gpu_model: str = "H100"
@@ -220,7 +220,7 @@ class ContinueTrainingState:
     # Step 4: Training params
     additional_steps: int = 50000
     batch_size: int = 32
-    save_freq: int = 10000
+    save_freq: int = 5000
 
     # Step 5: Verda settings
     gpu_model: str = "H100"
@@ -679,11 +679,13 @@ class TrainingWizard(BaseMenu):
             ).execute()
             self.state.batch_size = int(batch_size)
 
+            save_freq_max = self.state.steps
+            save_freq_default = max(min(self.state.save_freq, save_freq_max), 50)
             save_freq = inquirer.number(
                 message="Save frequency (steps):",
-                default=self.state.save_freq,
-                min_allowed=100,
-                max_allowed=100000,
+                default=save_freq_default,
+                min_allowed=50,
+                max_allowed=save_freq_max,
                 style=hacker_style,
             ).execute()
             self.state.save_freq = int(save_freq)
@@ -1600,11 +1602,13 @@ class ContinueTrainingWizard(BaseMenu):
             ).execute()
             self.state.batch_size = int(batch_size)
 
+            save_freq_max = self.state.additional_steps
+            save_freq_default = max(min(self.state.save_freq, save_freq_max), 50)
             save_freq = inquirer.number(
                 message="Save frequency (steps):",
-                default=self.state.save_freq,
-                min_allowed=100,
-                max_allowed=100000,
+                default=save_freq_default,
+                min_allowed=50,
+                max_allowed=save_freq_max,
                 style=hacker_style,
             ).execute()
             self.state.save_freq = int(save_freq)

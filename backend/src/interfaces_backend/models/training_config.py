@@ -28,7 +28,7 @@ class TrainingParamsModel(BaseModel):
 
     steps: Optional[int] = Field(None, description="Number of training steps")
     batch_size: Optional[int] = Field(None, description="Batch size")
-    save_freq: Optional[int] = Field(None, description="Checkpoint save frequency")
+    save_freq: Optional[int] = Field(None, ge=50, description="Checkpoint save frequency")
 
 
 class OutputConfigModel(BaseModel):
