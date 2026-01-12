@@ -243,7 +243,7 @@ async def list_project_sessions(
     )
 
 
-@router.get("/datasets/{dataset_id}", response_model=DatasetMetadata)
+@router.get("/datasets/{dataset_id:path}", response_model=DatasetMetadata)
 async def get_dataset(dataset_id: str):
     """Get dataset details."""
     manifest = _get_manifest()
@@ -253,7 +253,7 @@ async def get_dataset(dataset_id: str):
     return dataset
 
 
-@router.post("/datasets/{dataset_id}/upload", response_model=UploadResponse)
+@router.post("/datasets/{dataset_id:path}/upload", response_model=UploadResponse)
 async def upload_dataset(dataset_id: str):
     """Upload dataset to R2."""
     sync = _get_sync_service()
@@ -272,7 +272,7 @@ async def upload_dataset(dataset_id: str):
     )
 
 
-@router.post("/datasets/{dataset_id}/download", response_model=DownloadResponse)
+@router.post("/datasets/{dataset_id:path}/download", response_model=DownloadResponse)
 async def download_dataset(dataset_id: str, request: Optional[SyncRequest] = None):
     """Download dataset from R2."""
     sync = _get_sync_service()
@@ -302,7 +302,7 @@ async def download_dataset(dataset_id: str, request: Optional[SyncRequest] = Non
     )
 
 
-@router.post("/datasets/{dataset_id}/publish", response_model=PublishResponse)
+@router.post("/datasets/{dataset_id:path}/publish", response_model=PublishResponse)
 async def publish_dataset(dataset_id: str, request: PublishRequest):
     """Publish dataset to HuggingFace Hub."""
     hf = _get_hf_service()
@@ -324,7 +324,7 @@ async def publish_dataset(dataset_id: str, request: PublishRequest):
     )
 
 
-@router.delete("/datasets/{dataset_id}", response_model=ArchiveResponse)
+@router.delete("/datasets/{dataset_id:path}", response_model=ArchiveResponse)
 async def archive_dataset(dataset_id: str):
     """Archive (soft delete) a dataset."""
     manifest = _get_manifest()
@@ -341,7 +341,7 @@ async def archive_dataset(dataset_id: str):
     )
 
 
-@router.post("/datasets/{dataset_id}/restore", response_model=ArchiveResponse)
+@router.post("/datasets/{dataset_id:path}/restore", response_model=ArchiveResponse)
 async def restore_dataset(dataset_id: str):
     """Restore dataset from archive."""
     manifest = _get_manifest()
@@ -358,7 +358,7 @@ async def restore_dataset(dataset_id: str):
     )
 
 
-@router.get("/datasets/{dataset_id}/sync", response_model=SyncStatusResponse)
+@router.get("/datasets/{dataset_id:path}/sync", response_model=SyncStatusResponse)
 async def check_dataset_sync(dataset_id: str):
     """Check sync status for a dataset."""
     sync = _get_sync_service()

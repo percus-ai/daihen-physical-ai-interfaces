@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import yaml
-from datacrunch import DataCrunchClient
+from verda import VerdaClient
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from interfaces_backend.models.training import (
@@ -233,7 +233,7 @@ def _extract_gpu_count(instance_type: str) -> Optional[int]:
         return None
 
 
-def _get_verda_client():
+def _get_verda_client() -> Optional[VerdaClient]:
     """Get Verda/DataCrunch client (if available)."""
     client_id = os.environ.get("DATACRUNCH_CLIENT_ID")
     client_secret = os.environ.get("DATACRUNCH_CLIENT_SECRET")
@@ -241,7 +241,7 @@ def _get_verda_client():
     if not client_id or not client_secret:
         return None
 
-    return DataCrunchClient(client_id, client_secret)
+    return VerdaClient(client_id, client_secret)
 
 
 def _build_verda_storage_item(volume: object, state: str) -> VerdaStorageItem:
@@ -261,7 +261,7 @@ def _build_verda_storage_item(volume: object, state: str) -> VerdaStorageItem:
     )
 
 
-def _collect_verda_volumes(client: DataCrunchClient) -> dict[str, tuple[str, object]]:
+def _collect_verda_volumes(client: VerdaClient) -> dict[str, tuple[str, object]]:
     """Collect Verda volumes and map by ID."""
     volumes_by_id: dict[str, tuple[str, object]] = {}
     active_volumes = client.volumes.get()
@@ -273,7 +273,7 @@ def _collect_verda_volumes(client: DataCrunchClient) -> dict[str, tuple[str, obj
     return volumes_by_id
 
 
-def _restore_verda_volumes(client: DataCrunchClient, volume_ids: list[str]) -> None:
+def _restore_verda_volumes(client: VerdaClient, volume_ids: list[str]) -> None:
     """Restore volumes from trash via Verda API."""
     payload = {"action": "restore", "id": volume_ids}
     client._http_client.put("/volumes", json=payload)
@@ -287,7 +287,7 @@ def _chunk_list(items: list[str], chunk_size: int = 20) -> list[list[str]]:
 _verda_client_local = threading.local()
 
 
-def _get_thread_verda_client() -> Optional[DataCrunchClient]:
+def _get_thread_verda_client() -> Optional[VerdaClient]:
     """Get thread-local Verda client."""
     client = getattr(_verda_client_local, "client", None)
     if client is None:
@@ -671,7 +671,7 @@ async def list_verda_storage():
     client = _get_verda_client()
     if not client:
         raise HTTPException(
-            status_code=503,
+            status_code=400,
             detail="Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)",
         )
 
@@ -696,7 +696,7 @@ async def delete_verda_storage(request: VerdaStorageActionRequest):
     client = _get_verda_client()
     if not client:
         raise HTTPException(
-            status_code=503,
+            status_code=400,
             detail="Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)",
         )
 
@@ -761,7 +761,7 @@ async def restore_verda_storage(request: VerdaStorageActionRequest):
     client = _get_verda_client()
     if not client:
         raise HTTPException(
-            status_code=503,
+            status_code=400,
             detail="Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)",
         )
 
@@ -826,7 +826,7 @@ async def purge_verda_storage(request: VerdaStorageActionRequest):
     client = _get_verda_client()
     if not client:
         raise HTTPException(
-            status_code=503,
+            status_code=400,
             detail="Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)",
         )
 

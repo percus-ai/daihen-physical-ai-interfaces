@@ -915,6 +915,49 @@ async def list_recordings(project_id: Optional[str] = None):
     return RecordingListResponse(recordings=recordings, total=len(recordings))
 
 
+@router.get("/recordings/{recording_id:path}/validate", response_model=RecordingValidateResponse)
+async def validate_recording(recording_id: str):
+    """Validate recording data."""
+    parts = recording_id.split("/")
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid recording ID format")
+
+    project_id, episode_name = parts
+    recordings_dir = get_datasets_dir()
+    recording_path = recordings_dir / project_id / episode_name
+
+    if not recording_path.exists():
+        raise HTTPException(status_code=404, detail=f"Recording not found: {recording_id}")
+
+    errors = []
+    warnings = []
+
+    # Check for parquet files
+    parquet_files = list(recording_path.glob("*.parquet"))
+    data_dir = recording_path / "data"
+    if data_dir.exists():
+        parquet_files.extend(list(data_dir.glob("*.parquet")))
+
+    if not parquet_files:
+        errors.append("No parquet files found")
+
+    # Check for metadata
+    meta_file = recording_path / "meta" / "info.json"
+    if not meta_file.exists():
+        meta_file = recording_path / "meta.json"
+    if not meta_file.exists():
+        warnings.append("Missing metadata file")
+
+    is_valid = len(errors) == 0
+
+    return RecordingValidateResponse(
+        recording_id=recording_id,
+        is_valid=is_valid,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
 @router.get("/recordings/{recording_id:path}", response_model=RecordingInfo)
 async def get_recording(recording_id: str):
     """Get recording details."""
@@ -967,45 +1010,3 @@ async def delete_recording(recording_id: str):
 
     return {"recording_id": recording_id, "message": "Recording deleted"}
 
-
-@router.get("/recordings/{recording_id:path}/validate", response_model=RecordingValidateResponse)
-async def validate_recording(recording_id: str):
-    """Validate recording data."""
-    parts = recording_id.split("/")
-    if len(parts) != 2:
-        raise HTTPException(status_code=400, detail="Invalid recording ID format")
-
-    project_id, episode_name = parts
-    recordings_dir = get_datasets_dir()
-    recording_path = recordings_dir / project_id / episode_name
-
-    if not recording_path.exists():
-        raise HTTPException(status_code=404, detail=f"Recording not found: {recording_id}")
-
-    errors = []
-    warnings = []
-
-    # Check for parquet files
-    parquet_files = list(recording_path.glob("*.parquet"))
-    data_dir = recording_path / "data"
-    if data_dir.exists():
-        parquet_files.extend(list(data_dir.glob("*.parquet")))
-
-    if not parquet_files:
-        errors.append("No parquet files found")
-
-    # Check for metadata
-    meta_file = recording_path / "meta" / "info.json"
-    if not meta_file.exists():
-        meta_file = recording_path / "meta.json"
-    if not meta_file.exists():
-        warnings.append("Missing metadata file")
-
-    is_valid = len(errors) == 0
-
-    return RecordingValidateResponse(
-        recording_id=recording_id,
-        is_valid=is_valid,
-        errors=errors,
-        warnings=warnings,
-    )
