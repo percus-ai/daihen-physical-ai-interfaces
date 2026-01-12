@@ -505,34 +505,73 @@ class VerdaStorageMenu(BaseMenu):
         """Run storage action via WebSocket and show progress."""
         total = len(volume_ids)
         result: Dict[str, Any] = {}
+        current = {
+            "done": 0,
+            "total": total,
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "current_id": "",
+            "last_error": "",
+        }
 
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-        )
-        task_id = progress.add_task("処理中...", total=total)
+        title_map = {
+            "delete": "🗑️ Verdaストレージ削除",
+            "restore": "♻️ Verdaストレージ復活",
+            "purge": "🔥 Verdaストレージ完全削除",
+        }
+
+        def make_progress_panel() -> Panel:
+            table = Table(show_header=False, box=None, padding=(0, 1))
+            table.add_column("Label", style="cyan")
+            table.add_column("Value")
+
+            done = current["done"]
+            total_count = current["total"] or total
+            pct = (done / total_count) * 100 if total_count else 0
+            table.add_row("進捗:", f"{done}/{total_count} ({pct:.1f}%)")
+            table.add_row("成功:", str(current["success"]))
+            table.add_row("失敗:", str(current["failed"]))
+            table.add_row("スキップ:", str(current["skipped"]))
+            if current["current_id"]:
+                table.add_row("対象:", current["current_id"])
+            if current["last_error"]:
+                table.add_row("直近エラー:", current["last_error"])
+
+            return Panel(table, title=title_map.get(action, "Verdaストレージ操作"), border_style="cyan")
 
         def on_message(message: Dict[str, Any]) -> None:
             msg_type = message.get("type")
             if msg_type == "start":
-                progress.update(task_id, total=message.get("total", total))
+                current["total"] = message.get("total", total)
             elif msg_type == "progress":
-                done = message.get("done", 0)
-                progress.update(task_id, completed=done)
+                current["done"] = message.get("done", current["done"])
+                current["current_id"] = message.get("id", current["current_id"])
+                status = message.get("status")
+                if status == "success":
+                    current["success"] += 1
+                elif status == "failed":
+                    current["failed"] += 1
+                    current["last_error"] = message.get("reason", "")[:80]
+                elif status == "skipped":
+                    current["skipped"] += 1
             elif msg_type == "complete":
-                progress.update(task_id, completed=message.get("total", total))
+                current["done"] = message.get("total", current["done"])
+                current["current_id"] = ""
 
         def on_error(error: str) -> None:
             self.print_error(error)
 
-        with progress:
+        console = Console()
+        with Live(make_progress_panel(), console=console, refresh_per_second=4) as live:
+            def update_display(message: Dict[str, Any]) -> None:
+                on_message(message)
+                live.update(make_progress_panel())
+
             result = self.api.verda_storage_action_ws(
                 action=action,
                 volume_ids=volume_ids,
-                on_message=on_message,
+                on_message=update_display,
                 on_error=on_error,
             )
 
