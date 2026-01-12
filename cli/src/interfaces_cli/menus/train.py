@@ -343,7 +343,7 @@ class TrainMenu(BaseMenu):
             Choice(value="new", name="🚀 [NEW] 新規学習"),
             Choice(value="continue", name="🔄 [CONTINUE] 継続学習"),
             Choice(value="configs", name="⚙️  [CONFIGS] 学習設定管理"),
-            Choice(value="verda_storage", name="🗄️  Verdaストレージ管理"),
+            Choice(value="verda_storage", name="🗄️  [VERDA] Verdaストレージ管理"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
