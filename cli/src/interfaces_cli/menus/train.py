@@ -2265,7 +2265,7 @@ class TrainingJobsMenu(BaseMenu):
                     print(f"  設定名: {job_info.get('config_name', 'N/A')}")
                     print(f"  モード: {job_info.get('mode', 'train')}")
                     if job_info.get('gpu_model'):
-                        gpu_count = job_info.get('gpu_count', 1)
+                        gpu_count = job_info.get('gpus_per_instance') or job_info.get('gpu_count', 1)
                         print(f"  GPU: {job_info.get('gpu_model')} x {gpu_count}")
                     if job_info.get('ip'):
                         print(f"  IP: {job_info.get('ip')}")

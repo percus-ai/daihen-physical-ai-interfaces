@@ -50,7 +50,7 @@ from interfaces_backend.models.training import (
     VerdaStorageListResponse,
 )
 from percus_ai.storage import get_configs_dir, get_project_root, get_models_dir
-from percus_ai.db import get_supabase_client
+from percus_ai.db import get_supabase_async_client, get_supabase_client
 from percus_ai.training.ssh.client import SSHConnection
 from percus_ai.training.ssh.executor import RemoteExecutor
 
@@ -160,7 +160,7 @@ class _TrainingJobRealtimeSubscriber:
 
 class TrainingJobRealtimeManager:
     def __init__(self) -> None:
-        self._client = get_supabase_client()
+        self._client = None
         self._channel = None
         self._realtime = None
         self._channel_lock = asyncio.Lock()
@@ -188,28 +188,37 @@ class TrainingJobRealtimeManager:
             if self._channel:
                 return
 
+            self._client = await get_supabase_async_client()
             realtime = getattr(self._client, "realtime", None) or getattr(
                 self._client,
                 "realtime_client",
                 None,
             )
             if realtime is None:
-                raise RuntimeError("Supabase Realtime client is not available")
+                raise RuntimeError("Supabase Realtime client is not available (async client required)")
 
             channel_factory = getattr(realtime, "channel", None) or getattr(self._client, "channel", None)
             if channel_factory is None or not callable(channel_factory):
                 raise RuntimeError("Supabase Realtime channel API is not available")
 
             channel = channel_factory(DB_TABLE)
-            on_method = getattr(channel, "on", None)
-            if on_method is None or not callable(on_method):
-                raise RuntimeError("Supabase Realtime channel.on is not available")
-
-            on_method(
-                "postgres_changes",
-                {"event": "*", "schema": "public", "table": DB_TABLE},
-                self._handle_change,
-            )
+            on_changes = getattr(channel, "on_postgres_changes", None)
+            if on_changes is not None and callable(on_changes):
+                on_changes(
+                    event="*",
+                    schema="public",
+                    table=DB_TABLE,
+                    callback=self._handle_change,
+                )
+            else:
+                on_method = getattr(channel, "on", None)
+                if on_method is None or not callable(on_method):
+                    raise RuntimeError("Supabase Realtime channel handler is not available")
+                on_method(
+                    "postgres_changes",
+                    {"event": "*", "schema": "public", "table": DB_TABLE},
+                    self._handle_change,
+                )
 
             connect = getattr(realtime, "connect", None)
             if connect is not None and callable(connect):
@@ -609,6 +618,63 @@ def _update_cleanup_status(job_id: str, status: str) -> None:
         return
     job_data["cleanup_status"] = status
     _save_job(job_data)
+
+
+def _resolve_project_id(dataset_id: Optional[str]) -> Optional[str]:
+    if not dataset_id:
+        return None
+    client = get_supabase_client()
+    rows = client.table("datasets").select("project_id").eq("id", dataset_id).execute().data or []
+    if rows:
+        return rows[0].get("project_id")
+    return None
+
+
+def _upsert_model_for_job(job_data: dict) -> None:
+    client = get_supabase_client()
+    model_id = job_data.get("model_id") or job_data.get("job_id")
+    project_id = job_data.get("project_id") or _resolve_project_id(job_data.get("dataset_id"))
+    if not model_id or not project_id:
+        logger.warning("Model upsert skipped (model_id or project_id missing)")
+        return
+
+    training_cfg = job_data.get("training_config") or {}
+    training_params = training_cfg.get("training") if isinstance(training_cfg, dict) else {}
+    policy_type = job_data.get("policy_type")
+    if not policy_type and isinstance(training_cfg, dict):
+        policy = training_cfg.get("policy") or {}
+        policy_type = policy.get("type")
+
+    now = datetime.now().isoformat()
+    payload = {
+        "id": model_id,
+        "name": model_id,
+        "project_id": project_id,
+        "dataset_id": job_data.get("dataset_id"),
+        "policy_type": policy_type,
+        "training_steps": training_params.get("steps"),
+        "batch_size": training_params.get("batch_size"),
+        "source": "r2",
+        "status": "active",
+        "created_at": job_data.get("created_at") or now,
+        "updated_at": now,
+    }
+    client.table("models").upsert(payload, on_conflict="id").execute()
+
+
+def _mark_job_completed(job_id: str, termination_reason: str = "REMOTE_EXIT") -> None:
+    job_data = _load_job(job_id, include_deleted=True)
+    if not job_data:
+        return
+    if job_data.get("status") not in ("running", "starting", "deploying"):
+        return
+    job_data["status"] = "completed"
+    job_data["termination_reason"] = termination_reason
+    job_data["completed_at"] = datetime.now().isoformat()
+    if not job_data.get("model_id"):
+        job_data["model_id"] = job_data.get("job_id")
+    _save_job(job_data)
+    _upsert_model_for_job(job_data)
 
 
 def _list_jobs(days: int = 7) -> list[dict]:
@@ -1730,10 +1796,7 @@ async def check_all_jobs_status():
         remote_status = _check_remote_status(job_data)
 
         if remote_status == "stopped":
-            job_data["status"] = "completed"
-            job_data["termination_reason"] = "REMOTE_EXIT"
-            job_data["completed_at"] = datetime.now().isoformat()
-            _save_job(job_data)
+            _mark_job_completed(job_id, termination_reason="REMOTE_EXIT")
             updates.append(
                 JobStatusUpdate(
                     job_id=job_id,
@@ -1925,6 +1988,7 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
             "status": "starting",
             "config_name": job_id,
             "mode": "train",
+            "project_id": _resolve_project_id(request.dataset.id if request.dataset else None),
             "ssh_user": "root",
             "ssh_private_key": ssh_private_key,
             "remote_base_dir": "/root",
@@ -2257,6 +2321,7 @@ def _create_job_with_progress(
             "status": "starting",
             "config_name": job_id,
             "mode": "train",
+            "project_id": _resolve_project_id(dataset.id),
             "ssh_user": "root",
             "ssh_private_key": ssh_private_key,
             "remote_base_dir": "/root",
@@ -3222,6 +3287,7 @@ async def create_continue_job(
             "status": "starting",
             "config_name": job_id,
             "mode": "resume_local",
+            "project_id": _resolve_project_id(dataset_id),
             "continue_from": {
                 "job_name": checkpoint_config.job_name,
                 "step": step,
@@ -3801,6 +3867,7 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
                         "status": "stream_ended",
                         "message": "ログストリーム終了"
                     })
+                    _mark_job_completed(job_id)
                     break
 
             except Exception as e:
@@ -3899,7 +3966,7 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
             "config_name": job_data.get("config_name"),
             "mode": job_data.get("mode"),
             "gpu_model": job_data.get("gpu_model"),
-            "gpu_count": job_data.get("gpu_count"),
+            "gpus_per_instance": job_data.get("gpus_per_instance"),
             "ip": job_data.get("ip"),
             "instance_id": job_data.get("instance_id"),
             "created_at": job_data.get("created_at"),
