@@ -19,6 +19,14 @@ class JobStatus(str, Enum):
     TERMINATED = "terminated"
 
 
+class CleanupStatus(str, Enum):
+    """Cleanup status for failed/terminated jobs."""
+
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
 class TrainingMode(str, Enum):
     """Training mode."""
 
@@ -34,6 +42,9 @@ class JobInfo(BaseModel):
     instance_id: str
     ip: Optional[str] = None
     status: JobStatus
+    failure_reason: Optional[str] = None
+    termination_reason: Optional[str] = None
+    cleanup_status: Optional[CleanupStatus] = None
     config_name: str
     mode: TrainingMode
 
@@ -56,6 +67,7 @@ class JobInfo(BaseModel):
     # Completion info
     exit_code: Optional[int] = None
     completed_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
 
     model_config = ConfigDict(use_enum_values=True)
 

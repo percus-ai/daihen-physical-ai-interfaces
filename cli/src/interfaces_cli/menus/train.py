@@ -2270,6 +2270,14 @@ class TrainingJobsMenu(BaseMenu):
                     if job_info.get('ip'):
                         print(f"  IP: {job_info.get('ip')}")
                     print(f"  作成: {job_info.get('created_at', 'N/A')}")
+                    if job_info.get('failure_reason'):
+                        print(f"  失敗理由: {job_info.get('failure_reason')}")
+                    if job_info.get('termination_reason'):
+                        print(f"  終了理由: {job_info.get('termination_reason')}")
+                    if job_info.get('cleanup_status'):
+                        print(f"  後処理: {job_info.get('cleanup_status')}")
+                    if job_info.get('deleted_at'):
+                        print(f"  削除日時: {job_info.get('deleted_at')}")
                     job_info_displayed = True
                     # Show loading indicator for remote info
                     print(f"  {Colors.muted('リモート情報取得中...')}", end="\r")

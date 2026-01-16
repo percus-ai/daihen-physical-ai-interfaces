@@ -1,11 +1,13 @@
 """Training jobs API router."""
 
 import asyncio
+import inspect
 import json
 import logging
 import os
 import time
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -59,6 +61,201 @@ router = APIRouter(prefix="/api/training", tags=["training"])
 _executor = ThreadPoolExecutor(max_workers=2)
 
 DB_TABLE = "training_jobs"
+
+RUNNING_STATUSES = {"running", "starting", "deploying"}
+RUNNING_STATUSES_WITH_PENDING = {"running", "starting", "deploying", "pending"}
+
+
+def _first_dict(*values: object) -> Optional[dict]:
+    for value in values:
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _extract_record(payload: object) -> Optional[dict]:
+    if isinstance(payload, dict):
+        record = _first_dict(payload.get("new"), payload.get("record"))
+        if record:
+            return record
+        data = payload.get("data")
+        if isinstance(data, dict):
+            record = _first_dict(data.get("record"), data.get("new"))
+            if record:
+                return record
+        record = _first_dict(payload.get("old"), payload.get("old_record"))
+        if record:
+            return record
+        return None
+
+    for attr in ("new", "record", "old"):
+        record = getattr(payload, attr, None)
+        if isinstance(record, dict):
+            return record
+
+    data = getattr(payload, "data", None) or getattr(payload, "payload", None)
+    if isinstance(data, dict):
+        record = _first_dict(data.get("record"), data.get("new"), data.get("old"))
+        if record:
+            return record
+
+    return None
+
+
+def _extract_event_type(payload: object) -> str:
+    if isinstance(payload, dict):
+        event_type = payload.get("eventType") or payload.get("event_type") or payload.get("type")
+        if isinstance(event_type, str):
+            return event_type.upper()
+        data = payload.get("data")
+        if isinstance(data, dict):
+            event_type = data.get("eventType") or data.get("event_type") or data.get("type")
+            if isinstance(event_type, str):
+                return event_type.upper()
+
+    for attr in ("event_type", "eventType", "type"):
+        event_type = getattr(payload, attr, None)
+        if isinstance(event_type, str):
+            return event_type.upper()
+
+    return ""
+
+
+def _extract_status_update(payload: object) -> tuple[Optional[str], Optional[str]]:
+    record = _extract_record(payload)
+    job_id = record.get("job_id") if isinstance(record, dict) else None
+    status = record.get("status") if isinstance(record, dict) else None
+    if not status:
+        event_type = _extract_event_type(payload)
+        if event_type == "DELETE":
+            status = "deleted"
+    return job_id, status
+
+
+def _drain_latest_status(queue: "asyncio.Queue") -> Optional[str]:
+    latest_status = None
+    while True:
+        try:
+            update = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        if isinstance(update, dict):
+            status = update.get("status")
+            if status:
+                latest_status = status
+    return latest_status
+
+
+async def _maybe_await(result: object) -> None:
+    if inspect.isawaitable(result):
+        await result
+
+
+class _TrainingJobRealtimeSubscriber:
+    def __init__(self, job_id: str, loop: asyncio.AbstractEventLoop, queue: "asyncio.Queue") -> None:
+        self.job_id = job_id
+        self.loop = loop
+        self.queue = queue
+
+
+class TrainingJobRealtimeManager:
+    def __init__(self) -> None:
+        self._client = get_supabase_client()
+        self._channel = None
+        self._realtime = None
+        self._channel_lock = asyncio.Lock()
+        self._subscribers: dict[str, _TrainingJobRealtimeSubscriber] = {}
+        self._subscribers_lock = threading.Lock()
+
+    async def subscribe(
+        self,
+        job_id: str,
+        loop: asyncio.AbstractEventLoop,
+    ) -> tuple[str, "asyncio.Queue"]:
+        await self._ensure_channel()
+        queue: asyncio.Queue = asyncio.Queue()
+        subscriber_id = uuid.uuid4().hex
+        with self._subscribers_lock:
+            self._subscribers[subscriber_id] = _TrainingJobRealtimeSubscriber(job_id, loop, queue)
+        return subscriber_id, queue
+
+    def unsubscribe(self, subscriber_id: str) -> None:
+        with self._subscribers_lock:
+            self._subscribers.pop(subscriber_id, None)
+
+    async def _ensure_channel(self) -> None:
+        async with self._channel_lock:
+            if self._channel:
+                return
+
+            realtime = getattr(self._client, "realtime", None) or getattr(
+                self._client,
+                "realtime_client",
+                None,
+            )
+            if realtime is None:
+                raise RuntimeError("Supabase Realtime client is not available")
+
+            channel_factory = getattr(realtime, "channel", None) or getattr(self._client, "channel", None)
+            if channel_factory is None or not callable(channel_factory):
+                raise RuntimeError("Supabase Realtime channel API is not available")
+
+            channel = channel_factory(DB_TABLE)
+            on_method = getattr(channel, "on", None)
+            if on_method is None or not callable(on_method):
+                raise RuntimeError("Supabase Realtime channel.on is not available")
+
+            on_method(
+                "postgres_changes",
+                {"event": "*", "schema": "public", "table": DB_TABLE},
+                self._handle_change,
+            )
+
+            connect = getattr(realtime, "connect", None)
+            if connect is not None and callable(connect):
+                await _maybe_await(connect())
+
+            subscribe = getattr(channel, "subscribe", None)
+            if subscribe is None or not callable(subscribe):
+                raise RuntimeError("Supabase Realtime channel.subscribe is not available")
+
+            await _maybe_await(subscribe())
+
+            self._realtime = realtime
+            self._channel = channel
+
+    def _handle_change(self, payload: object) -> None:
+        job_id, status = _extract_status_update(payload)
+        if not job_id or not status:
+            return
+
+        with self._subscribers_lock:
+            subscribers = [
+                subscriber
+                for subscriber in self._subscribers.values()
+                if subscriber.job_id == job_id
+            ]
+
+        for subscriber in subscribers:
+            if subscriber.loop.is_closed():
+                continue
+            try:
+                subscriber.loop.call_soon_threadsafe(
+                    subscriber.queue.put_nowait,
+                    {"job_id": job_id, "status": status},
+                )
+            except Exception as exc:
+                logger.debug("Failed to enqueue training job update: %s", exc)
+
+
+_training_job_realtime_manager: Optional[TrainingJobRealtimeManager] = None
+
+
+def _get_training_job_realtime_manager() -> TrainingJobRealtimeManager:
+    global _training_job_realtime_manager
+    if _training_job_realtime_manager is None:
+        _training_job_realtime_manager = TrainingJobRealtimeManager()
+    return _training_job_realtime_manager
 
 # Remote scripts directory - contains setup_env.sh, entry.py, etc.
 # These scripts are deployed to remote instances for training
@@ -345,7 +542,7 @@ def _check_instance_via_api(instance_id: str) -> Optional[str]:
         return None
 
 
-def _load_job(job_id: str) -> Optional[dict]:
+def _load_job(job_id: str, include_deleted: bool = False) -> Optional[dict]:
     """Load job from DB."""
     client = get_supabase_client()
     response = client.table(DB_TABLE).select("*").eq("job_id", job_id).execute()
@@ -353,6 +550,8 @@ def _load_job(job_id: str) -> Optional[dict]:
     if not records:
         return None
     record = records[0]
+    if not include_deleted and record.get("deleted_at"):
+        return None
     metadata = record.get("job_metadata") or {}
     if isinstance(metadata, dict):
         record.update(metadata)
@@ -371,6 +570,10 @@ def _save_job(job_data: dict) -> None:
         "policy_type",
         "dataset_id",
         "status",
+        "failure_reason",
+        "termination_reason",
+        "cleanup_status",
+        "deleted_at",
         "training_config",
         "compute_profile",
         "author",
@@ -400,6 +603,14 @@ def _save_job(job_data: dict) -> None:
     client.table(DB_TABLE).upsert(record, on_conflict="job_id").execute()
 
 
+def _update_cleanup_status(job_id: str, status: str) -> None:
+    job_data = _load_job(job_id, include_deleted=True)
+    if not job_data:
+        return
+    job_data["cleanup_status"] = status
+    _save_job(job_data)
+
+
 def _list_jobs(days: int = 7) -> list[dict]:
     """List jobs from DB.
 
@@ -408,7 +619,7 @@ def _list_jobs(days: int = 7) -> list[dict]:
               Running/starting jobs are always included.
     """
     client = get_supabase_client()
-    response = client.table(DB_TABLE).select("*").execute()
+    response = client.table(DB_TABLE).select("*").is_("deleted_at", "null").execute()
     jobs = response.data or []
 
     cutoff_date = datetime.now() - timedelta(days=days)
@@ -1332,6 +1543,7 @@ async def stop_job(job_id: str):
     success = _stop_remote_job(job_data)
     if success:
         job_data["status"] = "stopped"
+        job_data["termination_reason"] = "USER_STOP"
         job_data["completed_at"] = datetime.now().isoformat()
         _save_job(job_data)
 
@@ -1411,29 +1623,32 @@ async def delete_job(job_id: str, terminate_instance: bool = True):
         job_id: Job ID to delete
         terminate_instance: If True (default), also terminate the Verda instance
     """
-    job_file = _get_job_file(job_id)
-    if not job_file.exists():
+    job_data = _load_job(job_id)
+    if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    # Load job data to get instance_id
-    job_data = _load_job(job_id)
-    instance_id = job_data.get("instance_id") if job_data else None
+    instance_id = job_data.get("instance_id")
     instance_deleted = False
+
+    job_data["deleted_at"] = datetime.now().isoformat()
+    job_data["status"] = "terminated"
+    job_data["termination_reason"] = "USER_DELETE"
 
     # Terminate Verda instance if requested and available
     if terminate_instance and instance_id:
+        job_data["cleanup_status"] = "running"
+        _save_job(job_data)
         instance_deleted = _delete_verda_instance(instance_id)
-
-    # Delete the job file
-    job_file.unlink()
+        job_data["cleanup_status"] = "done" if instance_deleted else "failed"
+    _save_job(job_data)
 
     if instance_id and terminate_instance:
         if instance_deleted:
-            message = "ジョブ記録とインスタンスを削除しました"
+            message = "ジョブを論理削除し、インスタンスを削除しました"
         else:
-            message = "ジョブ記録を削除しました（インスタンス終了に失敗）"
+            message = "ジョブを論理削除しました（インスタンス終了に失敗）"
     else:
-        message = "ジョブ記録を削除しました"
+        message = "ジョブを論理削除しました"
 
     return JobActionResponse(
         job_id=job_id,
@@ -1467,6 +1682,7 @@ async def check_all_jobs_status():
         if instance_status is None:
             # Instance not found (deleted or API error)
             job_data["status"] = "terminated"
+            job_data["termination_reason"] = "INSTANCE_NOT_FOUND"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
             updates.append(
@@ -1483,6 +1699,7 @@ async def check_all_jobs_status():
         if instance_status in ("offline", "error", "discontinued"):
             # Instance terminated (spot preemption, error, etc.)
             job_data["status"] = "terminated"
+            job_data["termination_reason"] = "INSTANCE_TERMINATED"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
             updates.append(
@@ -1514,6 +1731,7 @@ async def check_all_jobs_status():
 
         if remote_status == "stopped":
             job_data["status"] = "completed"
+            job_data["termination_reason"] = "REMOTE_EXIT"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
             updates.append(
@@ -1980,7 +2198,9 @@ def _create_job_with_progress(
         if instance_id:
             emit_progress({"type": "cleanup", "message": f"エラー発生のためインスタンスを削除中: {instance_id}"})
             logger.warning(f"Cleaning up instance {instance_id} due to failure: {error_msg}")
-            _delete_verda_instance(instance_id)
+            _update_cleanup_status(job_id, "running")
+            cleanup_ok = _delete_verda_instance(instance_id)
+            _update_cleanup_status(job_id, "done" if cleanup_ok else "failed")
         return {"success": False, "error": error_msg}
 
     try:
@@ -2082,6 +2302,7 @@ def _create_job_with_progress(
 
         if not ip:
             job_data["status"] = "failed"
+            job_data["failure_reason"] = "IP_TIMEOUT"
             job_data["error_message"] = "IP取得タイムアウト"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
@@ -2124,6 +2345,7 @@ def _create_job_with_progress(
 
         if not conn:
             job_data["status"] = "failed"
+            job_data["failure_reason"] = "SSH_TIMEOUT"
             job_data["error_message"] = "SSH接続タイムアウト"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
@@ -2279,9 +2501,25 @@ def _create_job_with_progress(
             conn.disconnect()
 
     except HTTPException as e:
+        if instance_id:
+            job_data = _load_job(job_id, include_deleted=True)
+            if job_data:
+                job_data["status"] = "failed"
+                job_data["failure_reason"] = "VERDA_ERROR"
+                job_data["error_message"] = e.detail
+                job_data["completed_at"] = datetime.now().isoformat()
+                _save_job(job_data)
         emit_progress({"type": "error", "error": e.detail})
         return cleanup_instance_on_failure(e.detail)
     except Exception as e:
+        if instance_id:
+            job_data = _load_job(job_id, include_deleted=True)
+            if job_data:
+                job_data["status"] = "failed"
+                job_data["failure_reason"] = "UNKNOWN"
+                job_data["error_message"] = str(e)
+                job_data["completed_at"] = datetime.now().isoformat()
+                _save_job(job_data)
         emit_progress({"type": "error", "error": str(e)})
         return cleanup_instance_on_failure(str(e))
 
@@ -2409,6 +2647,7 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
     client = _get_verda_client()
     if not client:
         job_data["status"] = "failed"
+        job_data["failure_reason"] = "VERDA_ERROR"
         job_data["completed_at"] = datetime.now().isoformat()
         _save_job(job_data)
         return
@@ -2418,7 +2657,9 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
     def cleanup_on_failure(error_msg: str) -> None:
         """Clean up instance on deployment failure."""
         logger.warning(f"Cleaning up instance {instance_id} due to failure: {error_msg}")
-        _delete_verda_instance(instance_id)
+        _update_cleanup_status(job_id, "running")
+        cleanup_ok = _delete_verda_instance(instance_id)
+        _update_cleanup_status(job_id, "done" if cleanup_ok else "failed")
 
     try:
         # Wait for IP (up to 15 minutes)
@@ -2436,6 +2677,7 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
 
         if not ip:
             job_data["status"] = "failed"
+            job_data["failure_reason"] = "IP_TIMEOUT"
             job_data["error_message"] = "IP取得タイムアウト"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
@@ -2465,6 +2707,7 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
 
         if not conn:
             job_data["status"] = "failed"
+            job_data["failure_reason"] = "SSH_TIMEOUT"
             job_data["error_message"] = "SSH接続タイムアウト"
             job_data["completed_at"] = datetime.now().isoformat()
             _save_job(job_data)
@@ -2517,6 +2760,7 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
 
     except Exception as e:
         job_data["status"] = "failed"
+        job_data["failure_reason"] = "UNKNOWN"
         job_data["error_message"] = str(e)
         job_data["completed_at"] = datetime.now().isoformat()
         _save_job(job_data)
@@ -3498,8 +3742,22 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
         await websocket.close()
         return
 
+    status_subscription_id = None
+    status_queue = None
+    realtime_manager = None
     ssh_conn: Optional[SSHConnection] = None
     try:
+        try:
+            realtime_manager = _get_training_job_realtime_manager()
+            status_subscription_id, status_queue = await realtime_manager.subscribe(
+                job_id,
+                asyncio.get_running_loop(),
+            )
+        except Exception as e:
+            await websocket.send_json({"type": "error", "error": f"Realtime購読に失敗しました: {e}"})
+            await websocket.close()
+            return
+
         # Connect SSH in thread pool
         loop = asyncio.get_event_loop()
         ssh_conn = await loop.run_in_executor(
@@ -3524,7 +3782,6 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
         channel.setblocking(0)
 
         last_heartbeat = asyncio.get_event_loop().time()
-        last_status_check = last_heartbeat
 
         while True:
             # Check for incoming data from SSH
@@ -3555,19 +3812,14 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
                 await websocket.send_json({"type": "heartbeat"})
                 last_heartbeat = now
 
-            # Check job status periodically
-            if now - last_status_check > 2:
-                job_data = _load_job(job_id)
-                last_status_check = now
-                if job_data:
-                    status = job_data.get("status", "")
-                    if status not in ("running", "starting", "deploying"):
-                        await websocket.send_json({
-                            "type": "status",
-                            "status": status,
-                            "message": f"ジョブ状態: {status}"
-                        })
-                        break
+            status = _drain_latest_status(status_queue) if status_queue else None
+            if status and status not in RUNNING_STATUSES:
+                await websocket.send_json({
+                    "type": "status",
+                    "status": status,
+                    "message": f"ジョブ状態: {status}"
+                })
+                break
 
             # Small delay to avoid busy loop
             await asyncio.sleep(0.1)
@@ -3586,6 +3838,8 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
                 ssh_conn.disconnect()
             except Exception:
                 pass
+        if status_subscription_id and realtime_manager:
+            realtime_manager.unsubscribe(status_subscription_id)
 
 
 @router.websocket("/ws/jobs/{job_id}/session")
@@ -3622,6 +3876,20 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
         await websocket.close()
         return
 
+    status_subscription_id = None
+    status_queue = None
+    realtime_manager = None
+    try:
+        realtime_manager = _get_training_job_realtime_manager()
+        status_subscription_id, status_queue = await realtime_manager.subscribe(
+            job_id,
+            asyncio.get_running_loop(),
+        )
+    except Exception as e:
+        await websocket.send_json({"type": "error", "error": f"Realtime購読に失敗しました: {e}"})
+        await websocket.close()
+        return
+
     # Send job info immediately (no SSH needed)
     await websocket.send_json({
         "type": "job_info",
@@ -3635,28 +3903,32 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
             "ip": job_data.get("ip"),
             "instance_id": job_data.get("instance_id"),
             "created_at": job_data.get("created_at"),
+            "failure_reason": job_data.get("failure_reason"),
+            "termination_reason": job_data.get("termination_reason"),
+            "cleanup_status": job_data.get("cleanup_status"),
+            "deleted_at": job_data.get("deleted_at"),
         }
     })
-
-    # Check if job has IP (needed for SSH)
-    ip = job_data.get("ip")
-    if not ip:
-        await websocket.send_json({
-            "type": "ssh_error",
-            "error": "Job has no IP address (instance may not be ready)"
-        })
-        # Continue without SSH - user can still see local info
-        await _run_session_loop_no_ssh(websocket, job_id)
-        return
-
-    # Start SSH connection
-    await websocket.send_json({"type": "ssh_connecting"})
 
     ssh_conn: Optional[SSHConnection] = None
     log_channel = None
     is_streaming_logs = False
 
     try:
+        # Check if job has IP (needed for SSH)
+        ip = job_data.get("ip")
+        if not ip:
+            await websocket.send_json({
+                "type": "ssh_error",
+                "error": "Job has no IP address (instance may not be ready)"
+            })
+            # Continue without SSH - user can still see local info
+            await _run_session_loop_no_ssh(websocket, status_queue)
+            return
+
+        # Start SSH connection
+        await websocket.send_json({"type": "ssh_connecting"})
+
         # Connect SSH in thread pool
         loop = asyncio.get_event_loop()
         ssh_conn = await loop.run_in_executor(
@@ -3666,7 +3938,7 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
 
         if not ssh_conn:
             await websocket.send_json({"type": "ssh_error", "error": "SSH接続に失敗しました"})
-            await _run_session_loop_no_ssh(websocket, job_id)
+            await _run_session_loop_no_ssh(websocket, status_queue)
             return
 
         await websocket.send_json({"type": "ssh_connected"})
@@ -3679,7 +3951,6 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
         log_file = _get_log_file_path(job_data)
 
         last_heartbeat = asyncio.get_event_loop().time()
-        last_status_check = last_heartbeat
         last_progress_update = asyncio.get_event_loop().time()
 
         while True:
@@ -3753,18 +4024,13 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
                 await _send_progress(websocket, ssh_conn.client, job_data)
                 last_progress_update = now
 
-            # Check job status periodically
-            if now - last_status_check > 2:
-                job_data = _load_job(job_id)
-                last_status_check = now
-                if job_data:
-                    status = job_data.get("status", "")
-                    if status not in ("running", "starting", "deploying"):
-                        await websocket.send_json({
-                            "type": "job_status_changed",
-                            "status": status
-                        })
-                        break
+            status = _drain_latest_status(status_queue) if status_queue else None
+            if status and status not in RUNNING_STATUSES:
+                await websocket.send_json({
+                    "type": "job_status_changed",
+                    "status": status
+                })
+                break
 
             await asyncio.sleep(0.05)
 
@@ -3787,12 +4053,16 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
                 ssh_conn.disconnect()
             except Exception:
                 pass
+        if status_subscription_id and realtime_manager:
+            realtime_manager.unsubscribe(status_subscription_id)
 
 
-async def _run_session_loop_no_ssh(websocket: WebSocket, job_id: str):
+async def _run_session_loop_no_ssh(
+    websocket: WebSocket,
+    status_queue: "asyncio.Queue",
+) -> None:
     """Run session loop without SSH connection (local data only)."""
     last_heartbeat = asyncio.get_event_loop().time()
-    last_status_check = last_heartbeat
 
     try:
         while True:
@@ -3820,18 +4090,13 @@ async def _run_session_loop_no_ssh(websocket: WebSocket, job_id: str):
                 await websocket.send_json({"type": "heartbeat"})
                 last_heartbeat = now
 
-            # Check job status
-            if now - last_status_check > 2:
-                job_data = _load_job(job_id)
-                last_status_check = now
-                if job_data:
-                    status = job_data.get("status", "")
-                    if status not in ("running", "starting", "deploying", "pending"):
-                        await websocket.send_json({
-                            "type": "job_status_changed",
-                            "status": status
-                        })
-                        break
+            status = _drain_latest_status(status_queue) if status_queue else None
+            if status and status not in RUNNING_STATUSES_WITH_PENDING:
+                await websocket.send_json({
+                    "type": "job_status_changed",
+                    "status": status
+                })
+                break
 
             await asyncio.sleep(0.1)
 
