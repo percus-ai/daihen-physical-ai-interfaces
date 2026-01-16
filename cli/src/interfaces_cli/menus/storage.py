@@ -164,16 +164,32 @@ class ModelsMenu(BaseMenu):
 
     title = "モデル"
 
+    @staticmethod
+    def _shorten(value: Optional[str], max_len: int) -> str:
+        if not value:
+            return "-"
+        if len(value) <= max_len:
+            return value
+        if max_len <= 3:
+            return value[:max_len]
+        return f"{value[:max_len - 3]}..."
+
+    def _format_model_label(self, model: dict) -> str:
+        model_id = model.get("id") or model.get("name") or "unknown"
+        size = format_size(model.get("size_bytes", 0))
+        policy = self._shorten(model.get("policy_type"), 8)
+        dataset = self._shorten(model.get("dataset_id"), 24)
+        model_id = self._shorten(model_id, 28)
+        return f"{model_id:<28} {size:>8}  {policy:<8}  {dataset}"
+
     def get_choices(self) -> List[Choice]:
         choices = []
         try:
             result = self.api.list_models()
             models = result.get("models", [])
             for m in models[:15]:
-                name = m.get("id", m.get("name", "unknown"))
-                size = format_size(m.get("size_bytes", 0))
-                source = m.get("source", "r2")
-                choices.append(Choice(value=name, name=f"{name} ({size}) [{source}]"))
+                model_id = m.get("id", m.get("name", "unknown"))
+                choices.append(Choice(value=model_id, name=self._format_model_label(m)))
         except Exception:
             pass
 
