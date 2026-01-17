@@ -6,7 +6,7 @@ import sys
 import select
 import termios
 import tty
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
@@ -16,19 +16,11 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+import websockets
 
 from interfaces_cli.banner import format_size, show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
 from interfaces_cli.styles import Colors, hacker_style
-
-try:
-    import websockets
-    WEBSOCKETS_AVAILABLE = True
-except ImportError:
-    WEBSOCKETS_AVAILABLE = False
-
-if TYPE_CHECKING:
-    from interfaces_cli.app import PhiApplication
 
 
 class OperateMenu(BaseMenu):
@@ -200,12 +192,6 @@ class TeleopMenu(BaseMenu):
         fps: int,
     ) -> MenuResult:
         """Run visual teleoperation with Rich Live display via WebSocket."""
-        if not WEBSOCKETS_AVAILABLE:
-            print(f"{Colors.error('Error:')} websockets library not installed.")
-            print(f"{Colors.muted('Install with: pip install websockets')}")
-            input(f"\n{Colors.muted('Press Enter to continue...')}")
-            return MenuResult.CONTINUE
-
         console = Console()
 
         # Get backend URL and convert to WebSocket URL

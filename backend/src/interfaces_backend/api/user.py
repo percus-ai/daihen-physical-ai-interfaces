@@ -6,7 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+import cv2
+import lerobot
+from serial.tools import list_ports
+import yaml
 
 from interfaces_backend.models.user import (
     UserConfigModel,
@@ -46,7 +50,6 @@ def _load_user_config() -> dict:
         }
 
     try:
-        import yaml
         with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
@@ -69,21 +72,6 @@ def _load_user_config() -> dict:
             "save_raw_video": recording.get("save_raw_video", True),
             "devices_file": data.get("devices_file", "user_devices.json"),
         }
-    except ImportError:
-        return {
-            "username": os.environ.get("USER", "unknown"),
-            "email": "",
-            "preferred_tool": "uv",
-            "gpu_available": False,
-            "cuda_version": None,
-            "auto_upload_after_recording": True,
-            "auto_download_models": True,
-            "sync_on_startup": False,
-            "default_fps": 30,
-            "preview_window": True,
-            "save_raw_video": True,
-            "devices_file": "user_devices.json",
-        }
     except Exception:
         return {
             "username": os.environ.get("USER", "unknown"),
@@ -104,8 +92,6 @@ def _load_user_config() -> dict:
 def _save_user_config(config: dict) -> None:
     """Save user configuration to file."""
     try:
-        import yaml
-
         # Create directory if needed
         USER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -135,10 +121,6 @@ def _save_user_config(config: dict) -> None:
 
         with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
-
-    except ImportError:
-        raise HTTPException(status_code=500, detail="PyYAML is required for saving config")
-
 
 def _load_device_config() -> dict:
     """Load device configuration from file."""
@@ -470,38 +452,20 @@ async def validate_environment():
         errors.append("PyTorch is required")
 
     # Check LeRobot
-    try:
-        import lerobot
-        checks.append(EnvironmentCheckResult(
-            name="LeRobot",
-            passed=True,
-            message="LeRobot installed",
-            details={"version": getattr(lerobot, "__version__", "unknown")},
-        ))
-    except ImportError:
-        checks.append(EnvironmentCheckResult(
-            name="LeRobot",
-            passed=False,
-            message="LeRobot not installed",
-        ))
-        warnings.append("LeRobot not installed - some features unavailable")
+    checks.append(EnvironmentCheckResult(
+        name="LeRobot",
+        passed=True,
+        message="LeRobot installed",
+        details={"version": getattr(lerobot, "__version__", "unknown")},
+    ))
 
     # Check OpenCV
-    try:
-        import cv2
-        checks.append(EnvironmentCheckResult(
-            name="OpenCV",
-            passed=True,
-            message=f"OpenCV {cv2.__version__}",
-            details={"version": cv2.__version__},
-        ))
-    except ImportError:
-        checks.append(EnvironmentCheckResult(
-            name="OpenCV",
-            passed=False,
-            message="OpenCV not installed",
-        ))
-        warnings.append("OpenCV not installed - camera features unavailable")
+    checks.append(EnvironmentCheckResult(
+        name="OpenCV",
+        passed=True,
+        message=f"OpenCV {cv2.__version__}",
+        details={"version": cv2.__version__},
+    ))
 
     # Check device config
     device_config = _load_device_config()
@@ -526,21 +490,13 @@ async def validate_environment():
         warnings.append("No devices configured - run device setup")
 
     # Check serial ports
-    try:
-        import serial.tools.list_ports
-        ports = list(serial.tools.list_ports.comports())
-        checks.append(EnvironmentCheckResult(
-            name="Serial ports",
-            passed=True,
-            message=f"{len(ports)} port(s) available",
-            details={"ports": [p.device for p in ports]},
-        ))
-    except ImportError:
-        checks.append(EnvironmentCheckResult(
-            name="Serial ports",
-            passed=False,
-            message="pyserial not installed",
-        ))
+    ports = list(list_ports.comports())
+    checks.append(EnvironmentCheckResult(
+        name="Serial ports",
+        passed=True,
+        message=f"{len(ports)} port(s) available",
+        details={"ports": [p.device for p in ports]},
+    ))
 
     is_valid = len(errors) == 0
 

@@ -2,16 +2,12 @@
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 
 from interfaces_cli.styles import Colors, hacker_style
-
-if TYPE_CHECKING:
-    from interfaces_cli.app import PhiApplication
-
 
 class MenuResult(Enum):
     """Result of menu action."""

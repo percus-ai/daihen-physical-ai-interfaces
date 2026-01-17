@@ -5,9 +5,12 @@ Auto-generated based on OpenAPI schema from /openapi.json
 
 import json
 import os
+import socket
+import sys
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+import websocket
 
 
 def get_backend_url() -> str:
@@ -208,8 +211,6 @@ class PhiClient:
         Returns:
             Final result with type='complete' or type='error'
         """
-        import websocket
-
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/api/inference/ws/run"
 
@@ -234,13 +235,6 @@ class PhiClient:
                     break
 
             ws.close()
-        except ImportError:
-            if progress_callback:
-                progress_callback({
-                    "type": "error",
-                    "error": "websocket-client not installed"
-                })
-            result = {"type": "error", "error": "websocket-client not installed"}
         except Exception as e:
             if progress_callback:
                 progress_callback({"type": "error", "error": str(e)})
@@ -418,13 +412,6 @@ class PhiClient:
                 ws.close()
             except Exception:
                 pass
-        except ImportError:
-            if progress_callback:
-                progress_callback({
-                    "type": "error",
-                    "error": "websocket-client not installed"
-                })
-            result = {"type": "error", "error": "websocket-client not installed"}
         except websocket.WebSocketConnectionClosedException:
             # Connection closed during setup or early
             result = {
@@ -440,7 +427,6 @@ class PhiClient:
             result = {"type": "error", "error": str(e)}
 
         # Debug: print the actual result being returned
-        import sys
         print(f"\n[DEBUG] record_ws returning: {result}", file=sys.stderr)
         return result
 
@@ -848,9 +834,6 @@ class PhiClient:
                     break
 
             ws.close()
-        except ImportError:
-            if on_error:
-                on_error("websocket-client not installed")
         except Exception as e:
             if on_error:
                 on_error(str(e))
@@ -966,9 +949,6 @@ class PhiClient:
                     break
 
             ws.close()
-        except ImportError:
-            if on_error:
-                on_error("websocket-client not installed")
         except Exception as e:
             if on_error:
                 on_error(str(e))
@@ -998,14 +978,6 @@ class PhiClient:
         on_error: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """Run Verda storage action via WebSocket with progress."""
-        try:
-            import websocket
-        except ImportError:
-            error_msg = "websocket-client not installed. Run: pip install websocket-client"
-            if on_error:
-                on_error(error_msg)
-            return {"error": error_msg}
-
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/api/training/ws/verda/storage"
         result: Dict[str, Any] = {}
@@ -1156,12 +1128,6 @@ class PhiClient:
                     break
 
             ws.close()
-        except ImportError:
-            # websocket-client not installed
-            error_msg = "websocket-client not installed. Run: pip install websocket-client"
-            if progress_callback:
-                progress_callback({"type": "error", "error": error_msg})
-            result = {"type": "error", "error": error_msg}
         except Exception as e:
             if progress_callback:
                 progress_callback({"type": "error", "error": str(e)})
@@ -1426,14 +1392,6 @@ class PhiClient:
                     break
 
             ws.close()
-        except ImportError:
-            # websocket-client not installed
-            if progress_callback:
-                progress_callback({
-                    "type": "error",
-                    "error": "websocket-client not installed. Run: pip install websocket-client"
-                })
-            result = {"type": "error", "error": "websocket-client not installed"}
         except Exception as e:
             if progress_callback:
                 progress_callback({"type": "error", "error": str(e)})
@@ -1453,8 +1411,6 @@ class PhiClient:
         Returns:
             Final result with type='complete' or type='error'
         """
-        import websocket
-
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/api/build/ws/bundled-torch"
 
@@ -1479,13 +1435,6 @@ class PhiClient:
                     break
 
             ws.close()
-        except ImportError:
-            if progress_callback:
-                progress_callback({
-                    "type": "error",
-                    "error": "websocket-client not installed"
-                })
-            result = {"type": "error", "error": "websocket-client not installed"}
         except Exception as e:
             if progress_callback:
                 progress_callback({"type": "error", "error": str(e)})
@@ -1537,9 +1486,6 @@ class JobSessionWebSocket:
 
     def connect(self) -> bool:
         """Connect to WebSocket server."""
-        import socket
-        import websocket
-
         try:
             self._ws = websocket.create_connection(
                 self.ws_url,

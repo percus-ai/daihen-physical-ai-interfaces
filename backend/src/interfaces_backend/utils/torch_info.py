@@ -54,9 +54,10 @@ def get_torch_info(use_cache: bool = True) -> Dict[str, Any]:
     # Python code to run in subprocess
     torch_check_code = '''
 import json
+import torch
 info = {
-    "torch_version": None,
-    "cuda_available": False,
+    "torch_version": torch.__version__,
+    "cuda_available": torch.cuda.is_available(),
     "cuda_version": None,
     "gpu_name": None,
     "gpu_count": 0,
@@ -65,27 +66,19 @@ info = {
     "cuda_memory_free": None,
     "error": None,
 }
-try:
-    import torch
-    info["torch_version"] = torch.__version__
-    info["cuda_available"] = torch.cuda.is_available()
-    if info["cuda_available"]:
-        info["cuda_version"] = torch.version.cuda or "N/A"
-        info["gpu_count"] = torch.cuda.device_count()
-        if info["gpu_count"] > 0:
-            info["gpu_name"] = torch.cuda.get_device_name(0)
-            props = torch.cuda.get_device_properties(0)
-            info["cuda_memory_total"] = props.total_memory / (1024 * 1024)  # MB
-            info["cuda_memory_free"] = (
-                props.total_memory - torch.cuda.memory_allocated(0)
-            ) / (1024 * 1024)  # MB
-    else:
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            info["mps_available"] = True
-except ImportError:
-    info["error"] = "PyTorch not installed"
-except Exception as e:
-    info["error"] = str(e)
+if info["cuda_available"]:
+    info["cuda_version"] = torch.version.cuda or "N/A"
+    info["gpu_count"] = torch.cuda.device_count()
+    if info["gpu_count"] > 0:
+        info["gpu_name"] = torch.cuda.get_device_name(0)
+        props = torch.cuda.get_device_properties(0)
+        info["cuda_memory_total"] = props.total_memory / (1024 * 1024)  # MB
+        info["cuda_memory_free"] = (
+            props.total_memory - torch.cuda.memory_allocated(0)
+        ) / (1024 * 1024)  # MB
+else:
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        info["mps_available"] = True
 print(json.dumps(info))
 '''
 

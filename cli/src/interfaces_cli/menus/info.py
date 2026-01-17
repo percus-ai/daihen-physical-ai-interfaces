@@ -1,16 +1,18 @@
 """Info menu - System information display."""
 
-from typing import TYPE_CHECKING, Any, List
+import sys
+from typing import Any, List
+
+import lerobot
+import percus_ai
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 
-from interfaces_cli.banner import format_size, show_section_header
+from interfaces_cli.banner import check_system_info, format_size, show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
 from interfaces_cli.styles import Colors, hacker_style
-
-if TYPE_CHECKING:
-    from interfaces_cli.app import PhiApplication
+from interfaces_cli import __version__ as cli_version
 
 
 class InfoMenu(BaseMenu):
@@ -311,10 +313,6 @@ class InfoMenu(BaseMenu):
         """Show software versions."""
         show_section_header("Software Versions")
 
-        import sys
-
-        from interfaces_cli import __version__ as cli_version
-
         print(f"{Colors.CYAN}CLI:{Colors.RESET}")
         print(f"  interfaces-cli: {cli_version}")
         print(f"  Python: {sys.version.split()[0]}")
@@ -326,23 +324,10 @@ class InfoMenu(BaseMenu):
         except Exception:
             print(f"\n{Colors.muted('Backend unreachable')}")
 
-        # Check for percus_ai
-        try:
-            import percus_ai
-            print(f"\n{Colors.CYAN}Framework:{Colors.RESET}")
-            print(f"  percus-ai: {getattr(percus_ai, '__version__', 'installed')}")
-        except ImportError:
-            print(f"\n{Colors.muted('percus-ai: not installed')}")
+        print(f"\n{Colors.CYAN}Framework:{Colors.RESET}")
+        print(f"  percus-ai: {getattr(percus_ai, '__version__', 'installed')}")
+        print(f"  lerobot: {getattr(lerobot, '__version__', 'installed')}")
 
-        # Check for LeRobot
-        try:
-            import lerobot
-            print(f"  lerobot: {getattr(lerobot, '__version__', 'installed')}")
-        except ImportError:
-            pass
-
-        # Check for PyTorch (via subprocess to avoid numpy conflicts with bundled-torch)
-        from interfaces_cli.banner import check_system_info
         torch_info = check_system_info()
         if torch_info.get("torch_version"):
             print(f"\n{Colors.CYAN}ML Libraries:{Colors.RESET}")

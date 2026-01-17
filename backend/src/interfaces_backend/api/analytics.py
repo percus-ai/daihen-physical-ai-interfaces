@@ -4,9 +4,9 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
 from fastapi import APIRouter
+
+import pyarrow.parquet as pq
 
 from percus_ai.storage import get_datasets_dir, get_models_dir, get_configs_dir, get_storage_root
 from interfaces_backend.models.analytics import (
@@ -103,12 +103,9 @@ def _get_project_stats() -> list[dict]:
                 parquet_files = list(episode_dir.glob("*.parquet"))
                 if parquet_files:
                     try:
-                        import pyarrow.parquet as pq
                         for pf in parquet_files:
                             table = pq.read_table(pf)
                             total_frames += len(table)
-                    except ImportError:
-                        pass
                     except Exception:
                         pass
 

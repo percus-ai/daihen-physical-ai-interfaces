@@ -1,7 +1,7 @@
 """System API router."""
 
-import os
 import platform
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Query
+import psutil
 
+from interfaces_backend.utils.torch_info import get_torch_info
 from interfaces_backend.models.system import (
     ServiceStatus,
     HealthResponse,
@@ -22,7 +24,7 @@ from interfaces_backend.models.system import (
     GpuInfo,
     GpuResponse,
 )
-from percus_ai.storage import get_datasets_dir, get_storage_root
+from percus_ai.storage import get_datasets_dir, get_features_path, get_storage_root
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -76,7 +78,6 @@ async def health_check():
         overall_status = "degraded"
 
     # Check PyTorch/CUDA (via subprocess to avoid numpy conflicts)
-    from interfaces_backend.utils.torch_info import get_torch_info
     torch_info = get_torch_info()
     if torch_info.get("torch_version"):
         cuda_status = "running" if torch_info.get("cuda_available") else "stopped"
@@ -95,39 +96,23 @@ async def health_check():
         overall_status = "degraded"
 
     # Check LeRobot
-    try:
-        import lerobot
-        services.append(ServiceStatus(
-            name="lerobot",
-            status="running",
-            message=f"Version {getattr(lerobot, '__version__', 'unknown')}",
-        ))
-    except ImportError:
-        services.append(ServiceStatus(
-            name="lerobot",
-            status="stopped",
-            message="Not installed",
-        ))
+    import lerobot
+    services.append(ServiceStatus(
+        name="lerobot",
+        status="running",
+        message=f"Version {getattr(lerobot, '__version__', 'unknown')}",
+    ))
 
     # Check percus_ai
-    try:
-        from percus_ai.storage import get_features_path
-
-        features_path = get_features_path()
-        if features_path.exists() and str(features_path) not in sys.path:
-            sys.path.insert(0, str(features_path))
-        import percus_ai
-        services.append(ServiceStatus(
-            name="percus_ai",
-            status="running",
-            message="Available",
-        ))
-    except ImportError:
-        services.append(ServiceStatus(
-            name="percus_ai",
-            status="stopped",
-            message="Not available",
-        ))
+    features_path = get_features_path()
+    if features_path.exists() and str(features_path) not in sys.path:
+        sys.path.insert(0, str(features_path))
+    import percus_ai
+    services.append(ServiceStatus(
+        name="percus_ai",
+        status="running",
+        message="Available",
+    ))
 
     uptime = time.time() - _server_start_time
 
@@ -150,38 +135,21 @@ async def get_resources():
     disk_used_gb = 0.0
     disk_percent = 0.0
 
-    try:
-        import psutil
+    # CPU
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    cpu_count = psutil.cpu_count() or 1
 
-        # CPU
-        cpu_percent = psutil.cpu_percent(interval=0.1)
-        cpu_count = psutil.cpu_count() or 1
+    # Memory
+    mem = psutil.virtual_memory()
+    memory_total_gb = mem.total / (1024 ** 3)
+    memory_used_gb = mem.used / (1024 ** 3)
+    memory_percent = mem.percent
 
-        # Memory
-        mem = psutil.virtual_memory()
-        memory_total_gb = mem.total / (1024 ** 3)
-        memory_used_gb = mem.used / (1024 ** 3)
-        memory_percent = mem.percent
-
-        # Disk
-        disk = psutil.disk_usage(str(get_storage_root()))
-        disk_total_gb = disk.total / (1024 ** 3)
-        disk_used_gb = disk.used / (1024 ** 3)
-        disk_percent = disk.percent
-
-    except ImportError:
-        # Fallback without psutil
-        cpu_count = os.cpu_count() or 1
-
-        # Try to get disk info
-        try:
-            import shutil
-            total, used, free = shutil.disk_usage(get_storage_root())
-            disk_total_gb = total / (1024 ** 3)
-            disk_used_gb = used / (1024 ** 3)
-            disk_percent = (used / total) * 100 if total > 0 else 0
-        except Exception:
-            pass
+    # Disk
+    disk = psutil.disk_usage(str(get_storage_root()))
+    disk_total_gb = disk.total / (1024 ** 3)
+    disk_used_gb = disk.used / (1024 ** 3)
+    disk_percent = disk.percent
 
     return ResourcesResponse(
         resources=ResourceUsage(
@@ -267,25 +235,16 @@ async def get_system_info():
     lerobot_version = None
     pytorch_version = None
 
-    try:
-        from percus_ai.storage import get_features_path
+    features_path = get_features_path()
+    if features_path.exists() and str(features_path) not in sys.path:
+        sys.path.insert(0, str(features_path))
+    import percus_ai
+    percus_ai_version = getattr(percus_ai, "__version__", "installed")
 
-        features_path = get_features_path()
-        if features_path.exists() and str(features_path) not in sys.path:
-            sys.path.insert(0, str(features_path))
-        import percus_ai
-        percus_ai_version = getattr(percus_ai, "__version__", "installed")
-    except ImportError:
-        pass
-
-    try:
-        import lerobot
-        lerobot_version = getattr(lerobot, "__version__", "installed")
-    except ImportError:
-        pass
+    import lerobot
+    lerobot_version = getattr(lerobot, "__version__", "installed")
 
     # Get PyTorch version via subprocess
-    from interfaces_backend.utils.torch_info import get_torch_info
     torch_info = get_torch_info()
     pytorch_version = torch_info.get("torch_version")
 
@@ -311,8 +270,6 @@ async def get_system_info():
 @router.get("/gpu", response_model=GpuResponse)
 async def get_gpu_info():
     """Get GPU information using nvidia-smi (no torch import needed)."""
-    import subprocess
-
     gpus = []
     cuda_version = None
     driver_version = None

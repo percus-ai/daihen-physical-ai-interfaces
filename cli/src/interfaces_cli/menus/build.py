@@ -1,6 +1,6 @@
 """Build menu - PyTorch building for Jetson."""
 
-from typing import TYPE_CHECKING, Any, List
+from typing import Any, List
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
@@ -11,10 +11,6 @@ from rich.table import Table
 from interfaces_cli.banner import show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
 from interfaces_cli.styles import Colors, hacker_style
-
-if TYPE_CHECKING:
-    from interfaces_cli.app import PhiApplication
-
 
 class BuildMenu(BaseMenu):
     """Build menu - PyTorch building for Jetson."""

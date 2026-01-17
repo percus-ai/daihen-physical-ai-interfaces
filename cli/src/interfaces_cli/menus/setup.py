@@ -1,6 +1,6 @@
 """Setup menu - Device and project configuration."""
 
-from typing import TYPE_CHECKING, Any, List
+from typing import Any, List
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
@@ -9,10 +9,6 @@ from interfaces_cli.banner import show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
 from interfaces_cli.menus.build import BuildMenu
 from interfaces_cli.styles import Colors, hacker_style
-
-if TYPE_CHECKING:
-    from interfaces_cli.app import PhiApplication
-
 
 class SetupMenu(BaseMenu):
     """Setup menu - Device and project configuration."""

@@ -1,7 +1,9 @@
 """Banner and display utilities."""
 
+import json
 import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -91,10 +93,6 @@ def check_system_info() -> Dict[str, Any]:
     if _system_info_cache is not None:
         return _system_info_cache
 
-    import json
-    import os
-    import subprocess
-
     info: Dict[str, Any] = {
         "torch_version": None,
         "cuda_available": None,
@@ -116,32 +114,24 @@ def check_system_info() -> Dict[str, Any]:
     # Python code to run in subprocess
     torch_check_code = '''
 import json
-import sys
+import torch
 info = {
-    "torch_version": None,
-    "cuda_available": None,
+    "torch_version": torch.__version__,
+    "cuda_available": torch.cuda.is_available(),
     "cuda_version": None,
     "gpu_name": None,
     "gpu_count": 0,
     "mps_available": None,
     "error": None,
 }
-try:
-    import torch
-    info["torch_version"] = torch.__version__
-    info["cuda_available"] = torch.cuda.is_available()
-    if info["cuda_available"]:
-        info["cuda_version"] = torch.version.cuda or "N/A"
-        info["gpu_count"] = torch.cuda.device_count()
-        if info["gpu_count"] > 0:
-            info["gpu_name"] = torch.cuda.get_device_name(0)
-    else:
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            info["mps_available"] = True
-except ImportError:
-    info["error"] = "PyTorch not installed"
-except Exception as e:
-    info["error"] = str(e)
+if info["cuda_available"]:
+    info["cuda_version"] = torch.version.cuda or "N/A"
+    info["gpu_count"] = torch.cuda.device_count()
+    if info["gpu_count"] > 0:
+        info["gpu_name"] = torch.cuda.get_device_name(0)
+else:
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        info["mps_available"] = True
 print(json.dumps(info))
 '''
 
@@ -168,9 +158,6 @@ print(json.dumps(info))
 
 def check_device_status() -> Dict[str, Any]:
     """Check device connection status from user_devices.json."""
-    import json
-    import subprocess
-
     status: Dict[str, Any] = {
         "cameras": [],
         "robots": [],

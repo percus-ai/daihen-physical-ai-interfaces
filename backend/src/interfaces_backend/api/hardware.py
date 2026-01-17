@@ -1,7 +1,11 @@
 """Hardware detection API."""
 
 import platform as py_platform
+from pathlib import Path
 from typing import List
+
+import cv2
+from serial.tools import list_ports
 
 from fastapi import APIRouter, Query
 
@@ -18,11 +22,6 @@ router = APIRouter(prefix="/api/hardware", tags=["hardware"])
 
 def _detect_cameras(max_cameras: int = 10) -> List[CameraInfo]:
     """Detect cameras using OpenCV."""
-    try:
-        import cv2
-    except ImportError:
-        return []
-
     cameras = []
 
     for camera_id in range(max_cameras):
@@ -65,11 +64,6 @@ def _detect_cameras(max_cameras: int = 10) -> List[CameraInfo]:
 
 def _detect_serial_ports() -> List[SerialPortInfo]:
     """Detect serial ports using pyserial."""
-    try:
-        from serial.tools import list_ports
-    except ImportError:
-        return []
-
     ports = []
     system = py_platform.system()
 
@@ -81,8 +75,6 @@ def _detect_serial_ports() -> List[SerialPortInfo]:
 
         # On macOS, prefer /dev/tty.* over /dev/cu.* for bidirectional communication
         if system == "Darwin" and device_path.startswith("/dev/cu."):
-            from pathlib import Path
-
             tty_path = device_path.replace("/dev/cu.", "/dev/tty.")
             if Path(tty_path).exists():
                 device_path = tty_path
@@ -108,23 +100,8 @@ async def get_hardware_status():
 
     Returns availability of detection libraries and counts of detected devices.
     """
-    # Check OpenCV availability
-    opencv_available = False
-    try:
-        import cv2  # noqa: F401
-
-        opencv_available = True
-    except ImportError:
-        pass
-
-    # Check pyserial availability
-    pyserial_available = False
-    try:
-        from serial.tools import list_ports  # noqa: F401
-
-        pyserial_available = True
-    except ImportError:
-        pass
+    opencv_available = True
+    pyserial_available = True
 
     # Count devices
     cameras_count = 0

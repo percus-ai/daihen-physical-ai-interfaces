@@ -1,6 +1,6 @@
 """Storage menu - DB-backed data management operations."""
 
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import Any, List, Optional
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
@@ -9,10 +9,6 @@ from InquirerPy.separator import Separator
 from interfaces_cli.banner import format_size, show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
 from interfaces_cli.styles import Colors, hacker_style
-
-if TYPE_CHECKING:
-    from interfaces_cli.app import PhiApplication
-
 
 class StorageMenu(BaseMenu):
     """Storage menu - Data management operations."""

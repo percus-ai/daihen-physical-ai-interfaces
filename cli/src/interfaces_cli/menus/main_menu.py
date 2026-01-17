@@ -1,14 +1,10 @@
 """Main menu implementation."""
 
-from typing import TYPE_CHECKING, Any, List
+from typing import Any, List
 
 from InquirerPy.base.control import Choice
 
 from interfaces_cli.menu_system import BaseMenu, MenuResult
-
-if TYPE_CHECKING:
-    from interfaces_cli.app import PhiApplication
-
 
 class MainMenu(BaseMenu):
     """Main menu - entry point for all operations."""

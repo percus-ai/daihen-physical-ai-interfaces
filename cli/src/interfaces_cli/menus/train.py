@@ -9,7 +9,7 @@ This module implements the training CLI with:
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
@@ -22,10 +22,6 @@ from rich.table import Table
 from interfaces_cli.banner import format_size, show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
 from interfaces_cli.styles import Colors, hacker_style
-
-if TYPE_CHECKING:
-    from interfaces_cli.app import PhiApplication
-
 
 # =============================================================================
 # Policy Configuration Constants
