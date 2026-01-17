@@ -1152,19 +1152,18 @@ class TrainingWizard(BaseMenu):
 
     def _step6_job_naming(self) -> str:
         """Step 6: Job naming."""
-        # Use framework username as default
+        # Use user_id as default
         default_author = self.state.author
         if not default_author:
             try:
                 user_config = self.api.get_user_config()
-                # API returns flat structure: {"username": "...", "email": "...", ...}
-                default_author = user_config.get("username", "")
+                default_author = user_config.get("user_id", "")
             except Exception:
                 default_author = ""
 
         try:
             author = inquirer.text(
-                message="作者名:",
+                message="User ID:",
                 default=default_author,
                 style=hacker_style,
             ).execute()

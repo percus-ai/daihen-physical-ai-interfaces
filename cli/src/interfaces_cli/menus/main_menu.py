@@ -26,6 +26,7 @@ class MainMenu(BaseMenu):
             Choice(value="setup", name="🔧 [SETUP] デバイス・プロジェクト設定"),
             Choice(value="info", name="📊 [INFO] システム情報"),
             Choice(value="config", name="⚙️  [CONFIG] 環境設定"),
+            Choice(value="logout", name="🔐 [AUTH] ログアウト"),
             Choice(value="exit", name="❌ [EXIT] 終了"),
         ]
 
@@ -61,5 +62,10 @@ class MainMenu(BaseMenu):
         if choice == "config":
             from interfaces_cli.menus.config import ConfigMenu
             return self.submenu(ConfigMenu)
+
+        if choice == "logout":
+            if not self.app.logout_and_relogin():
+                return MenuResult.EXIT
+            return MenuResult.CONTINUE
 
         return MenuResult.CONTINUE

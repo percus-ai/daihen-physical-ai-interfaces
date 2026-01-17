@@ -270,7 +270,10 @@ def check_device_status() -> Dict[str, Any]:
     return status
 
 
-def show_device_status_panel(backend_status: str = "unknown") -> None:
+def show_device_status_panel(
+    backend_status: str = "unknown",
+    auth_status: str = "unknown",
+) -> None:
     """Display device status panel similar to archive CLI."""
     console = Console()
     lines: List[Text] = []
@@ -282,6 +285,13 @@ def show_device_status_panel(backend_status: str = "unknown") -> None:
         lines.append(Text("✗ Backend: Disconnected", style="bright_red"))
     else:
         lines.append(Text("⚠ Backend: Unknown", style="bright_yellow"))
+
+    if auth_status == "ok":
+        lines.append(Text("✓ Auth: Logged in", style="bright_green"))
+    elif auth_status == "error":
+        lines.append(Text("✗ Auth: Logged out", style="bright_red"))
+    else:
+        lines.append(Text("⚠ Auth: Unknown", style="bright_yellow"))
 
     lines.append(Text(""))
 

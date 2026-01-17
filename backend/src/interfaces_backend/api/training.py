@@ -50,11 +50,23 @@ from interfaces_backend.models.training import (
     VerdaStorageListResponse,
 )
 from percus_ai.storage import get_configs_dir, get_project_root, get_models_dir
-from percus_ai.db import get_supabase_async_client, get_supabase_client
+from percus_ai.db import (
+    get_current_user_id,
+    get_supabase_async_client,
+    get_supabase_client,
+    upsert_with_owner,
+)
 from percus_ai.training.ssh.client import SSHConnection
 from percus_ai.training.ssh.executor import RemoteExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _default_author_user_id() -> str:
+    try:
+        return get_current_user_id()
+    except ValueError:
+        return "unknown"
 router = APIRouter(prefix="/api/training", tags=["training"])
 
 # Thread pool for WebSocket operations
@@ -619,7 +631,7 @@ def _save_job(job_data: dict) -> None:
     if metadata:
         record["job_metadata"] = metadata
 
-    client.table(DB_TABLE).upsert(record, on_conflict="job_id").execute()
+    upsert_with_owner(DB_TABLE, "job_id", record)
 
 
 def _update_cleanup_status(job_id: str, status: str) -> None:
@@ -669,7 +681,7 @@ def _upsert_model_for_job(job_data: dict) -> None:
         "created_at": job_data.get("created_at") or now,
         "updated_at": now,
     }
-    client.table("models").upsert(payload, on_conflict="id").execute()
+    upsert_with_owner("models", "id", payload)
 
 
 def _mark_job_completed(job_id: str, termination_reason: str = "REMOTE_EXIT") -> None:
@@ -3214,7 +3226,7 @@ async def create_continue_job(
 
         # 3. Generate job name
         date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        author = request.author or os.environ.get("LEROBOT_AUTHOR", "user")
+        author = request.author or _default_author_user_id()
         job_id = f"{checkpoint_config.job_name}_continue_{author}_{date_str}"
 
         # Check for duplicates

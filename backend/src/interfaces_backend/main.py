@@ -52,6 +52,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from interfaces_backend.api import (
     analytics_router,
+    auth_router,
     build_router,
     calibration_router,
     config_router,
@@ -66,11 +67,15 @@ from interfaces_backend.api import (
     training_router,
     user_router,
 )
+from interfaces_backend.core.auth import load_supabase_session
 
 app = FastAPI(
     title="Physical AI API",
     version="0.1.0",
 )
+
+# Load cached Supabase session if available.
+load_supabase_session()
 
 # CORS for web/tauri clients
 app.add_middleware(
@@ -83,6 +88,7 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(analytics_router)
+app.include_router(auth_router)
 app.include_router(build_router)
 app.include_router(calibration_router)
 app.include_router(config_router)

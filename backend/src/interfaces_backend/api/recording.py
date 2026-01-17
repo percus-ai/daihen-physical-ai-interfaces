@@ -19,7 +19,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from percus_ai.db import get_supabase_client
+from percus_ai.db import get_current_user_id, get_supabase_client, upsert_with_owner
 from percus_ai.storage import (
     get_datasets_dir,
     get_projects_dir,
@@ -54,7 +54,6 @@ class RecordRequest(BaseModel):
     """Simple recording request."""
     project_name: str
     num_episodes: int = 1
-    username: Optional[str] = None
 
 
 class RecordResponse(BaseModel):
@@ -76,6 +75,13 @@ class RecordingInfo(BaseModel):
     size_mb: float = 0.0
     cameras: List[str] = []
     path: str
+
+
+def _require_user_id() -> str:
+    try:
+        return get_current_user_id()
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Login required") from exc
 
 
 class RecordingListResponse(BaseModel):
@@ -130,15 +136,19 @@ def _load_user_config() -> dict:
         environment = raw.get("environment", {})
 
         return {
-            "username": user.get("username", raw.get("username", "user")),
             "default_fps": recording.get("default_fps", raw.get("default_fps", 30)),
-            "environment_name": environment.get("environment_name", raw.get("environment_name", "lerobot")),
-            "auto_upload_after_recording": sync.get("auto_upload_after_recording", raw.get("auto_upload_after_recording", True)),
+            "environment_name": environment.get(
+                "environment_name",
+                raw.get("environment_name", "lerobot"),
+            ),
+            "auto_upload_after_recording": sync.get(
+                "auto_upload_after_recording",
+                raw.get("auto_upload_after_recording", True),
+            ),
         }
 
     # Return defaults
     return {
-        "username": "user",
         "default_fps": 30,
         "environment_name": "lerobot",
         "auto_upload_after_recording": True,
@@ -152,7 +162,6 @@ def _upsert_dataset_record(
     episode_count: int,
     task_detail: str,
 ) -> None:
-    client = get_supabase_client()
     payload = {
         "id": dataset_id,
         "project_id": project_id,
@@ -163,7 +172,7 @@ def _upsert_dataset_record(
         "status": "active",
         "task_detail": task_detail,
     }
-    client.table("datasets").upsert(payload, on_conflict="id").execute()
+    upsert_with_owner("datasets", "id", payload)
 
 
 def _build_camera_entry(
@@ -375,7 +384,7 @@ async def record(request: RecordRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
     user_config = _load_user_config()
-    username = request.username or user_config.get("username", "user")
+    user_id = _require_user_id()
     fps = user_config.get("default_fps", 30)
 
     # Extract project settings
@@ -414,13 +423,13 @@ async def record(request: RecordRequest):
     # Use dynamic path resolution
     recordings_dir = get_datasets_dir()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session_name = f"{timestamp}_{username}"
+    session_name = f"{timestamp}_{user_id}"
     output_path = recordings_dir / project_id / session_name
     # Don't create the directory - lerobot-record creates it internally
     # Only ensure parent (project) directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    repo_id = f"{username}/{project_id}"
+    repo_id = f"{user_id}/{project_id}"
 
     # Build LeRobot YAML config
     lerobot_config = {
@@ -535,8 +544,7 @@ async def websocket_record(websocket: WebSocket):
     Client sends:
         {
             "project_name": "...",
-            "num_episodes": 1,
-            "username": "user"  # optional
+            "num_episodes": 1
         }
 
     Server sends:
@@ -574,7 +582,6 @@ async def websocket_record(websocket: WebSocket):
 
         project_name = data.get("project_name")
         num_episodes = data.get("num_episodes", 1)
-        username = data.get("username")
 
         if not project_name:
             await websocket.send_json({
@@ -612,8 +619,12 @@ async def websocket_record(websocket: WebSocket):
             return
 
         user_config = _load_user_config()
-        logger.info(f"Loaded user config: username={user_config.get('username', 'N/A')}")
-        username = username or user_config.get("username", "user")
+        try:
+            user_id = _require_user_id()
+        except HTTPException as exc:
+            await websocket.send_json({"type": "error", "error": exc.detail})
+            await websocket.close()
+            return
         fps = user_config.get("default_fps", 30)
 
         # Extract project settings
@@ -653,13 +664,13 @@ async def websocket_record(websocket: WebSocket):
         # Generate output path
         recordings_dir = get_datasets_dir()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        session_name = f"{timestamp}_{username}"
+        session_name = f"{timestamp}_{user_id}"
         output_path = recordings_dir / project_id / session_name
         # Don't create the directory - lerobot-record creates it internally
         # Only ensure parent (project) directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        repo_id = f"{username}/{project_id}"
+        repo_id = f"{user_id}/{project_id}"
 
         # Build LeRobot YAML config
         lerobot_config = {

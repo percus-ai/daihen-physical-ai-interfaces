@@ -229,7 +229,7 @@ class UserConfigMenu(BaseMenu):
 
             # User info
             print(f"{Colors.CYAN}User:{Colors.RESET}")
-            print(f"  Username: {config.get('username', 'N/A')}")
+            print(f"  User ID: {config.get('user_id', 'N/A')}")
             print(f"  Email: {config.get('email', '(not set)')}")
 
             # Environment
@@ -267,7 +267,6 @@ class UserConfigMenu(BaseMenu):
 
             # Editable settings based on UserConfigModel
             settings = [
-                ("username", "Username", config.get("username", ""), "text"),
                 ("email", "Email", config.get("email", ""), "text"),
                 ("preferred_tool", "Preferred Tool", config.get("preferred_tool", "uv"), "select"),
                 ("default_fps", "Default FPS", config.get("default_fps", 30), "number"),

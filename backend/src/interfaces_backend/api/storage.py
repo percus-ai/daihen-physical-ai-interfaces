@@ -27,7 +27,7 @@ from interfaces_backend.models.storage import (
     ModelListResponse,
     StorageUsageResponse,
 )
-from percus_ai.db import get_supabase_client
+from percus_ai.db import get_supabase_client, upsert_with_owner
 from percus_ai.storage.hash import compute_directory_hash, compute_directory_size
 from percus_ai.storage.hub import download_model, ensure_hf_token, get_local_model_info, upload_model
 from percus_ai.storage.naming import validate_dataset_name
@@ -226,7 +226,7 @@ def _merge_datasets(
         "size_bytes": size_bytes,
         "content_hash": content_hash,
     }
-    client.table("datasets").upsert(payload, on_conflict="id").execute()
+    upsert_with_owner("datasets", "id", payload)
 
     return DatasetMergeResponse(
         success=True,
@@ -532,7 +532,6 @@ def _upsert_dataset_from_hf(
     project_id: str,
     name: str,
 ) -> None:
-    client = get_supabase_client()
     payload = {
         "id": dataset_id,
         "project_id": project_id,
@@ -541,7 +540,7 @@ def _upsert_dataset_from_hf(
         "source": "huggingface",
         "status": "active",
     }
-    client.table("datasets").upsert(payload, on_conflict="id").execute()
+    upsert_with_owner("datasets", "id", payload)
 
 
 def _upsert_model_from_hf(
@@ -551,7 +550,6 @@ def _upsert_model_from_hf(
     dataset_id: Optional[str],
     policy_type: Optional[str],
 ) -> None:
-    client = get_supabase_client()
     payload = {
         "id": model_id,
         "project_id": project_id,
@@ -562,7 +560,7 @@ def _upsert_model_from_hf(
         "source": "huggingface",
         "status": "active",
     }
-    client.table("models").upsert(payload, on_conflict="id").execute()
+    upsert_with_owner("models", "id", payload)
 
 
 @router.post("/huggingface/datasets/import", response_model=HuggingFaceTransferResponse)

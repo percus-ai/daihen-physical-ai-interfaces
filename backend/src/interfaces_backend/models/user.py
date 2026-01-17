@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class UserConfigModel(BaseModel):
     """User configuration."""
 
-    username: str = Field(..., description="Username")
+    user_id: Optional[str] = Field(None, description="Supabase user id")
     email: str = Field("", description="Email address")
     preferred_tool: str = Field("uv", description="Preferred Python tool (uv/pip)")
     gpu_available: bool = Field(False, description="GPU is available")
@@ -25,7 +25,6 @@ class UserConfigModel(BaseModel):
 class UserConfigUpdateRequest(BaseModel):
     """Request to update user configuration."""
 
-    username: Optional[str] = Field(None, description="Username")
     email: Optional[str] = Field(None, description="Email address")
     preferred_tool: Optional[str] = Field(None, description="Preferred Python tool")
     gpu_available: Optional[bool] = Field(None, description="GPU availability")

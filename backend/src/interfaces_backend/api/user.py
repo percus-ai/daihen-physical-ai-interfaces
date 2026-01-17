@@ -22,6 +22,7 @@ from interfaces_backend.models.user import (
     EnvironmentCheckResult,
     EnvironmentValidationResponse,
 )
+from percus_ai.db import get_supabase_session
 from percus_ai.storage import get_user_config_path, get_user_devices_path
 
 router = APIRouter(prefix="/api/user", tags=["user"])
@@ -35,7 +36,6 @@ def _load_user_config() -> dict:
     """Load user configuration from file."""
     if not USER_CONFIG_PATH.exists():
         return {
-            "username": os.environ.get("USER", "unknown"),
             "email": "",
             "preferred_tool": "uv",
             "gpu_available": False,
@@ -59,7 +59,6 @@ def _load_user_config() -> dict:
         recording = data.get("recording", {})
 
         return {
-            "username": user.get("username", os.environ.get("USER", "unknown")),
             "email": user.get("email", ""),
             "preferred_tool": environment.get("preferred_tool", "uv"),
             "gpu_available": environment.get("gpu_available", False),
@@ -74,7 +73,6 @@ def _load_user_config() -> dict:
         }
     except Exception:
         return {
-            "username": os.environ.get("USER", "unknown"),
             "email": "",
             "preferred_tool": "uv",
             "gpu_available": False,
@@ -97,7 +95,6 @@ def _save_user_config(config: dict) -> None:
     # Convert to YAML structure
     data = {
         "user": {
-            "username": config.get("username", "unknown"),
             "email": config.get("email", ""),
         },
         "environment": {
@@ -237,9 +234,10 @@ def _save_device_config(config: dict) -> None:
 async def get_user_config():
     """Get user configuration."""
     config = _load_user_config()
+    session = get_supabase_session() or {}
 
     return UserConfigModel(
-        username=config.get("username", "unknown"),
+        user_id=session.get("user_id"),
         email=config.get("email", ""),
         preferred_tool=config.get("preferred_tool", "uv"),
         gpu_available=config.get("gpu_available", False),
@@ -260,8 +258,6 @@ async def update_user_config(request: UserConfigUpdateRequest):
     config = _load_user_config()
 
     # Update only provided fields
-    if request.username is not None:
-        config["username"] = request.username
     if request.email is not None:
         config["email"] = request.email
     if request.preferred_tool is not None:
@@ -285,8 +281,9 @@ async def update_user_config(request: UserConfigUpdateRequest):
 
     _save_user_config(config)
 
+    session = get_supabase_session() or {}
     return UserConfigModel(
-        username=config.get("username", "unknown"),
+        user_id=session.get("user_id"),
         email=config.get("email", ""),
         preferred_tool=config.get("preferred_tool", "uv"),
         gpu_available=config.get("gpu_available", False),

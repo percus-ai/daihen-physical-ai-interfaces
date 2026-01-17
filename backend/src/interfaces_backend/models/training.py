@@ -235,7 +235,7 @@ class CheckpointInfo(BaseModel):
     created_at: str = Field(..., description="Job creation timestamp")
     size_mb: float = Field(0.0, description="Total checkpoint size in MB")
     pretrained_path: Optional[str] = Field(None, description="Base pretrained model path")
-    author: Optional[str] = Field(None, description="Author name")
+    author: Optional[str] = Field(None, description="Author user id")
 
 
 class CheckpointListResponse(BaseModel):
@@ -375,7 +375,7 @@ class JobCreateContinueRequest(BaseModel):
     training: ContinueTrainingParams = Field(..., description="Training params")
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     wandb_enable: bool = Field(True, description="Enable W&B logging")
-    author: Optional[str] = Field(None, description="Author name")
+    author: Optional[str] = Field(None, description="Author user id")
 
 
 # =============================================================================

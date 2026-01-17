@@ -3,13 +3,12 @@ def test_user_config(client):
     assert resp.status_code == 200
 
     update_payload = {
-        "username": "tester",
         "email": "tester@example.com",
         "auto_download_models": False,
     }
     resp = client.put("/api/user/config", json=update_payload)
     assert resp.status_code == 200
-    assert resp.json()["username"] == "tester"
+    assert resp.json()["email"] == "tester@example.com"
 
 
 def test_user_devices(client):

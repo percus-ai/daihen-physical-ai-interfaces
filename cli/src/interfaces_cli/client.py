@@ -52,6 +52,31 @@ class PhiClient:
         return response.json()
 
     # =========================================================================
+    # Auth
+    # =========================================================================
+
+    def auth_status(self) -> Dict[str, Any]:
+        """GET /api/auth/status - Get auth status."""
+        response = self._client.get("/api/auth/status")
+        response.raise_for_status()
+        return response.json()
+
+    def auth_login(self, email: str, password: str) -> Dict[str, Any]:
+        """POST /api/auth/login - Login."""
+        response = self._client.post(
+            "/api/auth/login",
+            json={"email": email, "password": password},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def auth_logout(self) -> Dict[str, Any]:
+        """POST /api/auth/logout - Logout."""
+        response = self._client.post("/api/auth/logout")
+        response.raise_for_status()
+        return response.json()
+
+    # =========================================================================
     # Analytics
     # =========================================================================
 
@@ -317,20 +342,17 @@ class PhiClient:
     # Recording
     # =========================================================================
 
-    def record(self, project_name: str, num_episodes: int = 1, username: str = None) -> Dict[str, Any]:
+    def record(self, project_name: str, num_episodes: int = 1) -> Dict[str, Any]:
         """POST /api/recording/record - Start recording directly.
 
         Args:
             project_name: Name of the project (must exist in data/projects/)
             num_episodes: Number of episodes to record
-            username: Optional username override
         """
         data = {
             "project_name": project_name,
             "num_episodes": num_episodes,
         }
-        if username:
-            data["username"] = username
         response = self._client.post("/api/recording/record", json=data, timeout=3600)
         response.raise_for_status()
         return response.json()
@@ -339,7 +361,6 @@ class PhiClient:
         self,
         project_name: str,
         num_episodes: int = 1,
-        username: Optional[str] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Start recording via WebSocket with real-time output streaming.
@@ -347,7 +368,6 @@ class PhiClient:
         Args:
             project_name: Name of the project
             num_episodes: Number of episodes to record
-            username: Optional username override
             progress_callback: Callback for progress updates. Receives dict with:
                 - type: "start", "output", "error_output", "complete", "error"
                 - Additional fields depending on type
@@ -371,8 +391,6 @@ class PhiClient:
                 "project_name": project_name,
                 "num_episodes": num_episodes,
             }
-            if username:
-                request_data["username"] = username
             ws.send(json.dumps(request_data))
 
             # Receive messages until done

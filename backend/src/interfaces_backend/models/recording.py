@@ -35,7 +35,6 @@ class RecordingStartRequest(BaseModel):
     episode_time_s: int = Field(60, description="Episode duration in seconds")
     reset_time_s: int = Field(10, description="Reset time between episodes")
     num_episodes: int = Field(1, description="Number of episodes to record")
-    username: str = Field("user", description="Username for dataset")
 
 
 class RecordingSession(BaseModel):
