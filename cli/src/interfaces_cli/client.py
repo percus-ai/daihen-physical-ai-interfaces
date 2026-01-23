@@ -545,6 +545,164 @@ class PhiClient:
 
         return result
 
+    def import_hf_dataset_ws(
+        self,
+        payload: Dict[str, Any],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Import dataset from HF with real-time progress via WebSocket."""
+        import websocket
+
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/storage/ws/huggingface/datasets/import"
+
+        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
+
+        try:
+            ws = websocket.create_connection(ws_url, timeout=None, enable_multithread=True)
+            ws.send(json.dumps(payload))
+
+            while True:
+                message = ws.recv()
+                data = json.loads(message)
+
+                if data.get("type") == "heartbeat":
+                    continue
+
+                if progress_callback:
+                    progress_callback(data)
+
+                if data.get("type") in ("complete", "error"):
+                    result = data
+                    break
+
+            ws.close()
+        except Exception as e:
+            if progress_callback:
+                progress_callback({"type": "error", "error": str(e)})
+            result = {"type": "error", "error": str(e)}
+
+        return result
+
+    def import_hf_model_ws(
+        self,
+        payload: Dict[str, Any],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Import model from HF with real-time progress via WebSocket."""
+        import websocket
+
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/storage/ws/huggingface/models/import"
+
+        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
+
+        try:
+            ws = websocket.create_connection(ws_url, timeout=None, enable_multithread=True)
+            ws.send(json.dumps(payload))
+
+            while True:
+                message = ws.recv()
+                data = json.loads(message)
+
+                if data.get("type") == "heartbeat":
+                    continue
+
+                if progress_callback:
+                    progress_callback(data)
+
+                if data.get("type") in ("complete", "error"):
+                    result = data
+                    break
+
+            ws.close()
+        except Exception as e:
+            if progress_callback:
+                progress_callback({"type": "error", "error": str(e)})
+            result = {"type": "error", "error": str(e)}
+
+        return result
+
+    def export_hf_dataset_ws(
+        self,
+        dataset_id: str,
+        payload: Dict[str, Any],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Export dataset to HF with real-time progress via WebSocket."""
+        import websocket
+
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/storage/ws/huggingface/datasets/{dataset_id}/export"
+
+        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
+
+        try:
+            ws = websocket.create_connection(ws_url, timeout=None, enable_multithread=True)
+            ws.send(json.dumps(payload))
+
+            while True:
+                message = ws.recv()
+                data = json.loads(message)
+
+                if data.get("type") == "heartbeat":
+                    continue
+
+                if progress_callback:
+                    progress_callback(data)
+
+                if data.get("type") in ("complete", "error"):
+                    result = data
+                    break
+
+            ws.close()
+        except Exception as e:
+            if progress_callback:
+                progress_callback({"type": "error", "error": str(e)})
+            result = {"type": "error", "error": str(e)}
+
+        return result
+
+    def export_hf_model_ws(
+        self,
+        model_id: str,
+        payload: Dict[str, Any],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Export model to HF with real-time progress via WebSocket."""
+        import websocket
+
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_url}/api/storage/ws/huggingface/models/{model_id}/export"
+
+        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
+
+        try:
+            ws = websocket.create_connection(ws_url, timeout=None, enable_multithread=True)
+            ws.send(json.dumps(payload))
+
+            while True:
+                message = ws.recv()
+                data = json.loads(message)
+
+                if data.get("type") == "heartbeat":
+                    continue
+
+                if progress_callback:
+                    progress_callback(data)
+
+                if data.get("type") in ("complete", "error"):
+                    result = data
+                    break
+
+            ws.close()
+        except Exception as e:
+            if progress_callback:
+                progress_callback({"type": "error", "error": str(e)})
+            result = {"type": "error", "error": str(e)}
+
+        return result
+
     def list_models(self) -> Dict[str, Any]:
         """GET /api/storage/models - List models."""
         response = self._client.get("/api/storage/models")
@@ -571,25 +729,41 @@ class PhiClient:
 
     def import_hf_dataset(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/storage/huggingface/datasets/import - Import dataset from HF."""
-        response = self._client.post("/api/storage/huggingface/datasets/import", json=payload)
+        response = self._client.post(
+            "/api/storage/huggingface/datasets/import",
+            json=payload,
+            timeout=None,
+        )
         response.raise_for_status()
         return response.json()
 
     def import_hf_model(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/storage/huggingface/models/import - Import model from HF."""
-        response = self._client.post("/api/storage/huggingface/models/import", json=payload)
+        response = self._client.post(
+            "/api/storage/huggingface/models/import",
+            json=payload,
+            timeout=None,
+        )
         response.raise_for_status()
         return response.json()
 
     def export_hf_dataset(self, dataset_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/storage/huggingface/datasets/{dataset_id}/export - Export dataset to HF."""
-        response = self._client.post(f"/api/storage/huggingface/datasets/{dataset_id}/export", json=payload)
+        response = self._client.post(
+            f"/api/storage/huggingface/datasets/{dataset_id}/export",
+            json=payload,
+            timeout=None,
+        )
         response.raise_for_status()
         return response.json()
 
     def export_hf_model(self, model_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/storage/huggingface/models/{model_id}/export - Export model to HF."""
-        response = self._client.post(f"/api/storage/huggingface/models/{model_id}/export", json=payload)
+        response = self._client.post(
+            f"/api/storage/huggingface/models/{model_id}/export",
+            json=payload,
+            timeout=None,
+        )
         response.raise_for_status()
         return response.json()
 

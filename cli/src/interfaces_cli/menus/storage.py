@@ -572,6 +572,143 @@ class HuggingFaceMenu(BaseMenu):
             return self._export_model()
         return MenuResult.CONTINUE
 
+    def _run_hf_transfer_with_progress(
+        self,
+        title: str,
+        run_ws: Any,
+    ) -> dict:
+        console = Console()
+        status_info = {
+            "step": "",
+            "message": "",
+            "item_id": "",
+            "repo_url": "",
+        }
+        upload_info = {
+            "active": False,
+            "current_file": "",
+            "file_size": 0,
+            "bytes_transferred": 0,
+            "files_done": 0,
+            "total_files": 0,
+            "total_size": 0,
+        }
+        output_lines: List[str] = []
+        max_display_lines = 6
+
+        def make_progress_panel() -> Panel:
+            if upload_info["active"]:
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Label", style="cyan")
+                table.add_column("Value")
+
+                table.add_row("ステップ:", "upload")
+                if status_info["item_id"]:
+                    table.add_row("対象:", status_info["item_id"])
+
+                if upload_info["current_file"]:
+                    if upload_info["file_size"] > 0:
+                        pct = (upload_info["bytes_transferred"] / upload_info["file_size"]) * 100
+                        transferred_str = format_size(upload_info["bytes_transferred"])
+                        size_str = format_size(upload_info["file_size"])
+                        progress_str = f"{transferred_str} / {size_str} ({pct:.1f}%)"
+                    else:
+                        progress_str = "..."
+                    table.add_row("ファイル:", upload_info["current_file"])
+                    table.add_row("転送:", progress_str)
+
+                if upload_info["total_files"] > 0:
+                    table.add_row("ファイル数:", f"{upload_info['files_done']}/{upload_info['total_files']}")
+
+                if upload_info["total_size"] > 0:
+                    table.add_row("合計サイズ:", format_size(upload_info["total_size"]))
+
+                return Panel(table, title="📤 アップロード進捗", border_style="green")
+
+            text = Text()
+            if status_info["step"]:
+                text.append(f"Step: {status_info['step']}\n", style="cyan")
+            if status_info["message"]:
+                text.append(f"Status: {status_info['message']}\n", style="cyan")
+            if status_info["item_id"]:
+                text.append(f"Item: {status_info['item_id']}\n", style="dim")
+            if status_info["repo_url"]:
+                text.append(f"Repo: {status_info['repo_url']}\n", style="dim")
+            text.append("\n")
+
+            display_lines = output_lines[-max_display_lines:]
+            for line in display_lines:
+                lower = line.lower()
+                if lower.startswith("[error]") or "error" in lower:
+                    text.append(line + "\n", style="red")
+                elif lower.startswith("[upload]"):
+                    text.append(line + "\n", style="green")
+                elif lower.startswith("[info]"):
+                    text.append(line + "\n", style="dim")
+                else:
+                    text.append(line + "\n", style="dim")
+
+            return Panel(text, title=title, border_style="cyan")
+
+        def progress_callback(message: dict) -> None:
+            msg_type = message.get("type")
+            if msg_type == "heartbeat":
+                return
+            if msg_type in ("start", "step_complete"):
+                status_info["step"] = message.get("step", status_info["step"])
+                status_info["message"] = message.get("message", status_info["message"])
+                output_lines.append(f"[info] {status_info['step']}: {status_info['message']}")
+                return
+            if msg_type == "upload_start":
+                upload_info["active"] = True
+                upload_info["total_files"] = message.get("total_files", 0)
+                upload_info["total_size"] = message.get("total_size", 0)
+                upload_info["files_done"] = 0
+                output_lines.append("[upload] start")
+                return
+            if msg_type == "uploading":
+                upload_info["active"] = True
+                upload_info["current_file"] = message.get("current_file", "")
+                upload_info["file_size"] = message.get("file_size", 0)
+                upload_info["bytes_transferred"] = 0
+                upload_info["files_done"] = message.get("files_done", 0)
+                output_lines.append(f"[upload] {upload_info['current_file']}")
+                return
+            if msg_type == "upload_progress":
+                upload_info["current_file"] = message.get("current_file", "")
+                upload_info["file_size"] = message.get("file_size", 0)
+                upload_info["bytes_transferred"] = message.get("bytes_transferred", 0)
+                return
+            if msg_type == "upload_file_complete":
+                upload_info["files_done"] = message.get("files_done", 0)
+                upload_info["bytes_transferred"] = upload_info["file_size"]
+                output_lines.append(f"[upload] done {upload_info['current_file']}")
+                return
+            if msg_type == "upload_complete":
+                upload_info["active"] = False
+                status_info["message"] = "Upload complete"
+                output_lines.append("[upload] complete")
+                return
+            if msg_type == "complete":
+                status_info["message"] = message.get("message", "Complete")
+                status_info["item_id"] = message.get("item_id", status_info["item_id"])
+                status_info["repo_url"] = message.get("repo_url", status_info["repo_url"])
+                output_lines.append("[info] complete")
+                return
+            if msg_type == "error":
+                status_info["message"] = f"Error: {message.get('error', 'Unknown')}"
+                output_lines.append(f"[error] {message.get('error', 'Unknown')}")
+                return
+
+        with Live(make_progress_panel(), refresh_per_second=4, console=console) as live:
+            def live_progress_callback(data: dict) -> None:
+                progress_callback(data)
+                live.update(make_progress_panel())
+
+            result = run_ws(live_progress_callback)
+
+        return result
+
     def _select_project(self) -> Optional[str]:
         try:
             result = self.api.list_projects()
@@ -634,11 +771,14 @@ class HuggingFaceMenu(BaseMenu):
             "force": force,
         }
 
-        try:
-            result = self.api.import_hf_dataset(payload)
+        result = self._run_hf_transfer_with_progress(
+            "📥 HuggingFace データセット インポート",
+            lambda cb: self.api.import_hf_dataset_ws(payload, cb),
+        )
+        if result.get("type") == "error":
+            print(f"{Colors.error('Error:')} {result.get('error')}")
+        else:
             print(f"{Colors.success('Import complete')}: {result.get('repo_url', '')}")
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE
@@ -687,11 +827,14 @@ class HuggingFaceMenu(BaseMenu):
             "force": force,
         }
 
-        try:
-            result = self.api.import_hf_model(payload)
+        result = self._run_hf_transfer_with_progress(
+            "📥 HuggingFace モデル インポート",
+            lambda cb: self.api.import_hf_model_ws(payload, cb),
+        )
+        if result.get("type") == "error":
+            print(f"{Colors.error('Error:')} {result.get('error')}")
+        else:
             print(f"{Colors.success('Import complete')}: {result.get('repo_url', '')}")
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE
@@ -742,11 +885,14 @@ class HuggingFaceMenu(BaseMenu):
             "commit_message": commit_message or None,
         }
 
-        try:
-            result = self.api.export_hf_dataset(dataset_id, payload)
+        result = self._run_hf_transfer_with_progress(
+            "📤 HuggingFace データセット エクスポート",
+            lambda cb: self.api.export_hf_dataset_ws(dataset_id, payload, cb),
+        )
+        if result.get("type") == "error":
+            print(f"{Colors.error('Error:')} {result.get('error')}")
+        else:
             print(f"{Colors.success('Export complete')}: {result.get('repo_url', '')}")
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE
@@ -797,11 +943,14 @@ class HuggingFaceMenu(BaseMenu):
             "commit_message": commit_message or None,
         }
 
-        try:
-            result = self.api.export_hf_model(model_id, payload)
+        result = self._run_hf_transfer_with_progress(
+            "📤 HuggingFace モデル エクスポート",
+            lambda cb: self.api.export_hf_model_ws(model_id, payload, cb),
+        )
+        if result.get("type") == "error":
+            print(f"{Colors.error('Error:')} {result.get('error')}")
+        else:
             print(f"{Colors.success('Export complete')}: {result.get('repo_url', '')}")
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE

@@ -563,8 +563,29 @@ def _upsert_model_from_hf(
     upsert_with_owner("models", "id", payload)
 
 
-@router.post("/huggingface/datasets/import", response_model=HuggingFaceTransferResponse)
-async def import_dataset_from_huggingface(request: HuggingFaceDatasetImportRequest):
+def _report_upload_progress(
+    message: dict,
+    report: Optional[Callable[[dict], None]],
+) -> None:
+    if report is None:
+        return
+    msg_type = message.get("type")
+    if not msg_type:
+        return
+    type_map = {
+        "start": "upload_start",
+        "uploading": "uploading",
+        "progress": "upload_progress",
+        "uploaded": "upload_file_complete",
+        "complete": "upload_complete",
+    }
+    report({**message, "type": type_map.get(msg_type, msg_type), "step": "upload"})
+
+
+def _import_dataset_from_huggingface(
+    request: HuggingFaceDatasetImportRequest,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> HuggingFaceTransferResponse:
     if not ensure_hf_token():
         raise HTTPException(status_code=400, detail="HF_TOKEN is required")
     dataset_id = request.dataset_id
@@ -575,6 +596,12 @@ async def import_dataset_from_huggingface(request: HuggingFaceDatasetImportReque
         else:
             raise HTTPException(status_code=409, detail=f"Dataset already exists: {dataset_id}")
 
+    if progress_callback:
+        progress_callback({
+            "type": "start",
+            "step": "hf_download",
+            "message": f"Downloading {request.repo_id}",
+        })
     local_path.mkdir(parents=True, exist_ok=True)
     snapshot_download(
         repo_id=request.repo_id,
@@ -582,12 +609,33 @@ async def import_dataset_from_huggingface(request: HuggingFaceDatasetImportReque
         local_dir=str(local_path),
         local_dir_use_symlinks=False,
     )
+    if progress_callback:
+        progress_callback({
+            "type": "step_complete",
+            "step": "hf_download",
+            "message": "Download complete",
+        })
 
     name = request.name or dataset_id.split("/")[-1]
+    if progress_callback:
+        progress_callback({
+            "type": "start",
+            "step": "db_upsert",
+            "message": "Registering dataset",
+        })
     _upsert_dataset_from_hf(dataset_id, request.project_id, name)
+    if progress_callback:
+        progress_callback({
+            "type": "step_complete",
+            "step": "db_upsert",
+            "message": "Dataset registered",
+        })
 
     sync_service = R2DBSyncService()
-    ok, error = sync_service.upload_dataset_with_progress(dataset_id, None)
+    ok, error = sync_service.upload_dataset_with_progress(
+        dataset_id,
+        lambda message: _report_upload_progress(message, progress_callback),
+    )
     if not ok:
         raise HTTPException(status_code=500, detail=f"R2 upload failed: {error}")
 
@@ -599,8 +647,10 @@ async def import_dataset_from_huggingface(request: HuggingFaceDatasetImportReque
     )
 
 
-@router.post("/huggingface/models/import", response_model=HuggingFaceTransferResponse)
-async def import_model_from_huggingface(request: HuggingFaceModelImportRequest):
+def _import_model_from_huggingface(
+    request: HuggingFaceModelImportRequest,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> HuggingFaceTransferResponse:
     if not ensure_hf_token():
         raise HTTPException(status_code=400, detail="HF_TOKEN is required")
     model_id = request.model_id
@@ -611,12 +661,36 @@ async def import_model_from_huggingface(request: HuggingFaceModelImportRequest):
         else:
             raise HTTPException(status_code=409, detail=f"Model already exists: {model_id}")
 
+    if progress_callback:
+        progress_callback({
+            "type": "start",
+            "step": "hf_download",
+            "message": f"Downloading {request.repo_id}",
+        })
     download_model(repo_id=request.repo_id, output_dir=local_path, force=request.force)
+    if progress_callback:
+        progress_callback({
+            "type": "step_complete",
+            "step": "hf_download",
+            "message": "Download complete",
+        })
     local_info = get_local_model_info(local_path)
     policy_type = local_info.policy_type if local_info else None
     name = request.name or model_id
 
+    if progress_callback:
+        progress_callback({
+            "type": "start",
+            "step": "db_upsert",
+            "message": "Registering model",
+        })
     _upsert_model_from_hf(model_id, request.project_id, name, request.dataset_id, policy_type)
+    if progress_callback:
+        progress_callback({
+            "type": "step_complete",
+            "step": "db_upsert",
+            "message": "Model registered",
+        })
 
     sync_service = R2DBSyncService()
     result = sync_service.upload_model(model_id)
@@ -631,19 +705,40 @@ async def import_model_from_huggingface(request: HuggingFaceModelImportRequest):
     )
 
 
-@router.post("/huggingface/datasets/{dataset_id:path}/export", response_model=HuggingFaceTransferResponse)
-async def export_dataset_to_huggingface(dataset_id: str, request: HuggingFaceExportRequest):
+def _export_dataset_to_huggingface(
+    dataset_id: str,
+    request: HuggingFaceExportRequest,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> HuggingFaceTransferResponse:
     if not ensure_hf_token():
         raise HTTPException(status_code=400, detail="HF_TOKEN is required")
+    if progress_callback:
+        progress_callback({
+            "type": "start",
+            "step": "ensure_local",
+            "message": "Checking local dataset cache",
+        })
     sync_service = R2DBSyncService()
     result = sync_service.ensure_dataset_local(dataset_id, auto_download=True)
     if not result.success:
         raise HTTPException(status_code=500, detail=f"Dataset download failed: {result.message}")
+    if progress_callback:
+        progress_callback({
+            "type": "step_complete",
+            "step": "ensure_local",
+            "message": result.message,
+        })
 
     local_path = get_datasets_dir() / dataset_id
     if not local_path.exists():
         raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
 
+    if progress_callback:
+        progress_callback({
+            "type": "start",
+            "step": "hf_upload",
+            "message": f"Uploading to {request.repo_id}",
+        })
     api = HfApi()
     api.create_repo(
         repo_id=request.repo_id,
@@ -658,6 +753,12 @@ async def export_dataset_to_huggingface(dataset_id: str, request: HuggingFaceExp
         repo_type="dataset",
         commit_message=commit_message,
     )
+    if progress_callback:
+        progress_callback({
+            "type": "step_complete",
+            "step": "hf_upload",
+            "message": "Upload complete",
+        })
 
     return HuggingFaceTransferResponse(
         success=True,
@@ -667,25 +768,52 @@ async def export_dataset_to_huggingface(dataset_id: str, request: HuggingFaceExp
     )
 
 
-@router.post("/huggingface/models/{model_id}/export", response_model=HuggingFaceTransferResponse)
-async def export_model_to_huggingface(model_id: str, request: HuggingFaceExportRequest):
+def _export_model_to_huggingface(
+    model_id: str,
+    request: HuggingFaceExportRequest,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> HuggingFaceTransferResponse:
     if not ensure_hf_token():
         raise HTTPException(status_code=400, detail="HF_TOKEN is required")
+    if progress_callback:
+        progress_callback({
+            "type": "start",
+            "step": "ensure_local",
+            "message": "Checking local model cache",
+        })
     sync_service = R2DBSyncService()
     result = sync_service.ensure_model_local(model_id, auto_download=True)
     if not result.success:
         raise HTTPException(status_code=500, detail=f"Model download failed: {result.message}")
+    if progress_callback:
+        progress_callback({
+            "type": "step_complete",
+            "step": "ensure_local",
+            "message": result.message,
+        })
 
     local_path = get_models_dir() / model_id
     if not local_path.exists():
         raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
 
+    if progress_callback:
+        progress_callback({
+            "type": "start",
+            "step": "hf_upload",
+            "message": f"Uploading to {request.repo_id}",
+        })
     repo_url = upload_model(
         local_path=local_path,
         repo_id=request.repo_id,
         private=request.private,
         commit_message=request.commit_message,
     )
+    if progress_callback:
+        progress_callback({
+            "type": "step_complete",
+            "step": "hf_upload",
+            "message": "Upload complete",
+        })
 
     return HuggingFaceTransferResponse(
         success=True,
@@ -693,3 +821,251 @@ async def export_model_to_huggingface(model_id: str, request: HuggingFaceExportR
         item_id=model_id,
         repo_url=repo_url,
     )
+
+
+@router.post("/huggingface/datasets/import", response_model=HuggingFaceTransferResponse)
+async def import_dataset_from_huggingface(request: HuggingFaceDatasetImportRequest):
+    return _import_dataset_from_huggingface(request)
+
+
+@router.post("/huggingface/models/import", response_model=HuggingFaceTransferResponse)
+async def import_model_from_huggingface(request: HuggingFaceModelImportRequest):
+    return _import_model_from_huggingface(request)
+
+
+@router.post("/huggingface/datasets/{dataset_id:path}/export", response_model=HuggingFaceTransferResponse)
+async def export_dataset_to_huggingface(dataset_id: str, request: HuggingFaceExportRequest):
+    return _export_dataset_to_huggingface(dataset_id, request)
+
+
+@router.post("/huggingface/models/{model_id}/export", response_model=HuggingFaceTransferResponse)
+async def export_model_to_huggingface(model_id: str, request: HuggingFaceExportRequest):
+    return _export_model_to_huggingface(model_id, request)
+
+
+@router.websocket("/ws/huggingface/datasets/import")
+async def websocket_import_dataset_from_huggingface(websocket: WebSocket):
+    await websocket.accept()
+
+    try:
+        data = await websocket.receive_json()
+        request = HuggingFaceDatasetImportRequest(**data)
+    except ValidationError as e:
+        await websocket.send_json({"type": "error", "error": str(e)})
+        await websocket.close()
+        return
+    except Exception:
+        await websocket.send_json({"type": "error", "error": "Invalid request"})
+        await websocket.close()
+        return
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    main_loop = asyncio.get_running_loop()
+
+    def progress_callback(progress: dict) -> None:
+        asyncio.run_coroutine_threadsafe(progress_queue.put(progress), main_loop)
+
+    async def run_import() -> None:
+        try:
+            result = await main_loop.run_in_executor(
+                _executor,
+                lambda: _import_dataset_from_huggingface(request, progress_callback),
+            )
+            await progress_queue.put({"type": "complete", **result.model_dump()})
+        except HTTPException as e:
+            await progress_queue.put({"type": "error", "error": e.detail})
+        except Exception as e:
+            await progress_queue.put({"type": "error", "error": str(e)})
+
+    import_task = asyncio.create_task(run_import())
+
+    try:
+        while True:
+            try:
+                progress = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                await websocket.send_json(progress)
+                if progress.get("type") in ("complete", "error"):
+                    break
+            except asyncio.TimeoutError:
+                if import_task.done():
+                    break
+                await websocket.send_json({"type": "heartbeat"})
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected during HF dataset import")
+    except Exception as e:
+        logger.error(f"WebSocket HF dataset import error: {e}")
+    finally:
+        if not import_task.done():
+            import_task.cancel()
+        await websocket.close()
+
+
+@router.websocket("/ws/huggingface/models/import")
+async def websocket_import_model_from_huggingface(websocket: WebSocket):
+    await websocket.accept()
+
+    try:
+        data = await websocket.receive_json()
+        request = HuggingFaceModelImportRequest(**data)
+    except ValidationError as e:
+        await websocket.send_json({"type": "error", "error": str(e)})
+        await websocket.close()
+        return
+    except Exception:
+        await websocket.send_json({"type": "error", "error": "Invalid request"})
+        await websocket.close()
+        return
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    main_loop = asyncio.get_running_loop()
+
+    def progress_callback(progress: dict) -> None:
+        asyncio.run_coroutine_threadsafe(progress_queue.put(progress), main_loop)
+
+    async def run_import() -> None:
+        try:
+            result = await main_loop.run_in_executor(
+                _executor,
+                lambda: _import_model_from_huggingface(request, progress_callback),
+            )
+            await progress_queue.put({"type": "complete", **result.model_dump()})
+        except HTTPException as e:
+            await progress_queue.put({"type": "error", "error": e.detail})
+        except Exception as e:
+            await progress_queue.put({"type": "error", "error": str(e)})
+
+    import_task = asyncio.create_task(run_import())
+
+    try:
+        while True:
+            try:
+                progress = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                await websocket.send_json(progress)
+                if progress.get("type") in ("complete", "error"):
+                    break
+            except asyncio.TimeoutError:
+                if import_task.done():
+                    break
+                await websocket.send_json({"type": "heartbeat"})
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected during HF model import")
+    except Exception as e:
+        logger.error(f"WebSocket HF model import error: {e}")
+    finally:
+        if not import_task.done():
+            import_task.cancel()
+        await websocket.close()
+
+
+@router.websocket("/ws/huggingface/datasets/{dataset_id:path}/export")
+async def websocket_export_dataset_to_huggingface(websocket: WebSocket, dataset_id: str):
+    await websocket.accept()
+
+    try:
+        data = await websocket.receive_json()
+        request = HuggingFaceExportRequest(**data)
+    except ValidationError as e:
+        await websocket.send_json({"type": "error", "error": str(e)})
+        await websocket.close()
+        return
+    except Exception:
+        await websocket.send_json({"type": "error", "error": "Invalid request"})
+        await websocket.close()
+        return
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    main_loop = asyncio.get_running_loop()
+
+    def progress_callback(progress: dict) -> None:
+        asyncio.run_coroutine_threadsafe(progress_queue.put(progress), main_loop)
+
+    async def run_export() -> None:
+        try:
+            result = await main_loop.run_in_executor(
+                _executor,
+                lambda: _export_dataset_to_huggingface(dataset_id, request, progress_callback),
+            )
+            await progress_queue.put({"type": "complete", **result.model_dump()})
+        except HTTPException as e:
+            await progress_queue.put({"type": "error", "error": e.detail})
+        except Exception as e:
+            await progress_queue.put({"type": "error", "error": str(e)})
+
+    export_task = asyncio.create_task(run_export())
+
+    try:
+        while True:
+            try:
+                progress = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                await websocket.send_json(progress)
+                if progress.get("type") in ("complete", "error"):
+                    break
+            except asyncio.TimeoutError:
+                if export_task.done():
+                    break
+                await websocket.send_json({"type": "heartbeat"})
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected during HF dataset export")
+    except Exception as e:
+        logger.error(f"WebSocket HF dataset export error: {e}")
+    finally:
+        if not export_task.done():
+            export_task.cancel()
+        await websocket.close()
+
+
+@router.websocket("/ws/huggingface/models/{model_id}/export")
+async def websocket_export_model_to_huggingface(websocket: WebSocket, model_id: str):
+    await websocket.accept()
+
+    try:
+        data = await websocket.receive_json()
+        request = HuggingFaceExportRequest(**data)
+    except ValidationError as e:
+        await websocket.send_json({"type": "error", "error": str(e)})
+        await websocket.close()
+        return
+    except Exception:
+        await websocket.send_json({"type": "error", "error": "Invalid request"})
+        await websocket.close()
+        return
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    main_loop = asyncio.get_running_loop()
+
+    def progress_callback(progress: dict) -> None:
+        asyncio.run_coroutine_threadsafe(progress_queue.put(progress), main_loop)
+
+    async def run_export() -> None:
+        try:
+            result = await main_loop.run_in_executor(
+                _executor,
+                lambda: _export_model_to_huggingface(model_id, request, progress_callback),
+            )
+            await progress_queue.put({"type": "complete", **result.model_dump()})
+        except HTTPException as e:
+            await progress_queue.put({"type": "error", "error": e.detail})
+        except Exception as e:
+            await progress_queue.put({"type": "error", "error": str(e)})
+
+    export_task = asyncio.create_task(run_export())
+
+    try:
+        while True:
+            try:
+                progress = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                await websocket.send_json(progress)
+                if progress.get("type") in ("complete", "error"):
+                    break
+            except asyncio.TimeoutError:
+                if export_task.done():
+                    break
+                await websocket.send_json({"type": "heartbeat"})
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected during HF model export")
+    except Exception as e:
+        logger.error(f"WebSocket HF model export error: {e}")
+    finally:
+        if not export_task.done():
+            export_task.cancel()
+        await websocket.close()
