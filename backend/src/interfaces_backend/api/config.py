@@ -43,7 +43,7 @@ async def get_environments():
 
     try:
         manager = EnvironmentManager()
-        policy_map = manager.get_policy_map()
+        policy_map = manager.policy_map
 
         # Check platform compatibility
         platform = None
