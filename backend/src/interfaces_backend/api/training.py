@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
-import yaml
 from verda import VerdaClient
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -310,59 +309,54 @@ def _create_ssh_connection(
     return conn
 
 
-def _generate_training_config_yaml(request: "JobCreateRequest", job_id: str) -> str:
-    """Generate training config YAML from JobCreateRequest."""
+def _build_pipeline_config(request: "JobCreateRequest", job_id: str) -> dict:
+    """Build TrainingPipeline JSON config from JobCreateRequest."""
+    dataset = request.dataset
+    policy = request.policy
+
+    training = request.training.model_dump()
+    training.setdefault("save_checkpoint", True)
+
     config = {
-        "metadata": {
-            "name": request.name,
-            "job_id": job_id,
-        },
         "dataset": {
-            "id": request.dataset.id,
-            "source": request.dataset.source,
+            "id": dataset.id,
         },
         "policy": {
-            "type": request.policy.type,
+            "type": policy.type,
+            "push_to_hub": False,
         },
-        "training": {},
-        "wandb": {
-            "enable": request.wandb_enable,
+        "training": training,
+        "validation": {
+            "enable": False,
         },
+        "early_stopping": {
+            "enable": False,
+        },
+        "output": {
+            "job_name": job_id,
+        },
+        "rename_map": {},
+        "seed": 1000,
     }
 
-    # Add optional dataset fields
-    if request.dataset.hf_repo_id:
-        config["dataset"]["repo_id"] = request.dataset.hf_repo_id
+    if policy.pretrained_path:
+        config["policy"]["pretrained_path"] = policy.pretrained_path
+    if policy.dtype:
+        config["policy"]["dtype"] = policy.dtype
+    if policy.compile_model is not None:
+        config["policy"]["compile_model"] = policy.compile_model
+    if policy.gradient_checkpointing is not None:
+        config["policy"]["gradient_checkpointing"] = policy.gradient_checkpointing
 
-    # Add optional policy fields
-    if request.policy.pretrained_path:
-        config["policy"]["pretrained_path"] = request.policy.pretrained_path
-    if request.policy.compile_model is not None:
-        config["policy"]["compile_model"] = request.policy.compile_model
-    if request.policy.gradient_checkpointing is not None:
-        config["policy"]["gradient_checkpointing"] = request.policy.gradient_checkpointing
-    if request.policy.dtype:
-        config["policy"]["dtype"] = request.policy.dtype
-
-    # Add optional training fields
-    if request.training.steps:
-        config["training"]["steps"] = request.training.steps
-    if request.training.batch_size:
-        config["training"]["batch_size"] = request.training.batch_size
-    if request.training.save_freq:
-        config["training"]["save_freq"] = request.training.save_freq
-
-    # Add checkpoint repo if specified
-    if request.checkpoint_repo_id:
-        config["checkpoint"] = {
-            "repo_id": request.checkpoint_repo_id,
-            "upload_every_save": True,
-        }
-
-    return yaml.dump(config, default_flow_style=False, allow_unicode=True)
+    return config
 
 
-def _generate_env_file(job_id: str, instance_id: str, auto_delete: bool = True) -> str:
+def _generate_env_file(
+    job_id: str,
+    instance_id: str,
+    policy_type: Optional[str],
+    auto_delete: bool = True,
+) -> str:
     """Generate .env file content with required credentials."""
     lines = []
 
@@ -403,6 +397,11 @@ def _generate_env_file(job_id: str, instance_id: str, auto_delete: bool = True) 
     if r2_bucket:
         lines.append(f"R2_BUCKET={r2_bucket}")
         lines.append(f"S3_BUCKET={r2_bucket}")
+
+    lines.append("PHYSICAL_AI_DATA_DIR=$HOME/.physical-ai")
+
+    if policy_type:
+        lines.append(f"PERCUS_AI_POLICY_TYPE={policy_type}")
 
     # GitHub token for private repo access (physical-ai-features)
     gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
@@ -758,8 +757,8 @@ def _get_log_file_path(job_data: dict) -> str:
         Full path to the log file on the remote instance
     """
     mode = job_data.get("mode", "train")
-    remote_base_dir = job_data.get("remote_base_dir", "/root")
-    return f"{remote_base_dir}/lerobot_run/setup_env_{mode}.log"
+    remote_base_dir = job_data.get("remote_base_dir", "/root/.physical-ai")
+    return f"{remote_base_dir}/run/setup_env_{mode}.log"
 
 
 def _get_ssh_connection_for_job(job_data: dict, timeout: int = 30) -> Optional[SSHConnection]:
@@ -2013,7 +2012,7 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
             "project_id": _resolve_project_id(request.dataset.id if request.dataset else None),
             "ssh_user": "root",
             "ssh_private_key": ssh_private_key,
-            "remote_base_dir": "/root",
+            "remote_base_dir": "/root/.physical-ai",
             "checkpoint_repo_id": request.checkpoint_repo_id,
             "created_at": now,
             "updated_at": now,
@@ -2021,13 +2020,7 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
             "gpus_per_instance": request.cloud.gpus_per_instance,
             "policy_type": request.policy.type if request.policy else None,
             "dataset_id": request.dataset.id if request.dataset else None,
-            "training_config": {
-                "dataset": request.dataset.model_dump() if request.dataset else {},
-                "policy": request.policy.model_dump() if request.policy else {},
-                "training": request.training.model_dump(),
-                "wandb_enable": request.wandb_enable,
-                "checkpoint_repo_id": request.checkpoint_repo_id,
-            },
+            "training_config": _build_pipeline_config(request, job_id),
             "compute_profile": request.cloud.model_dump(),
         }
         _save_job(job_data)
@@ -2213,6 +2206,7 @@ def _create_job_with_progress(
         PolicyConfig,
         TrainingParams,
         CloudConfig,
+        JobCreateRequest,
     )
 
     emit_progress({"type": "start", "message": "ジョブ作成を開始..."})
@@ -2334,6 +2328,17 @@ def _create_job_with_progress(
             "instance_id": instance_id,
         })
 
+        request_model = JobCreateRequest(
+            name=job_id,
+            dataset=dataset,
+            policy=policy,
+            training=training,
+            cloud=cloud,
+            checkpoint_repo_id=checkpoint_repo_id,
+            wandb_enable=wandb_enable,
+        )
+        training_config = _build_pipeline_config(request_model, job_id)
+
         # Save job info
         now = datetime.now().isoformat()
         job_data = {
@@ -2346,7 +2351,7 @@ def _create_job_with_progress(
             "project_id": _resolve_project_id(dataset.id),
             "ssh_user": "root",
             "ssh_private_key": ssh_private_key,
-            "remote_base_dir": "/root",
+            "remote_base_dir": "/root/.physical-ai",
             "checkpoint_repo_id": checkpoint_repo_id,
             "created_at": now,
             "updated_at": now,
@@ -2354,13 +2359,7 @@ def _create_job_with_progress(
             "gpus_per_instance": cloud.gpus_per_instance,
             "policy_type": policy.type,
             "dataset_id": dataset.id,
-            "training_config": {
-                "dataset": dataset.model_dump(),
-                "policy": policy.model_dump(),
-                "training": training.model_dump(),
-                "wandb_enable": wandb_enable,
-                "checkpoint_repo_id": checkpoint_repo_id,
-            },
+            "training_config": training_config,
             "compute_profile": cloud.model_dump(),
         }
         _save_job(job_data)
@@ -2405,8 +2404,6 @@ def _create_job_with_progress(
 
         # SSH deployment using SSHConnection and RemoteExecutor
         ssh_user = "root"
-        remote_base_dir = "/root"
-        remote_run_dir = f"{remote_base_dir}/lerobot_run"
 
         # Wait for SSH (up to 5 minutes)
         emit_progress({"type": "connecting_ssh", "message": "SSH接続中...", "attempt": 0, "max_attempts": 30})
@@ -2442,6 +2439,12 @@ def _create_job_with_progress(
         emit_progress({"type": "ssh_ready", "message": "SSH接続完了"})
 
         try:
+            resolved_base_dir = conn.resolve_path("~/.physical-ai") or "/root/.physical-ai"
+            remote_base_dir = resolved_base_dir
+            remote_run_dir = f"{remote_base_dir}/run"
+            job_data["remote_base_dir"] = remote_base_dir
+            _save_job(job_data)
+
             # Create remote directory
             emit_progress({"type": "deploying", "message": "リモートディレクトリを作成中..."})
             conn.mkdir_p(remote_run_dir)
@@ -2449,38 +2452,17 @@ def _create_job_with_progress(
             # Upload remote scripts
             emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "setup_env.sh"})
             setup_env_path = REMOTE_SCRIPTS_DIR / "setup_env.sh"
-            read_config_path = REMOTE_SCRIPTS_DIR / "read_train_config.py"
             entry_path = REMOTE_SCRIPTS_DIR / "entry.py"
 
             if setup_env_path.exists():
                 conn.upload_file(setup_env_path, f"{remote_run_dir}/setup_env.sh")
-            emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "read_train_config.py"})
-            if read_config_path.exists():
-                conn.upload_file(read_config_path, f"{remote_run_dir}/read_train_config.py")
             emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "entry.py"})
             if entry_path.exists():
                 conn.upload_file(entry_path, f"{remote_run_dir}/entry.py")
 
-            # Generate and upload training config YAML
-            emit_progress({"type": "deploying", "message": "学習設定をアップロード中...", "file": "train.remote.yaml"})
-
-            # Build request object for config generation
-            from interfaces_backend.models.training import JobCreateRequest
-            request = JobCreateRequest(
-                name=name,
-                dataset=dataset,
-                policy=policy,
-                training=training,
-                cloud=cloud,
-                checkpoint_repo_id=checkpoint_repo_id,
-                wandb_enable=wandb_enable,
-            )
-            config_yaml = _generate_training_config_yaml(request, job_id)
-            conn.upload_content(config_yaml, f"{remote_run_dir}/train.remote.yaml")
-
             # Generate and upload .env file
             emit_progress({"type": "deploying", "message": "環境変数をアップロード中...", "file": ".env"})
-            env_content = _generate_env_file(job_id, instance_id)
+            env_content = _generate_env_file(job_id, instance_id, policy.type if policy else None)
             conn.upload_content(env_content, f"{remote_run_dir}/.env")
 
             # Generate and upload instance_info.env
@@ -2774,8 +2756,6 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
         # SSH deployment using SSHConnection
         ssh_user = job_data.get("ssh_user", "root")
         ssh_private_key = job_data.get("ssh_private_key", "~/.ssh/id_rsa")
-        remote_base_dir = job_data.get("remote_base_dir", "/root")
-        remote_run_dir = f"{remote_base_dir}/lerobot_run"
 
         # Wait for SSH to be ready (up to 5 minutes)
         conn: Optional[SSHConnection] = None
@@ -2797,28 +2777,31 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
             return
 
         try:
+            resolved_base_dir = conn.resolve_path("~/.physical-ai") or "/root/.physical-ai"
+            remote_base_dir = resolved_base_dir
+            remote_run_dir = f"{remote_base_dir}/run"
+            job_data["remote_base_dir"] = remote_base_dir
+            _save_job(job_data)
+
             # Create remote directory
             conn.mkdir_p(remote_run_dir)
 
             # Upload remote scripts
             setup_env_path = REMOTE_SCRIPTS_DIR / "setup_env.sh"
-            read_config_path = REMOTE_SCRIPTS_DIR / "read_train_config.py"
             entry_path = REMOTE_SCRIPTS_DIR / "entry.py"
 
             if setup_env_path.exists():
                 conn.upload_file(setup_env_path, f"{remote_run_dir}/setup_env.sh")
-            if read_config_path.exists():
-                conn.upload_file(read_config_path, f"{remote_run_dir}/read_train_config.py")
             if entry_path.exists():
                 conn.upload_file(entry_path, f"{remote_run_dir}/entry.py")
 
-            # Generate and upload training config YAML
-            config_yaml = _generate_training_config_yaml(request, job_id)
-            conn.upload_content(config_yaml, f"{remote_run_dir}/train.remote.yaml")
-
             # Generate and upload .env file
             instance_id = job_data["instance_id"]
-            env_content = _generate_env_file(job_id, instance_id)
+            env_content = _generate_env_file(
+                job_id,
+                instance_id,
+                request.policy.type if request.policy else None,
+            )
             conn.upload_content(env_content, f"{remote_run_dir}/.env")
 
             # Generate and upload instance_info.env
@@ -3308,7 +3291,7 @@ async def create_continue_job(
             "policy_type": checkpoint_entry.policy_type,
             "ssh_user": "root",
             "ssh_private_key": ssh_private_key,
-            "remote_base_dir": "/root",
+            "remote_base_dir": "/root/.physical-ai",
             "created_at": now,
             "updated_at": now,
             "gpu_model": request.cloud.gpu_model,
@@ -3355,7 +3338,7 @@ CONFIGS_DIR = get_configs_dir()
 
 def _get_config_file(config_id: str) -> Path:
     """Get config file path."""
-    return CONFIGS_DIR / f"{config_id}.yaml"
+    return CONFIGS_DIR / f"{config_id}.json"
 
 
 def _list_configs() -> list[dict]:
@@ -3364,10 +3347,10 @@ def _list_configs() -> list[dict]:
         return []
 
     configs = []
-    for config_file in CONFIGS_DIR.glob("*.yaml"):
+    for config_file in CONFIGS_DIR.glob("*.json"):
         try:
             with open(config_file, encoding="utf-8") as f:
-                data = yaml.safe_load(f)
+                data = json.load(f)
             if not isinstance(data, dict):
                 continue
 
@@ -3396,7 +3379,7 @@ def _load_config(config_id: str) -> Optional[dict]:
         return None
 
     with open(config_file, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return json.load(f)
 
 
 def _save_config(config_id: str, config_data: dict) -> Path:
@@ -3406,13 +3389,13 @@ def _save_config(config_id: str, config_data: dict) -> Path:
     config_file.parent.mkdir(parents=True, exist_ok=True)
 
     with open(config_file, "w", encoding="utf-8") as f:
-        yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
+        json.dump(config_data, f, indent=2, ensure_ascii=False)
 
     return config_file
 
 
-def _convert_model_to_yaml_format(config) -> dict:
-    """Convert Pydantic model to YAML format."""
+def _convert_model_to_config_format(config) -> dict:
+    """Convert Pydantic model to config format."""
     return {
         "metadata": {
             "name": config.name,
@@ -3452,8 +3435,8 @@ def _convert_model_to_yaml_format(config) -> dict:
     }
 
 
-def _convert_yaml_to_model_format(data: dict) -> dict:
-    """Convert YAML format to Pydantic model format."""
+def _convert_config_to_model_format(data: dict) -> dict:
+    """Convert config format to Pydantic model format."""
     metadata = data.get("metadata", {})
     dataset = data.get("dataset", {})
     policy = data.get("policy", {})
@@ -3532,7 +3515,7 @@ async def get_training_config(config_id: str):
     if not data:
         raise HTTPException(status_code=404, detail=f"Config not found: {config_id}")
 
-    model_data = _convert_yaml_to_model_format(data)
+    model_data = _convert_config_to_model_format(data)
     config = TrainingConfigModel(**model_data)
 
     return TrainingConfigDetailResponse(
@@ -3554,8 +3537,8 @@ async def create_training_config(request: TrainingConfigCreateRequest):
             detail=f"Config '{config_id}' already exists",
         )
 
-    yaml_data = _convert_model_to_yaml_format(request.config)
-    file_path = _save_config(config_id, yaml_data)
+    config_data = _convert_model_to_config_format(request.config)
+    file_path = _save_config(config_id, config_data)
 
     return TrainingConfigCreateResponse(
         config_id=config_id,
@@ -3570,8 +3553,8 @@ async def update_training_config(config_id: str, request: TrainingConfigCreateRe
     if not _get_config_file(config_id).exists():
         raise HTTPException(status_code=404, detail=f"Config not found: {config_id}")
 
-    yaml_data = _convert_model_to_yaml_format(request.config)
-    file_path = _save_config(config_id, yaml_data)
+    config_data = _convert_model_to_config_format(request.config)
+    file_path = _save_config(config_id, config_data)
 
     return TrainingConfigCreateResponse(
         config_id=config_id,
@@ -3655,9 +3638,9 @@ async def dry_run_training_config(config_id: str):
         estimated_cost_per_hour=None,  # Would need Verda API to get actual price
         files_to_deploy=[
             ".env",
-            "train.remote.yaml",
             "setup_env.sh",
             "entry.py",
+            "instance_info.env",
         ],
         remote_command=f"bash ./setup_env.sh train",
     )
@@ -3709,7 +3692,7 @@ async def upload_config_to_r2(config_name: str, force: bool = Query(False)):
     """Upload a training config to R2.
 
     Args:
-        config_name: Config name (filename without .yaml)
+        config_name: Config name (filename without .json)
         force: Force upload even if remote is newer
     """
     # Check if local config exists
@@ -3735,7 +3718,7 @@ async def download_config_from_r2(config_name: str, force: bool = Query(False)):
     """Download a training config from R2.
 
     Args:
-        config_name: Config name (filename without .yaml)
+        config_name: Config name (filename without .json)
         force: Force download even if local is newer
     """
     try:
