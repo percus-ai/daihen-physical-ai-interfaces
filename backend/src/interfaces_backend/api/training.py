@@ -400,6 +400,16 @@ def _generate_env_file(
 
     lines.append("PHYSICAL_AI_DATA_DIR=$HOME/.physical-ai")
 
+    repo_url = os.environ.get(
+        "PERCUS_AI_REPO_URL",
+        "https://github.com/percus-ai/physical-ai-features.git",
+    )
+    if repo_url:
+        lines.append(f"PERCUS_AI_REPO_URL={repo_url}")
+    repo_ref = os.environ.get("PERCUS_AI_REPO_REF")
+    if repo_ref:
+        lines.append(f"PERCUS_AI_REPO_REF={repo_ref}")
+
     if policy_type:
         lines.append(f"PERCUS_AI_POLICY_TYPE={policy_type}")
 
