@@ -56,7 +56,7 @@ from percus_ai.db import (
     upsert_with_owner,
 )
 from percus_ai.training.ssh.client import SSHConnection
-from percus_ai.training.ssh.executor import RemoteExecutor
+from percus_ai.training.ssh.executor import RemoteExecutor, run_remote_command
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +277,7 @@ def _get_training_job_realtime_manager() -> TrainingJobRealtimeManager:
         _training_job_realtime_manager = TrainingJobRealtimeManager()
     return _training_job_realtime_manager
 
-# Remote scripts directory - contains setup_env.sh, entry.py, etc.
+# Remote scripts directory - contains setup_env.sh, run_training.sh, entry.py, etc.
 # These scripts are deployed to remote instances for training
 REMOTE_SCRIPTS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "features" / "percus_ai" / "training" / "remote"
 
@@ -739,14 +739,14 @@ def _list_jobs(days: int = 7) -> list[dict]:
 
 # --- SSH utilities for job monitoring (uses SSHConnection) ---
 
-# tmux session name for training jobs (consistent with job startup)
-TMUX_SESSION_NAME = "instance_setup"
+# tmux session names for setup and training
+TMUX_SETUP_SESSION_NAME = "instance_setup"
+TMUX_TRAIN_SESSION_NAME = "training_run"
 
 # Timeout constants
 IP_WAIT_TIMEOUT_SEC = 900  # 15 minutes to wait for IP assignment
 SSH_WAIT_TIMEOUT_SEC = 300  # 5 minutes to wait for SSH to be ready
-LOG_STREAM_MAX_SEC = 30  # Max time to stream initial logs
-LOG_STREAM_INITIAL_LINES = 10  # Number of log lines to show initially
+SETUP_TIMEOUT_SEC = 3600  # Max time to run setup_env.sh
 
 
 def _get_setup_log_file_path(job_data: dict) -> str:
@@ -811,23 +811,35 @@ def _check_remote_status(job_data: dict) -> str:
         return "unreachable"
 
     try:
-        cmd = f"tmux has-session -t {TMUX_SESSION_NAME} 2>/dev/null && echo 'running' || echo 'stopped'"
-        exit_code, stdout, stderr = conn.exec_command(cmd)
-        return stdout.strip()
+        train_cmd = f"tmux has-session -t {TMUX_TRAIN_SESSION_NAME} 2>/dev/null && echo 'running' || echo 'stopped'"
+        exit_code, stdout, stderr = conn.exec_command(train_cmd)
+        train_status = stdout.strip()
+        if train_status == "running":
+            return "running"
+
+        setup_cmd = f"tmux has-session -t {TMUX_SETUP_SESSION_NAME} 2>/dev/null && echo 'running' || echo 'stopped'"
+        exit_code, stdout, stderr = conn.exec_command(setup_cmd)
+        setup_status = stdout.strip()
+        if setup_status == "running":
+            return "starting"
+        return "stopped"
     except Exception:
         return "error"
     finally:
         conn.disconnect()
 
 
-def _get_remote_logs(job_data: dict, lines: int = 100) -> Optional[str]:
+def _get_remote_logs(job_data: dict, lines: int = 100, log_type: str = "training") -> Optional[str]:
     """Get remote logs via SSH."""
     conn = _get_ssh_connection_for_job(job_data)
     if not conn:
         return None
 
     try:
-        log_file = _get_training_log_file_path(job_data)
+        if log_type == "setup":
+            log_file = _get_setup_log_file_path(job_data)
+        else:
+            log_file = _get_training_log_file_path(job_data)
         cmd = f"tail -n {lines} {log_file} 2>/dev/null || echo '[Log file not found]'"
         exit_code, stdout, stderr = conn.exec_command(cmd)
         return stdout
@@ -889,8 +901,8 @@ def _stop_remote_job(job_data: dict) -> bool:
         return False
 
     try:
-        cmd = f"tmux kill-session -t {TMUX_SESSION_NAME} 2>/dev/null || true"
-        conn.exec_command(cmd)
+        conn.exec_command(f"tmux kill-session -t {TMUX_SETUP_SESSION_NAME} 2>/dev/null || true")
+        conn.exec_command(f"tmux kill-session -t {TMUX_TRAIN_SESSION_NAME} 2>/dev/null || true")
         return True
     except Exception:
         return False
@@ -1571,13 +1583,17 @@ async def get_job(job_id: str):
 
 
 @router.get("/jobs/{job_id}/logs", response_model=JobLogsResponse)
-async def get_job_logs(job_id: str, lines: int = Query(100, ge=1, le=10000)):
+async def get_job_logs(
+    job_id: str,
+    lines: int = Query(100, ge=1, le=10000),
+    log_type: str = Query("training", pattern="^(training|setup)$"),
+):
     """Get job logs from remote instance."""
     job_data = _load_job(job_id)
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    logs = _get_remote_logs(job_data, lines)
+    logs = _get_remote_logs(job_data, lines, log_type=log_type)
     if logs is None:
         raise HTTPException(
             status_code=503, detail="Could not connect to remote instance"
@@ -2485,16 +2501,24 @@ def _create_job_with_progress(
             emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "setup_env.sh"})
             setup_env_path = REMOTE_SCRIPTS_DIR / "setup_env.sh"
             entry_path = REMOTE_SCRIPTS_DIR / "entry.py"
+            run_training_path = REMOTE_SCRIPTS_DIR / "run_training.sh"
 
             if setup_env_path.exists():
                 conn.upload_file(setup_env_path, f"{remote_run_dir}/setup_env.sh")
             emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "entry.py"})
             if entry_path.exists():
                 conn.upload_file(entry_path, f"{remote_run_dir}/entry.py")
+            emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "run_training.sh"})
+            if run_training_path.exists():
+                conn.upload_file(run_training_path, f"{remote_run_dir}/run_training.sh")
 
             # Generate and upload .env file
             emit_progress({"type": "deploying", "message": "環境変数をアップロード中...", "file": ".env"})
-            env_content = _generate_env_file(job_id, instance_id, policy.type if policy else None)
+            env_content = _generate_env_file(
+                job_id,
+                instance_id,
+                policy.type if policy else None,
+            )
             conn.upload_content(env_content, f"{remote_run_dir}/.env")
 
             # Generate and upload instance_info.env
@@ -2502,79 +2526,54 @@ def _create_job_with_progress(
             instance_info = _generate_instance_info_env(job_id, instance_id, auto_delete=True)
             conn.upload_content(instance_info, f"{remote_run_dir}/instance_info.env")
 
-            # Make setup script executable
+            # Make scripts executable
             conn.exec_command(f"chmod +x {remote_run_dir}/setup_env.sh")
+            conn.exec_command(f"chmod +x {remote_run_dir}/run_training.sh")
 
-            # Start training using RemoteExecutor with tmux
-            emit_progress({"type": "starting_training", "message": "学習を開始中..."})
+            # Run setup synchronously and stream logs
+            emit_progress({"type": "setting_up", "message": "環境構築中..."})
+
+            def _emit_setup_log(line: str) -> None:
+                line = line.strip()
+                if line:
+                    emit_progress({"type": "training_log", "message": line})
+
+            setup_cmd = f"cd {remote_run_dir} && timeout {SETUP_TIMEOUT_SEC}s bash setup_env.sh train 2>&1"
+            setup_exit_code = run_remote_command(
+                conn,
+                setup_cmd,
+                stream_output=False,
+                on_stdout=_emit_setup_log,
+            )
+            if setup_exit_code != 0:
+                if setup_exit_code == 124:
+                    job_data["status"] = "failed"
+                    job_data["failure_reason"] = "SETUP_TIMEOUT"
+                    job_data["error_message"] = "環境構築がタイムアウトしました"
+                    job_data["completed_at"] = datetime.now().isoformat()
+                    _save_job(job_data)
+                    emit_progress({"type": "error", "error": "環境構築がタイムアウトしました"})
+                    return cleanup_instance_on_failure("環境構築がタイムアウトしました")
+                job_data["status"] = "failed"
+                job_data["failure_reason"] = "SETUP_FAILED"
+                job_data["error_message"] = f"環境構築に失敗しました (exit={setup_exit_code})"
+                job_data["completed_at"] = datetime.now().isoformat()
+                _save_job(job_data)
+                emit_progress({"type": "error", "error": "環境構築に失敗しました"})
+                return cleanup_instance_on_failure("環境構築に失敗しました")
+
+            # Start training in separate tmux session
             executor = RemoteExecutor(conn, remote_base_dir=remote_run_dir)
+            emit_progress({"type": "starting_training", "message": "学習を開始中..."})
             success = executor.run_background(
-                "bash setup_env.sh train",
-                session_name=TMUX_SESSION_NAME,
+                "bash run_training.sh train",
+                session_name=TMUX_TRAIN_SESSION_NAME,
             )
             if not success:
-                emit_progress({"type": "training_log", "message": "警告: tmuxセッションの開始を確認できませんでした"})
-
-            # Stream log file in real-time using tail -f
-            log_file = _get_setup_log_file_path(job_data)
-            max_stream_time = LOG_STREAM_MAX_SEC
-            lines_to_show = LOG_STREAM_INITIAL_LINES
-            lines_received = 0
-            start_time = time.time()
-            log_file_found = False
-
-            try:
-                # Wait for log file to exist (max 5 seconds)
-                emit_progress({"type": "training_log", "message": "ログファイル待機中..."})
-                for i in range(10):
-                    exit_code, stdout, stderr = conn.exec_command(
-                        f"test -f {log_file} && echo 'exists' || echo 'not_exists'",
-                        timeout=2
-                    )
-                    if "exists" in stdout:
-                        log_file_found = True
-                        emit_progress({"type": "training_log", "message": "ログストリーミング開始..."})
-                        break
-                    time.sleep(0.5)
-
-                if not log_file_found:
-                    emit_progress({"type": "training_log", "message": "ログファイル作成待ち (バックグラウンドで起動中)..."})
-
-                # Use tail -f to stream logs in real-time
-                transport = conn.client.get_transport()
-                channel = transport.open_session()
-                # Use tail -F (capital F) to handle file that doesn't exist yet
-                channel.exec_command(f"tail -F {log_file} 2>/dev/null")
-                channel.setblocking(0)  # Non-blocking mode
-
-                buffer = ""
-                while time.time() - start_time < max_stream_time:
-                    # Check if data is available
-                    if channel.recv_ready():
-                        chunk = channel.recv(4096).decode("utf-8", errors="replace")
-                        buffer += chunk
-
-                        # Process complete lines
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            if line.strip():
-                                emit_progress({
-                                    "type": "training_log",
-                                    "message": line.strip(),
-                                })
-                                lines_received += 1
-
-                        # Exit once we have enough lines
-                        if lines_received >= lines_to_show:
-                            break
-                    else:
-                        time.sleep(0.1)
-
-                channel.close()
-
-            except Exception as e:
-                logger.warning(f"Log streaming error (non-fatal): {e}")
-                emit_progress({"type": "training_log", "message": f"ログ取得エラー: {e}"})
+                emit_progress({"type": "training_log", "message": "警告: 学習用tmuxセッションの開始を確認できませんでした"})
+            else:
+                job_data["status"] = "starting"
+                _save_job(job_data)
 
             emit_progress({
                 "type": "complete",
@@ -2582,7 +2581,7 @@ def _create_job_with_progress(
                 "job_id": job_id,
                 "instance_id": instance_id,
                 "ip": ip,
-                "status": "deploying",
+                "status": "starting",
             })
 
             return {
@@ -2590,7 +2589,7 @@ def _create_job_with_progress(
                 "job_id": job_id,
                 "instance_id": instance_id,
                 "ip": ip,
-                "status": "deploying",
+                "status": "starting",
             }
 
         finally:
@@ -2650,8 +2649,9 @@ async def websocket_create_job(websocket: WebSocket):
     - {"type": "connecting_ssh", "message": "...", "attempt": N, "max_attempts": 30}
     - {"type": "ssh_ready", "message": "..."}
     - {"type": "deploying", "message": "...", "file": "..."}
+    - {"type": "setting_up", "message": "..."}
     - {"type": "starting_training", "message": "..."}
-    - {"type": "complete", "job_id": "...", "instance_id": "...", "ip": "...", "status": "running"}
+    - {"type": "complete", "job_id": "...", "instance_id": "...", "ip": "...", "status": "starting"}
     - {"type": "error", "error": "..."}
     - {"type": "heartbeat"} (sent periodically to keep connection alive)
     """
@@ -2821,11 +2821,14 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
             # Upload remote scripts
             setup_env_path = REMOTE_SCRIPTS_DIR / "setup_env.sh"
             entry_path = REMOTE_SCRIPTS_DIR / "entry.py"
+            run_training_path = REMOTE_SCRIPTS_DIR / "run_training.sh"
 
             if setup_env_path.exists():
                 conn.upload_file(setup_env_path, f"{remote_run_dir}/setup_env.sh")
             if entry_path.exists():
                 conn.upload_file(entry_path, f"{remote_run_dir}/entry.py")
+            if run_training_path.exists():
+                conn.upload_file(run_training_path, f"{remote_run_dir}/run_training.sh")
 
             # Generate and upload .env file
             instance_id = job_data["instance_id"]
@@ -2840,12 +2843,39 @@ async def _deploy_and_start_training(job_id: str, request: JobCreateRequest) -> 
             instance_info = _generate_instance_info_env(job_id, instance_id, auto_delete=True)
             conn.upload_content(instance_info, f"{remote_run_dir}/instance_info.env")
 
-            # Make setup script executable
+            # Make scripts executable
             conn.exec_command(f"chmod +x {remote_run_dir}/setup_env.sh")
+            conn.exec_command(f"chmod +x {remote_run_dir}/run_training.sh")
+
+            # Run setup synchronously
+            setup_cmd = f"cd {remote_run_dir} && timeout {SETUP_TIMEOUT_SEC}s bash setup_env.sh train 2>&1"
+            setup_exit_code = run_remote_command(
+                conn,
+                setup_cmd,
+                stream_output=False,
+            )
+            if setup_exit_code != 0:
+                if setup_exit_code == 124:
+                    job_data["status"] = "failed"
+                    job_data["failure_reason"] = "SETUP_TIMEOUT"
+                    job_data["error_message"] = "環境構築がタイムアウトしました"
+                    job_data["completed_at"] = datetime.now().isoformat()
+                    _save_job(job_data)
+                    cleanup_on_failure("環境構築がタイムアウトしました")
+                    return
+                job_data["status"] = "failed"
+                job_data["failure_reason"] = "SETUP_FAILED"
+                job_data["error_message"] = f"環境構築に失敗しました (exit={setup_exit_code})"
+                job_data["completed_at"] = datetime.now().isoformat()
+                _save_job(job_data)
+                cleanup_on_failure("環境構築に失敗しました")
+                return
 
             # Start training using RemoteExecutor with tmux
             executor = RemoteExecutor(conn, remote_base_dir=remote_run_dir)
-            executor.run_background("bash setup_env.sh train", session_name=TMUX_SESSION_NAME)
+            executor.run_background("bash run_training.sh train", session_name=TMUX_TRAIN_SESSION_NAME)
+            job_data["status"] = "starting"
+            _save_job(job_data)
 
         finally:
             conn.disconnect()
@@ -3667,10 +3697,11 @@ async def dry_run_training_config(config_id: str):
         files_to_deploy=[
             ".env",
             "setup_env.sh",
+            "run_training.sh",
             "entry.py",
             "instance_info.env",
         ],
-        remote_command=f"bash ./setup_env.sh train",
+        remote_command="tmux(instance_setup): bash ./setup_env.sh train -> tmux(training_run): bash ./run_training.sh train",
     )
 
 
@@ -3816,6 +3847,11 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
     - {"type": "heartbeat"}
     """
     await websocket.accept()
+    log_type = websocket.query_params.get("log_type", "training")
+    if log_type not in ("training", "setup"):
+        await websocket.send_json({"type": "error", "error": f"Invalid log_type: {log_type}"})
+        await websocket.close()
+        return
     logger.info(f"WebSocket log stream client connected for job {job_id}")
 
     job_data = _load_job(job_id)
@@ -3862,7 +3898,10 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
         await websocket.send_json({"type": "connected", "message": "SSH接続完了"})
 
         # Determine log file path
-        log_file = _get_training_log_file_path(job_data)
+        if log_type == "setup":
+            log_file = _get_setup_log_file_path(job_data)
+        else:
+            log_file = _get_training_log_file_path(job_data)
 
         # Start tail -f in a channel
         transport = ssh_conn.client.get_transport()
@@ -4209,7 +4248,13 @@ async def _send_remote_status(websocket: WebSocket, ssh_client) -> None:
         loop = asyncio.get_event_loop()
         status = await loop.run_in_executor(
             _executor,
-            lambda: _exec_ssh_command(ssh_client, f"tmux has-session -t {TMUX_SESSION_NAME} 2>/dev/null && echo 'running' || echo 'stopped'")
+            lambda: _exec_ssh_command(
+                ssh_client,
+                (
+                    f"tmux has-session -t {TMUX_TRAIN_SESSION_NAME} 2>/dev/null && echo 'running' "
+                    f"|| (tmux has-session -t {TMUX_SETUP_SESSION_NAME} 2>/dev/null && echo 'starting' || echo 'stopped')"
+                ),
+            )
         )
         await websocket.send_json({
             "type": "remote_status",

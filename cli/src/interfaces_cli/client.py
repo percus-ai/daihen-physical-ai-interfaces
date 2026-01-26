@@ -1114,15 +1114,19 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
-    def get_training_job_logs(self, job_id: str) -> Dict[str, Any]:
+    def get_training_job_logs(self, job_id: str, log_type: str = "training") -> Dict[str, Any]:
         """GET /api/training/jobs/{job_id}/logs - Get logs."""
-        response = self._client.get(f"/api/training/jobs/{job_id}/logs")
+        response = self._client.get(
+            f"/api/training/jobs/{job_id}/logs",
+            params={"log_type": log_type},
+        )
         response.raise_for_status()
         return response.json()
 
     def stream_training_job_logs_ws(
         self,
         job_id: str,
+        log_type: str = "training",
         on_log: Optional[Callable[[str], None]] = None,
         on_status: Optional[Callable[[str, str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
@@ -1142,7 +1146,7 @@ class PhiClient:
         import websocket
 
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/training/ws/jobs/{job_id}/logs"
+        ws_url = f"{ws_url}/api/training/ws/jobs/{job_id}/logs?log_type={log_type}"
 
         try:
             ws = websocket.create_connection(

@@ -1266,7 +1266,8 @@ class TrainingWizard(BaseMenu):
             ("waiting_ip", "4. IP割り当て待機"),
             ("connecting", "5. SSH接続"),
             ("deploying", "6. ファイル転送"),
-            ("starting", "7. 学習開始"),
+            ("setting_up", "7. 環境構築"),
+            ("starting", "8. 学習開始"),
         ]
 
         current = {
@@ -1380,8 +1381,11 @@ class TrainingWizard(BaseMenu):
             elif msg_type == "deploying":
                 current["phase_index"] = 5
                 current["phase_name"] = "ファイル転送"
-            elif msg_type == "starting_training":
+            elif msg_type == "setting_up":
                 current["phase_index"] = 6
+                current["phase_name"] = "環境構築"
+            elif msg_type == "starting_training":
+                current["phase_index"] = 7
                 current["phase_name"] = "学習開始"
 
             # Handle specific data
@@ -2358,12 +2362,14 @@ class TrainingJobsMenu(BaseMenu):
             status = job_info.get("status", "")
             action_choices = []
 
-            if status == "running":
-                action_choices.append(Choice(value="stream_logs", name="📜 ログをストリーミング (Ctrl+Cで終了)"))
+            if status in ("running", "starting", "deploying"):
+                action_choices.append(Choice(value="stream_train_logs", name="📜 学習ログをストリーミング (Ctrl+Cで終了)"))
+                action_choices.append(Choice(value="stream_setup_logs", name="🧰 セットアップログをストリーミング (Ctrl+Cで終了)"))
                 action_choices.append(Choice(value="stop", name="⏹ ジョブを停止"))
                 action_choices.append(Choice(value="refresh", name="🔄 更新"))
             else:
-                action_choices.append(Choice(value="logs", name="📜 ログを表示 (最新30行)"))
+                action_choices.append(Choice(value="show_train_logs", name="📜 学習ログを表示 (最新30行)"))
+                action_choices.append(Choice(value="show_setup_logs", name="🧰 セットアップログを表示 (最新30行)"))
 
             if status in ("completed", "failed", "stopped", "terminated"):
                 action_choices.append(Choice(value="delete", name="🗑 ジョブを削除"))
@@ -2376,10 +2382,14 @@ class TrainingJobsMenu(BaseMenu):
                 style=hacker_style,
             ).execute()
 
-            if action == "logs":
-                self._show_job_logs(job_id)
-            elif action == "stream_logs":
-                self._stream_job_logs(job_id)
+            if action == "show_train_logs":
+                self._show_job_logs(job_id, log_type="training")
+            elif action == "show_setup_logs":
+                self._show_job_logs(job_id, log_type="setup")
+            elif action == "stream_train_logs":
+                self._stream_job_logs(job_id, log_type="training")
+            elif action == "stream_setup_logs":
+                self._stream_job_logs(job_id, log_type="setup")
             elif action == "stop":
                 self._stop_job(job_id)
             elif action == "delete":
@@ -2395,11 +2405,12 @@ class TrainingJobsMenu(BaseMenu):
 
         return MenuResult.CONTINUE
 
-    def _show_job_logs(self, job_id: str) -> None:
+    def _show_job_logs(self, job_id: str, log_type: str = "training") -> None:
         """Show job logs (for non-running jobs)."""
-        print(f"\n{Colors.CYAN}ログ:{Colors.RESET}")
+        title = "学習ログ" if log_type == "training" else "セットアップログ"
+        print(f"\n{Colors.CYAN}{title}:{Colors.RESET}")
         try:
-            result = self.api.get_training_job_logs(job_id)
+            result = self.api.get_training_job_logs(job_id, log_type=log_type)
             logs = result.get("logs", "")
             if logs:
                 lines = logs.strip().split("\n") if isinstance(logs, str) else logs
@@ -2411,101 +2422,33 @@ class TrainingJobsMenu(BaseMenu):
             print(f"{Colors.error('エラー:')} {e}")
         input(f"\n{Colors.muted('Press Enter to continue...')}")
 
-    def _stream_job_logs_with_session(self, session) -> None:
-        """Stream job logs using existing WebSocket session (no new SSH connection)."""
-        print(f"\n{Colors.CYAN}ログストリーミング中... (Ctrl+Cで終了){Colors.RESET}\n")
-
-        # Start log streaming via existing session
-        if not session.start_logs():
-            print(f"{Colors.error('ログストリーミングの開始に失敗しました')}")
-            return
+    def _stream_job_logs(self, job_id: str, log_type: str = "training") -> None:
+        """Stream job logs in real-time via WebSocket."""
+        title = "学習ログ" if log_type == "training" else "セットアップログ"
+        print(f"\n{Colors.CYAN}{title}ストリーミング中... (Ctrl+Cで終了){Colors.RESET}\n")
 
         try:
-            while True:
-                msg = session.receive(timeout=1.0)
-                if msg is None:
-                    continue
+            def on_log(line: str) -> None:
+                print(f"  {line}")
 
-                msg_type = msg.get("type", "")
+            def on_status(status: str, message: str) -> None:
+                if status and status != "connected":
+                    print(f"\n{Colors.info(message or 'ログストリーム終了')}")
 
-                if msg_type == "log":
-                    print(f"  {msg.get('line', '')}")
-                elif msg_type == "log_stream_started":
-                    pass  # Already started
-                elif msg_type == "log_stream_stopped":
-                    print(f"\n{Colors.info('ログストリーム終了')}")
-                    break
-                elif msg_type == "job_status_changed":
-                    status = msg.get("status", "")
-                    print(f"\n{Colors.info(f'ジョブ状態が変更されました: {status}')}")
-                    break
-                elif msg_type == "heartbeat":
-                    continue
-                elif msg_type == "progress":
-                    # Show progress updates while streaming
-                    step = msg.get("step", "N/A")
-                    loss = msg.get("loss", "N/A")
-                    print(f"  {Colors.muted(f'[進捗: Step {step}, Loss: {loss}]')}")
-                elif msg_type == "error" or msg_type == "ssh_error":
-                    print(f"\n{Colors.error('エラー:')} {msg.get('error', 'Unknown error')}")
-                    break
+            def on_error(err: str) -> None:
+                print(f"\n{Colors.error('エラー:')} {err}")
 
+            self.api.stream_training_job_logs_ws(
+                job_id,
+                log_type=log_type,
+                on_log=on_log,
+                on_status=on_status,
+                on_error=on_error,
+            )
         except KeyboardInterrupt:
-            session.stop_logs()
             print(f"\n{Colors.muted('ストリーミング終了')}")
 
         input(f"\n{Colors.muted('Press Enter to continue...')}")
-
-    def _stream_job_logs(self, job_id: str) -> None:
-        """Stream job logs in real-time via WebSocket (legacy, creates new session)."""
-        # Create new session and use it for streaming
-        session = self.api.create_job_session_ws(job_id)
-
-        if not session.connect():
-            print(f"{Colors.error('エラー:')} WebSocket接続に失敗しました")
-            input(f"\n{Colors.muted('Press Enter to continue...')}")
-            return
-
-        print(f"\n{Colors.CYAN}ログストリーミング中... (Ctrl+Cで終了){Colors.RESET}\n")
-
-        try:
-            # Wait for SSH connection
-            while True:
-                msg = session.receive(timeout=1.0)
-                if msg is None:
-                    continue
-
-                msg_type = msg.get("type", "")
-
-                if msg_type == "job_info":
-                    pass  # Skip job info
-                elif msg_type == "ssh_connecting":
-                    print(f"  {Colors.muted('SSH接続中...')}")
-                elif msg_type == "ssh_connected":
-                    print(f"{Colors.success('SSH接続完了')}\n")
-                    break
-                elif msg_type == "ssh_error":
-                    print(f"{Colors.error('SSH接続エラー:')} {msg.get('error', '')}")
-                    session.close()
-                    input(f"\n{Colors.muted('Press Enter to continue...')}")
-                    return
-                elif msg_type == "error":
-                    print(f"{Colors.error('エラー:')} {msg.get('error', '')}")
-                    session.close()
-                    input(f"\n{Colors.muted('Press Enter to continue...')}")
-                    return
-
-            # Skip remote_status and progress
-            msg = session.receive(timeout=1.0)  # remote_status
-            msg = session.receive(timeout=1.0)  # progress
-
-            # Now stream logs
-            self._stream_job_logs_with_session(session)
-
-        except KeyboardInterrupt:
-            print(f"\n{Colors.muted('ストリーミング終了')}")
-        finally:
-            session.close()
 
     def _stop_job(self, job_id: str) -> None:
         """Stop a running job."""
