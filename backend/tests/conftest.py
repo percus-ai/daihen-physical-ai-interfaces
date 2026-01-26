@@ -116,8 +116,6 @@ def _reset_backend_state() -> None:
     teleop._remote_leader_sessions.clear()
     teleop._remote_follower_sessions.clear()
 
-    training._config_manifest_manager = None
-    training._config_sync_service = None
 
 
 @pytest.fixture(autouse=True)

@@ -912,48 +912,6 @@ class PhiClient:
     # Training
     # =========================================================================
 
-    def list_training_configs(self) -> Dict[str, Any]:
-        """GET /api/training/configs - List training configs."""
-        response = self._client.get("/api/training/configs")
-        response.raise_for_status()
-        return response.json()
-
-    def get_training_config(self, config_id: str) -> Dict[str, Any]:
-        """GET /api/training/configs/{config_id} - Get config."""
-        response = self._client.get(f"/api/training/configs/{config_id}")
-        response.raise_for_status()
-        return response.json()
-
-    def create_training_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/training/configs - Create config."""
-        response = self._client.post("/api/training/configs", json=data)
-        response.raise_for_status()
-        return response.json()
-
-    def update_training_config(self, config_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """PUT /api/training/configs/{config_id} - Update config."""
-        response = self._client.put(f"/api/training/configs/{config_id}", json=data)
-        response.raise_for_status()
-        return response.json()
-
-    def delete_training_config(self, config_id: str) -> Dict[str, Any]:
-        """DELETE /api/training/configs/{config_id} - Delete config."""
-        response = self._client.delete(f"/api/training/configs/{config_id}")
-        response.raise_for_status()
-        return response.json()
-
-    def validate_training_config(self, config_id: str) -> Dict[str, Any]:
-        """GET /api/training/configs/{config_id}/validate - Validate."""
-        response = self._client.get(f"/api/training/configs/{config_id}/validate")
-        response.raise_for_status()
-        return response.json()
-
-    def dry_run_training(self, config_id: str) -> Dict[str, Any]:
-        """POST /api/training/configs/{config_id}/dry-run - Dry run."""
-        response = self._client.post(f"/api/training/configs/{config_id}/dry-run")
-        response.raise_for_status()
-        return response.json()
-
     def get_gpu_availability(self) -> Dict[str, Any]:
         """GET /api/training/gpu-availability - Check GPU availability.
 

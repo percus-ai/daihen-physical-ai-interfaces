@@ -4,7 +4,6 @@ This module implements the training CLI with:
 - New training wizard (7 steps)
 - Continue training wizard (6 steps)
 - Training jobs management
-- Training configs management
 """
 
 from dataclasses import dataclass, field
@@ -261,7 +260,6 @@ class TrainMenu(BaseMenu):
             Choice(value="jobs", name="📋 [JOBS] 学習ジョブ一覧"),
             Choice(value="new", name="🚀 [NEW] 新規学習"),
             Choice(value="continue", name="🔄 [CONTINUE] 継続学習"),
-            Choice(value="configs", name="⚙️  [CONFIGS] 学習設定管理"),
             Choice(value="verda_storage", name="🗄️  [VERDA] Verdaストレージ管理"),
         ]
 
@@ -272,8 +270,6 @@ class TrainMenu(BaseMenu):
             return self.submenu(TrainingWizard)
         if choice == "continue":
             return self.submenu(ContinueTrainingWizard)
-        if choice == "configs":
-            return self.submenu(TrainingConfigsMenu)
         if choice == "verda_storage":
             return self.submenu(VerdaStorageMenu)
         return MenuResult.CONTINUE
@@ -2529,137 +2525,3 @@ class TrainingJobsMenu(BaseMenu):
         except Exception as e:
             print(f"{Colors.error('エラー:')} {e}")
         input(f"\n{Colors.muted('Press Enter to continue...')}")
-
-
-# =============================================================================
-# Training Configs Menu (Existing functionality preserved)
-# =============================================================================
-
-
-class TrainingConfigsMenu(BaseMenu):
-    """Manage training configurations."""
-
-    title = "学習設定"
-
-    def get_choices(self) -> List[Choice]:
-        choices = []
-        try:
-            result = self.api.list_training_configs()
-            configs = result.get("configs", [])
-            for c in configs[:15]:
-                config_id = c.get("config_id", "unknown")
-                config_data = c.get("config", {})
-
-                if isinstance(config_data, dict):
-                    policy = config_data.get("policy", {}).get("type", "?")
-                    dataset = config_data.get("dataset", {}).get("id", "?")
-                else:
-                    policy = "?"
-                    dataset = "?"
-
-                choices.append(Choice(
-                    value=config_id,
-                    name=f"  {config_id} [{policy}] - {dataset}"
-                ))
-        except Exception:
-            pass
-
-        if not choices:
-            choices.append(Choice(value="__none__", name="(設定なし)"))
-
-        choices.append(Choice(value="__create__", name="+ 新規設定を作成"))
-
-        return choices
-
-    def handle_choice(self, choice: Any) -> MenuResult:
-        if choice == "__none__":
-            return MenuResult.BACK
-        if choice == "__create__":
-            # Redirect to training wizard
-            return self.submenu(TrainingWizard)
-
-        return self._show_config_detail(choice)
-
-    def _show_config_detail(self, config_id: str) -> MenuResult:
-        """Show config details and actions."""
-        show_section_header(f"設定: {config_id}")
-
-        try:
-            config_result = self.api.get_training_config(config_id)
-            config_data = config_result.get("config", {})
-
-            policy_type = config_data.get("policy", {}).get("type", "N/A")
-            dataset_id = config_data.get("dataset", {}).get("id", "N/A")
-            steps = config_data.get("training", {}).get("steps", 0) or 0
-            batch_size = config_data.get("training", {}).get("batch_size", 0) or 0
-
-            print(f"  ID: {config_result.get('config_id', 'N/A')}")
-            print(f"  ポリシー: {policy_type}")
-            print(f"  データセット: {dataset_id}")
-            print(f"  ステップ数: {steps:,}")
-            print(f"  バッチサイズ: {batch_size}")
-            print(f"  作成: {config_result.get('created_at', 'N/A')}")
-
-        except Exception as e:
-            print(f"{Colors.error('エラー:')} {e}")
-            input(f"\n{Colors.muted('Press Enter to continue...')}")
-            return MenuResult.CONTINUE
-
-        action = inquirer.select(
-            message="アクション:",
-            choices=[
-                Choice(value="validate", name="✓ 検証"),
-                Choice(value="dryrun", name="🔍 ドライラン"),
-                Choice(value="start", name="🚀 学習開始"),
-                Choice(value="delete", name="🗑 削除"),
-                Choice(value="back", name="← 戻る"),
-            ],
-            style=hacker_style,
-        ).execute()
-
-        if action == "validate":
-            try:
-                result = self.api.validate_training_config(config_id)
-                if result.get("is_valid"):
-                    print(f"{Colors.success('設定は有効です')}")
-                else:
-                    print(f"{Colors.warning('問題が見つかりました:')}")
-                    for issue in result.get("issues", []):
-                        print(f"  - {issue}")
-            except Exception as e:
-                print(f"{Colors.error('エラー:')} {e}")
-
-        elif action == "dryrun":
-            try:
-                result = self.api.dry_run_training(config_id)
-                print(f"{Colors.success('ドライラン完了')}")
-                print(f"  推定時間: {result.get('estimated_time', 'N/A')}")
-                print(f"  推定コスト: ${result.get('estimated_cost', 0):.2f}")
-            except Exception as e:
-                print(f"{Colors.error('エラー:')} {e}")
-
-        elif action == "start":
-            try:
-                result = self.api.create_training_job({"config_id": config_id})
-                print(f"{Colors.success('学習ジョブを開始しました!')}")
-                print(f"  ジョブID: {result.get('job_id', 'N/A')}")
-            except Exception as e:
-                print(f"{Colors.error('エラー:')} {e}")
-
-        elif action == "delete":
-            confirm = inquirer.confirm(
-                message=f"設定 {config_id} を削除しますか?",
-                default=False,
-                style=hacker_style,
-            ).execute()
-            if confirm:
-                try:
-                    self.api.delete_training_config(config_id)
-                    print(f"{Colors.success('設定を削除しました')}")
-                except Exception as e:
-                    print(f"{Colors.error('エラー:')} {e}")
-
-        if action != "back":
-            input(f"\n{Colors.muted('Press Enter to continue...')}")
-
-        return MenuResult.CONTINUE

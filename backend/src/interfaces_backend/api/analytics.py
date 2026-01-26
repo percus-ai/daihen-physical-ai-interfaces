@@ -8,7 +8,7 @@ from fastapi import APIRouter
 
 import pyarrow.parquet as pq
 
-from percus_ai.storage import get_datasets_dir, get_models_dir, get_configs_dir, get_storage_root
+from percus_ai.storage import get_datasets_dir, get_models_dir, get_storage_root
 from interfaces_backend.models.analytics import (
     OverviewStats,
     OverviewResponse,
@@ -25,7 +25,6 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 # Standard directories from storage paths
 DATASETS_DIR = get_datasets_dir()
 MODELS_DIR = get_models_dir()
-TRAINING_CONFIGS_DIR = get_configs_dir()
 
 
 def _get_dir_size(path: Path) -> float:
@@ -261,15 +260,6 @@ async def get_storage_stats():
         "category": "models",
         "size_mb": models_size,
         "file_count": models_files,
-    })
-
-    # Training configs
-    configs_size = _get_dir_size(TRAINING_CONFIGS_DIR) / (1024 * 1024)
-    configs_files = sum(1 for _ in TRAINING_CONFIGS_DIR.rglob("*") if _.is_file()) if TRAINING_CONFIGS_DIR.exists() else 0
-    categories.append({
-        "category": "training_configs",
-        "size_mb": configs_size,
-        "file_count": configs_files,
     })
 
     # Calibrations
