@@ -84,6 +84,7 @@ def login(request: AuthLoginRequest, response: Response, http_request: Request) 
         access_token,
         httponly=True,
         samesite="lax",
+        path="/",
         max_age=max_age,
     )
     if refresh_token:
@@ -92,6 +93,7 @@ def login(request: AuthLoginRequest, response: Response, http_request: Request) 
             refresh_token,
             httponly=True,
             samesite="lax",
+            path="/",
             max_age=max_age,
         )
 
@@ -107,8 +109,8 @@ def login(request: AuthLoginRequest, response: Response, http_request: Request) 
 
 @router.post("/logout", response_model=AuthStatusResponse)
 def logout(response: Response) -> AuthStatusResponse:
-    response.delete_cookie(ACCESS_COOKIE_NAME)
-    response.delete_cookie(REFRESH_COOKIE_NAME)
+    response.delete_cookie(ACCESS_COOKIE_NAME, path="/")
+    response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
     return AuthStatusResponse(authenticated=False, user_id=None, expires_at=None)
 
 

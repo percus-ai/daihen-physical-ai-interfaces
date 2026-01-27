@@ -9,10 +9,21 @@
     queryFn: api.projects.list
   });
 
-  const recordingsQuery = createQuery({
-    queryKey: ['recordings'],
-    queryFn: api.recording.list
+  const datasetsQuery = createQuery({
+    queryKey: ['datasets', 'recorded'],
+    queryFn: () => api.storage.datasets()
   });
+
+  $: recordedDatasets =
+    $datasetsQuery.data?.datasets?.filter(
+      (dataset) => !dataset.dataset_type || dataset.dataset_type === 'recorded'
+    ) ?? [];
+
+  $: latestRecorded =
+    recordedDatasets
+      .slice()
+      .sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())[0] ??
+    null;
 </script>
 
 <section class="card-strong p-8">
@@ -50,12 +61,12 @@
     <div class="mt-4 space-y-4 text-sm text-slate-600">
       <div>
         <p class="label">総録画数</p>
-        <p class="text-base font-semibold text-slate-800">{$recordingsQuery.data?.total ?? 0}</p>
+        <p class="text-base font-semibold text-slate-800">{recordedDatasets.length}</p>
       </div>
       <div>
         <p class="label">最新データセットID</p>
         <p class="text-base font-semibold text-slate-800">
-          {$recordingsQuery.data?.recordings?.[0]?.recording_id ?? '-'}
+          {latestRecorded?.id ?? '-'}
         </p>
       </div>
     </div>
@@ -78,15 +89,15 @@
         </tr>
       </thead>
       <tbody class="text-slate-600">
-        {#if $recordingsQuery.isLoading}
+        {#if $datasetsQuery.isLoading}
           <tr><td class="py-3" colspan="4">読み込み中...</td></tr>
-        {:else if $recordingsQuery.data?.recordings?.length}
-          {#each $recordingsQuery.data.recordings as recording}
+        {:else if recordedDatasets.length}
+          {#each recordedDatasets as dataset}
             <tr class="border-t border-slate-200/60">
-              <td class="py-3">{recording.recording_id}</td>
-              <td class="py-3">{recording.project_id}</td>
-              <td class="py-3">{formatBytes((recording.size_mb ?? 0) * 1024 * 1024)}</td>
-              <td class="py-3">{formatDate(recording.created_at)}</td>
+              <td class="py-3">{dataset.id}</td>
+              <td class="py-3">{dataset.project_id}</td>
+              <td class="py-3">{formatBytes(dataset.size_bytes ?? 0)}</td>
+              <td class="py-3">{formatDate(dataset.created_at)}</td>
             </tr>
           {/each}
         {:else}

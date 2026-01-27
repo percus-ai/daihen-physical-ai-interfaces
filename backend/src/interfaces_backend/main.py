@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 import uvicorn
@@ -77,9 +78,14 @@ app = FastAPI(
 )
 
 # CORS for web/tauri clients
+cors_origins = os.environ.get(
+    "PHI_CORS_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+)
+allowed_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately in production
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
