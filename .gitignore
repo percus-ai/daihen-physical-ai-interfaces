@@ -15,6 +15,8 @@
 ### Environments & Dependencies ###
 .env
 .env.remote
+.env.local
+.env.*.local
 .venv*
 env/
 venv/
@@ -23,6 +25,12 @@ venv.bak/
 .python-version
 __pypackages__/
 node_modules/
+.svelte-kit/
+.vite/
+.vercel/
+.netlify/
+target/
+src-tauri/target/
 
 # Lock files
 poetry.lock
