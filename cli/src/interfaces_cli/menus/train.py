@@ -142,6 +142,16 @@ GPU_MODELS = [
 ]
 
 GPU_COUNTS = [1, 2, 4, 8]
+GPU_VRAM_GB = {
+    "B300": 262,
+    "B200": 180,
+    "H200": 141,
+    "H100": 80,
+    "A100": 80,
+    "L40S": 48,
+    "RTX6000ADA": 48,
+    "RTXA6000": 48,
+}
 
 
 # =============================================================================
@@ -265,6 +275,69 @@ class ContinueTrainingState:
 # =============================================================================
 # Utility Functions
 # =============================================================================
+
+
+def _recommend_max_batch(policy_type: Optional[str], gpu_model: Optional[str]) -> Optional[int]:
+    if policy_type not in {"pi0", "pi05"}:
+        return None
+    vram_gb = GPU_VRAM_GB.get(gpu_model or "")
+    if vram_gb is None:
+        return None
+    if vram_gb >= 240:
+        return 64
+    if vram_gb >= 160:
+        return 48
+    if vram_gb >= 120:
+        return 32
+    if vram_gb >= 80:
+        return 16
+    return 8
+
+
+def _maybe_apply_oom_guardrails(state: Any, policy_type: Optional[str]) -> None:
+    max_batch = _recommend_max_batch(policy_type, state.gpu_model)
+    if max_batch is None or state.batch_size <= max_batch:
+        return
+
+    vram_gb = GPU_VRAM_GB.get(state.gpu_model)
+    policy_info = POLICY_TYPES.get(policy_type, PolicyTypeInfo(display_name=policy_type or "N/A"))
+    vram_label = f" ({vram_gb}GB)" if vram_gb else ""
+
+    print(f"\n{Colors.warning('⚠ メモリ警告')}")
+    print(f"  {policy_info.display_name} / {state.gpu_model}{vram_label} で batch_size={state.batch_size} はOOMになりやすいです。")
+    print(f"  推奨上限: {max_batch}")
+    if state.policy_compile_model:
+        print("  torch.compileはメモリ使用量が大きいため無効化を推奨します。")
+    if state.policy_gradient_checkpointing is not True:
+        print("  gradient checkpointingを有効化するとVRAM使用量を削減できます。")
+
+    apply_default = not getattr(state, "policy_settings_touched", False)
+    apply = inquirer.confirm(
+        message="OOM回避の推奨設定を適用しますか？",
+        default=apply_default,
+        style=hacker_style,
+    ).execute()
+
+    if not apply:
+        return
+
+    changes: list[tuple[str, Any, Any]] = []
+    if state.batch_size > max_batch:
+        changes.append(("batch_size", state.batch_size, max_batch))
+        state.batch_size = max_batch
+    if state.policy_compile_model:
+        changes.append(("torch.compile", state.policy_compile_model, False))
+        state.policy_compile_model = False
+        state.policy_settings_touched = True
+    if state.policy_gradient_checkpointing is not True:
+        changes.append(("gradient_checkpointing", state.policy_gradient_checkpointing, True))
+        state.policy_gradient_checkpointing = True
+        state.policy_settings_touched = True
+
+    if changes:
+        print(f"{Colors.success('✓ 推奨設定を適用しました')}")
+        for label, old, new in changes:
+            print(f"  {label}: {old} -> {new}")
 
 
 def download_dataset_with_progress(
@@ -1439,6 +1512,7 @@ class TrainingWizard(BaseMenu):
 
     def _step7_confirmation(self) -> str:
         """Step 7: Confirmation and start."""
+        _maybe_apply_oom_guardrails(self.state, self.state.policy_type)
         # Display summary
         print(f"\n{Colors.CYAN}=== 学習設定 ==={Colors.RESET}")
         print(f"  ポリシー: {POLICY_TYPES.get(self.state.policy_type, {}).display_name if self.state.policy_type else 'N/A'}")
@@ -2566,6 +2640,7 @@ class ContinueTrainingWizard(BaseMenu):
         """Step 6: Confirmation and start."""
         total_steps = self.state.checkpoint_step + self.state.additional_steps
 
+        _maybe_apply_oom_guardrails(self.state, self.state.checkpoint_policy_type)
         print(f"\n{Colors.CYAN}=== 継続学習設定 ==={Colors.RESET}")
         print(f"  ベースモデル: {self.state.checkpoint_job_name}")
         print(f"  現在ステップ: {self.state.checkpoint_step:,}")
