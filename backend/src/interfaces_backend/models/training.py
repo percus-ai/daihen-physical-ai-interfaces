@@ -137,6 +137,22 @@ class JobStatusCheckResponse(BaseModel):
     checked_count: int
 
 
+class JobMetricPoint(BaseModel):
+    """Single metric point for a job."""
+
+    step: Optional[int] = None
+    loss: Optional[float] = None
+    ts: Optional[str] = None
+
+
+class JobMetricsResponse(BaseModel):
+    """Metrics series for a job."""
+
+    job_id: str
+    train: list[JobMetricPoint] = Field(default_factory=list)
+    val: list[JobMetricPoint] = Field(default_factory=list)
+
+
 # --- Job Creation Models ---
 
 

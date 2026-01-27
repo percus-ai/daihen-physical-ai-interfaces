@@ -11,8 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import time
+import math
 from typing import Any, Dict, List, Optional
 
+import termplotlib as tpl
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 from rich.console import Console
@@ -2875,11 +2877,13 @@ class TrainingJobsMenu(BaseMenu):
             if status in ("running", "starting", "deploying"):
                 action_choices.append(Choice(value="stream_train_logs", name="📜 学習ログをストリーミング (Ctrl+Cで終了)"))
                 action_choices.append(Choice(value="stream_setup_logs", name="🧰 セットアップログをストリーミング (Ctrl+Cで終了)"))
+                action_choices.append(Choice(value="show_loss_chart", name="📈 loss推移を表示"))
                 action_choices.append(Choice(value="download_train_logs", name="📥 学習ログをダウンロード"))
                 action_choices.append(Choice(value="download_setup_logs", name="📥 セットアップログをダウンロード"))
                 action_choices.append(Choice(value="stop", name="⏹ ジョブを停止"))
                 action_choices.append(Choice(value="refresh", name="🔄 更新"))
             else:
+                action_choices.append(Choice(value="show_loss_chart", name="📈 loss推移を表示"))
                 action_choices.append(Choice(value="show_train_logs", name="📜 学習ログを表示 (最新30行)"))
                 action_choices.append(Choice(value="show_setup_logs", name="🧰 セットアップログを表示 (最新30行)"))
                 action_choices.append(Choice(value="download_train_logs", name="📥 学習ログをダウンロード"))
@@ -2902,6 +2906,8 @@ class TrainingJobsMenu(BaseMenu):
                 self._show_job_logs(job_id, log_type="training")
             elif action == "show_setup_logs":
                 self._show_job_logs(job_id, log_type="setup")
+            elif action == "show_loss_chart":
+                self._show_loss_chart(job_id)
             elif action == "stream_train_logs":
                 self._stream_job_logs(job_id, log_type="training")
             elif action == "stream_setup_logs":
@@ -3042,6 +3048,62 @@ class TrainingJobsMenu(BaseMenu):
                     print(f"  {line}")
             else:
                 print(f"  {Colors.muted('ログなし')}")
+        except Exception as e:
+            print(f"{Colors.error('エラー:')} {e}")
+        input(f"\n{Colors.muted('Press Enter to continue...')}")
+
+    def _sparkline(self, values: List[float], width: int = 120, log_scale: bool = True) -> str:
+        if not values:
+            return ""
+        if len(values) > width:
+            step = len(values) / width
+            sampled = [values[int(i * step)] for i in range(width)]
+        else:
+            sampled = values
+        if log_scale:
+            sampled = [math.log10(v + 1e-12) for v in sampled]
+        vmin = min(sampled)
+        vmax = max(sampled)
+        if vmax == vmin:
+            return "#" * len(sampled)
+        chars = " .:-=+*#%@"
+        out = []
+        for v in sampled:
+            idx = int((v - vmin) / (vmax - vmin) * (len(chars) - 1))
+            out.append(chars[idx])
+        return "".join(out)
+
+    def _show_loss_chart(self, job_id: str) -> None:
+        show_section_header("loss推移")
+        try:
+            result = self.api.get_training_job_metrics(job_id, limit=2000)
+            train = result.get("train") or []
+            val = result.get("val") or []
+
+            train_vals = [(m.get("step"), m.get("loss")) for m in train if m.get("loss") is not None]
+            val_vals = [(m.get("step"), m.get("loss")) for m in val if m.get("loss") is not None]
+
+            if not train_vals and not val_vals:
+                print(f"{Colors.muted('lossデータがありません')}")
+                input(f"\n{Colors.muted('Press Enter to continue...')}")
+                return
+
+            if train_vals:
+                print(f"{Colors.CYAN}train:{Colors.RESET}")
+                x = [v[0] or 0 for v in train_vals]
+                y = [v[1] for v in train_vals]
+                fig = tpl.figure()
+                fig.plot(x, y, width=80, height=15)
+                fig.show()
+                print(f"  min={min(y):.6f} max={max(y):.6f} last={y[-1]:.6f}")
+            if val_vals:
+                print(f"{Colors.CYAN}val:{Colors.RESET}")
+                x = [v[0] or 0 for v in val_vals]
+                y = [v[1] for v in val_vals]
+                fig = tpl.figure()
+                fig.plot(x, y, width=80, height=15)
+                fig.show()
+                print(f"  min={min(y):.6f} max={max(y):.6f} last={y[-1]:.6f}")
         except Exception as e:
             print(f"{Colors.error('エラー:')} {e}")
         input(f"\n{Colors.muted('Press Enter to continue...')}")

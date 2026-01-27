@@ -1275,6 +1275,15 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
+    def get_training_job_metrics(self, job_id: str, limit: int = 1000) -> Dict[str, Any]:
+        """GET /api/training/jobs/{job_id}/metrics - Get metric series."""
+        response = self._client.get(
+            f"/api/training/jobs/{job_id}/metrics",
+            params={"limit": limit},
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_training_instance_status(self, job_id: str) -> Dict[str, Any]:
         """GET /api/training/jobs/{job_id}/instance-status - Instance status."""
         response = self._client.get(f"/api/training/jobs/{job_id}/instance-status")

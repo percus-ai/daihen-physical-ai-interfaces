@@ -28,6 +28,7 @@ from interfaces_backend.models.training import (
     JobStatusUpdate,
     JobCreateRequest,
     JobCreateResponse,
+    JobMetricsResponse,
     InstanceStatusResponse,
     # Checkpoint models
     CheckpointDatasetInfo,
@@ -1257,6 +1258,20 @@ def _get_latest_metrics(job_id: str) -> tuple[Optional[dict], Optional[dict]]:
     return _get_latest_metric(job_id, "train"), _get_latest_metric(job_id, "val")
 
 
+def _get_metrics_series(job_id: str, split: str, limit: int) -> list[dict]:
+    client = get_supabase_client()
+    response = (
+        client.table("training_job_metrics")
+        .select("step,loss,ts")
+        .eq("job_id", job_id)
+        .eq("split", split)
+        .order("step", desc=False)
+        .limit(limit)
+        .execute()
+    )
+    return response.data or []
+
+
 def _stop_remote_job(job_data: dict) -> bool:
     """Stop remote training job via SSH."""
     conn = _get_ssh_connection_for_job(job_data)
@@ -2028,6 +2043,18 @@ async def get_job_progress(job_id: str):
         return JobProgressResponse(job_id=job_id)
 
     return JobProgressResponse(job_id=job_id, **progress)
+
+
+@router.get("/jobs/{job_id}/metrics", response_model=JobMetricsResponse)
+async def get_job_metrics(job_id: str, limit: int = Query(1000, ge=1, le=10000)):
+    """Get training/validation loss series for a job."""
+    job_data = _load_job(job_id, include_deleted=True)
+    if not job_data:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    train = _get_metrics_series(job_id, "train", limit)
+    val = _get_metrics_series(job_id, "val", limit)
+    return JobMetricsResponse(job_id=job_id, train=train, val=val)
 
 
 @router.get("/jobs/{job_id}/instance-status", response_model=InstanceStatusResponse)
