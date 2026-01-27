@@ -362,6 +362,8 @@ def _build_pipeline_config(request: "JobCreateRequest", job_id: str) -> dict:
         config["policy"]["use_amp"] = policy.use_amp
     if config["policy"].get("dtype") in ("bfloat16", "bf16") and config["policy"].get("use_amp"):
         config["policy"]["use_amp"] = False
+    if dataset.video_backend:
+        config["dataset"]["video_backend"] = dataset.video_backend
 
     return config
 
@@ -2859,6 +2861,7 @@ def _create_job_with_progress(
             id=dataset_data.get("id", ""),
             source=dataset_data.get("source", "r2"),
             hf_repo_id=dataset_data.get("hf_repo_id"),
+            video_backend=dataset_data.get("video_backend"),
         )
         policy = PolicyConfig(
             type=policy_data.get("type", "act"),

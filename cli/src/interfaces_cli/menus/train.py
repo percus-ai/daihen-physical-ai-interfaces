@@ -84,7 +84,7 @@ POLICY_TYPES: Dict[str, PolicyTypeInfo] = {
         default_batch_size=32,
         recommended_storage=200,
         compile_model=True,
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,
         dtype="bfloat16",
         use_amp=False,
     ),
@@ -94,11 +94,11 @@ POLICY_TYPES: Dict[str, PolicyTypeInfo] = {
             PretrainedModel("lerobot/pi05_base", "π0.5 Base (推奨)", "標準ベースモデル"),
             PretrainedModel("lerobot/pi05_libero", "π0.5 Libero", "Liberoベンチマーク向け"),
         ],
-        default_steps=3000,
+        default_steps=1500,
         default_batch_size=32,
         recommended_storage=200,
         compile_model=True,
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,
         dtype="bfloat16",
         use_amp=False,
     ),
@@ -165,6 +165,7 @@ class NewTrainingState:
     session_name: Optional[str] = None  # e.g., "20260107_180132_watanabe"
     dataset_id: Optional[str] = None  # Full ID: project_id/session_name
     dataset_short_id: Optional[str] = None  # 6-char alphanumeric ID for job naming
+    dataset_video_backend: Optional[str] = "torchcodec"
 
     # Step 4: Training params
     steps: int = 100000
@@ -179,12 +180,13 @@ class NewTrainingState:
     validation_batch_size: Optional[int] = None
     early_stopping_enable: bool = True
     early_stopping_patience: int = 5
-    early_stopping_min_delta: float = 0.0
+    early_stopping_min_delta: float = 0.002
     early_stopping_mode: str = "min"
     policy_use_amp: Optional[bool] = None
     policy_dtype: Optional[str] = None
     policy_gradient_checkpointing: Optional[bool] = None
     policy_compile_model: Optional[bool] = None
+    policy_settings_touched: bool = False
 
     # Step 5: Verda settings
     gpu_model: str = "H100"
@@ -229,6 +231,7 @@ class ContinueTrainingState:
     # Step 3: Dataset
     use_original_dataset: bool = True
     dataset_id: Optional[str] = None
+    dataset_video_backend: Optional[str] = "torchcodec"
 
     # Step 4: Training params
     additional_steps: int = 50000
@@ -243,12 +246,13 @@ class ContinueTrainingState:
     validation_batch_size: Optional[int] = None
     early_stopping_enable: bool = True
     early_stopping_patience: int = 5
-    early_stopping_min_delta: float = 0.0
+    early_stopping_min_delta: float = 0.002
     early_stopping_mode: str = "min"
     policy_use_amp: Optional[bool] = None
     policy_dtype: Optional[str] = None
     policy_gradient_checkpointing: Optional[bool] = None
     policy_compile_model: Optional[bool] = None
+    policy_settings_touched: bool = False
 
     # Step 5: Verda settings
     gpu_model: str = "H100"
@@ -747,8 +751,12 @@ class TrainingWizard(BaseMenu):
         self.state.policy_gradient_checkpointing = policy_info.gradient_checkpointing
         self.state.policy_dtype = policy_info.dtype
         self.state.policy_use_amp = policy_info.use_amp
+        self.state.policy_settings_touched = False
         if self.state.policy_dtype in ("bfloat16", "bf16"):
             self.state.policy_use_amp = False
+        if self.state.policy_type == "pi05":
+            self.state.validation_eval_freq = min(500, self.state.steps)
+            self.state.early_stopping_min_delta = 0.002
 
         return "next"
 
@@ -1100,6 +1108,26 @@ class TrainingWizard(BaseMenu):
                         ).execute()
                         self.state.early_stopping_mode = mode
 
+            print(f"{Colors.muted('データセット/デコード設定（デフォルト）')}")
+            backend_label = self.state.dataset_video_backend or "auto"
+            print(f"  video_backend: {backend_label}")
+            if inquirer.confirm(
+                message="動画デコード設定を変更しますか？",
+                default=False,
+                style=hacker_style,
+            ).execute():
+                backend_choice = inquirer.select(
+                    message="動画デコード backend:",
+                    choices=[
+                        Choice(value="auto", name="自動 (torchcodec優先)"),
+                        Choice(value="torchcodec", name="torchcodec (高速)"),
+                        Choice(value="pyav", name="pyav (互換優先)"),
+                    ],
+                    default=backend_label,
+                    style=hacker_style,
+                ).execute()
+                self.state.dataset_video_backend = None if backend_choice == "auto" else backend_choice
+
             print(f"{Colors.muted('モデル/精度設定（デフォルト）')}")
             print(f"  dtype: {self.state.policy_dtype}")
             print(f"  use_amp: {self.state.policy_use_amp}")
@@ -1110,6 +1138,7 @@ class TrainingWizard(BaseMenu):
                 default=False,
                 style=hacker_style,
             ).execute():
+                self.state.policy_settings_touched = True
                 dtype = inquirer.select(
                     message="モデルdtype:",
                     choices=[
@@ -1280,6 +1309,14 @@ class TrainingWizard(BaseMenu):
                 print(f"{Colors.warning('⚠ Blackwell GPUのため、torch nightlyを自動有効化します')}")
                 break
 
+        if (
+            gpu_model == "H200"
+            and not self.state.policy_settings_touched
+            and self.state.policy_gradient_checkpointing is True
+        ):
+            self.state.policy_gradient_checkpointing = False
+            print(f"{Colors.warning('⚠ H200のため、gradient checkpointingを自動で無効化します')}")
+
         # GPU Count with availability indicators
         # Priority: spot > ondemand > none > unknown
         gpu_count_choices = []
@@ -1408,6 +1445,7 @@ class TrainingWizard(BaseMenu):
         if self.state.pretrained_path:
             print(f"  事前学習: {self.state.pretrained_path}")
         print(f"  データセット: {self.state.dataset_id}")
+        print(f"  video_backend: {self.state.dataset_video_backend or 'auto'}")
         print(f"  ステップ数: {self.state.steps:,}")
         print(f"  バッチサイズ: {self.state.batch_size}")
         print(f"  保存頻度: {self.state.save_freq:,} steps")
@@ -1508,6 +1546,8 @@ class TrainingWizard(BaseMenu):
         # Add pretrained path if specified
         if self.state.pretrained_path:
             payload["policy"]["pretrained_path"] = self.state.pretrained_path
+        if self.state.dataset_video_backend is not None:
+            payload["dataset"]["video_backend"] = self.state.dataset_video_backend
 
         # Add policy-specific settings
         if policy_info.compile_model is not None:
@@ -2226,6 +2266,26 @@ class ContinueTrainingWizard(BaseMenu):
                         ).execute()
                         self.state.early_stopping_mode = mode
 
+            print(f"{Colors.muted('データセット/デコード設定（デフォルト）')}")
+            backend_label = self.state.dataset_video_backend or "auto"
+            print(f"  video_backend: {backend_label}")
+            if inquirer.confirm(
+                message="動画デコード設定を変更しますか？",
+                default=False,
+                style=hacker_style,
+            ).execute():
+                backend_choice = inquirer.select(
+                    message="動画デコード backend:",
+                    choices=[
+                        Choice(value="auto", name="自動 (torchcodec優先)"),
+                        Choice(value="torchcodec", name="torchcodec (高速)"),
+                        Choice(value="pyav", name="pyav (互換優先)"),
+                    ],
+                    default=backend_label,
+                    style=hacker_style,
+                ).execute()
+                self.state.dataset_video_backend = None if backend_choice == "auto" else backend_choice
+
             print(f"{Colors.muted('モデル/精度設定（デフォルト）')}")
             print(f"  dtype: {self.state.policy_dtype}")
             print(f"  use_amp: {self.state.policy_use_amp}")
@@ -2236,6 +2296,7 @@ class ContinueTrainingWizard(BaseMenu):
                 default=False,
                 style=hacker_style,
             ).execute():
+                self.state.policy_settings_touched = True
                 dtype = inquirer.select(
                     message="モデルdtype:",
                     choices=[
@@ -2405,6 +2466,14 @@ class ContinueTrainingWizard(BaseMenu):
                 print(f"{Colors.warning('⚠ Blackwell GPUのため、torch nightlyを自動有効化します')}")
                 break
 
+        if (
+            gpu_model == "H200"
+            and not self.state.policy_settings_touched
+            and self.state.policy_gradient_checkpointing is True
+        ):
+            self.state.policy_gradient_checkpointing = False
+            print(f"{Colors.warning('⚠ H200のため、gradient checkpointingを自動で無効化します')}")
+
         # GPU Count with availability indicators
         # Priority: spot > ondemand > none > unknown
         gpu_count_choices = []
@@ -2501,6 +2570,7 @@ class ContinueTrainingWizard(BaseMenu):
         print(f"  ベースモデル: {self.state.checkpoint_job_name}")
         print(f"  現在ステップ: {self.state.checkpoint_step:,}")
         print(f"  データセット: {self.state.dataset_id}")
+        print(f"  video_backend: {self.state.dataset_video_backend or 'auto'}")
         print(f"  追加ステップ: {self.state.additional_steps:,}")
         print(f"  最終ステップ: {total_steps:,}")
         print(f"  バッチサイズ: {self.state.batch_size}")
@@ -2601,6 +2671,8 @@ class ContinueTrainingWizard(BaseMenu):
                 policy_payload["use_amp"] = self.state.policy_use_amp
             if policy_payload:
                 payload["policy"] = policy_payload
+            if self.state.dataset_video_backend is not None:
+                payload["dataset"]["video_backend"] = self.state.dataset_video_backend
 
             result = self.api.create_continue_training_job(payload)
 

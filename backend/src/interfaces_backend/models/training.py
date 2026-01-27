@@ -162,6 +162,7 @@ class DatasetConfig(BaseModel):
     id: str = Field(..., description="Dataset ID")
     source: str = Field("r2", description="Dataset source: r2, hub, local")
     hf_repo_id: Optional[str] = Field(None, description="HuggingFace repo ID (for hub source)")
+    video_backend: Optional[str] = Field(None, description="Video decode backend: torchcodec, pyav, etc.")
 
 
 class PolicyConfig(BaseModel):
@@ -200,7 +201,7 @@ class EarlyStoppingConfig(BaseModel):
 
     enable: bool = Field(True, description="Enable early stopping")
     patience: int = Field(5, ge=1, description="Patience (number of worsening evals)")
-    min_delta: float = Field(0.0, description="Minimum change to qualify as improvement")
+    min_delta: float = Field(0.002, description="Minimum change to qualify as improvement")
     mode: str = Field("min", description="Mode: min or max")
 
 
@@ -415,6 +416,7 @@ class ContinueDatasetConfig(BaseModel):
 
     id: str = Field(..., description="Dataset ID")
     use_original: bool = Field(True, description="Use original training dataset")
+    video_backend: Optional[str] = Field(None, description="Video decode backend: torchcodec, pyav, etc.")
 
 
 class ContinueTrainingParams(BaseModel):
