@@ -97,6 +97,7 @@ class PhiClient:
                 "access_token": access_token,
                 "refresh_token": data.get("refresh_token"),
                 "expires_at": data.get("expires_at"),
+                "session_expires_at": data.get("session_expires_at"),
                 "user_id": data.get("user_id"),
             }
             self._update_session(session)

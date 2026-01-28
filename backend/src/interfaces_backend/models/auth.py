@@ -16,6 +16,9 @@ class AuthLoginResponse(BaseModel):
     success: bool = Field(..., description="Login success")
     user_id: str = Field(..., description="Supabase user id")
     expires_at: int | None = Field(None, description="Access token expiry (unix time)")
+    session_expires_at: int | None = Field(
+        None, description="Session expiry based on refresh token (unix time)"
+    )
     access_token: str | None = Field(None, description="Access token (CLI only)")
     refresh_token: str | None = Field(None, description="Refresh token (CLI only)")
 
@@ -26,6 +29,9 @@ class AuthStatusResponse(BaseModel):
     authenticated: bool = Field(..., description="Whether session is available")
     user_id: str | None = Field(None, description="Supabase user id")
     expires_at: int | None = Field(None, description="Access token expiry (unix time)")
+    session_expires_at: int | None = Field(
+        None, description="Session expiry based on refresh token (unix time)"
+    )
 
 
 class AuthTokenResponse(BaseModel):
@@ -35,3 +41,6 @@ class AuthTokenResponse(BaseModel):
     refresh_token: str | None = Field(None, description="Refresh token (optional)")
     user_id: str | None = Field(None, description="Supabase user id")
     expires_at: int | None = Field(None, description="Access token expiry (unix time)")
+    session_expires_at: int | None = Field(
+        None, description="Session expiry based on refresh token (unix time)"
+    )

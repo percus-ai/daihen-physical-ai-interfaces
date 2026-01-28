@@ -10,6 +10,7 @@
     authenticated: boolean;
     user_id?: string;
     expires_at?: number;
+    session_expires_at?: number;
   };
 
   let status: AuthStatus | null = null;
@@ -106,10 +107,20 @@
         <p class="text-base font-semibold text-slate-800">{status.user_id ?? '-'}</p>
       </div>
       <div>
-        <p class="label">有効期限</p>
+        <p class="label">セッション有効期限</p>
         <p class="text-base font-semibold text-slate-800">
-          {status.expires_at ? new Date(status.expires_at * 1000).toLocaleString() : '-'}
+          {status.session_expires_at
+            ? new Date(status.session_expires_at * 1000).toLocaleString()
+            : status.expires_at
+              ? new Date(status.expires_at * 1000).toLocaleString()
+              : '-'}
         </p>
+        {#if status.expires_at}
+          <p class="mt-1 text-xs text-slate-500">
+            アクセストークン期限:
+            {new Date(status.expires_at * 1000).toLocaleString()}
+          </p>
+        {/if}
       </div>
     </div>
     {#if error}

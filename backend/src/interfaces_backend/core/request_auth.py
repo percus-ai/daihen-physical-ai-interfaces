@@ -15,6 +15,7 @@ from fastapi import Request, Response
 
 ACCESS_COOKIE_NAME = "phi_access_token"
 REFRESH_COOKIE_NAME = "phi_refresh_token"
+REFRESH_ISSUED_AT_COOKIE_NAME = "phi_refresh_issued_at"
 DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ def _access_cookie_max_age(expires_at: Any) -> Optional[int]:
         return None
 
 
-def _refresh_cookie_max_age() -> Optional[int]:
+def _refresh_cookie_max_age() -> int:
     raw = os.environ.get("PHI_REFRESH_COOKIE_MAX_AGE_SECONDS")
     if raw is None or raw == "":
         return DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS
@@ -69,6 +70,7 @@ def set_session_cookies(response: Response, session: dict[str, Any]) -> None:
     access_token = session.get("access_token")
     if not access_token:
         return
+    refresh_max_age = _refresh_cookie_max_age()
     response.set_cookie(
         ACCESS_COOKIE_NAME,
         access_token,
@@ -85,7 +87,15 @@ def set_session_cookies(response: Response, session: dict[str, Any]) -> None:
             httponly=True,
             samesite="lax",
             path="/",
-            max_age=_refresh_cookie_max_age(),
+            max_age=refresh_max_age,
+        )
+        response.set_cookie(
+            REFRESH_ISSUED_AT_COOKIE_NAME,
+            str(int(time.time())),
+            httponly=True,
+            samesite="lax",
+            path="/",
+            max_age=refresh_max_age,
         )
 
 
@@ -120,6 +130,34 @@ def build_session_from_tokens(
         "expires_at": expires_at,
         "user_id": user_id,
     }
+
+
+def compute_session_expires_at(issued_at: int) -> int:
+    return issued_at + _refresh_cookie_max_age()
+
+
+def get_session_expires_at_from_request(request: Request) -> Optional[int]:
+    issued_at_raw = request.cookies.get(REFRESH_ISSUED_AT_COOKIE_NAME)
+    if not issued_at_raw:
+        return None
+    try:
+        issued_at = int(float(issued_at_raw))
+    except (TypeError, ValueError):
+        return None
+    return compute_session_expires_at(issued_at)
+
+
+def needs_session_cookie_update(request: Request) -> bool:
+    if not request.cookies.get(REFRESH_COOKIE_NAME):
+        return False
+    issued_at_raw = request.cookies.get(REFRESH_ISSUED_AT_COOKIE_NAME)
+    if not issued_at_raw:
+        return True
+    try:
+        int(float(issued_at_raw))
+    except (TypeError, ValueError):
+        return True
+    return False
 
 
 def is_session_expired(session: Optional[dict[str, Any]], leeway_seconds: int = 30) -> bool:

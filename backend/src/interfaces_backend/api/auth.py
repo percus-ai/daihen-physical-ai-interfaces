@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -14,7 +15,11 @@ from interfaces_backend.models.auth import (
 from interfaces_backend.core.request_auth import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
+    REFRESH_ISSUED_AT_COOKIE_NAME,
     build_session_from_request_with_refresh,
+    compute_session_expires_at,
+    get_session_expires_at_from_request,
+    needs_session_cookie_update,
     set_session_cookies,
 )
 from percus_ai.db import create_supabase_anon_client
@@ -68,12 +73,16 @@ def login(request: AuthLoginRequest, response: Response, http_request: Request) 
         "user_id": user_id,
     }
     set_session_cookies(response, session_payload)
+    session_expires_at = None
+    if refresh_token:
+        session_expires_at = compute_session_expires_at(int(time.time()))
 
     is_cli = http_request.headers.get("x-client") == "cli"
     return AuthLoginResponse(
         success=True,
         user_id=user_id,
         expires_at=expires_at,
+        session_expires_at=session_expires_at,
         access_token=access_token if is_cli else None,
         refresh_token=refresh_token if is_cli else None,
     )
@@ -83,6 +92,7 @@ def login(request: AuthLoginRequest, response: Response, http_request: Request) 
 def logout(response: Response) -> AuthStatusResponse:
     response.delete_cookie(ACCESS_COOKIE_NAME, path="/")
     response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
+    response.delete_cookie(REFRESH_ISSUED_AT_COOKIE_NAME, path="/")
     return AuthStatusResponse(authenticated=False, user_id=None, expires_at=None)
 
 
@@ -91,12 +101,18 @@ def status(http_request: Request, response: Response) -> AuthStatusResponse:
     session, refreshed = build_session_from_request_with_refresh(http_request)
     if not session:
         return AuthStatusResponse(authenticated=False, user_id=None, expires_at=None)
-    if refreshed:
-        set_session_cookies(response, session)
+    session_expires_at = None
+    if session.get("refresh_token"):
+        if refreshed or needs_session_cookie_update(http_request):
+            session_expires_at = compute_session_expires_at(int(time.time()))
+            set_session_cookies(response, session)
+        else:
+            session_expires_at = get_session_expires_at_from_request(http_request)
     return AuthStatusResponse(
         authenticated=True,
         user_id=session.get("user_id"),
         expires_at=session.get("expires_at"),
+        session_expires_at=session_expires_at,
     )
 
 
@@ -108,11 +124,17 @@ def token(http_request: Request, response: Response) -> AuthTokenResponse:
     access_token = session.get("access_token")
     if not access_token:
         raise HTTPException(status_code=401, detail="unauthenticated")
-    if refreshed:
-        set_session_cookies(response, session)
+    session_expires_at = None
+    if session.get("refresh_token"):
+        if refreshed or needs_session_cookie_update(http_request):
+            session_expires_at = compute_session_expires_at(int(time.time()))
+            set_session_cookies(response, session)
+        else:
+            session_expires_at = get_session_expires_at_from_request(http_request)
     return AuthTokenResponse(
         access_token=access_token,
         refresh_token=session.get("refresh_token"),
         user_id=session.get("user_id"),
         expires_at=session.get("expires_at"),
+        session_expires_at=session_expires_at,
     )

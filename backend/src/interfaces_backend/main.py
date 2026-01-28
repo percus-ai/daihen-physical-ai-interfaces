@@ -71,6 +71,7 @@ from interfaces_backend.api import (
 )
 from interfaces_backend.core.request_auth import (
     build_session_from_request_with_refresh,
+    needs_session_cookie_update,
     set_session_cookies,
 )
 from percus_ai.db import reset_request_session, set_request_session
@@ -98,12 +99,15 @@ app.add_middleware(
 @app.middleware("http")
 async def attach_supabase_session(request, call_next):
     session, refreshed = build_session_from_request_with_refresh(request)
+    needs_cookie_update = False
+    if session and not refreshed:
+        needs_cookie_update = needs_session_cookie_update(request)
     token = set_request_session(session)
     try:
         response = await call_next(request)
     finally:
         reset_request_session(token)
-    if refreshed and session:
+    if session and (refreshed or needs_cookie_update):
         set_session_cookies(response, session)
     return response
 
