@@ -31,6 +31,10 @@
     rates?: Record<string, number>;
   };
 
+  type MediaUrlResponse = {
+    urls?: Record<string, string>;
+  };
+
   type EvaluationDraft = {
     trial_index: number;
     value: string;
@@ -82,6 +86,9 @@
   let success = '';
   let uploadingIndex: number | null = null;
   let uploadError = '';
+  let imageUrlsError = '';
+  let imageUrlMap: Record<string, string> = {};
+  let imageKeySignature = '';
 
   $: experiment = $experimentQuery.data as Experiment | undefined;
   $: evaluationCount = experiment?.evaluation_count ?? 0;
@@ -122,6 +129,14 @@
 
   $: filledCount = evaluationItems.filter((item) => item.value.trim()).length;
   $: remainingCount = Math.max(0, (experiment?.evaluation_count ?? 0) - filledCount);
+  $: imageKeys = Array.from(
+    new Set(evaluationItems.flatMap((item) => item.image_files ?? []).filter(Boolean))
+  );
+
+  $: if (imageKeys.join('|') !== imageKeySignature) {
+    imageKeySignature = imageKeys.join('|');
+    void loadImageUrls();
+  }
 
   const updateItem = (index: number, updates: Partial<EvaluationDraft>) => {
     evaluationItems = evaluationItems.map((item, idx) =>
@@ -148,6 +163,11 @@
 
   const handleNotesInput = (index: number, value: string) => {
     updateItem(index, { notes: value });
+  };
+
+  const handleRemoveImage = (index: number, key: string) => {
+    const next = (evaluationItems[index]?.image_files ?? []).filter((item) => item !== key);
+    updateItem(index, { image_files: next });
   };
 
   const handleUpload = async (index: number, event: Event) => {
@@ -195,6 +215,21 @@
     const refetch = $evaluationsQuery?.refetch;
     if (typeof refetch === 'function') {
       await refetch();
+    }
+  };
+
+  const loadImageUrls = async () => {
+    if (!imageKeys.length) {
+      imageUrlMap = {};
+      imageUrlsError = '';
+      return;
+    }
+    try {
+      const response = (await api.experiments.mediaUrls(imageKeys)) as MediaUrlResponse;
+      imageUrlMap = response?.urls ?? {};
+      imageUrlsError = '';
+    } catch {
+      imageUrlsError = '画像URLの取得に失敗しました。';
     }
   };
 
@@ -284,6 +319,9 @@
     {#if uploadError}
       <p class="mt-3 text-sm text-rose-600">{uploadError}</p>
     {/if}
+    {#if imageUrlsError}
+      <p class="mt-3 text-sm text-rose-600">{imageUrlsError}</p>
+    {/if}
     {#if error}
       <p class="mt-3 text-sm text-rose-600">{error}</p>
     {/if}
@@ -339,8 +377,38 @@
               </label>
             </div>
             <div class="mt-3 text-sm text-slate-600">
-              <p class="label">画像キー</p>
-              <pre class="mt-2 max-h-32 overflow-auto rounded-xl border border-slate-200/70 bg-white/70 p-3 text-xs">{item.image_files.length ? item.image_files.join('\n') : 'なし'}</pre>
+              <p class="label">画像プレビュー</p>
+              {#if item.image_files.length}
+                <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {#each item.image_files as key}
+                    <div class="group relative">
+                      {#if imageUrlMap[key]}
+                        <img
+                          src={imageUrlMap[key]}
+                          alt={`評価画像 ${item.trial_index}`}
+                          class="h-20 w-full rounded-lg border border-slate-200/60 object-cover"
+                          loading="lazy"
+                        />
+                      {:else}
+                        <div class="flex h-20 items-center justify-center rounded-lg border border-dashed border-slate-200/70 bg-white/70 text-xs text-slate-400">
+                          準備中
+                        </div>
+                      {/if}
+                      <button
+                        class="absolute right-1 top-1 rounded-full bg-slate-900/80 px-2 py-1 text-[10px] font-semibold text-white opacity-0 transition group-hover:opacity-100"
+                        type="button"
+                        on:click={() => handleRemoveImage(index, key)}
+                        aria-label="画像を削除"
+                        title="削除"
+                      >
+                        削除
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="mt-2 text-xs text-slate-400">画像はありません。</p>
+              {/if}
               <input
                 class="input mt-2"
                 type="file"

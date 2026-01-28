@@ -17,6 +17,10 @@
     image_files?: string[] | null;
   };
 
+  type MediaUrlResponse = {
+    urls?: Record<string, string>;
+  };
+
   type AnalysisListResponse = {
     analyses?: AnalysisBlock[];
     total?: number;
@@ -26,7 +30,7 @@
     name: string;
     purpose: string;
     notes: string;
-    imageText: string;
+    image_files: string[];
   };
 
   const experimentQuery = createQuery<Experiment>(
@@ -56,6 +60,11 @@
   let submitting = false;
   let error = '';
   let success = '';
+  let uploadingIndex: number | null = null;
+  let uploadError = '';
+  let imageUrlsError = '';
+  let imageUrlMap: Record<string, string> = {};
+  let imageKeySignature = '';
 
   $: experiment = $experimentQuery.data as Experiment | undefined;
 
@@ -65,7 +74,7 @@
       name: block.name ?? '',
       purpose: block.purpose ?? '',
       notes: block.notes ?? '',
-      imageText: block.image_files?.join('\n') ?? ''
+      image_files: block.image_files ?? []
     }));
   };
 
@@ -81,18 +90,67 @@
   };
 
   const addBlock = () => {
-    analysisBlocks = [...analysisBlocks, { name: '', purpose: '', notes: '', imageText: '' }];
+    analysisBlocks = [...analysisBlocks, { name: '', purpose: '', notes: '', image_files: [] }];
   };
 
   const removeBlock = (index: number) => {
     analysisBlocks = analysisBlocks.filter((_, idx) => idx !== index);
   };
 
-  const parseImageKeys = (text: string) =>
-    text
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
+  const handleRemoveImage = (index: number, key: string) => {
+    const next = (analysisBlocks[index]?.image_files ?? []).filter((item) => item !== key);
+    updateBlock(index, { image_files: next });
+  };
+
+  $: imageKeys = Array.from(
+    new Set(analysisBlocks.flatMap((block) => block.image_files ?? []).filter(Boolean))
+  );
+
+  $: if (imageKeys.join('|') !== imageKeySignature) {
+    imageKeySignature = imageKeys.join('|');
+    void loadImageUrls();
+  }
+
+  const loadImageUrls = async () => {
+    if (!imageKeys.length) {
+      imageUrlMap = {};
+      imageUrlsError = '';
+      return;
+    }
+    try {
+      const response = (await api.experiments.mediaUrls(imageKeys)) as MediaUrlResponse;
+      imageUrlMap = response?.urls ?? {};
+      imageUrlsError = '';
+    } catch {
+      imageUrlsError = '画像URLの取得に失敗しました。';
+    }
+  };
+
+  const handleUpload = async (index: number, event: Event) => {
+    if (!experiment) return;
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    if (!files.length) return;
+    uploadingIndex = index;
+    uploadError = '';
+    try {
+      const formData = new FormData();
+      files.forEach((file) => formData.append('files', file));
+      const response = await api.experiments.upload(experiment.id, formData, {
+        scope: 'analysis',
+        block_index: index + 1
+      });
+      if (response?.keys?.length) {
+        const existing = analysisBlocks[index]?.image_files ?? [];
+        updateBlock(index, { image_files: [...existing, ...response.keys] });
+      }
+      input.value = '';
+    } catch {
+      uploadError = '画像アップロードに失敗しました。';
+    } finally {
+      uploadingIndex = null;
+    }
+  };
 
   const handleSave = async () => {
     if (!experiment) return;
@@ -104,7 +162,7 @@
         name: block.name || null,
         purpose: block.purpose || null,
         notes: block.notes || null,
-        image_files: parseImageKeys(block.imageText)
+        image_files: block.image_files
       }));
       await api.experiments.replaceAnalyses(experiment.id, { items });
       const refetch = $analysesQuery?.refetch;
@@ -168,6 +226,12 @@
   {#if success}
     <p class="mt-3 text-sm text-emerald-600">{success}</p>
   {/if}
+  {#if uploadError}
+    <p class="mt-3 text-sm text-rose-600">{uploadError}</p>
+  {/if}
+  {#if imageUrlsError}
+    <p class="mt-3 text-sm text-rose-600">{imageUrlsError}</p>
+  {/if}
 
   <div class="mt-4 space-y-4">
     {#if $analysesQuery.isLoading}
@@ -215,14 +279,46 @@
               ></textarea>
             </label>
             <label class="text-sm font-semibold text-slate-700">
-              <span class="label">画像キー（改行区切り）</span>
-              <textarea
-                class="input mt-2 min-h-[96px]"
-                value={block.imageText}
-                on:input={(event) =>
-                  updateBlock(index, { imageText: (event.currentTarget as HTMLTextAreaElement).value })
-                }
-              ></textarea>
+              <span class="label">画像プレビュー</span>
+              {#if block.image_files.length}
+                <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {#each block.image_files as key}
+                    <div class="group relative">
+                      {#if imageUrlMap[key]}
+                        <img
+                          src={imageUrlMap[key]}
+                          alt={`考察画像 ${index + 1}`}
+                          class="h-20 w-full rounded-lg border border-slate-200/60 object-cover"
+                          loading="lazy"
+                        />
+                      {:else}
+                        <div class="flex h-20 items-center justify-center rounded-lg border border-dashed border-slate-200/70 bg-white/70 text-xs text-slate-400">
+                          準備中
+                        </div>
+                      {/if}
+                      <button
+                        class="absolute right-1 top-1 rounded-full bg-slate-900/80 px-2 py-1 text-[10px] font-semibold text-white opacity-0 transition group-hover:opacity-100"
+                        type="button"
+                        on:click|stopPropagation|preventDefault={() => handleRemoveImage(index, key)}
+                        aria-label="画像を削除"
+                        title="削除"
+                      >
+                        削除
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="mt-2 text-xs text-slate-400">画像はありません。</p>
+              {/if}
+              <input
+                class="input mt-2"
+                type="file"
+                accept="image/*"
+                multiple
+                disabled={uploadingIndex === index}
+                on:change={(event) => handleUpload(index, event)}
+              />
             </label>
           </div>
         </div>

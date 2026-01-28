@@ -208,13 +208,19 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(payload)
       }),
+    mediaUrls: (keys: string[]) =>
+      fetchApi('/api/experiments/media-urls', {
+        method: 'POST',
+        body: JSON.stringify({ keys })
+      }),
     upload: (
       experimentId: string,
       formData: FormData,
-      params: { scope: 'experiment' | 'evaluation'; trial_index?: number }
+      params: { scope: 'experiment' | 'evaluation' | 'analysis'; trial_index?: number; block_index?: number }
     ) => {
       const query = new URLSearchParams({ scope: params.scope });
       if (params.trial_index) query.set('trial_index', String(params.trial_index));
+      if (params.block_index) query.set('block_index', String(params.block_index));
       return fetchForm(`/api/experiments/${experimentId}/uploads?${query.toString()}`, formData);
     }
   },

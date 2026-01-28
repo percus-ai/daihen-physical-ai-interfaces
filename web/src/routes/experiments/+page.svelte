@@ -26,6 +26,7 @@
     environment_id?: string | null;
     name?: string;
     evaluation_count?: number;
+    metric_options?: string[] | null;
     updated_at?: string;
   };
 
@@ -42,6 +43,11 @@
   type AnalysisListResponse = {
     analyses?: Array<{ id?: string }>;
     total?: number;
+  };
+
+  type RateEntry = {
+    label: string;
+    value: number;
   };
 
   const modelsQuery = createQuery<{ models?: ModelSummary[] }>({
@@ -130,11 +136,38 @@
     }
   };
 
-  const formatRates = (rates?: Record<string, number>) => {
-    if (!rates || Object.keys(rates).length === 0) return '-';
-    return Object.values(rates)
-      .map((value) => formatPercent(value))
-      .join(' / ');
+  const buildRateEntries = (
+    options: string[] | null | undefined,
+    rates?: Record<string, number>
+  ): RateEntry[] => {
+    if (!rates) return [];
+    const entries: RateEntry[] = [];
+    const used = new Set<string>();
+    if (options?.length) {
+      for (const option of options) {
+        if (option in rates) {
+          entries.push({ label: option, value: rates[option] });
+          used.add(option);
+        }
+      }
+    }
+    for (const [label, value] of Object.entries(rates)) {
+      if (!used.has(label)) {
+        entries.push({ label, value });
+      }
+    }
+    return entries;
+  };
+
+  const formatRateValues = (entries: RateEntry[]) => {
+    if (!entries.length) return '-';
+    const values = entries.map((entry) => Math.round(entry.value));
+    return `${values.join('/')}${values.length ? '%' : ''}`;
+  };
+
+  const formatRateTooltip = (entries: RateEntry[]) => {
+    if (!entries.length) return '-';
+    return entries.map((entry) => `${entry.label}: ${formatPercent(entry.value)}`).join(' / ');
   };
 
   const resetFilters = () => {
@@ -288,7 +321,34 @@
               </td>
               <td class="py-3">{exp.evaluation_count ?? 0}</td>
               <td class="py-3">{summariesLoading ? '-' : summaryById[exp.id]?.total ?? 0}</td>
-              <td class="py-3">{summariesLoading ? '-' : formatRates(summaryById[exp.id]?.rates)}</td>
+              <td class="py-3">
+                {#if summariesLoading}
+                  -
+                {:else}
+                  {@const rateEntries = buildRateEntries(exp.metric_options, summaryById[exp.id]?.rates)}
+                  {#if rateEntries.length}
+                    <Tooltip.Root>
+                      <Tooltip.Trigger type={null}>
+                        {#snippet child({ props })}
+                          <span {...props} class="cursor-help">
+                            {formatRateValues(rateEntries)}
+                          </span>
+                        {/snippet}
+                      </Tooltip.Trigger>
+                      <Tooltip.Portal>
+                        <Tooltip.Content
+                          class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+                          sideOffset={6}
+                        >
+                          {formatRateTooltip(rateEntries)}
+                        </Tooltip.Content>
+                      </Tooltip.Portal>
+                    </Tooltip.Root>
+                  {:else}
+                    -
+                  {/if}
+                {/if}
+              </td>
               <td class="py-3">{summariesLoading ? '-' : analysisById[exp.id] ? 'あり' : 'なし'}</td>
               <td class="py-3">{formatDate(exp.updated_at)}</td>
               <td class="py-3">

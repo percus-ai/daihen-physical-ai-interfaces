@@ -18,6 +18,8 @@ from interfaces_backend.models.experiment import (
     ExperimentEvaluationReplaceRequest,
     ExperimentEvaluationSummary,
     ExperimentListResponse,
+    ExperimentMediaUrlRequest,
+    ExperimentMediaUrlResponse,
     ExperimentModel,
     ExperimentUpdateRequest,
 )
@@ -265,6 +267,28 @@ async def experiment_evaluation_summary(experiment_id: str):
     return ExperimentEvaluationSummary(total=total, counts=counts, rates=rates)
 
 
+@router.post("/media-urls", response_model=ExperimentMediaUrlResponse)
+async def get_experiment_media_urls(request: ExperimentMediaUrlRequest):
+    """Generate signed URLs for experiment-related images."""
+    _require_user_id()
+    keys = [key for key in (request.keys or []) if key]
+    if not keys:
+        return ExperimentMediaUrlResponse(urls={})
+    bucket = _get_r2_bucket()
+    s3 = S3Manager()
+    urls: dict[str, str] = {}
+    for key in keys:
+        try:
+            urls[key] = s3.client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket, "Key": key},
+                ExpiresIn=3600,
+            )
+        except Exception as exc:
+            logger.warning("Failed to sign key %s: %s", key, exc)
+    return ExperimentMediaUrlResponse(urls=urls)
+
+
 @router.get("/{experiment_id}/analyses", response_model=ExperimentAnalysisListResponse)
 async def list_experiment_analyses(experiment_id: str):
     """List analyses for an experiment."""
@@ -362,8 +386,9 @@ async def delete_experiment_analysis(experiment_id: str, block_index: int):
 @router.post("/{experiment_id}/uploads")
 async def upload_experiment_images(
     experiment_id: str,
-    scope: str = Query("experiment", description="experiment or evaluation"),
+    scope: str = Query("experiment", description="experiment, evaluation, or analysis"),
     trial_index: Optional[int] = Query(None, description="Trial index for evaluation scope"),
+    block_index: Optional[int] = Query(None, description="Block index for analysis scope"),
     files: list[UploadFile] = File(...),
 ):
     """Upload images to R2 and return keys."""
@@ -372,17 +397,21 @@ async def upload_experiment_images(
     existing = client.table("experiments").select("id").eq("id", experiment_id).execute().data or []
     if not existing:
         raise HTTPException(status_code=404, detail="Experiment not found")
-    if scope not in {"experiment", "evaluation"}:
+    if scope not in {"experiment", "evaluation", "analysis"}:
         raise HTTPException(status_code=400, detail="Invalid scope")
     if scope == "evaluation" and not trial_index:
         raise HTTPException(status_code=400, detail="trial_index is required for evaluation scope")
+    if scope == "analysis" and not block_index:
+        raise HTTPException(status_code=400, detail="block_index is required for analysis scope")
 
     bucket = _get_r2_bucket()
     prefix = _get_r2_version_prefix()
     if scope == "experiment":
         base_key = f"{prefix}experiments/{experiment_id}/images"
-    else:
+    elif scope == "evaluation":
         base_key = f"{prefix}experiments/{experiment_id}/evaluations/{trial_index}"
+    else:
+        base_key = f"{prefix}experiments/{experiment_id}/analyses/{block_index}"
 
     s3 = S3Manager()
     uploaded: list[str] = []

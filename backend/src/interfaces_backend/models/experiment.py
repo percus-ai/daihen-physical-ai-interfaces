@@ -112,6 +112,18 @@ class ExperimentEvaluationSummary(BaseModel):
     rates: dict = Field(default_factory=dict, description="Value rates (%)")
 
 
+class ExperimentMediaUrlRequest(BaseModel):
+    """Request signed URLs for stored image keys."""
+
+    keys: List[str] = Field(default_factory=list, description="R2 object keys")
+
+
+class ExperimentMediaUrlResponse(BaseModel):
+    """Signed URLs for stored image keys."""
+
+    urls: dict[str, str] = Field(default_factory=dict, description="Key to signed URL")
+
+
 class ExperimentAnalysisInput(BaseModel):
     """Experiment analysis input (index assigned by server)."""
 
