@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
+import time
+import urllib.error
+import urllib.request
 from typing import Any, Optional
 
-from fastapi import Request
+from fastapi import Request, Response
 
 ACCESS_COOKIE_NAME = "phi_access_token"
 REFRESH_COOKIE_NAME = "phi_refresh_token"
+DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
+
+logger = logging.getLogger(__name__)
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
@@ -26,6 +34,59 @@ def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+def _get_supabase_auth_config() -> tuple[str, str] | None:
+    url = os.environ.get("SUPABASE_URL")
+    secret_key = os.environ.get("SUPABASE_SECRET_KEY")
+    anon_key = os.environ.get("SUPABASE_ANON_KEY")
+    api_key = secret_key or anon_key
+    if not url or not api_key:
+        return None
+    return url.rstrip("/"), api_key
+
+
+def _access_cookie_max_age(expires_at: Any) -> Optional[int]:
+    if not expires_at:
+        return None
+    try:
+        return max(0, int(float(expires_at) - time.time()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _refresh_cookie_max_age() -> Optional[int]:
+    raw = os.environ.get("PHI_REFRESH_COOKIE_MAX_AGE_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS
+
+
+def set_session_cookies(response: Response, session: dict[str, Any]) -> None:
+    access_token = session.get("access_token")
+    if not access_token:
+        return
+    response.set_cookie(
+        ACCESS_COOKIE_NAME,
+        access_token,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        max_age=_access_cookie_max_age(session.get("expires_at")),
+    )
+    refresh_token = session.get("refresh_token")
+    if refresh_token:
+        response.set_cookie(
+            REFRESH_COOKIE_NAME,
+            refresh_token,
+            httponly=True,
+            samesite="lax",
+            path="/",
+            max_age=_refresh_cookie_max_age(),
+        )
 
 
 def extract_access_token(request: Request) -> Optional[str]:
@@ -61,7 +122,88 @@ def build_session_from_tokens(
     }
 
 
+def is_session_expired(session: Optional[dict[str, Any]], leeway_seconds: int = 30) -> bool:
+    if not session:
+        return True
+    expires_at = session.get("expires_at")
+    if not expires_at:
+        return False
+    try:
+        return time.time() >= float(expires_at) - leeway_seconds
+    except (TypeError, ValueError):
+        return False
+
+
+def _refresh_session(refresh_token: str) -> Optional[dict[str, Any]]:
+    config = _get_supabase_auth_config()
+    if not config:
+        return None
+    url, api_key = config
+    payload = json.dumps({"refresh_token": refresh_token}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{url}/auth/v1/token?grant_type=refresh_token",
+        data=payload,
+        method="POST",
+    )
+    req.add_header("apikey", api_key)
+    req.add_header("Authorization", f"Bearer {api_key}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8")
+        except Exception:
+            body = ""
+        logger.warning("Supabase refresh failed: %s %s", exc, body)
+        return None
+    except Exception as exc:
+        logger.warning("Supabase refresh error: %s", exc)
+        return None
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    access_token = payload.get("access_token")
+    if not access_token:
+        return None
+    new_refresh = payload.get("refresh_token") or refresh_token
+    user_id = None
+    user = payload.get("user")
+    if isinstance(user, dict):
+        user_id = user.get("id")
+    if not user_id:
+        user_id = (_decode_jwt_payload(access_token) or {}).get("sub")
+    expires_at = payload.get("expires_at")
+    if not expires_at:
+        expires_at = (_decode_jwt_payload(access_token) or {}).get("exp")
+    return {
+        "access_token": access_token,
+        "refresh_token": new_refresh,
+        "expires_at": expires_at,
+        "user_id": user_id,
+    }
+
+
 def build_session_from_request(request: Request) -> Optional[dict[str, Any]]:
     access_token = extract_access_token(request)
     refresh_token = extract_refresh_token(request)
     return build_session_from_tokens(access_token, refresh_token)
+
+
+def build_session_from_request_with_refresh(
+    request: Request,
+) -> tuple[Optional[dict[str, Any]], bool]:
+    access_token = extract_access_token(request)
+    refresh_token = extract_refresh_token(request)
+    session = build_session_from_tokens(access_token, refresh_token) if access_token else None
+    if session and not is_session_expired(session):
+        return session, False
+    if not refresh_token:
+        return None, False
+    refreshed = _refresh_session(refresh_token)
+    if not refreshed:
+        return None, False
+    return refreshed, True

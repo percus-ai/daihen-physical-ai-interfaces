@@ -4,12 +4,30 @@
   import { api } from '$lib/api/client';
   import { formatBytes, formatDate } from '$lib/format';
 
-  const projectsQuery = createQuery({
+  type ProjectsResponse = {
+    projects?: string[];
+    total?: number;
+  };
+
+  type DatasetSummary = {
+    id: string;
+    project_id?: string;
+    dataset_type?: string;
+    created_at?: string;
+    size_bytes?: number;
+  };
+
+  type DatasetListResponse = {
+    datasets?: DatasetSummary[];
+    total?: number;
+  };
+
+  const projectsQuery = createQuery<ProjectsResponse>({
     queryKey: ['projects'],
     queryFn: api.projects.list
   });
 
-  const datasetsQuery = createQuery({
+  const datasetsQuery = createQuery<DatasetListResponse>({
     queryKey: ['datasets', 'recorded'],
     queryFn: () => api.storage.datasets()
   });

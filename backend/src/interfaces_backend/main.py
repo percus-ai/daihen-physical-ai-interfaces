@@ -69,7 +69,10 @@ from interfaces_backend.api import (
     training_router,
     user_router,
 )
-from interfaces_backend.core.request_auth import build_session_from_request
+from interfaces_backend.core.request_auth import (
+    build_session_from_request_with_refresh,
+    set_session_cookies,
+)
 from percus_ai.db import reset_request_session, set_request_session
 
 app = FastAPI(
@@ -94,12 +97,14 @@ app.add_middleware(
 
 @app.middleware("http")
 async def attach_supabase_session(request, call_next):
-    session = build_session_from_request(request)
+    session, refreshed = build_session_from_request_with_refresh(request)
     token = set_request_session(session)
     try:
         response = await call_next(request)
     finally:
         reset_request_session(token)
+    if refreshed and session:
+        set_session_cookies(response, session)
     return response
 
 # Include API routers

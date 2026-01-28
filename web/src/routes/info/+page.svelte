@@ -4,30 +4,68 @@
   import { api } from '$lib/api/client';
   import { formatDate, formatPercent } from '$lib/format';
 
-  const healthQuery = createQuery({
+  type SystemHealthResponse = {
+    status?: string;
+    uptime_seconds?: number;
+  };
+
+  type SystemInfoResponse = {
+    info?: {
+      python_version?: string;
+      lerobot_version?: string;
+      percus_ai_version?: string;
+    };
+  };
+
+  type GpuInfoResponse = {
+    gpus?: Array<{ utilization_gpu?: number }>;
+  };
+
+  type SystemResourcesResponse = {
+    resources?: {
+      cpu_percent?: number;
+      memory_percent?: number;
+      disk_percent?: number;
+    };
+    timestamp?: string;
+  };
+
+  type SystemLogsResponse = {
+    logs?: Array<{ level?: string; timestamp?: string; message?: string }>;
+  };
+
+  const healthQuery = createQuery<SystemHealthResponse>({
     queryKey: ['system', 'health'],
     queryFn: api.system.health
   });
 
-  const infoQuery = createQuery({
+  const infoQuery = createQuery<SystemInfoResponse>({
     queryKey: ['system', 'info'],
     queryFn: api.system.info
   });
 
-  const gpuQuery = createQuery({
+  const gpuQuery = createQuery<GpuInfoResponse>({
     queryKey: ['system', 'gpu'],
     queryFn: api.system.gpu
   });
 
-  const resourcesQuery = createQuery({
+  const resourcesQuery = createQuery<SystemResourcesResponse>({
     queryKey: ['system', 'resources'],
     queryFn: api.system.resources
   });
 
-  const logsQuery = createQuery({
+  const logsQuery = createQuery<SystemLogsResponse>({
     queryKey: ['system', 'logs'],
     queryFn: api.system.logs
   });
+
+  const refetchAll = () => {
+    $healthQuery?.refetch?.();
+    $infoQuery?.refetch?.();
+    $gpuQuery?.refetch?.();
+    $resourcesQuery?.refetch?.();
+    $logsQuery?.refetch?.();
+  };
 </script>
 
 <section class="card-strong p-8">
@@ -37,7 +75,7 @@
       <h1 class="text-3xl font-semibold text-slate-900">システム情報</h1>
       <p class="mt-2 text-sm text-slate-600">環境状態と依存関係を可視化。</p>
     </div>
-    <Button.Root class="btn-ghost">再チェック</Button.Root>
+    <button class="btn-ghost" type="button" on:click={refetchAll}>再チェック</button>
   </div>
 </section>
 

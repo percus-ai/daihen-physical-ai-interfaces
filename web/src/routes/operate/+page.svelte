@@ -4,22 +4,56 @@
   import { api } from '$lib/api/client';
   import { formatDate } from '$lib/format';
 
-  const teleopSessionsQuery = createQuery({
+  type TeleopSessionsResponse = {
+    sessions?: Array<{
+      session_id?: string;
+      mode?: string;
+      leader_port?: string;
+      follower_port?: string;
+      is_running?: boolean;
+    }>;
+  };
+
+  type InferenceModelsResponse = {
+    models?: Array<{
+      name?: string;
+      policy_type?: string;
+      source?: string;
+      is_loaded?: boolean;
+    }>;
+  };
+
+  type InferenceSessionsResponse = {
+    sessions?: Array<{
+      session_id?: string;
+      model_id?: string;
+      device?: string;
+      created_at?: string;
+    }>;
+  };
+
+  type DevicesResponse = {
+    leader_right?: { port?: string };
+    follower_right?: { port?: string };
+    cameras?: Record<string, unknown>;
+  };
+
+  const teleopSessionsQuery = createQuery<TeleopSessionsResponse>({
     queryKey: ['teleop', 'sessions'],
     queryFn: api.teleop.sessions
   });
 
-  const inferenceModelsQuery = createQuery({
+  const inferenceModelsQuery = createQuery<InferenceModelsResponse>({
     queryKey: ['inference', 'models'],
     queryFn: api.inference.models
   });
 
-  const inferenceSessionsQuery = createQuery({
+  const inferenceSessionsQuery = createQuery<InferenceSessionsResponse>({
     queryKey: ['inference', 'sessions'],
     queryFn: api.inference.sessions
   });
 
-  const devicesQuery = createQuery({
+  const devicesQuery = createQuery<DevicesResponse>({
     queryKey: ['user', 'devices'],
     queryFn: api.user.devices
   });

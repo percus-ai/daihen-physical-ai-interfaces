@@ -137,15 +137,6 @@
       <Button.Root class="btn-ghost" href="/">戻る</Button.Root>
     </div>
   </section>
-{:else if mode === 'logout'}
-  <section class="card p-6">
-    <h2 class="text-xl font-semibold text-slate-900">ログイン中のセッションがありません</h2>
-    <p class="mt-2 text-sm text-slate-600">ログイン画面からサインインしてください。</p>
-    <div class="mt-6 flex flex-wrap gap-3">
-      <Button.Root class="btn-primary" href="/auth?mode=login">ログインへ</Button.Root>
-      <Button.Root class="btn-ghost" href="/">戻る</Button.Root>
-    </div>
-  </section>
 {:else}
   <section class="card p-6">
     <h2 class="text-xl font-semibold text-slate-900">ログイン情報</h2>

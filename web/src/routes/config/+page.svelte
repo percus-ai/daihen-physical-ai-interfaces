@@ -8,12 +8,27 @@
   let backendUrl = '';
   let saved = false;
 
-  const configQuery = createQuery({
+  type AppConfigResponse = {
+    config?: {
+      data_dir?: string;
+      robot_type?: string;
+      hf_token_set?: boolean;
+    };
+  };
+
+  type UserConfigResponse = {
+    email?: string;
+    default_fps?: number;
+    auto_upload_after_recording?: boolean;
+    auto_download_models?: boolean;
+  };
+
+  const configQuery = createQuery<AppConfigResponse>({
     queryKey: ['config'],
     queryFn: api.config.get
   });
 
-  const userConfigQuery = createQuery({
+  const userConfigQuery = createQuery<UserConfigResponse>({
     queryKey: ['user', 'config'],
     queryFn: api.user.config
   });
@@ -33,6 +48,10 @@
     backendUrl = getBackendUrl();
     saved = true;
     setTimeout(() => (saved = false), 1500);
+  };
+
+  const refreshUserConfig = () => {
+    $userConfigQuery?.refetch?.();
   };
 
 </script>
@@ -87,7 +106,7 @@
 <section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">ユーザー設定</h2>
-    <Button.Root class="btn-ghost">更新</Button.Root>
+    <button class="btn-ghost" type="button" on:click={refreshUserConfig}>更新</button>
   </div>
   <div class="mt-4 grid gap-4 sm:grid-cols-2">
     <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">

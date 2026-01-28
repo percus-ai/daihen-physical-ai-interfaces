@@ -3,27 +3,51 @@
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
 
-  const projectsQuery = createQuery({
+  type ProjectsResponse = {
+    projects?: string[];
+    total?: number;
+  };
+
+  type HardwareStatusResponse = {
+    cameras_detected?: number;
+    ports_detected?: number;
+    opencv_available?: boolean;
+  };
+
+  type CamerasResponse = {
+    cameras?: Array<{ id?: string | number; width?: number; height?: number; fps?: number }>;
+  };
+
+  type PortsResponse = {
+    ports?: Array<{ port?: string; description?: string }>;
+  };
+
+  type DevicesResponse = {
+    leader_right?: { port?: string };
+    follower_right?: { port?: string };
+  };
+
+  const projectsQuery = createQuery<ProjectsResponse>({
     queryKey: ['projects'],
     queryFn: api.projects.list
   });
 
-  const hardwareStatusQuery = createQuery({
+  const hardwareStatusQuery = createQuery<HardwareStatusResponse>({
     queryKey: ['hardware', 'status'],
     queryFn: api.hardware.status
   });
 
-  const camerasQuery = createQuery({
+  const camerasQuery = createQuery<CamerasResponse>({
     queryKey: ['hardware', 'cameras'],
     queryFn: api.hardware.cameras
   });
 
-  const portsQuery = createQuery({
+  const portsQuery = createQuery<PortsResponse>({
     queryKey: ['hardware', 'ports'],
     queryFn: api.hardware.serialPorts
   });
 
-  const devicesQuery = createQuery({
+  const devicesQuery = createQuery<DevicesResponse>({
     queryKey: ['user', 'devices'],
     queryFn: api.user.devices
   });

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import time
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from interfaces_backend.models.auth import (
@@ -15,7 +14,8 @@ from interfaces_backend.models.auth import (
 from interfaces_backend.core.request_auth import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
-    build_session_from_request,
+    build_session_from_request_with_refresh,
+    set_session_cookies,
 )
 from percus_ai.db import create_supabase_anon_client
 
@@ -43,18 +43,6 @@ def _extract_user_id(response: Any, session: Any) -> str | None:
     return _extract_value(user, "id")
 
 
-def _is_session_expired(session: Optional[dict[str, Any]]) -> bool:
-    if not session:
-        return True
-    expires_at = session.get("expires_at")
-    if not expires_at:
-        return False
-    try:
-        return time.time() >= float(expires_at) - 30
-    except (TypeError, ValueError):
-        return False
-
-
 @router.post("/login", response_model=AuthLoginResponse)
 def login(request: AuthLoginRequest, response: Response, http_request: Request) -> AuthLoginResponse:
     client = create_supabase_anon_client()
@@ -73,30 +61,13 @@ def login(request: AuthLoginRequest, response: Response, http_request: Request) 
     if not access_token or not user_id:
         raise HTTPException(status_code=401, detail="Login failed")
 
-    max_age = None
-    if expires_at:
-        try:
-            max_age = max(0, int(float(expires_at) - time.time()))
-        except (TypeError, ValueError):
-            max_age = None
-
-    response.set_cookie(
-        ACCESS_COOKIE_NAME,
-        access_token,
-        httponly=True,
-        samesite="lax",
-        path="/",
-        max_age=max_age,
-    )
-    if refresh_token:
-        response.set_cookie(
-            REFRESH_COOKIE_NAME,
-            refresh_token,
-            httponly=True,
-            samesite="lax",
-            path="/",
-            max_age=max_age,
-        )
+    session_payload = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at": expires_at,
+        "user_id": user_id,
+    }
+    set_session_cookies(response, session_payload)
 
     is_cli = http_request.headers.get("x-client") == "cli"
     return AuthLoginResponse(
@@ -116,10 +87,12 @@ def logout(response: Response) -> AuthStatusResponse:
 
 
 @router.get("/status", response_model=AuthStatusResponse)
-def status(http_request: Request) -> AuthStatusResponse:
-    session = build_session_from_request(http_request)
-    if not session or _is_session_expired(session):
+def status(http_request: Request, response: Response) -> AuthStatusResponse:
+    session, refreshed = build_session_from_request_with_refresh(http_request)
+    if not session:
         return AuthStatusResponse(authenticated=False, user_id=None, expires_at=None)
+    if refreshed:
+        set_session_cookies(response, session)
     return AuthStatusResponse(
         authenticated=True,
         user_id=session.get("user_id"),
@@ -128,13 +101,15 @@ def status(http_request: Request) -> AuthStatusResponse:
 
 
 @router.get("/token", response_model=AuthTokenResponse)
-def token(http_request: Request) -> AuthTokenResponse:
-    session = build_session_from_request(http_request)
-    if not session or _is_session_expired(session):
+def token(http_request: Request, response: Response) -> AuthTokenResponse:
+    session, refreshed = build_session_from_request_with_refresh(http_request)
+    if not session:
         raise HTTPException(status_code=401, detail="unauthenticated")
     access_token = session.get("access_token")
     if not access_token:
         raise HTTPException(status_code=401, detail="unauthenticated")
+    if refreshed:
+        set_session_cookies(response, session)
     return AuthTokenResponse(
         access_token=access_token,
         refresh_token=session.get("refresh_token"),

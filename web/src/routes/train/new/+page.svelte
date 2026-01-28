@@ -8,12 +8,39 @@
   import { formatBytes, formatDate } from '$lib/format';
   import { GPU_COUNTS, GPU_MODELS, POLICY_TYPES } from '$lib/policies';
 
-  const datasetsQuery = createQuery({
+  type DatasetSummary = {
+    id: string;
+    project_id?: string;
+    dataset_type?: string;
+    status?: string;
+    created_at?: string;
+    size_bytes?: number;
+    short_id?: string;
+  };
+
+  type DatasetListResponse = {
+    datasets?: DatasetSummary[];
+    total?: number;
+  };
+
+  type GpuAvailability = {
+    gpu_model: string;
+    gpu_count: number;
+    spot_available?: boolean;
+    ondemand_available?: boolean;
+    spot_price_per_hour?: number;
+  };
+
+  type GpuAvailabilityResponse = {
+    available?: GpuAvailability[];
+  };
+
+  const datasetsQuery = createQuery<DatasetListResponse>({
     queryKey: ['datasets', 'train'],
     queryFn: () => api.storage.datasets()
   });
 
-  const gpuAvailabilityQuery = createQuery({
+  const gpuAvailabilityQuery = createQuery<GpuAvailabilityResponse>({
     queryKey: ['training', 'gpu-availability'],
     queryFn: api.training.gpuAvailability
   });
@@ -106,16 +133,16 @@
     applyPolicyDefaults(value);
   };
 
-  const normalizeProjectId = (dataset: Record<string, unknown>) => {
-    const projectId = dataset.project_id as string | undefined;
+  const normalizeProjectId = (dataset: DatasetSummary) => {
+    const projectId = dataset.project_id;
     if (projectId) return projectId;
-    const datasetId = (dataset.id as string | undefined) ?? '';
+    const datasetId = dataset.id ?? '';
     return datasetId.includes('/') ? datasetId.split('/')[0] : datasetId;
   };
 
-  const isTrainingDataset = (dataset: Record<string, unknown>) => {
-    const datasetId = (dataset.id as string | undefined) ?? '';
-    const datasetType = dataset.dataset_type as string | undefined;
+  const isTrainingDataset = (dataset: DatasetSummary) => {
+    const datasetId = dataset.id ?? '';
+    const datasetType = dataset.dataset_type;
     if (datasetType === 'eval' || datasetId.includes('/eval_')) return false;
     if (dataset.status === 'archived') return false;
     return Boolean(datasetId);
@@ -152,7 +179,7 @@
   }
 
   $: selectedDatasetInfo = sessions.find((dataset) => dataset.id === selectedDataset) ?? null;
-  $: datasetShortId = (selectedDatasetInfo?.short_id as string | undefined) ?? '';
+  $: datasetShortId = selectedDatasetInfo?.short_id ?? '';
 
   $: if (!validationEnable) {
     earlyStoppingEnable = false;
@@ -359,8 +386,7 @@
 
   $: availability = $gpuAvailabilityQuery.data?.available ?? [];
   $: selectedAvailability = availability.find(
-    (item: { gpu_model: string; gpu_count: number }) =>
-      item.gpu_model === gpuModel && item.gpu_count === gpuCount
+    (item) => item.gpu_model === gpuModel && item.gpu_count === gpuCount
   );
 
   onDestroy(() => {

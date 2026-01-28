@@ -4,22 +4,64 @@
   import { api } from '$lib/api/client';
   import { formatBytes } from '$lib/format';
 
-  const datasetsQuery = createQuery({
+  type DatasetSummary = {
+    id: string;
+    status?: string;
+    size_bytes?: number;
+    source?: string;
+    dataset_type?: string;
+    episode_count?: number;
+  };
+
+  type ModelSummary = {
+    id: string;
+    status?: string;
+    size_bytes?: number;
+    policy_type?: string;
+    dataset_id?: string;
+  };
+
+  type DatasetListResponse = {
+    datasets?: DatasetSummary[];
+    total?: number;
+  };
+
+  type ModelListResponse = {
+    models?: ModelSummary[];
+    total?: number;
+  };
+
+  type StorageUsageResponse = {
+    datasets_size_bytes?: number;
+    datasets_count?: number;
+    models_size_bytes?: number;
+    models_count?: number;
+    archive_size_bytes?: number;
+    archive_count?: number;
+    total_size_bytes?: number;
+  };
+
+  type ArchiveListResponse = {
+    datasets?: Array<{ id: string; size_bytes?: number }>;
+    models?: Array<{ id: string; size_bytes?: number }>;
+  };
+
+  const datasetsQuery = createQuery<DatasetListResponse>({
     queryKey: ['storage', 'datasets'],
     queryFn: () => api.storage.datasets()
   });
 
-  const modelsQuery = createQuery({
+  const modelsQuery = createQuery<ModelListResponse>({
     queryKey: ['storage', 'models'],
     queryFn: api.storage.models
   });
 
-  const usageQuery = createQuery({
+  const usageQuery = createQuery<StorageUsageResponse>({
     queryKey: ['storage', 'usage'],
     queryFn: api.storage.usage
   });
 
-  const archiveQuery = createQuery({
+  const archiveQuery = createQuery<ArchiveListResponse>({
     queryKey: ['storage', 'archive'],
     queryFn: api.storage.archive
   });

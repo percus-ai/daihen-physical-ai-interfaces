@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { derived } from 'svelte/store';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { Button } from 'bits-ui';
@@ -9,12 +10,54 @@
   import { getBackendUrl } from '$lib/config';
   import { formatDate } from '$lib/format';
 
-  const jobId = $page.params.job_id;
+  type JobInfo = {
+    job_id?: string;
+    job_name?: string;
+    status?: string;
+    dataset_id?: string;
+    policy_type?: string;
+    ip?: string;
+    ssh_user?: string;
+    ssh_private_key?: string;
+    gpu_model?: string;
+    gpus_per_instance?: number;
+    created_at?: string;
+    started_at?: string;
+    completed_at?: string;
+  };
 
-  const jobQuery = createQuery({
-    queryKey: ['training', 'job', jobId],
-    queryFn: () => api.training.job(jobId)
-  });
+  type TrainingConfig = {
+    dataset?: { id?: string; video_backend?: string };
+    policy?: { type?: string; pretrained_path?: string };
+    training?: {
+      steps?: number;
+      batch_size?: number;
+      save_freq?: number;
+      log_freq?: number;
+    };
+    validation?: { enable?: boolean };
+    early_stopping?: { enable?: boolean };
+  };
+
+  type JobDetailResponse = {
+    job?: JobInfo;
+    training_config?: TrainingConfig;
+    summary?: Record<string, unknown> | null;
+  };
+
+  let jobId = '';
+  $: jobId = $page.params.job_id;
+
+  const jobQuery = createQuery<JobDetailResponse>(
+    derived(page, ($page) => {
+      const currentId = $page.params.job_id;
+      return {
+        queryKey: ['training', 'job', currentId],
+        queryFn: () => api.training.job(currentId) as Promise<JobDetailResponse>,
+        enabled: Boolean(currentId)
+      };
+    })
+  );
 
   let logsType: 'training' | 'setup' = 'training';
   let logLines = 30;
@@ -43,8 +86,6 @@
   $: jobInfo = $jobQuery.data?.job;
   $: trainingConfig = $jobQuery.data?.training_config ?? {};
   $: summary = $jobQuery.data?.summary ?? {};
-  $: latestTrain = $jobQuery.data?.latest_train_metrics ?? null;
-  $: latestVal = $jobQuery.data?.latest_val_metrics ?? null;
   $: status = jobInfo?.status ?? '';
   $: datasetId = trainingConfig?.dataset?.id ?? '';
   $: datasetProject = datasetId ? datasetId.split('/')[0] : '';
@@ -75,14 +116,14 @@
   };
 
   const stopJob = async () => {
-    if (!isRunning) return;
+    if (!jobId || !isRunning) return;
     if (!confirm('このジョブを停止しますか?')) return;
     await api.training.stopJob(jobId);
     await refresh();
   };
 
   const deleteJob = async () => {
-    if (!canDelete) return;
+    if (!jobId || !canDelete) return;
     if (!confirm('このジョブを削除しますか？（リモートインスタンスも終了します）')) return;
     await api.training.deleteJob(jobId);
     await goto('/train');
@@ -90,6 +131,10 @@
 
   const fetchLogs = async () => {
     logsError = '';
+    if (!jobId) {
+      logsError = 'ジョブIDが取得できません。';
+      return;
+    }
     logsLoading = true;
     try {
       const result = await api.training.logs(jobId, logsType, logLines);
@@ -104,6 +149,10 @@
 
   const fetchMetrics = async () => {
     metricsError = '';
+    if (!jobId) {
+      metricsError = 'ジョブIDが取得できません。';
+      return;
+    }
     metricsLoading = true;
     try {
       const result = await api.training.metrics(jobId, 2000);
@@ -128,6 +177,10 @@
 
   const downloadLogs = async () => {
     logsError = '';
+    if (!jobId) {
+      logsError = 'ジョブIDが取得できません。';
+      return;
+    }
     try {
       const content = await api.training.downloadLogs(jobId, logsType);
       const blob = new Blob([content], { type: 'text/plain' });
@@ -143,7 +196,7 @@
   };
 
   const startLogStream = () => {
-    if (streamWs) return;
+    if (!jobId || streamWs) return;
     streamError = '';
     streamLines = [];
     streamStatus = 'connecting';
@@ -215,6 +268,21 @@
     startAutoRefresh();
   } else {
     stopAutoRefresh();
+  }
+
+  let lastJobId = '';
+  $: if (jobId && jobId !== lastJobId) {
+    lastJobId = jobId;
+    streamWs?.close();
+    streamWs = null;
+    streamLines = [];
+    streamStatus = 'idle';
+    streamError = '';
+    logs = '';
+    logsSource = '';
+    logsError = '';
+    metrics = null;
+    metricsError = '';
   }
 
   onMount(() => {

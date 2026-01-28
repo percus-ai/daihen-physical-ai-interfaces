@@ -4,22 +4,48 @@
   import { api } from '$lib/api/client';
   import { formatBytes, formatDate, formatPercent } from '$lib/format';
 
-  const overviewQuery = createQuery({
+  type OverviewResponse = {
+    stats?: {
+      total_projects?: number;
+      total_episodes?: number;
+      total_training_jobs?: number;
+      total_models?: number;
+    };
+  };
+
+  type SystemHealthResponse = {
+    status?: string;
+  };
+
+  type SystemResourcesResponse = {
+    resources?: {
+      cpu_percent?: number;
+      memory_used_gb?: number;
+      memory_total_gb?: number;
+    };
+    timestamp?: string;
+  };
+
+  type StorageUsageResponse = {
+    datasets_size_bytes?: number;
+  };
+
+  const overviewQuery = createQuery<OverviewResponse>({
     queryKey: ['analytics', 'overview'],
     queryFn: api.analytics.overview
   });
 
-  const systemHealthQuery = createQuery({
+  const systemHealthQuery = createQuery<SystemHealthResponse>({
     queryKey: ['system', 'health'],
     queryFn: api.system.health
   });
 
-  const resourcesQuery = createQuery({
+  const resourcesQuery = createQuery<SystemResourcesResponse>({
     queryKey: ['system', 'resources'],
     queryFn: api.system.resources
   });
 
-  const storageUsageQuery = createQuery({
+  const storageUsageQuery = createQuery<StorageUsageResponse>({
     queryKey: ['storage', 'usage'],
     queryFn: api.storage.usage
   });

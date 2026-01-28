@@ -5,12 +5,37 @@
   import { formatDate } from '$lib/format';
   import { GPU_MODELS } from '$lib/policies';
 
-  const jobsQuery = createQuery({
+  type TrainingJob = {
+    job_id: string;
+    job_name?: string;
+    dataset_id?: string;
+    policy_type?: string;
+    status?: string;
+    updated_at?: string;
+  };
+
+  type JobListResponse = {
+    jobs?: TrainingJob[];
+    total?: number;
+  };
+
+  type GpuAvailability = {
+    gpu_model: string;
+    gpu_count: number;
+    spot_available?: boolean;
+    ondemand_available?: boolean;
+  };
+
+  type GpuAvailabilityResponse = {
+    available?: GpuAvailability[];
+  };
+
+  const jobsQuery = createQuery<JobListResponse>({
     queryKey: ['training', 'jobs'],
     queryFn: api.training.jobs
   });
 
-  const gpuAvailabilityQuery = createQuery({
+  const gpuAvailabilityQuery = createQuery<GpuAvailabilityResponse>({
     queryKey: ['training', 'gpu-availability'],
     queryFn: api.training.gpuAvailability
   });
