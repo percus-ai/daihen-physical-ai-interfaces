@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, DropdownMenu } from 'bits-ui';
+  import { Button, DropdownMenu, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
   import { formatDate, formatPercent } from '$lib/format';
@@ -74,6 +74,10 @@
   let experimentsError = '';
 
   $: experiments = $experimentsQuery.data?.experiments ?? [];
+  $: modelMap = new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]));
+  $: environmentMap = new Map(
+    ($environmentsQuery.data?.environments ?? []).map((env) => [env.id, env])
+  );
   $: experimentsError =
     $experimentsQuery.isError
       ? $experimentsQuery.error instanceof Error
@@ -233,11 +237,51 @@
             <tr class="border-t border-slate-200/60">
               <td class="py-3">{exp.name ?? '-'}</td>
               <td class="py-3">
-                <a class="text-xs font-semibold text-brand underline underline-offset-2" href={`/storage/models/${exp.model_id}`}>開く</a>
+                <Tooltip.Root>
+                  <Tooltip.Trigger type={null}>
+                    {#snippet child({ props })}
+                      <a
+                        {...props}
+                        class="text-xs font-semibold text-brand underline underline-offset-2"
+                        href={`/storage/models/${exp.model_id}`}
+                      >
+                        開く
+                      </a>
+                    {/snippet}
+                  </Tooltip.Trigger>
+                  <Tooltip.Portal>
+                    <Tooltip.Content
+                      class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+                      sideOffset={6}
+                    >
+                      {modelMap.get(exp.model_id)?.name ?? exp.model_id}
+                    </Tooltip.Content>
+                  </Tooltip.Portal>
+                </Tooltip.Root>
               </td>
               <td class="py-3">
                 {#if exp.environment_id}
-                  <a class="text-xs font-semibold text-brand underline underline-offset-2" href={`/storage/environments/${exp.environment_id}`}>開く</a>
+                  <Tooltip.Root>
+                    <Tooltip.Trigger type={null}>
+                      {#snippet child({ props })}
+                        <a
+                          {...props}
+                          class="text-xs font-semibold text-brand underline underline-offset-2"
+                          href={`/storage/environments/${exp.environment_id}`}
+                        >
+                          開く
+                        </a>
+                      {/snippet}
+                    </Tooltip.Trigger>
+                    <Tooltip.Portal>
+                      <Tooltip.Content
+                        class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+                        sideOffset={6}
+                      >
+                        {environmentMap.get(exp.environment_id)?.name ?? exp.environment_id}
+                      </Tooltip.Content>
+                    </Tooltip.Portal>
+                  </Tooltip.Root>
                 {:else}
                   <span class="text-xs text-slate-400">未設定</span>
                 {/if}
@@ -266,7 +310,7 @@
                       onSelect={() => goto(`/experiments/${exp.id}`)}
                     >
                       <FileText size={16} class="text-slate-500" />
-                      詳細
+                      開く
                     </DropdownMenu.Item>
                     <DropdownMenu.Item
                       class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"

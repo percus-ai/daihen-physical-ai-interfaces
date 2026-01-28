@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button } from 'bits-ui';
+  import { Button, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
   import { formatBytes, formatDate, formatPercent } from '$lib/format';
@@ -79,7 +79,21 @@
     <h2 class="mt-2 text-xl font-semibold text-slate-900">テレオペ / 推論</h2>
     <p class="mt-3 text-sm text-slate-600">テレオペ・推論実行・セッション監視を統合表示。</p>
     <div class="mt-6 flex gap-3">
-      <Button.Root class="btn-ghost" href="/operate">開く</Button.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger class="btn-ghost" type={null}>
+          {#snippet child({ props })}
+            <Button.Root {...props} href="/operate">開く</Button.Root>
+          {/snippet}
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+            sideOffset={6}
+          >
+            テレオペ / 推論
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
     </div>
   </div>
   <div class="card p-6">
@@ -87,7 +101,21 @@
     <h2 class="mt-2 text-xl font-semibold text-slate-900">録画セッション</h2>
     <p class="mt-3 text-sm text-slate-600">プロジェクト選択、エピソード指定、進行状況を可視化。</p>
     <div class="mt-6 flex gap-3">
-      <Button.Root class="btn-ghost" href="/record">開く</Button.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger class="btn-ghost" type={null}>
+          {#snippet child({ props })}
+            <Button.Root {...props} href="/record">開く</Button.Root>
+          {/snippet}
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+            sideOffset={6}
+          >
+            録画セッション
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
     </div>
   </div>
   <div class="card p-6">
@@ -95,7 +123,21 @@
     <h2 class="mt-2 text-xl font-semibold text-slate-900">学習ジョブ</h2>
     <p class="mt-3 text-sm text-slate-600">新規学習/継続学習、GPU・ストレージ指定を整理。</p>
     <div class="mt-6 flex gap-3">
-      <Button.Root class="btn-ghost" href="/train">開く</Button.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger class="btn-ghost" type={null}>
+          {#snippet child({ props })}
+            <Button.Root {...props} href="/train">開く</Button.Root>
+          {/snippet}
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+            sideOffset={6}
+          >
+            学習ジョブ
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
     </div>
   </div>
 </section>
@@ -162,7 +204,21 @@
       </div>
     </div>
     <div class="mt-6">
-      <Button.Root class="btn-ghost" href="/info">詳細</Button.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger class="btn-ghost" type={null}>
+          {#snippet child({ props })}
+            <Button.Root {...props} href="/info">開く</Button.Root>
+          {/snippet}
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+            sideOffset={6}
+          >
+            システム情報
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
     </div>
   </div>
 </section>

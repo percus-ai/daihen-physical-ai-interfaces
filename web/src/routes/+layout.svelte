@@ -1,6 +1,7 @@
 <script lang="ts">
   import '../app.css';
   import AppShell from '$lib/components/AppShell.svelte';
+  import { Tooltip } from 'bits-ui';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
 
   const queryClient = new QueryClient({
@@ -14,7 +15,9 @@
 </script>
 
 <QueryClientProvider client={queryClient}>
-  <AppShell>
-    <slot />
-  </AppShell>
+  <Tooltip.Provider>
+    <AppShell>
+      <slot />
+    </AppShell>
+  </Tooltip.Provider>
 </QueryClientProvider>

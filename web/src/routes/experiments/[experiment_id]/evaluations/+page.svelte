@@ -1,7 +1,7 @@
 <script lang="ts">
   import { derived } from 'svelte/store';
   import { page } from '$app/stores';
-  import { Button } from 'bits-ui';
+  import { Button, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
   import { formatPercent } from '$lib/format';
@@ -250,7 +250,21 @@
     </div>
     <div class="flex flex-wrap gap-2">
       {#if experiment?.id}
-        <Button.Root class="btn-ghost" href={`/experiments/${experiment.id}`}>詳細へ</Button.Root>
+        <Tooltip.Root>
+          <Tooltip.Trigger class="btn-ghost" type={null}>
+            {#snippet child({ props })}
+              <Button.Root {...props} href={`/experiments/${experiment.id}`}>開く</Button.Root>
+            {/snippet}
+          </Tooltip.Trigger>
+          <Tooltip.Portal>
+            <Tooltip.Content
+              class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+              sideOffset={6}
+            >
+              {experiment?.name ?? experiment?.id}
+            </Tooltip.Content>
+          </Tooltip.Portal>
+        </Tooltip.Root>
         <Button.Root class="btn-ghost" href={`/experiments/${experiment.id}/analyses`}>考察入力へ</Button.Root>
       {/if}
     </div>
