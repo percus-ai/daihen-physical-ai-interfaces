@@ -500,9 +500,9 @@ def _generate_env_file(
         lines.append(f"GH_TOKEN={gh_token}")
 
     # Supabase credentials for remote status updates
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_secret_key = os.environ.get("SUPABASE_SECRET_KEY")
-    supabase_anon_key = os.environ.get("SUPABASE_ANON_KEY")
+    supabase_url = os.environ.get("SUPABASE_URL") or env_fallback.get("SUPABASE_URL")
+    supabase_secret_key = os.environ.get("SUPABASE_SECRET_KEY") or env_fallback.get("SUPABASE_SECRET_KEY")
+    supabase_anon_key = os.environ.get("SUPABASE_ANON_KEY") or env_fallback.get("SUPABASE_ANON_KEY")
     if supabase_url and (supabase_secret_key or supabase_anon_key):
         lines.append(f"SUPABASE_URL={supabase_url}")
         if supabase_secret_key:
