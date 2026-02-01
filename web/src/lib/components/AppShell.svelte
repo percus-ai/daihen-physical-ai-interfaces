@@ -156,8 +156,10 @@
   </header>
 
   <div
-    class={`mx-auto grid gap-6 px-4 py-[var(--app-shell-gap)] sm:px-6 ${
-      immersiveView ? 'max-w-[1600px] lg:grid-cols-[1fr]' : 'max-w-7xl lg:grid-cols-[240px_1fr]'
+    class={`mx-auto grid gap-6 py-[var(--app-shell-gap)] ${
+      immersiveView
+        ? 'max-w-none px-[var(--app-shell-gap)] lg:grid-cols-[1fr]'
+        : 'max-w-7xl px-4 sm:px-6 lg:grid-cols-[240px_1fr]'
     }`}
   >
     <aside
