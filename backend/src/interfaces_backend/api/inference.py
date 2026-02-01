@@ -1,131 +1,52 @@
 """Inference API router."""
 
+from __future__ import annotations
+
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from uuid import uuid4
 
-import yaml
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException
 
+from interfaces_backend.clients.gpu_host import GpuHostClient
+from interfaces_backend.clients.runner_bridge import RunnerBridgeClient
 from interfaces_backend.models.inference import (
-    InferenceModelInfo,
-    InferenceModelsResponse,
     InferenceDeviceCompatibility,
     InferenceDeviceCompatibilityResponse,
-    InferenceRunRequest,
-    InferenceRunResponse,
+    InferenceModelInfo,
+    InferenceModelsResponse,
+    InferenceRunnerStartRequest,
+    InferenceRunnerStartResponse,
+    InferenceRunnerStatusResponse,
+    InferenceRunnerStopRequest,
+    InferenceRunnerStopResponse,
 )
-from percus_ai.inference import PolicyExecutor, detect_device as percus_detect_device
+from interfaces_backend.utils.torch_info import get_torch_info
 from percus_ai.db import get_supabase_client
-from percus_ai.storage import (
-    get_models_dir,
-    get_project_root,
-    get_user_config_path,
-)
-from percus_ai.storage.r2_db_sync import R2DBSyncService
+from percus_ai.gpu_host.models import StartRequest, StopRequest
+from percus_ai.inference.camera_maps import get_camera_maps_for_model, get_policy_type_from_config
+from percus_ai.storage.paths import get_models_dir, get_project_root
 
 logger = logging.getLogger(__name__)
 
-# Global instance for R2 sync (DB-backed)
-_sync_service: Optional[R2DBSyncService] = None
-
-
-def _get_sync_service() -> R2DBSyncService:
-    """Get or create DB-backed R2 sync service."""
-    global _sync_service
-    if _sync_service is None:
-        _sync_service = R2DBSyncService()
-    return _sync_service
-
-
-def _load_user_config() -> dict:
-    """Load user configuration for auto_download_models setting."""
-    path = get_user_config_path()
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-        sync = raw.get("sync", {})
-        return {
-            "auto_download_models": sync.get("auto_download_models", raw.get("auto_download_models", True)),
-        }
-    return {"auto_download_models": True}
-
 router = APIRouter(prefix="/api/inference", tags=["inference"])
 
-# Models directory (integrated with storage system)
 MODELS_DIR = get_models_dir()
 
-# Repository root
-_REPO_ROOT = get_project_root()
+_RUNNER_ZMQ_ENDPOINT = os.environ.get("RUNNER_BRIDGE_ZMQ_ENDPOINT", "tcp://127.0.0.1:5556")
+_RUNNER_COMPOSE_SERVICE = os.environ.get("RUNNER_BRIDGE_SERVICE", "lerobot-ros2")
+_RUNNER_AUTO_START = os.environ.get("RUNNER_BRIDGE_AUTO_START", "1") != "0"
+_GPU_WORKER_DEVICE = os.environ.get("GPU_WORKER_DEVICE", "cuda:0")
 
-# Environment scripts (now in features/percus_ai/environment/)
-RUN_IN_ENV_SCRIPT = _REPO_ROOT / "features" / "percus_ai" / "environment" / "run_in_env.sh"
-POLICY_MAP_FILE = _REPO_ROOT / "envs" / "policy_map.yaml"
-
-
-def _get_policy_type(model_path: Path) -> Optional[str]:
-    """Get policy type from model's config.json."""
-    config_path = model_path / "config.json"
-    if not config_path.exists():
-        # Search subdirectories (e.g. HuggingFace format)
-        for p in model_path.glob("**/config.json"):
-            config_path = p
-            break
-
-    if config_path.exists():
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-                return config.get("type")
-        except (json.JSONDecodeError, OSError):
-            pass
-    return None
-
-
-def _get_env_for_policy(policy_type: str) -> str:
-    """Get environment name for policy type from policy_map.yaml."""
-    if not POLICY_MAP_FILE.exists():
-        return "act"  # Default fallback
-
-    try:
-        with open(POLICY_MAP_FILE) as f:
-            policy_map = yaml.safe_load(f)
-
-        environments = policy_map.get("environments", {})
-        for env_config in environments.values():
-            policies = env_config.get("policies", [])
-            if policy_type in policies:
-                # Return short name (without .venv- prefix)
-                venv = env_config["venv"]
-                return venv.replace(".venv-", "")
-
-        # Return default environment
-        return policy_map.get("default_environment", "act")
-    except Exception:
-        return "act"
-
-
-def _detect_device() -> str:
-    """Detect best available compute device."""
-    try:
-        return percus_detect_device()
-    except Exception:
-        # Fallback detection (via subprocess to avoid numpy conflicts)
-        from interfaces_backend.utils.torch_info import get_torch_info
-        torch_info = get_torch_info()
-        if torch_info.get("cuda_available"):
-            return "cuda"
-        elif torch_info.get("mps_available"):
-            return "mps"
-        return "cpu"
+_DEFAULT_ARM_NAMESPACES = ["left_arm", "right_arm"]
+_DEFAULT_JOINT_NAMES = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 
 
 def _list_models() -> list[dict]:
-    """List available models for inference from DB with local cache status."""
-    models = []
-
+    models: list[dict] = []
     client = get_supabase_client()
     rows = client.table("models").select("*").eq("status", "active").execute().data or []
 
@@ -148,84 +69,152 @@ def _list_models() -> list[dict]:
     return models
 
 
+def _ensure_runner_service() -> None:
+    if not _RUNNER_AUTO_START:
+        return
+    repo_root = get_project_root()
+    compose_file = repo_root / "docker-compose.ros2.yml"
+    if not compose_file.exists():
+        raise HTTPException(status_code=500, detail="docker-compose.ros2.yml not found")
+    result = subprocess.run(
+        ["docker", "compose", "-f", str(compose_file), "up", "-d", _RUNNER_COMPOSE_SERVICE],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"runner bridge start failed: {result.stderr.strip()}")
+
+
+def _resolve_model_path(model_id: str) -> Path:
+    model_path = MODELS_DIR / model_id
+    if model_path.exists():
+        return model_path
+    client = get_supabase_client()
+    rows = (
+        client.table("models")
+        .select("*")
+        .eq("id", model_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if rows:
+        row = rows[0]
+        name = row.get("name")
+        if name:
+            candidate = MODELS_DIR / str(name)
+            if candidate.exists():
+                return candidate
+    raise HTTPException(status_code=404, detail=f"Model not found locally: {model_id}")
+
+
+def _resolve_model_policy_type(model_path: Path, model_id: str, override: str | None) -> str:
+    if override:
+        return override
+    policy_type = get_policy_type_from_config(str(model_path))
+    if policy_type:
+        return policy_type
+    client = get_supabase_client()
+    rows = (
+        client.table("models")
+        .select("*")
+        .eq("id", model_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if rows and rows[0].get("policy_type"):
+        return rows[0]["policy_type"]
+    return "unknown"
+
+
+def _load_model_config(model_path: Path) -> dict:
+    if model_path.is_file() and model_path.name == "config.json":
+        config_path = model_path
+    else:
+        config_path = model_path / "config.json"
+        if not config_path.exists():
+            config_path = model_path / "pretrained_model" / "config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _extract_camera_shapes(config: dict) -> dict[str, list[int]]:
+    shapes: dict[str, list[int]] = {}
+    input_features = config.get("input_features") or {}
+    for key, value in input_features.items():
+        if not key.startswith("observation.images."):
+            continue
+        name = key.replace("observation.images.", "")
+        shape = None
+        if isinstance(value, dict):
+            shape = value.get("shape")
+            if shape is None:
+                cfg = value.get("config")
+                if isinstance(cfg, dict):
+                    shape = cfg.get("shape")
+        elif isinstance(value, (list, tuple)) and len(value) == 3:
+            shape = value
+        if shape is not None:
+            shapes[name] = [int(x) for x in shape]
+    return shapes
+
+
 @router.get("/models", response_model=InferenceModelsResponse)
 async def list_inference_models():
-    """List models available for inference.
-
-    Returns both locally downloaded models and R2 remote models.
-    Use is_local to check if a model needs to be downloaded before use.
-    """
+    """List models available for inference."""
     models_data = _list_models()
-
-    models = []
-    for m in models_data:
-        models.append(
-            InferenceModelInfo(
-                model_id=m.get("model_id", m.get("name", "")),
-                name=m.get("name", ""),
-                policy_type=m.get("policy_type", "unknown"),
-                local_path=m.get("local_path"),
-                size_mb=m.get("size_mb", 0.0),
-                is_loaded=False,  # No longer tracking loaded state
-                is_local=m.get("is_local", True),
-                source=m.get("source", "local"),
-            )
+    models = [
+        InferenceModelInfo(
+            model_id=m.get("model_id", m.get("name", "")),
+            name=m.get("name", ""),
+            policy_type=m.get("policy_type", "unknown"),
+            local_path=m.get("local_path"),
+            size_mb=m.get("size_mb", 0.0),
+            is_loaded=False,
+            is_local=m.get("is_local", True),
+            source=m.get("source", "local"),
         )
-
+        for m in models_data
+    ]
     return InferenceModelsResponse(models=models, total=len(models))
 
 
 @router.get("/device-compatibility", response_model=InferenceDeviceCompatibilityResponse)
 async def get_device_compatibility():
     """Check device compatibility for inference."""
-    devices = []
-
-    # Check CUDA
-    cuda_available = False
-    cuda_memory_total = None
-    cuda_memory_free = None
-
-    # Get CUDA/MPS info via subprocess to avoid numpy conflicts
-    from interfaces_backend.utils.torch_info import get_torch_info
     torch_info = get_torch_info()
 
-    if torch_info.get("cuda_available"):
-        cuda_available = True
-        cuda_memory_total = torch_info.get("cuda_memory_total")
-        cuda_memory_free = torch_info.get("cuda_memory_free")
+    cuda_available = torch_info.get("cuda_available", False)
+    mps_available = torch_info.get("mps_available", False)
 
-    devices.append(
+    devices = [
         InferenceDeviceCompatibility(
             device="cuda",
             available=cuda_available,
-            memory_total_mb=cuda_memory_total,
-            memory_free_mb=cuda_memory_free,
-        )
-    )
-
-    # Check MPS (Apple Silicon)
-    mps_available = torch_info.get("mps_available", False)
-
-    devices.append(
+            memory_total_mb=torch_info.get("cuda_memory_total"),
+            memory_free_mb=torch_info.get("cuda_memory_free"),
+        ),
         InferenceDeviceCompatibility(
             device="mps",
             available=mps_available,
             memory_total_mb=None,
             memory_free_mb=None,
-        )
-    )
-
-    # CPU is always available
-    devices.append(
+        ),
         InferenceDeviceCompatibility(
             device="cpu",
             available=True,
             memory_total_mb=None,
             memory_free_mb=None,
-        )
-    )
+        ),
+    ]
 
-    # Determine recommended device
     if cuda_available:
         recommended = "cuda"
     elif mps_available:
@@ -239,257 +228,124 @@ async def get_device_compatibility():
     )
 
 
-def _find_model_path(model_id: str, auto_download: bool = True) -> Optional[Path]:
-    """Find model path in storage directories.
+@router.post("/runner/start", response_model=InferenceRunnerStartResponse)
+async def start_inference_runner(request: InferenceRunnerStartRequest):
+    _ensure_runner_service()
 
-    If model is not found locally and auto_download is enabled,
-    attempts to download from R2.
-    """
-    model_path = MODELS_DIR / model_id
+    model_path = _resolve_model_path(request.model_id)
+    policy_type = _resolve_model_policy_type(model_path, request.model_id, request.policy_type)
+    config = _load_model_config(model_path)
+    camera_shapes = request.camera_shapes or _extract_camera_shapes(config)
+    _, rename_map = get_camera_maps_for_model(str(model_path))
+    if request.rename_map:
+        rename_map = request.rename_map
 
-    if auto_download:
-        user_config = _load_user_config()
-        if user_config.get("auto_download_models", True):
-            try:
-                sync_service = _get_sync_service()
-                result = sync_service.ensure_model_local(model_id, auto_download=True)
-                if result.success and model_path.exists():
-                    if result.skipped:
-                        logger.info(f"Model cache hit: {model_id}")
-                    else:
-                        logger.info(f"Downloaded model from R2: {model_id}")
-                    return model_path
-            except Exception as e:
-                logger.warning(f"Model auto-download failed for {model_id}: {e}")
+    arm_namespaces = request.arm_namespaces or _DEFAULT_ARM_NAMESPACES
+    joint_names = request.joint_names or _DEFAULT_JOINT_NAMES
+    full_joint_names = [f"{ns}_{joint}" for ns in arm_namespaces for joint in joint_names]
 
-    if model_path.exists():
-        return model_path
+    session_id = request.session_id or uuid4().hex[:8]
+    zmq_endpoint = request.zmq_endpoint or _RUNNER_ZMQ_ENDPOINT
 
-    return None
-
-
-@router.post("/run", response_model=InferenceRunResponse)
-async def run_inference(request: InferenceRunRequest):
-    """Run inference on robot with the specified model.
-
-    Uses run_in_env.sh to execute percus_ai.inference.cli in the appropriate
-    policy environment (e.g., .venv-pi0 for pi05 models) with bundled-torch
-    PYTHONPATH injection.
-    """
-    model_id = request.model_id
-    project = request.project
-    episodes = request.episodes
-    robot_type = request.robot_type
-    device = request.device
-
-    # Find model path
-    model_path = _find_model_path(model_id)
-    if not model_path:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Model not found: {model_id}. Check if it's downloaded in {MODELS_DIR}",
-        )
-
-    # Detect policy type and get appropriate environment
-    policy_type = _get_policy_type(model_path)
-    if not policy_type:
-        policy_type = "act"  # Default fallback
-    env_name = _get_env_for_policy(policy_type)
-
-    # Check if run_in_env.sh exists
-    if not RUN_IN_ENV_SCRIPT.exists():
-        raise HTTPException(
-            status_code=500,
-            detail=f"Environment script not found: {RUN_IN_ENV_SCRIPT}",
-        )
-
-    # Build command using run_in_env.sh
-    # Format: run_in_env.sh <env_name> python -m percus_ai.inference.executor [args...]
-    cmd = [
-        str(RUN_IN_ENV_SCRIPT),
-        env_name,
-        "python", "-m", "percus_ai.inference.executor",
-        "--project", project,
-        "--policy-path", str(model_path),
-        "--episodes", str(episodes),
-        "--robot-type", robot_type,
-    ]
-
-    if device:
-        cmd.extend(["--device", device])
-
-    # Execute (run_in_env.sh handles PYTHONPATH for features and bundled-torch)
+    runner_client = RunnerBridgeClient()
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=_REPO_ROOT,
-            capture_output=False,  # Let output flow to terminal
-            text=True,
-        )
+        runner_client.start({
+            "session_id": session_id,
+            "task": request.task,
+            "zmq_endpoint": zmq_endpoint,
+        })
+    except Exception as exc:
+        logger.exception("Runner bridge start failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        return InferenceRunResponse(
-            success=result.returncode == 0,
-            model_id=model_id,
-            project=project,
-            message=f"Inference completed (env: {env_name}, policy: {policy_type})" if result.returncode == 0 else f"Inference failed (env: {env_name})",
-            return_code=result.returncode,
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to run inference: {str(e)}",
-        )
-
-
-@router.websocket("/ws/run")
-async def websocket_run_inference(websocket: WebSocket):
-    """WebSocket endpoint for running inference with real-time output streaming.
-
-    Client sends:
-        {
-            "model_id": "...",
-            "project": "...",
-            "episodes": 1,
-            "robot_type": "so101",
-            "device": "cuda" | "mps" | "cpu" | null
-        }
-
-    Server sends:
-        {"type": "start", "model_id": "...", "env": "...", "policy": "..."}
-        {"type": "output", "line": "..."}  # stdout lines
-        {"type": "error_output", "line": "..."}  # stderr lines
-        {"type": "complete", "success": true, "return_code": 0}
-        {"type": "error", "error": "..."}
-    """
-    import asyncio
-
-    await websocket.accept()
+    gpu_client = GpuHostClient()
+    try:
+        gpu_resp = gpu_client.start(StartRequest(
+            session_id=session_id,
+            policy_type=policy_type,
+            model_path=str(model_path),
+            device=request.device or _GPU_WORKER_DEVICE,
+            actions_per_chunk=request.actions_per_chunk,
+            joint_names=full_joint_names,
+            camera_shapes=camera_shapes,
+            rename_map=rename_map,
+            zmq_endpoint=zmq_endpoint,
+        ))
+    except Exception as exc:
+        logger.exception("GPU host start failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     try:
-        # Receive run request
-        data = await websocket.receive_json()
+        runner_status = runner_client.status()
+    except Exception:
+        runner_status = {}
 
-        model_id = data.get("model_id")
-        project = data.get("project")
-        episodes = data.get("episodes", 1)
-        robot_type = data.get("robot_type", "so101")
-        device = data.get("device")
+    return InferenceRunnerStartResponse(
+        success=True,
+        session_id=session_id,
+        zmq_endpoint=zmq_endpoint,
+        runner_status=runner_status,
+        gpu_host_status=gpu_resp.model_dump(),
+    )
 
-        if not model_id or not project:
-            await websocket.send_json({
-                "type": "error",
-                "error": "model_id and project are required"
-            })
-            await websocket.close()
-            return
 
-        # Find model path
-        model_path = _find_model_path(model_id)
-        if not model_path:
-            await websocket.send_json({
-                "type": "error",
-                "error": f"Model not found: {model_id}"
-            })
-            await websocket.close()
-            return
+@router.post("/runner/stop", response_model=InferenceRunnerStopResponse)
+async def stop_inference_runner(request: InferenceRunnerStopRequest):
+    runner_client = RunnerBridgeClient()
+    session_id = request.session_id
+    runner_status = {}
+    try:
+        runner_status = runner_client.status()
+    except Exception:
+        runner_status = {}
 
-        # Detect policy type and get appropriate environment
-        policy_type = _get_policy_type(model_path)
-        if not policy_type:
-            policy_type = "act"
-        env_name = _get_env_for_policy(policy_type)
+    if not session_id:
+        session_id = runner_status.get("session_id") if isinstance(runner_status, dict) else None
 
-        # Check if run_in_env.sh exists
-        if not RUN_IN_ENV_SCRIPT.exists():
-            await websocket.send_json({
-                "type": "error",
-                "error": f"Environment script not found: {RUN_IN_ENV_SCRIPT}"
-            })
-            await websocket.close()
-            return
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
 
-        # Build command
-        cmd = [
-            str(RUN_IN_ENV_SCRIPT),
-            env_name,
-            "python", "-m", "percus_ai.inference.executor",
-            "--project", project,
-            "--policy-path", str(model_path),
-            "--episodes", str(episodes),
-            "--robot-type", robot_type,
-        ]
+    try:
+        runner_client.stop()
+    except Exception as exc:
+        logger.exception("Runner bridge stop failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        if device:
-            cmd.extend(["--device", device])
+    gpu_status = {}
+    try:
+        gpu_client = GpuHostClient()
+        gpu_resp = gpu_client.stop(StopRequest(session_id=session_id))
+        gpu_status = gpu_resp.model_dump()
+    except Exception as exc:
+        logger.exception("GPU host stop failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        # Send start notification
-        await websocket.send_json({
-            "type": "start",
-            "model_id": model_id,
-            "project": project,
-            "env": env_name,
-            "policy": policy_type,
-        })
+    return InferenceRunnerStopResponse(
+        success=True,
+        session_id=session_id,
+        runner_status=runner_status if isinstance(runner_status, dict) else {},
+        gpu_host_status=gpu_status,
+    )
 
-        # Run subprocess with output streaming
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=_REPO_ROOT,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
 
-        async def read_stream(stream, output_type):
-            """Read from stream and send to websocket."""
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                try:
-                    text = line.decode("utf-8", errors="replace").rstrip()
-                    if text:
-                        await websocket.send_json({
-                            "type": output_type,
-                            "line": text,
-                        })
-                        # Log subprocess output to file
-                        if output_type == "error_output":
-                            logger.error(f"[subprocess] {text}")
-                        else:
-                            logger.debug(f"[subprocess] {text}")
-                except Exception:
-                    pass
+@router.get("/runner/status", response_model=InferenceRunnerStatusResponse)
+async def get_inference_runner_status():
+    runner_client = RunnerBridgeClient()
+    gpu_client = GpuHostClient()
 
-        # Read stdout and stderr concurrently
-        await asyncio.gather(
-            read_stream(process.stdout, "output"),
-            read_stream(process.stderr, "error_output"),
-        )
+    try:
+        runner_status = runner_client.status()
+    except Exception as exc:
+        logger.exception("Runner bridge status failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        # Wait for process to complete
-        return_code = await process.wait()
+    try:
+        gpu_status = gpu_client.status().model_dump()
+    except Exception as exc:
+        logger.exception("GPU host status failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        # Send completion notification
-        await websocket.send_json({
-            "type": "complete",
-            "success": return_code == 0,
-            "return_code": return_code,
-            "message": f"Inference completed (env: {env_name}, policy: {policy_type})" if return_code == 0 else f"Inference failed (env: {env_name})",
-        })
-
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "error": str(e),
-            })
-        except Exception:
-            pass
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+    return InferenceRunnerStatusResponse(
+        runner_status=runner_status,
+        gpu_host_status=gpu_status,
+    )

@@ -37,35 +37,10 @@ def _load_repo_env(monkeypatch):
             monkeypatch.setenv(key, value)
 
 
-def _has_r2_env() -> bool:
-    return bool(
-        (
-            _get_env("R2_ENDPOINT_URL")
-            or _get_env("S3_ENDPOINT_URL")
-        )
-        and (_get_env("R2_ACCESS_KEY_ID") or _get_env("S3_ACCESS_KEY_ID"))
-        and (_get_env("R2_SECRET_ACCESS_KEY") or _get_env("S3_SECRET_ACCESS_KEY"))
-        and (_get_env("R2_BUCKET") or _get_env("S3_BUCKET"))
-    )
-
-
 def _get_env(key: str) -> str | None:
     import os
 
     return os.environ.get(key)
-
-
-@pytest.mark.external
-def test_r2_dataset_projects(client):
-    if find_spec("boto3") is None:
-        pytest.skip("boto3 not installed")
-    if not _has_r2_env():
-        pytest.skip("R2 env vars not set")
-
-    resp = client.get("/api/storage/dataset-projects")
-    assert resp.status_code == 200
-    payload = resp.json()
-    assert "projects" in payload
 
 
 @pytest.mark.external

@@ -9,7 +9,7 @@ class ExperimentCreateRequest(BaseModel):
     """Create experiment request."""
 
     model_id: str = Field(..., description="Model ID")
-    environment_id: Optional[str] = Field(None, description="Environment ID")
+    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
     name: str = Field(..., description="Experiment name")
     purpose: Optional[str] = Field(None, description="Experiment purpose")
     evaluation_count: int = Field(..., description="Number of evaluations")
@@ -44,7 +44,7 @@ class ExperimentModel(BaseModel):
 
     id: str = Field(..., description="Experiment ID")
     model_id: str = Field(..., description="Model ID")
-    environment_id: Optional[str] = Field(None, description="Environment ID")
+    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
     name: str = Field(..., description="Experiment name")
     purpose: Optional[str] = Field(None, description="Experiment purpose")
     evaluation_count: int = Field(..., description="Number of evaluations")

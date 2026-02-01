@@ -206,7 +206,6 @@ class UserConfigMenu(BaseMenu):
             Choice(value="view", name="👁️  [VIEW] 現在のユーザー設定"),
             Choice(value="edit", name="✏️  [EDIT] 設定を編集"),
             Choice(value="devices", name="🔧 [DEVICES] デバイス設定"),
-            Choice(value="environments", name="🌐 [ENV] 利用可能な環境"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
@@ -216,8 +215,6 @@ class UserConfigMenu(BaseMenu):
             return self._edit_user_config()
         if choice == "devices":
             return self._user_devices()
-        if choice == "environments":
-            return self._list_environments()
         return MenuResult.CONTINUE
 
     def _view_user_config(self) -> MenuResult:
@@ -459,32 +456,4 @@ class UserConfigMenu(BaseMenu):
         input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE
 
-    def _list_environments(self) -> MenuResult:
-        """List available environments."""
-        show_section_header("Available Environments")
-
-        try:
-            result = self.api.get_config_environments()
-            environments = result.get("environments", [])
-
-            if environments:
-                current = result.get("current", "")
-                for env in environments:
-                    if isinstance(env, dict):
-                        name = env.get("name", "unknown")
-                        desc = env.get("description", "")
-                        is_current = " (current)" if name == current else ""
-                        print(f"  - {name}{Colors.success(is_current)}")
-                        if desc:
-                            print(f"      {Colors.muted(desc)}")
-                    else:
-                        is_current = " (current)" if env == current else ""
-                        print(f"  - {env}{Colors.success(is_current)}")
-            else:
-                print(f"{Colors.muted('No environments configured.')}")
-
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
-
-        input(f"\n{Colors.muted('Press Enter to continue...')}")
-        return MenuResult.CONTINUE
+    # Environments view removed (profile-based operation).

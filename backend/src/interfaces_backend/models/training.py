@@ -44,6 +44,8 @@ class JobInfo(BaseModel):
     ip: Optional[str] = None
     status: JobStatus
     dataset_id: Optional[str] = None
+    profile_instance_id: Optional[str] = None
+    profile_snapshot: Optional[dict] = None
     policy_type: Optional[str] = None
     failure_reason: Optional[str] = None
     termination_reason: Optional[str] = None

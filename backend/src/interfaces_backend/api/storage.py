@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import shutil
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
@@ -19,9 +20,6 @@ from interfaces_backend.models.storage import (
     DatasetMergeResponse,
     DatasetInfo,
     DatasetListResponse,
-    EnvironmentCreateRequest,
-    EnvironmentInfo,
-    EnvironmentListResponse,
     HuggingFaceDatasetImportRequest,
     HuggingFaceExportRequest,
     HuggingFaceModelImportRequest,
@@ -33,7 +31,7 @@ from interfaces_backend.models.storage import (
 from percus_ai.db import get_supabase_client, upsert_with_owner
 from percus_ai.storage.hash import compute_directory_hash, compute_directory_size
 from percus_ai.storage.hub import download_model, ensure_hf_token, get_local_model_info, upload_model
-from percus_ai.storage.naming import validate_dataset_name
+from percus_ai.storage.naming import validate_dataset_name, generate_dataset_id
 from percus_ai.storage.paths import get_datasets_dir, get_models_dir
 from percus_ai.storage.r2_db_sync import R2DBSyncService
 from lerobot.datasets.aggregate import aggregate_datasets
@@ -75,8 +73,8 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
     return DatasetInfo(
         id=row.get("id"),
         name=row.get("name") or row.get("id"),
-        project_id=row.get("project_id"),
-        environment_id=row.get("environment_id"),
+        profile_instance_id=row.get("profile_instance_id"),
+        profile_snapshot=row.get("profile_snapshot"),
         source=row.get("source") or "r2",
         status=row.get("status") or "active",
         dataset_type=row.get("dataset_type") or "recorded",
@@ -88,26 +86,13 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
     )
 
 
-def _environment_row_to_info(row: dict) -> EnvironmentInfo:
-    return EnvironmentInfo(
-        id=row.get("id"),
-        name=row.get("name") or row.get("id"),
-        description=row.get("description"),
-        camera_count=row.get("camera_count"),
-        camera_details=row.get("camera_details"),
-        image_files=row.get("image_files"),
-        notes=row.get("notes"),
-        created_at=row.get("created_at"),
-        updated_at=row.get("updated_at"),
-    )
-
-
 def _model_row_to_info(row: dict) -> ModelInfo:
     return ModelInfo(
         id=row.get("id"),
         name=row.get("name") or row.get("id"),
-        project_id=row.get("project_id"),
         dataset_id=row.get("dataset_id"),
+        profile_instance_id=row.get("profile_instance_id"),
+        profile_snapshot=row.get("profile_snapshot"),
         policy_type=row.get("policy_type"),
         training_steps=row.get("training_steps"),
         batch_size=row.get("batch_size"),
@@ -119,72 +104,18 @@ def _model_row_to_info(row: dict) -> ModelInfo:
     )
 
 
-@router.get("/environments", response_model=EnvironmentListResponse)
-async def list_environments():
-    """List environments from DB."""
-    client = get_supabase_client()
-    rows = client.table("environments").select("*").execute().data or []
-    environments = [_environment_row_to_info(row) for row in rows]
-    return EnvironmentListResponse(environments=environments, total=len(environments))
-
-
-@router.post("/environments", response_model=EnvironmentInfo)
-async def create_environment(request: EnvironmentCreateRequest):
-    """Create environment in DB."""
-    record = {
-        "name": request.name,
-        "description": request.description,
-        "camera_count": request.camera_count,
-        "camera_details": request.camera_details,
-        "image_files": request.image_files,
-        "notes": request.notes,
-    }
-    upsert_with_owner("environments", "name", record)
-    client = get_supabase_client()
-    rows = (
-        client.table("environments")
-        .select("*")
-        .eq("name", request.name)
-        .order("created_at", desc=True)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if not rows:
-        raise HTTPException(status_code=500, detail="Failed to create environment")
-    return _environment_row_to_info(rows[0])
-
-
-@router.get("/environments/{environment_id}", response_model=EnvironmentInfo)
-async def get_environment(environment_id: str):
-    """Get environment details from DB."""
-    client = get_supabase_client()
-    rows = (
-        client.table("environments")
-        .select("*")
-        .eq("id", environment_id)
-        .execute()
-        .data
-        or []
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"Environment not found: {environment_id}")
-    return _environment_row_to_info(rows[0])
-
-
 @router.get("/datasets", response_model=DatasetListResponse)
 async def list_datasets(
     include_archived: bool = Query(False, description="Include archived datasets"),
-    project_id: Optional[str] = Query(None, description="Filter by project"),
+    profile_instance_id: Optional[str] = Query(None, description="Filter by profile instance"),
 ):
     """List datasets from DB."""
     client = get_supabase_client()
     query = client.table("datasets").select("*")
     if not include_archived:
         query = query.eq("status", "active")
-    if project_id:
-        query = query.eq("project_id", project_id)
+    if profile_instance_id:
+        query = query.eq("profile_instance_id", profile_instance_id)
     rows = query.execute().data or []
 
     datasets = [_dataset_row_to_info(row) for row in rows]
@@ -207,11 +138,8 @@ def _merge_datasets(
     if not is_valid:
         raise HTTPException(status_code=400, detail=f"Invalid dataset name: {'; '.join(errors)}")
 
-    merged_dataset_id = f"{request.project_id}/{request.dataset_name}"
+    merged_dataset_id = generate_dataset_id()
     client = get_supabase_client()
-    existing = client.table("datasets").select("id").eq("id", merged_dataset_id).execute().data or []
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Dataset already exists: {merged_dataset_id}")
 
     report({"type": "start", "step": "validate", "message": "Validating datasets"})
     source_rows = []
@@ -222,18 +150,14 @@ def _merge_datasets(
         row = rows[0]
         if row.get("status") != "active":
             raise HTTPException(status_code=400, detail=f"Dataset is not active: {dataset_id}")
-        if row.get("project_id") != request.project_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Project mismatch for dataset {dataset_id}: {row.get('project_id')}",
-            )
         source_rows.append(row)
     report({"type": "step_complete", "step": "validate", "message": "Validation complete"})
 
-    environment_ids = {row.get("environment_id") for row in source_rows if row.get("environment_id")}
-    if len(environment_ids) > 1:
-        raise HTTPException(status_code=400, detail="Environment mismatch across source datasets")
-    environment_id = next(iter(environment_ids), None)
+    profile_ids = {row.get("profile_instance_id") for row in source_rows if row.get("profile_instance_id")}
+    if len(profile_ids) > 1:
+        raise HTTPException(status_code=400, detail="Profile instance mismatch across source datasets")
+    profile_instance_id = next(iter(profile_ids), None)
+    profile_snapshot = next((row.get("profile_snapshot") for row in source_rows if row.get("profile_snapshot")), None)
 
     report({"type": "start", "step": "download", "message": "Ensuring local datasets"})
     sync_service = R2DBSyncService()
@@ -292,9 +216,9 @@ def _merge_datasets(
 
     payload = {
         "id": merged_dataset_id,
-        "project_id": request.project_id,
         "name": request.dataset_name,
-        "environment_id": environment_id,
+        "profile_instance_id": profile_instance_id,
+        "profile_snapshot": profile_snapshot,
         "episode_count": episode_count,
         "dataset_type": "merged",
         "source": "r2",
@@ -409,15 +333,15 @@ async def restore_dataset(dataset_id: str):
 @router.get("/models", response_model=ModelListResponse)
 async def list_models(
     include_archived: bool = Query(False, description="Include archived models"),
-    project_id: Optional[str] = Query(None, description="Filter by project"),
+    profile_instance_id: Optional[str] = Query(None, description="Filter by profile instance"),
 ):
     """List models from DB."""
     client = get_supabase_client()
     query = client.table("models").select("*")
     if not include_archived:
         query = query.eq("status", "active")
-    if project_id:
-        query = query.eq("project_id", project_id)
+    if profile_instance_id:
+        query = query.eq("profile_instance_id", profile_instance_id)
     rows = query.execute().data or []
     models = [_model_row_to_info(row) for row in rows]
     return ModelListResponse(models=models, total=len(models))
@@ -607,13 +531,15 @@ async def delete_archived_items(request: ArchiveBulkRequest):
 
 def _upsert_dataset_from_hf(
     dataset_id: str,
-    project_id: str,
     name: str,
+    profile_instance_id: Optional[str],
+    profile_snapshot: Optional[dict],
 ) -> None:
     payload = {
         "id": dataset_id,
-        "project_id": project_id,
         "name": name,
+        "profile_instance_id": profile_instance_id,
+        "profile_snapshot": profile_snapshot,
         "dataset_type": "huggingface",
         "source": "huggingface",
         "status": "active",
@@ -623,16 +549,18 @@ def _upsert_dataset_from_hf(
 
 def _upsert_model_from_hf(
     model_id: str,
-    project_id: str,
     name: str,
     dataset_id: Optional[str],
+    profile_instance_id: Optional[str],
+    profile_snapshot: Optional[dict],
     policy_type: Optional[str],
 ) -> None:
     payload = {
         "id": model_id,
-        "project_id": project_id,
         "name": name,
         "dataset_id": dataset_id,
+        "profile_instance_id": profile_instance_id,
+        "profile_snapshot": profile_snapshot,
         "policy_type": policy_type,
         "model_type": "huggingface",
         "source": "huggingface",
@@ -666,7 +594,7 @@ def _import_dataset_from_huggingface(
 ) -> HuggingFaceTransferResponse:
     if not ensure_hf_token():
         raise HTTPException(status_code=400, detail="HF_TOKEN is required")
-    dataset_id = request.dataset_id
+    dataset_id = request.dataset_id or generate_dataset_id()
     local_path = get_datasets_dir() / dataset_id
     if local_path.exists():
         if request.force:
@@ -694,14 +622,33 @@ def _import_dataset_from_huggingface(
             "message": "Download complete",
         })
 
-    name = request.name or dataset_id.split("/")[-1]
+    name = request.dataset_name or request.name or request.repo_id.split("/")[-1]
+    profile_snapshot = None
+    if request.profile_instance_id:
+        client = get_supabase_client()
+        rows = (
+            client.table("profile_instances")
+            .select("profile_snapshot,variables,metadata,class_id,class_version")
+            .eq("id", request.profile_instance_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if rows:
+            profile_snapshot = {
+                "class_id": rows[0].get("class_id"),
+                "class_version": rows[0].get("class_version"),
+                "variables": rows[0].get("variables") or {},
+                "metadata": rows[0].get("metadata") or {},
+            }
     if progress_callback:
         progress_callback({
             "type": "start",
             "step": "db_upsert",
             "message": "Registering dataset",
         })
-    _upsert_dataset_from_hf(dataset_id, request.project_id, name)
+    _upsert_dataset_from_hf(dataset_id, name, request.profile_instance_id, profile_snapshot)
     if progress_callback:
         progress_callback({
             "type": "step_complete",
@@ -731,7 +678,7 @@ def _import_model_from_huggingface(
 ) -> HuggingFaceTransferResponse:
     if not ensure_hf_token():
         raise HTTPException(status_code=400, detail="HF_TOKEN is required")
-    model_id = request.model_id
+    model_id = request.model_id or str(uuid.uuid4())
     local_path = get_models_dir() / model_id
     if local_path.exists():
         if request.force:
@@ -754,7 +701,26 @@ def _import_model_from_huggingface(
         })
     local_info = get_local_model_info(local_path)
     policy_type = local_info.policy_type if local_info else None
-    name = request.name or model_id
+    name = request.model_name or model_id
+    profile_snapshot = None
+    if request.profile_instance_id:
+        client = get_supabase_client()
+        rows = (
+            client.table("profile_instances")
+            .select("class_id,class_version,variables,metadata")
+            .eq("id", request.profile_instance_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if rows:
+            profile_snapshot = {
+                "class_id": rows[0].get("class_id"),
+                "class_version": rows[0].get("class_version"),
+                "variables": rows[0].get("variables") or {},
+                "metadata": rows[0].get("metadata") or {},
+            }
 
     if progress_callback:
         progress_callback({
@@ -762,7 +728,14 @@ def _import_model_from_huggingface(
             "step": "db_upsert",
             "message": "Registering model",
         })
-    _upsert_model_from_hf(model_id, request.project_id, name, request.dataset_id, policy_type)
+    _upsert_model_from_hf(
+        model_id,
+        name,
+        request.dataset_id,
+        request.profile_instance_id,
+        profile_snapshot,
+        policy_type,
+    )
     if progress_callback:
         progress_callback({
             "type": "step_complete",

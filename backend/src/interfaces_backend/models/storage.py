@@ -13,8 +13,8 @@ class DatasetInfo(BaseModel):
 
     id: str = Field(..., description="Dataset ID")
     name: str = Field(..., description="Dataset name")
-    project_id: str = Field(..., description="Project ID")
-    environment_id: Optional[str] = Field(None, description="Environment ID")
+    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
+    profile_snapshot: Optional[dict] = Field(None, description="Profile snapshot")
     source: str = Field("r2", description="Data source")
     status: str = Field("active", description="Data status")
     dataset_type: str = Field("recorded", description="Dataset type")
@@ -32,42 +32,9 @@ class DatasetListResponse(BaseModel):
     total: int
 
 
-class EnvironmentInfo(BaseModel):
-    """Environment information for API responses."""
-
-    id: str = Field(..., description="Environment ID")
-    name: str = Field(..., description="Environment name")
-    description: Optional[str] = Field(None, description="Environment description")
-    camera_count: Optional[int] = Field(None, description="Camera count")
-    camera_details: Optional[dict] = Field(None, description="Camera details")
-    image_files: Optional[List[str]] = Field(None, description="R2 keys for images")
-    notes: Optional[str] = Field(None, description="Notes")
-    created_at: Optional[str] = Field(None, description="Creation time")
-    updated_at: Optional[str] = Field(None, description="Last update time")
-
-
-class EnvironmentListResponse(BaseModel):
-    """Response for environment list endpoint."""
-
-    environments: List[EnvironmentInfo]
-    total: int
-
-
-class EnvironmentCreateRequest(BaseModel):
-    """Request for creating environments."""
-
-    name: str = Field(..., description="Environment name")
-    description: Optional[str] = Field(None, description="Environment description")
-    camera_count: Optional[int] = Field(None, description="Camera count")
-    camera_details: Optional[dict] = Field(None, description="Camera details")
-    image_files: Optional[List[str]] = Field(None, description="R2 keys for images")
-    notes: Optional[str] = Field(None, description="Notes")
-
-
 class DatasetMergeRequest(BaseModel):
     """Request to merge multiple datasets into one."""
 
-    project_id: str = Field(..., description="Project ID")
     dataset_name: str = Field(..., description="Merged dataset name")
     source_dataset_ids: List[str] = Field(..., description="Source dataset IDs (>=2)")
 
@@ -87,8 +54,9 @@ class ModelInfo(BaseModel):
 
     id: str = Field(..., description="Model ID")
     name: str = Field(..., description="Model name")
-    project_id: str = Field(..., description="Project ID")
     dataset_id: Optional[str] = Field(None, description="Dataset ID")
+    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
+    profile_snapshot: Optional[dict] = Field(None, description="Profile snapshot")
     policy_type: Optional[str] = Field(None, description="Policy type")
     training_steps: Optional[int] = Field(None, description="Training steps")
     batch_size: Optional[int] = Field(None, description="Batch size")
@@ -155,8 +123,9 @@ class HuggingFaceDatasetImportRequest(BaseModel):
     """Request to import a dataset from HuggingFace."""
 
     repo_id: str = Field(..., description="HuggingFace repo ID")
-    project_id: str = Field(..., description="Project ID")
-    dataset_id: str = Field(..., description="Dataset ID to store")
+    dataset_id: Optional[str] = Field(None, description="Dataset ID to store (UUID)")
+    dataset_name: Optional[str] = Field(None, description="Dataset display name")
+    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
     name: Optional[str] = Field(None, description="Dataset display name")
     force: bool = Field(False, description="Overwrite local data if exists")
 
@@ -165,10 +134,10 @@ class HuggingFaceModelImportRequest(BaseModel):
     """Request to import a model from HuggingFace."""
 
     repo_id: str = Field(..., description="HuggingFace repo ID")
-    project_id: str = Field(..., description="Project ID")
-    model_id: str = Field(..., description="Model ID to store")
+    model_id: Optional[str] = Field(None, description="Model ID to store (UUID)")
+    model_name: Optional[str] = Field(None, description="Model display name")
     dataset_id: Optional[str] = Field(None, description="Associated dataset ID")
-    name: Optional[str] = Field(None, description="Model display name")
+    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
     force: bool = Field(False, description="Overwrite local data if exists")
 
 

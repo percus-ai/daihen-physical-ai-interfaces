@@ -23,7 +23,7 @@ class MainMenu(BaseMenu):
             Choice(value="record", name="📹 [RECORD] データ録画"),
             Choice(value="train", name="☁️  [TRAIN] モデル学習"),
             Choice(value="storage", name="📦 [STORAGE] データ管理"),
-            Choice(value="setup", name="🔧 [SETUP] デバイス・プロジェクト設定"),
+            Choice(value="setup", name="🔧 [SETUP] デバイス・プロフィール設定"),
             Choice(value="info", name="📊 [INFO] システム情報"),
             Choice(value="config", name="⚙️  [CONFIG] 環境設定"),
             Choice(value="logout", name="🔐 [AUTH] ログアウト"),

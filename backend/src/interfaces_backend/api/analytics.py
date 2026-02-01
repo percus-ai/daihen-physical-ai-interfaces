@@ -1,28 +1,26 @@
 """Analytics API router."""
 
-import os
-import shutil
 from datetime import datetime
 from pathlib import Path
+
 from fastapi import APIRouter
 
-import pyarrow.parquet as pq
-
-from percus_ai.storage import get_datasets_dir, get_models_dir, get_storage_root
 from interfaces_backend.models.analytics import (
     OverviewStats,
     OverviewResponse,
-    ProjectStats,
-    ProjectsStatsResponse,
+    ProfileStats,
+    ProfileStatsResponse,
     TrainingStats,
     TrainingStatsResponse,
     StorageCategory,
     StorageStatsResponse,
 )
+from percus_ai.db import get_supabase_client
+from percus_ai.storage import get_datasets_dir, get_models_dir
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
-# Standard directories from storage paths
+# Local storage directories
 DATASETS_DIR = get_datasets_dir()
 MODELS_DIR = get_models_dir()
 
@@ -42,84 +40,82 @@ def _get_dir_size(path: Path) -> float:
     return total
 
 
-def _count_episodes(project_dir: Path) -> int:
-    """Count episodes in a project directory."""
-    count = 0
-    for item in project_dir.iterdir():
-        if item.is_dir() and item.name.startswith("episode_"):
-            count += 1
-    return count
+def _get_profile_stats() -> list[dict]:
+    """Collect statistics for profile instances from DB."""
+    client = get_supabase_client()
+    profile_rows = client.table("profile_instances").select("id,name,updated_at").execute().data or []
+    dataset_rows = client.table("datasets").select(
+        "profile_instance_id,episode_count,size_bytes,updated_at,status",
+    ).execute().data or []
+    model_rows = client.table("models").select(
+        "profile_instance_id,size_bytes,updated_at,status",
+    ).execute().data or []
 
-
-def _count_models(project_dir: Path) -> int:
-    """Count models in a project directory."""
-    count = 0
-    if project_dir.exists():
-        for item in project_dir.iterdir():
-            if item.is_dir():
-                # Check for model files
-                if (item / "config.json").exists() or list(item.glob("*.safetensors")):
-                    count += 1
-    return count
-
-
-def _get_project_stats() -> list[dict]:
-    """Collect statistics for all projects."""
-    projects = []
-
-    if not DATASETS_DIR.exists():
-        return projects
-
-    for project_dir in DATASETS_DIR.iterdir():
-        if not project_dir.is_dir():
+    stats: dict[str, dict] = {}
+    for row in profile_rows:
+        profile_id = row.get("id")
+        if not profile_id:
             continue
+        stats[profile_id] = {
+            "profile_instance_id": profile_id,
+            "name": row.get("name") or "",
+            "dataset_count": 0,
+            "model_count": 0,
+            "episode_count": 0,
+            "storage_bytes": 0,
+            "last_activity": row.get("updated_at"),
+        }
 
-        # Count episodes
-        episode_count = _count_episodes(project_dir)
-        if episode_count == 0:
+    for row in dataset_rows:
+        if row.get("status") and row.get("status") != "active":
             continue
+        profile_id = row.get("profile_instance_id")
+        if not profile_id:
+            continue
+        entry = stats.setdefault(
+            profile_id,
+            {
+                "profile_instance_id": profile_id,
+                "name": "",
+                "dataset_count": 0,
+                "model_count": 0,
+                "episode_count": 0,
+                "storage_bytes": 0,
+                "last_activity": None,
+            },
+        )
+        entry["dataset_count"] += 1
+        entry["episode_count"] += row.get("episode_count") or 0
+        entry["storage_bytes"] += row.get("size_bytes") or 0
+        updated_at = row.get("updated_at")
+        if updated_at and (entry["last_activity"] is None or updated_at > entry["last_activity"]):
+            entry["last_activity"] = updated_at
 
-        # Get storage size
-        storage_bytes = _get_dir_size(project_dir)
-        storage_mb = storage_bytes / (1024 * 1024)
+    for row in model_rows:
+        if row.get("status") and row.get("status") != "active":
+            continue
+        profile_id = row.get("profile_instance_id")
+        if not profile_id:
+            continue
+        entry = stats.setdefault(
+            profile_id,
+            {
+                "profile_instance_id": profile_id,
+                "name": "",
+                "dataset_count": 0,
+                "model_count": 0,
+                "episode_count": 0,
+                "storage_bytes": 0,
+                "last_activity": None,
+            },
+        )
+        entry["model_count"] += 1
+        entry["storage_bytes"] += row.get("size_bytes") or 0
+        updated_at = row.get("updated_at")
+        if updated_at and (entry["last_activity"] is None or updated_at > entry["last_activity"]):
+            entry["last_activity"] = updated_at
 
-        # Count models for this project
-        model_dir = MODELS_DIR / project_dir.name
-        model_count = _count_models(model_dir) if model_dir.exists() else 0
-
-        # Get last activity
-        try:
-            last_activity = datetime.fromtimestamp(
-                project_dir.stat().st_mtime
-            ).isoformat()
-        except Exception:
-            last_activity = None
-
-        # Count total frames (from parquet files)
-        total_frames = 0
-        for episode_dir in project_dir.iterdir():
-            if episode_dir.is_dir():
-                parquet_files = list(episode_dir.glob("*.parquet"))
-                if parquet_files:
-                    try:
-                        for pf in parquet_files:
-                            table = pq.read_table(pf)
-                            total_frames += len(table)
-                    except Exception:
-                        pass
-
-        projects.append({
-            "project_id": project_dir.name,
-            "name": project_dir.name,
-            "episode_count": episode_count,
-            "model_count": model_count,
-            "total_frames": total_frames,
-            "total_duration_hours": 0.0,  # Would need metadata
-            "storage_mb": storage_mb,
-            "last_activity": last_activity,
-        })
-
-    return projects
+    return list(stats.values())
 
 
 def _get_training_stats() -> dict:
@@ -142,81 +138,55 @@ def _get_training_stats() -> dict:
 @router.get("/overview", response_model=OverviewResponse)
 async def get_overview():
     """Get overall statistics."""
-    project_stats = _get_project_stats()
+    client = get_supabase_client()
+    profiles = client.table("profile_instances").select("id").execute().data or []
+    datasets = client.table("datasets").select("episode_count,size_bytes,status").execute().data or []
+    models = client.table("models").select("size_bytes,status").execute().data or []
+    jobs = client.table("training_jobs").select("status").execute().data or []
+
+    total_episodes = sum(d.get("episode_count") or 0 for d in datasets if d.get("status") == "active")
+    total_models = sum(1 for m in models if m.get("status") == "active")
+    total_datasets = sum(1 for d in datasets if d.get("status") == "active")
+    total_storage_mb = (
+        sum(d.get("size_bytes") or 0 for d in datasets)
+        + sum(m.get("size_bytes") or 0 for m in models)
+    ) / (1024 * 1024)
+
     training_stats = _get_training_stats()
-
-    total_episodes = sum(p["episode_count"] for p in project_stats)
-    total_models = sum(p["model_count"] for p in project_stats)
-    total_storage_mb = sum(p["storage_mb"] for p in project_stats)
-
-    # Add models directory storage
-    if MODELS_DIR.exists():
-        total_storage_mb += _get_dir_size(MODELS_DIR) / (1024 * 1024)
+    active_jobs = sum(1 for job in jobs if job.get("status") in ("running", "starting", "deploying"))
+    total_jobs = len(jobs)
 
     return OverviewResponse(
         stats=OverviewStats(
-            total_projects=len(project_stats),
+            total_profiles=len(profiles),
+            total_datasets=total_datasets,
             total_episodes=total_episodes,
             total_models=total_models,
-            total_training_jobs=training_stats["total_jobs"],
-            active_training_jobs=training_stats["active_jobs"],
+            total_training_jobs=total_jobs,
+            active_training_jobs=active_jobs,
             total_storage_gb=total_storage_mb / 1024,
         ),
         updated_at=datetime.now().isoformat(),
     )
 
 
-@router.get("/projects", response_model=ProjectsStatsResponse)
-async def get_projects_stats():
-    """Get per-project statistics."""
-    project_stats = _get_project_stats()
-
-    projects = [
-        ProjectStats(
-            project_id=p["project_id"],
-            name=p["name"],
-            episode_count=p["episode_count"],
-            model_count=p["model_count"],
-            total_frames=p["total_frames"],
-            total_duration_hours=p["total_duration_hours"],
-            storage_mb=p["storage_mb"],
-            last_activity=p["last_activity"],
+@router.get("/profiles", response_model=ProfileStatsResponse)
+async def get_profile_stats():
+    """Get per-profile statistics."""
+    profile_stats = _get_profile_stats()
+    profiles = [
+        ProfileStats(
+            profile_instance_id=p["profile_instance_id"],
+            name=p.get("name") or "",
+            dataset_count=p.get("dataset_count", 0),
+            model_count=p.get("model_count", 0),
+            episode_count=p.get("episode_count", 0),
+            storage_mb=(p.get("storage_bytes") or 0) / (1024 * 1024),
+            last_activity=p.get("last_activity"),
         )
-        for p in project_stats
+        for p in profile_stats
     ]
-
-    return ProjectsStatsResponse(projects=projects, total=len(projects))
-
-
-@router.get("/projects/{project_name}", response_model=ProjectStats)
-async def get_project_stats(project_name: str):
-    """Get statistics for a specific project."""
-    project_stats = _get_project_stats()
-
-    for p in project_stats:
-        if p["project_id"] == project_name:
-            return ProjectStats(
-                project_id=p["project_id"],
-                name=p["name"],
-                episode_count=p["episode_count"],
-                model_count=p["model_count"],
-                total_frames=p["total_frames"],
-                total_duration_hours=p["total_duration_hours"],
-                storage_mb=p["storage_mb"],
-                last_activity=p["last_activity"],
-            )
-
-    # Return empty stats for non-existent project
-    return ProjectStats(
-        project_id=project_name,
-        name=project_name,
-        episode_count=0,
-        model_count=0,
-        total_frames=0,
-        total_duration_hours=0.0,
-        storage_mb=0.0,
-        last_activity=None,
-    )
+    return ProfileStatsResponse(profiles=profiles, total=len(profiles))
 
 
 @router.get("/training", response_model=TrainingStatsResponse)

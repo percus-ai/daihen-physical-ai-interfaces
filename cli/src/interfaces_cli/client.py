@@ -121,15 +121,9 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
-    def get_analytics_projects(self) -> Dict[str, Any]:
-        """GET /api/analytics/projects - Get per-project statistics."""
-        response = self._client.get("/api/analytics/projects")
-        response.raise_for_status()
-        return response.json()
-
-    def get_analytics_project(self, project_name: str) -> Dict[str, Any]:
-        """GET /api/analytics/projects/{project_name} - Get project stats."""
-        response = self._client.get(f"/api/analytics/projects/{project_name}")
+    def get_analytics_profiles(self) -> Dict[str, Any]:
+        """GET /api/analytics/profiles - Get per-profile statistics."""
+        response = self._client.get("/api/analytics/profiles")
         response.raise_for_status()
         return response.json()
 
@@ -155,11 +149,6 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
-    def get_config_environments(self) -> Dict[str, Any]:
-        """GET /api/config/environments - Get available environments."""
-        response = self._client.get("/api/config/environments")
-        response.raise_for_status()
-        return response.json()
 
     # =========================================================================
     # Hardware (Devices)
@@ -209,98 +198,11 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
-    def list_inference_sessions(self) -> Dict[str, Any]:
-        """GET /api/inference/sessions - List inference sessions."""
-        response = self._client.get("/api/inference/sessions")
-        response.raise_for_status()
-        return response.json()
-
-    def get_inference_session(self, session_id: str) -> Dict[str, Any]:
-        """GET /api/inference/sessions/{session_id} - Get session details."""
-        response = self._client.get(f"/api/inference/sessions/{session_id}")
-        response.raise_for_status()
-        return response.json()
-
     def get_device_compatibility(self) -> Dict[str, Any]:
         """GET /api/inference/device-compatibility - Get device compatibility."""
         response = self._client.get("/api/inference/device-compatibility")
         response.raise_for_status()
         return response.json()
-
-    def load_inference_model(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/inference/load - Load model for inference."""
-        response = self._client.post("/api/inference/load", json=data)
-        response.raise_for_status()
-        return response.json()
-
-    def unload_inference_model(self, session_id: str) -> Dict[str, Any]:
-        """POST /api/inference/unload - Unload current model."""
-        response = self._client.post("/api/inference/unload", json={"session_id": session_id})
-        response.raise_for_status()
-        return response.json()
-
-    def predict(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/inference/predict - Run prediction."""
-        response = self._client.post("/api/inference/predict", json=data)
-        response.raise_for_status()
-        return response.json()
-
-    def reset_inference_session(self, session_id: str) -> Dict[str, Any]:
-        """POST /api/inference/sessions/{session_id}/reset - Reset session."""
-        response = self._client.post(f"/api/inference/sessions/{session_id}/reset")
-        response.raise_for_status()
-        return response.json()
-
-    def run_inference(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/inference/run - Run inference on robot."""
-        response = self._client.post("/api/inference/run", json=data, timeout=600.0)
-        response.raise_for_status()
-        return response.json()
-
-    def run_inference_with_progress(
-        self,
-        data: Dict[str, Any],
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Dict[str, Any]:
-        """Run inference via WebSocket with real-time output streaming.
-
-        Args:
-            data: Dict with model_id, project, episodes, robot_type, device
-            progress_callback: Called with each message from WebSocket
-
-        Returns:
-            Final result with type='complete' or type='error'
-        """
-        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/inference/ws/run"
-
-        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
-
-        try:
-            ws = websocket.create_connection(ws_url, timeout=None)  # No timeout for long-running inference
-
-            # Send inference request
-            ws.send(json.dumps(data))
-
-            # Receive messages until done
-            while True:
-                message = ws.recv()
-                msg_data = json.loads(message)
-
-                if progress_callback:
-                    progress_callback(msg_data)
-
-                if msg_data.get("type") in ("complete", "error"):
-                    result = msg_data
-                    break
-
-            ws.close()
-        except Exception as e:
-            if progress_callback:
-                progress_callback({"type": "error", "error": str(e)})
-            result = {"type": "error", "error": str(e)}
-
-        return result
 
     # =========================================================================
     # Platform
@@ -319,57 +221,60 @@ class PhiClient:
         return response.json()
 
     # =========================================================================
-    # Projects
+    # Profiles
     # =========================================================================
 
-    def list_projects(self) -> Dict[str, Any]:
-        """GET /api/projects - List all projects."""
-        response = self._client.get("/api/projects")
+    def list_profile_classes(self) -> Dict[str, Any]:
+        """GET /api/profiles/classes - List profile classes."""
+        response = self._client.get("/api/profiles/classes")
         response.raise_for_status()
         return response.json()
 
-    def get_project(self, project_name: str) -> Dict[str, Any]:
-        """GET /api/projects/{project_name} - Get project details."""
-        response = self._client.get(f"/api/projects/{project_name}")
+    def get_profile_class(self, class_id: str) -> Dict[str, Any]:
+        """GET /api/profiles/classes/{class_id} - Get profile class detail."""
+        response = self._client.get(f"/api/profiles/classes/{class_id}")
         response.raise_for_status()
         return response.json()
 
-    def create_project(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/projects - Create a new project."""
-        response = self._client.post("/api/projects", json=data)
+    def create_profile_class(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/profiles/classes - Create profile class."""
+        response = self._client.post("/api/profiles/classes", json=data)
         response.raise_for_status()
         return response.json()
 
-    def import_project(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/projects/import - Import project from YAML content."""
-        response = self._client.post("/api/projects/import", json=data)
+    def update_profile_class(self, class_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """PUT /api/profiles/classes/{class_id} - Update profile class."""
+        response = self._client.put(f"/api/profiles/classes/{class_id}", json=data)
         response.raise_for_status()
         return response.json()
 
-    def delete_project(self, project_name: str, delete_data: bool = False) -> Dict[str, Any]:
-        """DELETE /api/projects/{project_name} - Delete a project."""
-        response = self._client.delete(
-            f"/api/projects/{project_name}",
-            params={"delete_data": delete_data}
-        )
+    def delete_profile_class(self, class_id: str) -> Dict[str, Any]:
+        """DELETE /api/profiles/classes/{class_id} - Delete profile class."""
+        response = self._client.delete(f"/api/profiles/classes/{class_id}")
         response.raise_for_status()
         return response.json()
 
-    def get_project_stats(self, project_name: str) -> Dict[str, Any]:
-        """GET /api/projects/{project_name}/stats - Get project stats."""
-        response = self._client.get(f"/api/projects/{project_name}/stats")
+    def list_profile_instances(self) -> Dict[str, Any]:
+        """GET /api/profiles/instances - List profile instances."""
+        response = self._client.get("/api/profiles/instances")
         response.raise_for_status()
         return response.json()
 
-    def validate_project(self, project_name: str) -> Dict[str, Any]:
-        """GET /api/projects/{project_name}/validate - Validate project."""
-        response = self._client.get(f"/api/projects/{project_name}/validate")
+    def get_active_profile_instance(self) -> Dict[str, Any]:
+        """GET /api/profiles/instances/active - Get active profile instance."""
+        response = self._client.get("/api/profiles/instances/active")
         response.raise_for_status()
         return response.json()
 
-    def validate_project_devices(self, project_name: str) -> Dict[str, Any]:
-        """GET /api/projects/{project_name}/validate-devices - Validate devices."""
-        response = self._client.get(f"/api/projects/{project_name}/validate-devices")
+    def create_profile_instance(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/profiles/instances - Create profile instance."""
+        response = self._client.post("/api/profiles/instances", json=data)
+        response.raise_for_status()
+        return response.json()
+
+    def update_profile_instance(self, instance_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """PUT /api/profiles/instances/{instance_id} - Update profile instance."""
+        response = self._client.put(f"/api/profiles/instances/{instance_id}", json=data)
         response.raise_for_status()
         return response.json()
 
@@ -377,111 +282,41 @@ class PhiClient:
     # Recording
     # =========================================================================
 
-    def record(self, project_name: str, num_episodes: int = 1) -> Dict[str, Any]:
-        """POST /api/recording/record - Start recording directly.
-
-        Args:
-            project_name: Name of the project (must exist in data/projects/)
-            num_episodes: Number of episodes to record
-        """
-        data = {
-            "project_name": project_name,
-            "num_episodes": num_episodes,
-        }
-        response = self._client.post("/api/recording/record", json=data, timeout=3600)
+    def start_recording_session(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/recording/session/start - Start recorder."""
+        response = self._client.post("/api/recording/session/start", json=data)
         response.raise_for_status()
         return response.json()
 
-    def record_ws(
-        self,
-        project_name: str,
-        num_episodes: int = 1,
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Dict[str, Any]:
-        """Start recording via WebSocket with real-time output streaming.
+    def stop_recording_session(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/recording/session/stop - Stop recorder."""
+        response = self._client.post("/api/recording/session/stop", json=data)
+        response.raise_for_status()
+        return response.json()
 
-        Args:
-            project_name: Name of the project
-            num_episodes: Number of episodes to record
-            progress_callback: Callback for progress updates. Receives dict with:
-                - type: "start", "output", "error_output", "complete", "error"
-                - Additional fields depending on type
+    def pause_recording_session(self) -> Dict[str, Any]:
+        """POST /api/recording/session/pause - Pause recorder."""
+        response = self._client.post("/api/recording/session/pause")
+        response.raise_for_status()
+        return response.json()
 
-        Returns:
-            Final result with type='complete' or type='error'
-        """
-        import websocket
+    def resume_recording_session(self) -> Dict[str, Any]:
+        """POST /api/recording/session/resume - Resume recorder."""
+        response = self._client.post("/api/recording/session/resume")
+        response.raise_for_status()
+        return response.json()
 
-        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/recording/ws/record"
+    def cancel_recording_session(self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """POST /api/recording/session/cancel - Cancel recorder."""
+        response = self._client.post("/api/recording/session/cancel", json=data or {})
+        response.raise_for_status()
+        return response.json()
 
-        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
-        last_received_msg: Dict[str, Any] = {}
-
-        try:
-            ws = websocket.create_connection(ws_url, timeout=None)
-
-            # Send recording request
-            request_data = {
-                "project_name": project_name,
-                "num_episodes": num_episodes,
-            }
-            ws.send(json.dumps(request_data))
-
-            # Receive messages until done
-            import sys
-            while True:
-                try:
-                    message = ws.recv()
-                    if not message:
-                        continue
-                    msg_data = json.loads(message)
-                    last_received_msg = msg_data
-
-                    # Debug: log all received messages
-                    msg_type = msg_data.get("type", "unknown")
-                    if msg_type in ("complete", "error", "stopped", "start"):
-                        print(f"[DEBUG] Received {msg_type} message: {msg_data}", file=sys.stderr)
-
-                    if progress_callback:
-                        progress_callback(msg_data)
-
-                    if msg_data.get("type") in ("complete", "error", "stopped"):
-                        result = msg_data
-                        break
-                except websocket.WebSocketConnectionClosedException:
-                    # Connection closed by server
-                    print(f"[DEBUG] WebSocket connection closed. last_received_msg: {last_received_msg}", file=sys.stderr)
-                    if last_received_msg.get("type") in ("complete", "error", "stopped"):
-                        result = last_received_msg
-                    else:
-                        result = {
-                            "type": "error",
-                            "error": "Connection closed unexpectedly",
-                            "last_message": last_received_msg,
-                        }
-                    break
-            try:
-                ws.close()
-            except Exception:
-                pass
-        except websocket.WebSocketConnectionClosedException:
-            # Connection closed during setup or early
-            result = {
-                "type": "error",
-                "error": "Connection closed by server",
-                "last_message": last_received_msg,
-            }
-            if progress_callback:
-                progress_callback(result)
-        except Exception as e:
-            if progress_callback:
-                progress_callback({"type": "error", "error": str(e)})
-            result = {"type": "error", "error": str(e)}
-
-        # Debug: print the actual result being returned
-        print(f"\n[DEBUG] record_ws returning: {result}", file=sys.stderr)
-        return result
+    def get_recording_status(self) -> Dict[str, Any]:
+        """GET /api/recording/session/status - Recorder status."""
+        response = self._client.get("/api/recording/session/status")
+        response.raise_for_status()
+        return response.json()
 
     def list_recordings(self) -> Dict[str, Any]:
         """GET /api/recording/recordings - List recordings."""
@@ -511,9 +346,12 @@ class PhiClient:
     # Storage
     # =========================================================================
 
-    def list_datasets(self) -> Dict[str, Any]:
+    def list_datasets(self, profile_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """GET /api/storage/datasets - List datasets."""
-        response = self._client.get("/api/storage/datasets")
+        params = {}
+        if profile_instance_id:
+            params["profile_instance_id"] = profile_instance_id
+        response = self._client.get("/api/storage/datasets", params=params)
         response.raise_for_status()
         return response.json()
 

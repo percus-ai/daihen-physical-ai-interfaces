@@ -154,8 +154,8 @@ class APIClient:
         return resp.json()
 
     # 各API用のヘルパーメソッド
-    def list_projects(self) -> List[dict]:
-        return self.get("/api/projects")["projects"]
+    def list_profile_instances(self) -> List[dict]:
+        return self.get("/api/profiles/instances")["instances"]
 
     def start_teleop(self, mode: str, config: dict) -> dict:
         return self.post("/api/teleop/start", json={"mode": mode, **config})

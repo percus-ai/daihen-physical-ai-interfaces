@@ -15,6 +15,7 @@
     job_name?: string;
     status?: string;
     dataset_id?: string;
+    profile_instance_id?: string;
     policy_type?: string;
     ip?: string;
     ssh_user?: string;
@@ -88,8 +89,7 @@
   $: summary = $jobQuery.data?.summary ?? {};
   $: status = jobInfo?.status ?? '';
   $: datasetId = trainingConfig?.dataset?.id ?? '';
-  $: datasetProject = datasetId ? datasetId.split('/')[0] : '';
-  $: datasetSession = datasetId.includes('/') ? datasetId.split('/').slice(1).join('/') : '';
+  $: profileId = jobInfo?.profile_instance_id ?? '';
   $: trainSeries =
     (metrics?.train ?? [])
       .filter((point: MetricPoint) => typeof point.step === 'number' && typeof point.loss === 'number')
@@ -445,15 +445,15 @@
           <p class="label">データセット</p>
           <div class="mt-2 space-y-2 text-sm text-slate-600">
             <div>
-              <p class="text-xs text-slate-500">プロジェクト</p>
+              <p class="text-xs text-slate-500">データセットID</p>
               <p class="font-semibold text-slate-800 break-words">
-                {datasetProject || datasetId || '-'}
+                {datasetId || '-'}
               </p>
             </div>
             <div>
-              <p class="text-xs text-slate-500">セッション</p>
+              <p class="text-xs text-slate-500">プロフィール</p>
               <p class="font-semibold text-slate-800 break-words">
-                {datasetSession || '-'}
+                {profileId || '-'}
               </p>
             </div>
           </div>

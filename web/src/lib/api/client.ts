@@ -12,7 +12,22 @@ export async function fetchApi<T>(path: string, options: RequestInit = {}): Prom
   });
 
   if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
+    let detail = `API error: ${response.status}`;
+    try {
+      const contentType = response.headers.get('content-type') ?? '';
+      if (contentType.includes('application/json')) {
+        const payload = await response.json();
+        if (payload?.detail) {
+          detail = String(payload.detail);
+        }
+      } else {
+        const text = await response.text();
+        if (text) detail = text;
+      }
+    } catch {
+      // ignore parsing errors
+    }
+    throw new Error(detail);
   }
 
   return response.json();
@@ -96,7 +111,7 @@ export const api = {
   },
   analytics: {
     overview: () => fetchApi('/api/analytics/overview'),
-    projects: () => fetchApi('/api/analytics/projects'),
+    profiles: () => fetchApi('/api/analytics/profiles'),
     training: () => fetchApi('/api/analytics/training'),
     storage: () => fetchApi('/api/analytics/storage')
   },
@@ -108,8 +123,7 @@ export const api = {
     gpu: () => fetchApi('/api/system/gpu')
   },
   config: {
-    get: () => fetchApi('/api/config'),
-    environments: () => fetchApi('/api/config/environments')
+    get: () => fetchApi('/api/config')
   },
   user: {
     config: () => fetchApi('/api/user/config'),
@@ -120,28 +134,39 @@ export const api = {
     cameras: () => fetchApi('/api/hardware/cameras'),
     serialPorts: () => fetchApi('/api/hardware/serial-ports')
   },
-  projects: {
-    list: () => fetchApi<{ projects: string[]; total: number }>('/api/projects'),
-    get: (id: string) => fetchApi(`/api/projects/${id}`)
+  profiles: {
+    classes: () => fetchApi('/api/profiles/classes'),
+    class: (classId: string) => fetchApi(`/api/profiles/classes/${classId}`),
+    createClass: (payload: Record<string, unknown>) =>
+      fetchApi('/api/profiles/classes', { method: 'POST', body: JSON.stringify(payload) }),
+    updateClass: (classId: string, payload: Record<string, unknown>) =>
+      fetchApi(`/api/profiles/classes/${classId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+    deleteClass: (classId: string) =>
+      fetchApi(`/api/profiles/classes/${classId}`, { method: 'DELETE' }),
+    instances: () => fetchApi('/api/profiles/instances'),
+    activeInstance: () => fetchApi('/api/profiles/instances/active'),
+    activeStatus: () => fetchApi('/api/profiles/instances/active/status'),
+    vlaborStatus: () => fetchApi('/api/profiles/vlabor/status'),
+    vlaborStart: () => fetchApi('/api/profiles/vlabor/start', { method: 'POST' }),
+    vlaborStop: () => fetchApi('/api/profiles/vlabor/stop', { method: 'POST' }),
+    vlaborRestart: () => fetchApi('/api/profiles/vlabor/restart', { method: 'POST' }),
+    createInstance: (payload: Record<string, unknown>) =>
+      fetchApi('/api/profiles/instances', { method: 'POST', body: JSON.stringify(payload) }),
+    updateInstance: (instanceId: string, payload: Record<string, unknown>) =>
+      fetchApi(`/api/profiles/instances/${instanceId}`, { method: 'PUT', body: JSON.stringify(payload) })
   },
   recording: {
     list: () => fetchApi('/api/recording/recordings')
   },
   storage: {
-    environments: () => fetchApi('/api/storage/environments'),
-    environment: (environmentId: string) => fetchApi(`/api/storage/environments/${environmentId}`),
-    datasets: (projectId?: string) =>
-      fetchApi(`/api/storage/datasets${projectId ? `?project_id=${projectId}` : ''}`),
+    datasets: (profileInstanceId?: string) =>
+      fetchApi(`/api/storage/datasets${profileInstanceId ? `?profile_instance_id=${profileInstanceId}` : ''}`),
     models: () => fetchApi('/api/storage/models'),
     dataset: (datasetId: string) => fetchApi(`/api/storage/datasets/${datasetId}`),
     model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),
     usage: () => fetchApi('/api/storage/usage'),
     archive: () => fetchApi('/api/storage/archive'),
-    mergeDatasets: (payload: {
-      project_id: string;
-      dataset_name: string;
-      source_dataset_ids: string[];
-    }) =>
+    mergeDatasets: (payload: { dataset_name: string; source_dataset_ids: string[] }) =>
       fetchApi('/api/storage/datasets/merge', {
         method: 'POST',
         body: JSON.stringify(payload)
@@ -170,10 +195,10 @@ export const api = {
       fetchApi(`/api/storage/archive/models/${modelId}`, { method: 'DELETE' })
   },
   experiments: {
-    list: (params: { model_id?: string; environment_id?: string; limit?: number; offset?: number } = {}) => {
+    list: (params: { model_id?: string; profile_instance_id?: string; limit?: number; offset?: number } = {}) => {
       const query = new URLSearchParams();
       if (params.model_id) query.set('model_id', params.model_id);
-      if (params.environment_id) query.set('environment_id', params.environment_id);
+      if (params.profile_instance_id) query.set('profile_instance_id', params.profile_instance_id);
       if (typeof params.limit === 'number') query.set('limit', String(params.limit));
       if (typeof params.offset === 'number') query.set('offset', String(params.offset));
       const queryString = query.toString();

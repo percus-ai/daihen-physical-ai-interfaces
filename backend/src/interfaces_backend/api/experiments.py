@@ -47,7 +47,7 @@ def _row_to_experiment(row: dict) -> ExperimentModel:
     return ExperimentModel(
         id=row.get("id"),
         model_id=row.get("model_id"),
-        environment_id=row.get("environment_id"),
+        profile_instance_id=row.get("profile_instance_id"),
         name=row.get("name"),
         purpose=row.get("purpose"),
         evaluation_count=row.get("evaluation_count") or 0,
@@ -110,7 +110,7 @@ async def create_experiment(request: ExperimentCreateRequest):
     )
     record = {
         "model_id": request.model_id,
-        "environment_id": request.environment_id,
+        "profile_instance_id": request.profile_instance_id,
         "name": request.name,
         "purpose": request.purpose,
         "evaluation_count": request.evaluation_count,
@@ -131,7 +131,7 @@ async def create_experiment(request: ExperimentCreateRequest):
 @router.get("", response_model=ExperimentListResponse)
 async def list_experiments(
     model_id: Optional[str] = Query(None, description="Filter by model"),
-    environment_id: Optional[str] = Query(None, description="Filter by environment"),
+    profile_instance_id: Optional[str] = Query(None, description="Filter by profile instance"),
     limit: int = Query(100, description="Max rows"),
     offset: int = Query(0, description="Offset"),
 ):
@@ -140,8 +140,8 @@ async def list_experiments(
     query = client.table("experiments").select("*")
     if model_id:
         query = query.eq("model_id", model_id)
-    if environment_id:
-        query = query.eq("environment_id", environment_id)
+    if profile_instance_id:
+        query = query.eq("profile_instance_id", profile_instance_id)
     if limit > 0:
         query = query.range(offset, offset + limit - 1)
     rows = query.execute().data or []

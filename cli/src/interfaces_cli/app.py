@@ -21,17 +21,6 @@ class PhiApplication:
         """
         self.api = PhiClient(base_url=backend_url)
         self.menu = MenuSystem()
-        self._current_project: Optional[str] = None
-
-    @property
-    def current_project(self) -> Optional[str]:
-        """Get currently selected project."""
-        return self._current_project
-
-    @current_project.setter
-    def current_project(self, value: Optional[str]) -> None:
-        """Set current project."""
-        self._current_project = value
 
     def check_backend(self) -> str:
         """Check backend connection status.

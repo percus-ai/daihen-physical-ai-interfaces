@@ -3,110 +3,277 @@
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
 
-  type ProjectsResponse = {
-    projects?: string[];
-    total?: number;
+  type ProfileInstanceResponse = {
+    instance?: {
+      id: string;
+      class_id?: string;
+      class_key?: string;
+      variables?: Record<string, unknown>;
+      updated_at?: string;
+    };
   };
 
-  type HardwareStatusResponse = {
-    cameras_detected?: number;
-    ports_detected?: number;
-    opencv_available?: boolean;
+  type ProfileClassDetailResponse = {
+    profile_class?: {
+      id?: string;
+      class_key?: string;
+      description?: string;
+      defaults?: Record<string, unknown>;
+      profile?: Record<string, unknown>;
+    };
   };
 
-  type CamerasResponse = {
-    cameras?: Array<{ id?: string | number; width?: number; height?: number; fps?: number }>;
+  type ProfileStatusResponse = {
+    profile_id?: string;
+    profile_class_key?: string;
+    cameras?: Array<{ name: string; enabled: boolean; connected: boolean; topics?: string[] }>;
+    arms?: Array<{ name: string; enabled: boolean; connected: boolean }>;
+    topics?: string[];
   };
 
-  type PortsResponse = {
-    ports?: Array<{ port?: string; description?: string }>;
+  type VlaborStatusResponse = {
+    status?: string;
+    service?: string;
   };
 
-  type DevicesResponse = {
-    leader_right?: { port?: string };
-    follower_right?: { port?: string };
+  const activeInstanceQuery = createQuery<ProfileInstanceResponse>({
+    queryKey: ['profiles', 'instances', 'active'],
+    queryFn: api.profiles.activeInstance
+  });
+
+  $: activeClassId = $activeInstanceQuery.data?.instance?.class_id ?? '';
+  $: activeProfileId = $activeInstanceQuery.data?.instance?.id ?? '';
+
+  const activeClassQuery = createQuery<ProfileClassDetailResponse>({
+    queryKey: ['profiles', 'classes', activeClassId],
+    queryFn: async () => {
+      if (!activeClassId) return { profile_class: undefined };
+      return api.profiles.class(activeClassId);
+    }
+  });
+
+  const activeStatusQuery = createQuery<ProfileStatusResponse>({
+    queryKey: ['profiles', 'instances', 'active', 'status', activeProfileId],
+    queryFn: async () => {
+      if (!activeProfileId) return { cameras: [], arms: [] };
+      return api.profiles.activeStatus();
+    },
+    refetchInterval: 5000
+  });
+
+  let restartPending = false;
+  let actionPending = false;
+  let actionMessage = '';
+
+  const vlaborStatusQuery = createQuery<VlaborStatusResponse>({
+    queryKey: ['profiles', 'vlabor', 'status'],
+    queryFn: api.profiles.vlaborStatus,
+    refetchInterval: () => (restartPending || actionPending ? 2000 : false)
+  });
+
+  type ProfileSettingsState = {
+    flags: Record<string, boolean>;
+    orderedKeys: string[];
   };
 
-  const projectsQuery = createQuery<ProjectsResponse>({
-    queryKey: ['projects'],
-    queryFn: api.projects.list
-  });
+  let profileSettings: ProfileSettingsState = {
+    flags: {},
+    orderedKeys: []
+  };
+  let lastInstanceId = '';
+  let savingProfileSettings = false;
+  let saveMessage = '';
 
-  const hardwareStatusQuery = createQuery<HardwareStatusResponse>({
-    queryKey: ['hardware', 'status'],
-    queryFn: api.hardware.status
-  });
+  const labelMap: Record<string, string> = {
+    overhead_camera_enabled: 'オーバーヘッドカメラ',
+    d405_enabled: 'D405 サイドカメラ',
+    left_arm_enabled: '左アーム',
+    right_arm_enabled: '右アーム'
+  };
 
-  const camerasQuery = createQuery<CamerasResponse>({
-    queryKey: ['hardware', 'cameras'],
-    queryFn: api.hardware.cameras
-  });
+  function labelFor(key: string) {
+    if (labelMap[key]) return labelMap[key];
+    return key.replace(/_/g, ' ');
+  }
 
-  const portsQuery = createQuery<PortsResponse>({
-    queryKey: ['hardware', 'ports'],
-    queryFn: api.hardware.serialPorts
-  });
+  function buildOrderedKeys(keys: string[]) {
+    const preferred = ['overhead_camera_enabled', 'd405_enabled', 'left_arm_enabled', 'right_arm_enabled'];
+    const rest = keys.filter((k) => !preferred.includes(k)).sort();
+    return [...preferred.filter((k) => keys.includes(k)), ...rest];
+  }
 
-  const devicesQuery = createQuery<DevicesResponse>({
-    queryKey: ['user', 'devices'],
-    queryFn: api.user.devices
-  });
+  $: {
+    const instance = $activeInstanceQuery.data?.instance;
+    const profileClass = $activeClassQuery.data?.profile_class;
+    const defaults = (profileClass?.defaults ?? {}) as Record<string, unknown>;
+    if (instance?.id && instance.id !== lastInstanceId) {
+      const vars = (instance.variables ?? {}) as Record<string, unknown>;
+      const keys = new Set<string>();
+      Object.keys(defaults).forEach((k) => {
+        if (k.endsWith('_enabled')) keys.add(k);
+      });
+      Object.keys(vars).forEach((k) => {
+        if (k.endsWith('_enabled')) keys.add(k);
+      });
+
+      const flags: Record<string, boolean> = {};
+      for (const key of keys) {
+        const raw = (vars[key] ?? defaults[key]) as unknown;
+        flags[key] = Boolean(raw ?? true);
+      }
+
+      profileSettings = {
+        flags,
+        orderedKeys: buildOrderedKeys(Array.from(keys))
+      };
+      lastInstanceId = instance.id;
+      saveMessage = '';
+    }
+  }
+
+  $: activeProfileTitle = (() => {
+    const instance = $activeInstanceQuery.data?.instance;
+    const classKey = instance?.class_key ?? $activeClassQuery.data?.profile_class?.class_key ?? '-';
+    const instanceName = instance?.id ? instance?.id.slice(0, 6) : '-';
+    return `${classKey} / ${instanceName}`;
+  })();
+
+  $: {
+    const status = $vlaborStatusQuery.data?.status ?? 'unknown';
+    if (restartPending && status === 'running') {
+      restartPending = false;
+      saveMessage = '再起動が完了しました。';
+    }
+    if (actionPending && (status === 'running' || status === 'stopped')) {
+      actionPending = false;
+    }
+  }
+
+  async function saveProfileSettings() {
+    const instance = $activeInstanceQuery.data?.instance;
+    if (!instance?.id) return;
+    savingProfileSettings = true;
+    saveMessage = '';
+    try {
+      const vars = (instance.variables ?? {}) as Record<string, unknown>;
+      const updated = {
+        ...vars,
+        ...profileSettings.flags
+      };
+      await api.profiles.updateInstance(instance.id, {
+        variables: updated,
+        activate: true
+      });
+      restartPending = true;
+      saveMessage = '再起動中…';
+      await activeInstanceQuery.refetch();
+      await activeStatusQuery.refetch();
+    } catch (error) {
+      console.error(error);
+      saveMessage = '更新に失敗しました。';
+    } finally {
+      savingProfileSettings = false;
+    }
+  }
+
+  async function startVlabor() {
+    actionPending = true;
+    actionMessage = '';
+    try {
+      await api.profiles.vlaborStart();
+      await vlaborStatusQuery.refetch();
+      await activeStatusQuery.refetch();
+    } catch (error) {
+      console.error(error);
+      const detail = error instanceof Error ? error.message : '起動に失敗しました。';
+      actionMessage = `${detail} Docker権限やバックエンドログを確認してください。`;
+    } finally {
+      actionPending = false;
+    }
+  }
+
+  async function stopVlabor() {
+    actionPending = true;
+    actionMessage = '';
+    try {
+      await api.profiles.vlaborStop();
+      await vlaborStatusQuery.refetch();
+      await activeStatusQuery.refetch();
+    } catch (error) {
+      console.error(error);
+      const detail = error instanceof Error ? error.message : '停止に失敗しました。';
+      actionMessage = `${detail} Docker権限やバックエンドログを確認してください。`;
+    } finally {
+      actionPending = false;
+    }
+  }
+
+  async function restartVlabor() {
+    restartPending = true;
+    actionMessage = '';
+    try {
+      await api.profiles.vlaborRestart();
+      await vlaborStatusQuery.refetch();
+      await activeStatusQuery.refetch();
+    } catch (error) {
+      console.error(error);
+      const detail = error instanceof Error ? error.message : '再起動に失敗しました。';
+      actionMessage = `${detail} Docker権限やバックエンドログを確認してください。`;
+    }
+  }
 </script>
 
 <section class="card-strong p-8">
   <p class="section-title">Setup</p>
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
-      <h1 class="text-3xl font-semibold text-slate-900">デバイス・プロジェクト設定</h1>
-      <p class="mt-2 text-sm text-slate-600">プロジェクト管理、デバイス検出、キャリブレーションの集中管理。</p>
+      <h1 class="text-3xl font-semibold text-slate-900">デバイス・プロファイル設定</h1>
+      <p class="mt-2 text-sm text-slate-600">プロファイル管理、デバイス検出、キャリブレーションの集中管理。</p>
     </div>
-    <Button.Root class="btn-ghost">セットアップウィザード</Button.Root>
+    <div class="flex flex-wrap gap-2">
+      <Button.Root class="btn-ghost" on:click={startVlabor} disabled={actionPending || $vlaborStatusQuery.data?.status === 'running'}>
+        起動
+      </Button.Root>
+      <Button.Root class="btn-ghost" on:click={stopVlabor} disabled={actionPending || $vlaborStatusQuery.data?.status === 'stopped'}>
+        停止
+      </Button.Root>
+      <Button.Root class="btn-ghost" on:click={restartVlabor} disabled={actionPending || restartPending}>
+        再起動
+      </Button.Root>
+    </div>
+    {#if actionMessage}
+      <p class="mt-2 text-xs text-rose-500">{actionMessage}</p>
+    {/if}
   </div>
 </section>
 
-<section class="grid gap-6 lg:grid-cols-3">
-  <div class="card p-6">
-    <h2 class="text-lg font-semibold text-slate-900">プロジェクト</h2>
-    <div class="mt-4 space-y-2 text-sm text-slate-600">
-      {#if $projectsQuery.isLoading}
-        <p>読み込み中...</p>
-      {:else if $projectsQuery.data?.projects?.length}
-        {#each $projectsQuery.data.projects as project}
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-2">{project}</div>
-        {/each}
+<section class="card p-6">
+  <div class="flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <p class="text-xs uppercase tracking-widest text-slate-400">Active Profile</p>
+      <h2 class="mt-1 text-2xl font-semibold text-slate-900">{activeProfileTitle}</h2>
+      <p class="mt-2 text-sm text-slate-600">
+        {$activeClassQuery.data?.profile_class?.description ?? 'プロファイルの説明がありません。'}
+      </p>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      {#if restartPending}
+        <span class="rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-700">再起動中</span>
+      {:else if $vlaborStatusQuery.data?.status === 'running'}
+        <span class="rounded-full bg-emerald-100 px-3 py-1 text-xs text-emerald-700">稼働中</span>
       {:else}
-        <p>プロジェクトがありません。</p>
+        <span class="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">停止</span>
       {/if}
-    </div>
-  </div>
-  <div class="card p-6">
-    <h2 class="text-lg font-semibold text-slate-900">デバイス状態</h2>
-    <div class="mt-4 space-y-3 text-sm text-slate-600">
-      <div>
-        <p class="label">カメラ検出数</p>
-        <p class="text-base font-semibold text-slate-800">{$hardwareStatusQuery.data?.cameras_detected ?? 0}</p>
-      </div>
-      <div>
-        <p class="label">シリアルポート検出数</p>
-        <p class="text-base font-semibold text-slate-800">{$hardwareStatusQuery.data?.ports_detected ?? 0}</p>
-      </div>
-      <div>
-        <p class="label">OpenCV</p>
-        <p class="text-base font-semibold text-slate-800">{$hardwareStatusQuery.data?.opencv_available ? 'Available' : 'Not available'}</p>
-      </div>
-    </div>
-  </div>
-  <div class="card p-6">
-    <h2 class="text-lg font-semibold text-slate-900">ユーザー設定</h2>
-    <div class="mt-4 space-y-3 text-sm text-slate-600">
-      <div>
-        <p class="label">リーダー右腕</p>
-        <p class="text-base font-semibold text-slate-800">{$devicesQuery.data?.leader_right?.port ?? '-'}</p>
-      </div>
-      <div>
-        <p class="label">フォロワー右腕</p>
-        <p class="text-base font-semibold text-slate-800">{$devicesQuery.data?.follower_right?.port ?? '-'}</p>
-      </div>
+      {#if $vlaborStatusQuery.data?.status === 'running'}
+        <a
+          class="inline-flex h-9 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 px-4 text-xs font-semibold text-emerald-700"
+          href="http://vlabor.local:8888"
+          target="_blank"
+          rel="noreferrer"
+        >
+          VLabor UI を開く
+        </a>
+      {/if}
     </div>
   </div>
 </section>
@@ -114,39 +281,72 @@
 <section class="grid gap-6 lg:grid-cols-2">
   <div class="card p-6">
     <div class="flex items-center justify-between">
-      <h2 class="text-xl font-semibold text-slate-900">検出カメラ</h2>
-      <Button.Root class="btn-ghost">更新</Button.Root>
+      <h2 class="text-lg font-semibold text-slate-900">プロファイル簡易設定</h2>
+      <Button.Root class="btn-ghost" on:click={saveProfileSettings} disabled={savingProfileSettings}>
+        {savingProfileSettings ? '保存中…' : '保存'}
+      </Button.Root>
     </div>
-    <div class="mt-4 space-y-3 text-sm text-slate-600">
-      {#if $camerasQuery.isLoading}
+    <div class="mt-4 space-y-4 text-sm text-slate-600">
+      {#if $activeInstanceQuery.isLoading}
         <p>読み込み中...</p>
-      {:else if $camerasQuery.data?.cameras?.length}
-        {#each $camerasQuery.data.cameras as camera}
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-2">
-            Camera {camera.id} ({camera.width}x{camera.height} / {camera.fps}fps)
-          </div>
-        {/each}
+      {:else if $activeInstanceQuery.data?.instance}
+        {#if profileSettings.orderedKeys.length === 0}
+          <p>編集可能なフラグがありません。</p>
+        {:else}
+          {#each profileSettings.orderedKeys as flagKey}
+            <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-2">
+              <div>
+                <p class="font-medium text-slate-800">{labelFor(flagKey)}</p>
+                <p class="text-xs text-slate-500">{flagKey}</p>
+              </div>
+              <input
+                type="checkbox"
+                bind:checked={profileSettings.flags[flagKey]}
+                class="h-5 w-5 accent-slate-900"
+              />
+            </div>
+          {/each}
+        {/if}
+        {#if saveMessage}
+          <p class="text-xs text-slate-500">{saveMessage}</p>
+        {/if}
       {:else}
-        <p>カメラが見つかりません。</p>
+        <p>アクティブなプロファイルがありません。</p>
       {/if}
     </div>
   </div>
   <div class="card p-6">
-    <div class="flex items-center justify-between">
-      <h2 class="text-xl font-semibold text-slate-900">シリアルポート</h2>
-      <Button.Root class="btn-ghost">更新</Button.Root>
-    </div>
-    <div class="mt-4 space-y-3 text-sm text-slate-600">
-      {#if $portsQuery.isLoading}
+    <h2 class="text-lg font-semibold text-slate-900">プロファイル参照の状態</h2>
+    <div class="mt-4 space-y-4 text-sm text-slate-600">
+      {#if $activeStatusQuery.isLoading}
         <p>読み込み中...</p>
-      {:else if $portsQuery.data?.ports?.length}
-        {#each $portsQuery.data.ports as port}
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-2">
-            {port.port} {port.description ? `(${port.description})` : ''}
-          </div>
-        {/each}
       {:else}
-        <p>ポートが見つかりません。</p>
+        <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+          <p class="label">カメラ</p>
+          <div class="mt-2 space-y-2">
+            {#each $activeStatusQuery.data?.cameras ?? [] as cam}
+              <div class="flex items-center justify-between">
+                <span>{cam.name}</span>
+                <span class="text-xs text-slate-500">
+                  {cam.enabled ? (cam.connected ? '✅ 接続' : '⚠️ 未接続') : '⏸️ 無効'}
+                </span>
+              </div>
+            {/each}
+          </div>
+        </div>
+        <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+          <p class="label">ロボット/アーム</p>
+          <div class="mt-2 space-y-2">
+            {#each $activeStatusQuery.data?.arms ?? [] as arm}
+              <div class="flex items-center justify-between">
+                <span>{arm.name}</span>
+                <span class="text-xs text-slate-500">
+                  {arm.enabled ? (arm.connected ? '✅ 接続' : '⚠️ 未接続') : '⏸️ 無効'}
+                </span>
+              </div>
+            {/each}
+          </div>
+        </div>
       {/if}
     </div>
   </div>

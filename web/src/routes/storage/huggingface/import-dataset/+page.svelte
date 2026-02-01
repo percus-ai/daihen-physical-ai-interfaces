@@ -15,8 +15,8 @@
       <input class="input mt-2" placeholder="username/dataset" />
     </div>
     <div>
-      <p class="label">project</p>
-      <input class="input mt-2" placeholder="project_id" />
+      <p class="label">profile instance (optional)</p>
+      <input class="input mt-2" placeholder="profile_instance_id" />
     </div>
     <div>
       <p class="label">dataset name</p>

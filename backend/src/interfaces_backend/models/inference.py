@@ -1,6 +1,6 @@
 """Inference API models."""
 
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -25,67 +25,6 @@ class InferenceModelsResponse(BaseModel):
     total: int
 
 
-class InferenceLoadRequest(BaseModel):
-    """Request to load a model for inference."""
-
-    model_id: str = Field(..., description="Model ID to load")
-    device: str = Field("auto", description="Device: cuda, mps, cpu, auto")
-
-
-class InferenceSession(BaseModel):
-    """Inference session information."""
-
-    session_id: str = Field(..., description="Session ID")
-    model_id: str = Field(..., description="Loaded model ID")
-    policy_type: str = Field(..., description="Policy type")
-    device: str = Field(..., description="Device being used")
-    memory_mb: float = Field(0.0, description="Memory usage in MB")
-    created_at: str = Field(..., description="Session creation time")
-
-
-class InferenceLoadResponse(BaseModel):
-    """Response for model load endpoint."""
-
-    session: InferenceSession
-    message: str
-
-
-class InferenceUnloadRequest(BaseModel):
-    """Request to unload a model."""
-
-    session_id: str = Field(..., description="Session ID to unload")
-
-
-class InferenceUnloadResponse(BaseModel):
-    """Response for model unload endpoint."""
-
-    session_id: str
-    success: bool
-    message: str
-
-
-class InferencePredictRequest(BaseModel):
-    """Request for inference prediction."""
-
-    session_id: str = Field(..., description="Session ID")
-    observation: Dict[str, Any] = Field(..., description="Observation data")
-
-
-class InferencePredictResponse(BaseModel):
-    """Response for inference prediction."""
-
-    session_id: str
-    action: Dict[str, Any] = Field(..., description="Predicted action")
-    inference_time_ms: float = Field(0.0, description="Inference time in ms")
-
-
-class InferenceSessionsResponse(BaseModel):
-    """Response for sessions list endpoint."""
-
-    sessions: List[InferenceSession]
-    total: int
-
-
 class InferenceDeviceCompatibility(BaseModel):
     """Device compatibility information."""
 
@@ -102,22 +41,42 @@ class InferenceDeviceCompatibilityResponse(BaseModel):
     recommended: str = Field("cpu", description="Recommended device")
 
 
-class InferenceRunRequest(BaseModel):
-    """Request to run inference on robot."""
-
+class InferenceRunnerStartRequest(BaseModel):
     model_id: str = Field(..., description="Model ID to run")
-    project: str = Field(..., description="Project name")
-    episodes: int = Field(1, description="Number of episodes to run")
-    robot_type: str = Field("so101", description="Robot type (so101/so100/koch)")
-    device: Optional[str] = Field(None, description="Device: cuda, mps, cpu (auto if None)")
+    session_id: Optional[str] = Field(None, description="Session ID (auto-generate if omitted)")
+    task: Optional[str] = Field(None, description="Task description")
+    policy_type: Optional[str] = Field(None, description="Policy type override")
+    device: Optional[str] = Field(None, description="Device override (e.g., cuda:0)")
+    actions_per_chunk: int = Field(default=1, ge=1)
+    arm_namespaces: List[str] = Field(default_factory=lambda: ["left_arm", "right_arm"])
+    joint_names: List[str] = Field(
+        default_factory=lambda: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
+        description="Joint name list per arm",
+    )
+    camera_shapes: Optional[Dict[str, List[int]]] = Field(default=None)
+    rename_map: Dict[str, str] = Field(default_factory=dict)
+    zmq_endpoint: Optional[str] = Field(None, description="ZMQ endpoint for runner bridge")
 
 
-class InferenceRunResponse(BaseModel):
-    """Response for run inference endpoint."""
-
+class InferenceRunnerStartResponse(BaseModel):
     success: bool
-    model_id: str
-    project: str
-    message: str
-    return_code: int = Field(0, description="Process return code")
-    output: Optional[str] = Field(None, description="Process output (if captured)")
+    session_id: str
+    zmq_endpoint: str
+    runner_status: Dict[str, Optional[object]] = Field(default_factory=dict)
+    gpu_host_status: Dict[str, Optional[object]] = Field(default_factory=dict)
+
+
+class InferenceRunnerStopRequest(BaseModel):
+    session_id: Optional[str] = Field(None, description="Session ID to stop (default: current)")
+
+
+class InferenceRunnerStopResponse(BaseModel):
+    success: bool
+    session_id: Optional[str] = None
+    runner_status: Dict[str, Optional[object]] = Field(default_factory=dict)
+    gpu_host_status: Dict[str, Optional[object]] = Field(default_factory=dict)
+
+
+class InferenceRunnerStatusResponse(BaseModel):
+    runner_status: Dict[str, Optional[object]]
+    gpu_host_status: Dict[str, Optional[object]]

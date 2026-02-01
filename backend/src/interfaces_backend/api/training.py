@@ -848,10 +848,11 @@ def _save_job(job_data: dict) -> None:
     fixed_fields = {
         "job_id",
         "job_name",
-        "project_id",
         "model_id",
         "policy_type",
         "dataset_id",
+        "profile_instance_id",
+        "profile_snapshot",
         "status",
         "failure_reason",
         "termination_reason",
@@ -891,22 +892,32 @@ def _update_cleanup_status(job_id: str, status: str) -> None:
     _save_job(job_data)
 
 
-def _resolve_project_id(dataset_id: Optional[str]) -> Optional[str]:
+def _resolve_profile_info(dataset_id: Optional[str]) -> tuple[Optional[str], Optional[dict]]:
     if not dataset_id:
-        return None
+        return None, None
     client = get_supabase_client()
-    rows = client.table("datasets").select("project_id").eq("id", dataset_id).execute().data or []
+    rows = (
+        client.table("datasets")
+        .select("profile_instance_id,profile_snapshot")
+        .eq("id", dataset_id)
+        .execute()
+        .data
+        or []
+    )
     if rows:
-        return rows[0].get("project_id")
-    return None
+        return rows[0].get("profile_instance_id"), rows[0].get("profile_snapshot")
+    return None, None
 
 
 def _upsert_model_for_job(job_data: dict) -> None:
     client = get_supabase_client()
     model_id = job_data.get("model_id") or job_data.get("job_id")
-    project_id = job_data.get("project_id") or _resolve_project_id(job_data.get("dataset_id"))
-    if not model_id or not project_id:
-        logger.warning("Model upsert skipped (model_id or project_id missing)")
+    profile_instance_id = job_data.get("profile_instance_id")
+    profile_snapshot = job_data.get("profile_snapshot")
+    if not profile_instance_id:
+        profile_instance_id, profile_snapshot = _resolve_profile_info(job_data.get("dataset_id"))
+    if not model_id:
+        logger.warning("Model upsert skipped (model_id missing)")
         return
 
     training_cfg = job_data.get("training_config") or {}
@@ -920,8 +931,9 @@ def _upsert_model_for_job(job_data: dict) -> None:
     payload = {
         "id": model_id,
         "name": model_id,
-        "project_id": project_id,
         "dataset_id": job_data.get("dataset_id"),
+        "profile_instance_id": profile_instance_id,
+        "profile_snapshot": profile_snapshot,
         "policy_type": policy_type,
         "training_steps": training_params.get("steps"),
         "batch_size": training_params.get("batch_size"),
@@ -2698,6 +2710,9 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
             if request.policy.use_amp is not None:
                 policy_payload["use_amp"] = request.policy.use_amp
 
+        profile_instance_id, profile_snapshot = _resolve_profile_info(
+            request.dataset.id if request.dataset else None
+        )
         job_data = {
             "job_id": job_id,
             "job_name": job_name,
@@ -2705,7 +2720,8 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
             "ip": None,
             "status": "starting",
             "mode": "train",
-            "project_id": _resolve_project_id(request.dataset.id if request.dataset else None),
+            "profile_instance_id": profile_instance_id,
+            "profile_snapshot": profile_snapshot,
             "ssh_user": "root",
             "ssh_private_key": ssh_private_key,
             "remote_base_dir": "/root/.physical-ai",
@@ -3062,6 +3078,7 @@ def _create_job_with_progress(
 
             # Save job info
             now = datetime.now().isoformat()
+            profile_instance_id, profile_snapshot = _resolve_profile_info(dataset.id)
             job_data = {
                 "job_id": job_id,
                 "job_name": job_name,
@@ -3069,7 +3086,8 @@ def _create_job_with_progress(
                 "ip": None,
                 "status": "starting",
                 "mode": "train",
-                "project_id": _resolve_project_id(dataset.id),
+                "profile_instance_id": profile_instance_id,
+                "profile_snapshot": profile_snapshot,
                 "ssh_user": "root",
                 "ssh_private_key": ssh_private_key,
                 "remote_base_dir": "/root/.physical-ai",
@@ -4049,6 +4067,7 @@ async def create_continue_job(
         )
 
         # Save job info (status: starting)
+        profile_instance_id, profile_snapshot = _resolve_profile_info(dataset_id)
         job_data = {
             "job_id": job_id,
             "job_name": job_name,
@@ -4056,7 +4075,8 @@ async def create_continue_job(
             "ip": None,
             "status": "starting",
             "mode": "resume_local",
-            "project_id": _resolve_project_id(dataset_id),
+            "profile_instance_id": profile_instance_id,
+            "profile_snapshot": profile_snapshot,
             "continue_from": {
                 "job_name": checkpoint_config.job_name,
                 "step": step,

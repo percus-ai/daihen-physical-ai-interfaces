@@ -46,7 +46,7 @@ export const navItems = [
     label: 'デバイス設定',
     href: '/setup',
     icon: '🔧',
-    description: 'プロジェクト・デバイス・キャリブレーション'
+    description: 'プロファイル・デバイス・キャリブレーション'
   },
   {
     id: 'info',
@@ -64,23 +64,4 @@ export const navItems = [
   }
 ];
 
-export const quickActions = [
-  {
-    id: 'start-record',
-    label: '録画を開始',
-    href: '/record',
-    tone: 'primary'
-  },
-  {
-    id: 'new-train',
-    label: '学習ジョブ作成',
-    href: '/train',
-    tone: 'secondary'
-  },
-  {
-    id: 'teleop',
-    label: 'テレオペ起動',
-    href: '/operate',
-    tone: 'secondary'
-  }
-];
+export const quickActions = [];

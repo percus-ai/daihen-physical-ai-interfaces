@@ -170,10 +170,9 @@ class NewTrainingState:
     pretrained_path: Optional[str] = None
     skip_pretrained: bool = False
 
-    # Step 3: Dataset (2-stage selection: project -> session)
-    project_id: Optional[str] = None  # e.g., "0001_black_cube_to_tray"
-    session_name: Optional[str] = None  # e.g., "20260107_180132_watanabe"
-    dataset_id: Optional[str] = None  # Full ID: project_id/session_name
+    # Step 3: Dataset selection
+    dataset_id: Optional[str] = None  # UUID dataset id
+    dataset_name: Optional[str] = None
     dataset_short_id: Optional[str] = None  # 6-char alphanumeric ID for job naming
     dataset_video_backend: Optional[str] = "torchcodec"
 
@@ -881,97 +880,20 @@ class TrainingWizard(BaseMenu):
         return "next"
 
     def _step3_dataset(self) -> str:
-        """Step 3: Select dataset (2-stage: project -> session).
-
-        Uses DB as the source of truth for available datasets.
-        Stage 1: Select a project (top-level directory)
-        Stage 2: Select a session within that project
-        """
-        # Stage 1: Select project
-        project_result = self._step3a_select_project()
-        if project_result in ("back", "cancel"):
-            return project_result
-
-        # Stage 2: Select session within project
-        session_result = self._step3b_select_session()
-        if session_result == "back":
-            # Go back to project selection
-            return self._step3_dataset()
-        elif session_result == "cancel":
-            return "back"
-
-        return session_result
-
-    def _step3a_select_project(self) -> str:
-        """Step 3a: Select dataset project from DB."""
-        print(f"{Colors.muted('DBからプロジェクト一覧を取得中...')}")
+        """Step 3: Select dataset."""
+        print(f"{Colors.muted('DBからデータセット一覧を取得中...')}")
 
         try:
             result = self.api.list_datasets()
             datasets = result.get("datasets", [])
         except Exception as e:
-            print(f"{Colors.error('プロジェクト取得エラー:')} {e}")
-            input(f"\n{Colors.muted('Press Enter to continue...')}")
-            return "back"
-
-        if not datasets:
-            print(f"{Colors.warning('利用可能なデータセットがありません。')}")
-            print(f"{Colors.muted('データを収録してR2にアップロードしてください。')}")
-            input(f"\n{Colors.muted('Press Enter to continue...')}")
-            return "back"
-
-        project_stats = {}
-        for d in datasets:
-            if d.get("status") == "archived":
-                continue
-            project_id = d.get("project_id") or "unknown"
-            stats = project_stats.setdefault(project_id, {"count": 0, "size": 0})
-            stats["count"] += 1
-            stats["size"] += d.get("size_bytes", 0)
-
-        choices = []
-        for project_id, stats in sorted(project_stats.items()):
-            session_count = stats["count"]
-            total_size = format_size(stats["size"])
-
-            # Display format: project_name (N sessions, size)
-            display = f"  {project_id} ({session_count} sessions, {total_size})"
-            choices.append(Choice(value=project_id, name=display))
-
-        choices.append(Choice(value="__back__", name="← 戻る"))
-
-        project = inquirer.select(
-            message="プロジェクトを選択:",
-            choices=choices,
-            style=hacker_style,
-        ).execute()
-
-        if project == "__back__":
-            return "back"
-
-        self.state.project_id = project
-        return "next"
-
-    def _step3b_select_session(self) -> str:
-        """Step 3b: Select session within the selected project."""
-        if not self.state.project_id:
-            return "back"
-
-        print(f"{Colors.muted(f'プロジェクト {self.state.project_id} のセッション一覧を取得中...')}")
-
-        try:
-            result = self.api.list_datasets()
-            datasets = result.get("datasets", [])
-        except Exception as e:
-            print(f"{Colors.error('セッション取得エラー:')} {e}")
+            print(f"{Colors.error('データセット取得エラー:')} {e}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return "back"
 
         sessions = []
         for d in datasets:
             if d.get("status") == "archived":
-                continue
-            if d.get("project_id") != self.state.project_id:
                 continue
             dataset_id = d.get("id") or ""
             dataset_type = d.get("dataset_type") or ""
@@ -980,40 +902,39 @@ class TrainingWizard(BaseMenu):
             sessions.append(d)
 
         if not sessions:
-            print(f"{Colors.warning('このプロジェクトには利用可能なセッションがありません。')}")
+            print(f"{Colors.warning('利用可能なデータセットがありません。')}")
+            print(f"{Colors.muted('データを収録してR2にアップロードしてください。')}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return "back"
 
-        session_lookup = {}
         choices = []
         sessions = sorted(sessions, key=lambda s: s.get("created_at") or "", reverse=True)
         for s in sessions:
             dataset_id = s.get("id", "unknown")
-            session_name = dataset_id.split("/")[-1] if "/" in dataset_id else dataset_id
+            name = s.get("name") or dataset_id
             size = format_size(s.get("size_bytes", 0))
             episode_count = s.get("episode_count", 0)
+            profile_id = s.get("profile_instance_id")
+            profile_short = profile_id[:8] if profile_id else "-"
 
-            display = f"  {session_name} ({episode_count} eps, {size})"
-
+            display = f"  {name} ({episode_count} eps, {size}) [profile:{profile_short}]"
             choices.append(Choice(value=dataset_id, name=display))
-            session_lookup[dataset_id] = s
 
-        choices.append(Choice(value="__back__", name="← 戻る (プロジェクト選択へ)"))
+        choices.append(Choice(value="__back__", name="← 戻る"))
 
-        session = inquirer.select(
-            message="セッションを選択:",
+        selection = inquirer.select(
+            message="データセットを選択:",
             choices=choices,
             style=hacker_style,
         ).execute()
 
-        if session == "__back__":
-            self.state.project_id = None
+        if selection == "__back__":
             return "back"
 
-        # Store selected dataset info
-        self.state.dataset_id = session
-        self.state.session_name = session.split("/")[-1] if "/" in session else session
-        self.state.dataset_short_id = None
+        selected = next((s for s in sessions if s.get("id") == selection), {})
+        self.state.dataset_id = selection
+        self.state.dataset_name = selected.get("name") or selection
+        self.state.dataset_short_id = selection[:6] if selection else None
 
         return "next"
 
@@ -2086,10 +2007,10 @@ class ContinueTrainingWizard(BaseMenu):
                 ds_list = datasets.get("datasets", [])
                 for d in ds_list:
                     if isinstance(d, dict) and d.get("id") == self.state.original_dataset_id:
-                        self.state.dataset_short_id = d.get("short_id")
+                        self.state.dataset_short_id = d.get("short_id") or (self.state.original_dataset_id or "")[:6]
                         break
             except Exception:
-                pass  # Will use None if not found
+                self.state.dataset_short_id = (self.state.original_dataset_id or "")[:6]
             return "next"
 
         # New dataset selection
@@ -2113,8 +2034,9 @@ class ContinueTrainingWizard(BaseMenu):
         for d in ds_list:
             if isinstance(d, dict):
                 ds_id = d.get("id", "unknown")
+                ds_name = d.get("name") or ds_id
                 size = format_size(d.get("size_bytes", 0))
-                ds_choices.append(Choice(value=ds_id, name=f"  {ds_id} ({size})"))
+                ds_choices.append(Choice(value=ds_id, name=f"  {ds_name} ({size})"))
                 ds_lookup[ds_id] = d
 
         ds_choices.append(Choice(value="__back__", name="← 戻る"))
@@ -2170,7 +2092,8 @@ class ContinueTrainingWizard(BaseMenu):
         self.state.dataset_id = dataset
         # Get short_id from dataset info for job naming
         ds_info = ds_lookup.get(dataset, {})
-        self.state.dataset_short_id = ds_info.get("short_id")
+        self.state.dataset_name = ds_info.get("name") or dataset
+        self.state.dataset_short_id = (ds_info.get("short_id") or dataset[:6]) if dataset else None
         return "next"
 
     def _step4_training_params(self) -> str:

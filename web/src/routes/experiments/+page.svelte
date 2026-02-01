@@ -15,15 +15,16 @@
     dataset_id?: string;
   };
 
-  type EnvironmentSummary = {
+  type ProfileInstanceSummary = {
     id: string;
     name?: string;
+    class_key?: string;
   };
 
   type Experiment = {
     id: string;
     model_id: string;
-    environment_id?: string | null;
+    profile_instance_id?: string | null;
     name?: string;
     evaluation_count?: number;
     metric_options?: string[] | null;
@@ -55,20 +56,20 @@
     queryFn: api.storage.models
   });
 
-  const environmentsQuery = createQuery<{ environments?: EnvironmentSummary[] }>({
-    queryKey: ['storage', 'environments'],
-    queryFn: api.storage.environments
+  const profilesQuery = createQuery<{ instances?: ProfileInstanceSummary[] }>({
+    queryKey: ['profiles', 'instances'],
+    queryFn: api.profiles.instances
   });
 
   let selectedModel = '';
-  let selectedEnvironment = '';
+  let selectedProfile = '';
 
   const experimentsQuery = createQuery<ExperimentListResponse>({
-    queryKey: ['experiments', selectedModel, selectedEnvironment],
+    queryKey: ['experiments', selectedModel, selectedProfile],
     queryFn: () =>
       api.experiments.list({
         model_id: selectedModel || undefined,
-        environment_id: selectedEnvironment || undefined
+        profile_instance_id: selectedProfile || undefined
       })
   });
 
@@ -81,8 +82,8 @@
 
   $: experiments = $experimentsQuery.data?.experiments ?? [];
   $: modelMap = new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]));
-  $: environmentMap = new Map(
-    ($environmentsQuery.data?.environments ?? []).map((env) => [env.id, env])
+  $: profileMap = new Map(
+    ($profilesQuery.data?.instances ?? []).map((instance) => [instance.id, instance])
   );
   $: experimentsError =
     $experimentsQuery.isError
@@ -172,7 +173,7 @@
 
   const resetFilters = () => {
     selectedModel = '';
-    selectedEnvironment = '';
+    selectedProfile = '';
   };
 
   const refreshAll = async () => {
@@ -199,7 +200,7 @@
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div>
       <h2 class="text-xl font-semibold text-slate-900">フィルタ</h2>
-      <p class="text-xs text-slate-500">モデル・環境で絞り込みできます。</p>
+      <p class="text-xs text-slate-500">モデル・プロフィールで絞り込みできます。</p>
     </div>
     <div class="flex flex-wrap gap-2">
       <button class="btn-ghost" type="button" on:click={resetFilters}>リセット</button>
@@ -217,11 +218,13 @@
       </select>
     </label>
     <label class="text-sm font-semibold text-slate-700">
-      <span class="label">環境</span>
-      <select class="input mt-2" bind:value={selectedEnvironment}>
+      <span class="label">プロフィール</span>
+      <select class="input mt-2" bind:value={selectedProfile}>
         <option value="">すべて</option>
-        {#each $environmentsQuery.data?.environments ?? [] as env}
-          <option value={env.id}>{env.name ?? env.id}</option>
+        {#each $profilesQuery.data?.instances ?? [] as inst}
+          <option value={inst.id}>
+            {inst.class_key}:{inst.name ?? 'active'}
+          </option>
         {/each}
       </select>
     </label>
@@ -251,7 +254,7 @@
         <tr>
           <th class="pb-3">実験名</th>
           <th class="pb-3">モデル</th>
-          <th class="pb-3">環境</th>
+          <th class="pb-3">プロフィール</th>
           <th class="pb-3">評価回数</th>
           <th class="pb-3">評価件数</th>
           <th class="pb-3">カテゴリ比率</th>
@@ -293,17 +296,13 @@
                 </Tooltip.Root>
               </td>
               <td class="py-3">
-                {#if exp.environment_id}
+                {#if exp.profile_instance_id}
                   <Tooltip.Root>
                     <Tooltip.Trigger type={null}>
                       {#snippet child({ props })}
-                        <a
-                          {...props}
-                          class="text-xs font-semibold text-brand underline underline-offset-2"
-                          href={`/storage/environments/${exp.environment_id}`}
-                        >
-                          開く
-                        </a>
+                        <span {...props} class="text-xs font-semibold text-slate-700">
+                          {profileMap.get(exp.profile_instance_id)?.class_key ?? exp.profile_instance_id}
+                        </span>
                       {/snippet}
                     </Tooltip.Trigger>
                     <Tooltip.Portal>
@@ -311,7 +310,7 @@
                         class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
                         sideOffset={6}
                       >
-                        {environmentMap.get(exp.environment_id)?.name ?? exp.environment_id}
+                        {profileMap.get(exp.profile_instance_id)?.name ?? exp.profile_instance_id}
                       </Tooltip.Content>
                     </Tooltip.Portal>
                   </Tooltip.Root>

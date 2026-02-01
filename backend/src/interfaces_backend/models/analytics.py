@@ -1,6 +1,6 @@
 """Analytics API models."""
 
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 class OverviewStats(BaseModel):
     """Overview statistics."""
 
-    total_projects: int = Field(0, description="Total number of projects")
+    total_profiles: int = Field(0, description="Total number of profile instances")
+    total_datasets: int = Field(0, description="Total number of datasets")
     total_episodes: int = Field(0, description="Total number of recorded episodes")
     total_models: int = Field(0, description="Total number of trained models")
     total_training_jobs: int = Field(0, description="Total training jobs")
@@ -23,23 +24,22 @@ class OverviewResponse(BaseModel):
     updated_at: str = Field(..., description="Last update timestamp")
 
 
-class ProjectStats(BaseModel):
-    """Statistics for a single project."""
+class ProfileStats(BaseModel):
+    """Statistics for a single profile instance."""
 
-    project_id: str = Field(..., description="Project identifier")
-    name: str = Field("", description="Project name")
-    episode_count: int = Field(0, description="Number of episodes")
+    profile_instance_id: str = Field(..., description="Profile instance ID")
+    name: str = Field("", description="Profile instance name")
+    dataset_count: int = Field(0, description="Number of datasets")
     model_count: int = Field(0, description="Number of models")
-    total_frames: int = Field(0, description="Total frames recorded")
-    total_duration_hours: float = Field(0.0, description="Total duration in hours")
+    episode_count: int = Field(0, description="Number of episodes")
     storage_mb: float = Field(0.0, description="Storage used in MB")
     last_activity: Optional[str] = Field(None, description="Last activity timestamp")
 
 
-class ProjectsStatsResponse(BaseModel):
-    """Response for projects statistics endpoint."""
+class ProfileStatsResponse(BaseModel):
+    """Response for profile statistics endpoint."""
 
-    projects: List[ProjectStats]
+    profiles: List[ProfileStats]
     total: int
 
 

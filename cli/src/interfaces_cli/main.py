@@ -3,7 +3,7 @@
 Usage:
     phi           # Launch interactive menu
     phi health    # Check backend health
-    phi projects  # List projects
+    phi profiles  # List profile instances
 """
 
 import logging
@@ -70,20 +70,23 @@ def health():
 
 
 @cli.command()
-def projects():
-    """List all projects."""
+def profiles():
+    """List profile instances."""
     client = PhiClient()
     try:
-        result = client.list_projects()
-        project_list = result.get("projects", [])
-        if project_list:
-            rprint("[green]Projects:[/green]")
-            for p in project_list:
-                rprint(f"  - {p}")
+        result = client.list_profile_instances()
+        instances = result.get("instances", [])
+        if instances:
+            rprint("[green]Profile Instances:[/green]")
+            for inst in instances:
+                name = inst.get("name") or "active"
+                inst_id = inst.get("id", "")
+                class_key = inst.get("class_key", "")
+                rprint(f"  - {name} ({class_key}) {inst_id}")
         else:
-            rprint("[yellow]No projects found[/yellow]")
+            rprint("[yellow]No profile instances found[/yellow]")
     except Exception as e:
-        rprint(f"[red]Error listing projects: {e}[/red]")
+        rprint(f"[red]Error listing profiles: {e}[/red]")
         raise typer.Exit(1)
 
 

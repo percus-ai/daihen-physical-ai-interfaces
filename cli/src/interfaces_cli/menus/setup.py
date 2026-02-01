@@ -1,4 +1,4 @@
-"""Setup menu - Device and project configuration."""
+"""Setup menu - Device configuration."""
 
 from typing import Any, List
 
@@ -11,108 +11,24 @@ from interfaces_cli.menus.build import BuildMenu
 from interfaces_cli.styles import Colors, hacker_style
 
 class SetupMenu(BaseMenu):
-    """Setup menu - Device and project configuration."""
+    """Setup menu - Device configuration."""
 
     title = "設定"
 
     def get_choices(self) -> List[Choice]:
         return [
-            Choice(value="project", name="📦 [PROJECT] プロジェクト管理"),
             Choice(value="devices", name="🔧 [DEVICES] デバイス設定"),
             Choice(value="calibration", name="🎯 [CALIB] ロボットキャリブレーション"),
             Choice(value="build", name="🔨 [BUILD] PyTorchビルド (Jetson)"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
-        if choice == "project":
-            return self.submenu(ProjectMenu)
         if choice == "devices":
             return self.submenu(DevicesMenu)
         if choice == "calibration":
             return self.submenu(CalibrationMenu)
         if choice == "build":
             return self.submenu(BuildMenu)
-        return MenuResult.CONTINUE
-
-
-class ProjectMenu(BaseMenu):
-    """Project management."""
-
-    title = "プロジェクト"
-
-    def get_choices(self) -> List[Choice]:
-        return [
-            Choice(value="import", name="📥 [IMPORT] YAMLからインポート"),
-        ]
-
-    def handle_choice(self, choice: Any) -> MenuResult:
-        if choice == "import":
-            return self._import_project()
-        return MenuResult.CONTINUE
-
-    def _import_project(self) -> MenuResult:
-        """Import a project from YAML file."""
-        from pathlib import Path
-
-        show_section_header("Import Project")
-
-        base_dir = Path("data/projects")
-        yaml_files = sorted(base_dir.glob("*.yaml")) if base_dir.exists() else []
-
-        choices: List[Choice] = []
-        for path in yaml_files:
-            choices.append(Choice(value=str(path), name=path.name))
-        choices.append(Choice(value="__path__", name="パスを入力"))
-        choices.append(Choice(value="__back__", name="« 戻る"))
-
-        selected = inquirer.select(
-            message="YAMLを選択:",
-            choices=choices,
-            style=hacker_style,
-        ).execute()
-
-        if selected == "__back__":
-            return MenuResult.CONTINUE
-
-        if selected == "__path__":
-            selected = inquirer.text(
-                message="YAMLファイルのパス:",
-                default=str(base_dir) + "/",
-                style=hacker_style,
-            ).execute()
-
-        if not selected:
-            return MenuResult.CONTINUE
-
-        yaml_path = Path(selected).expanduser()
-        if not yaml_path.exists():
-            print(f"{Colors.error('Error:')} File not found: {yaml_path}")
-            input(f"\n{Colors.muted('Press Enter to continue...')}")
-            return MenuResult.CONTINUE
-
-        try:
-            content = yaml_path.read_text(encoding="utf-8")
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
-            input(f"\n{Colors.muted('Press Enter to continue...')}")
-            return MenuResult.CONTINUE
-
-        force = inquirer.confirm(
-            message="既存プロジェクトを上書きしますか?",
-            default=False,
-            style=hacker_style,
-        ).execute()
-
-        payload = {"yaml_content": content, "force": force}
-
-        try:
-            result = self.api.import_project(payload)
-            print(f"\n{Colors.success('Project imported!')}")
-            print(f"  Name: {result.get('name', '')}")
-        except Exception as e:
-            print(f"{Colors.error('Error:')} {e}")
-
-        input(f"\n{Colors.muted('Press Enter to continue...')}")
         return MenuResult.CONTINUE
 
 

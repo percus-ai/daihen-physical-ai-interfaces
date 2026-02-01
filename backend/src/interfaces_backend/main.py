@@ -62,7 +62,7 @@ from interfaces_backend.api import (
     inference_router,
     gpu_host_router,
     platform_router,
-    project_router,
+    profiles_router,
     recording_router,
     storage_router,
     system_router,
@@ -123,7 +123,7 @@ app.include_router(hardware_router)
 app.include_router(inference_router)
 app.include_router(gpu_host_router)
 app.include_router(platform_router)
-app.include_router(project_router)
+app.include_router(profiles_router)
 app.include_router(recording_router)
 app.include_router(storage_router)
 app.include_router(system_router)

@@ -86,10 +86,11 @@ class DatasetsMenu(BaseMenu):
             result = self.api.list_datasets()
             datasets = result.get("datasets", [])
             for d in datasets[:15]:
-                name = d.get("id", d.get("name", "unknown"))
+                dataset_id = d.get("id") or d.get("name", "unknown")
+                display_name = d.get("name") or dataset_id
                 size = format_size(d.get("size_bytes", 0))
                 source = d.get("source", "r2")
-                choices.append(Choice(value=name, name=f"{name} ({size}) [{source}]"))
+                choices.append(Choice(value=dataset_id, name=f"{display_name} ({size}) [{source}]"))
         except Exception:
             pass
 
@@ -154,33 +155,24 @@ class DatasetsMenu(BaseMenu):
             if len(selections) < 2:
                 print(f"{Colors.warning('Select at least two datasets')}")
             else:
-                selected_map = {d.get("id"): d for d in datasets}
-                selected_rows = [selected_map.get(dataset_id) for dataset_id in selections]
-                selected_rows = [row for row in selected_rows if row is not None]
-                project_ids = {row.get("project_id") for row in selected_rows}
-                if len(project_ids) != 1:
-                    print(f"{Colors.error('Project mismatch in selections')}")
-                else:
-                    project_id = next(iter(project_ids))
-                    first_id = selections[0]
-                    default_name = f"{first_id.split('/')[-1]}_merged"
-                    dataset_name = inquirer.text(
-                        message="New dataset name:",
-                        default=default_name,
-                        style=hacker_style,
-                    ).execute()
-                    confirm = inquirer.confirm(
-                        message=f"Merge {len(selections)} datasets into {project_id}/{dataset_name}?",
-                        default=False,
-                        style=hacker_style,
-                    ).execute()
-                    if confirm:
-                        payload = {
-                            "project_id": project_id,
-                            "dataset_name": dataset_name,
-                            "source_dataset_ids": selections,
-                        }
-                        self._merge_datasets_with_progress(payload)
+                first_id = selections[0]
+                default_name = f"{first_id[:8]}_merged"
+                dataset_name = inquirer.text(
+                    message="New dataset name:",
+                    default=default_name,
+                    style=hacker_style,
+                ).execute()
+                confirm = inquirer.confirm(
+                    message=f"Merge {len(selections)} datasets into '{dataset_name}'?",
+                    default=False,
+                    style=hacker_style,
+                ).execute()
+                if confirm:
+                    payload = {
+                        "dataset_name": dataset_name,
+                        "source_dataset_ids": selections,
+                    }
+                    self._merge_datasets_with_progress(payload)
 
         elif action == "archive":
             confirm = inquirer.confirm(
@@ -350,7 +342,8 @@ class DatasetsMenu(BaseMenu):
         try:
             dataset = self.api.get_dataset(dataset_id)
             print(f"  ID: {dataset.get('id', 'N/A')}")
-            print(f"  Project: {dataset.get('project_id', 'N/A')}")
+            print(f"  Name: {dataset.get('name', 'N/A')}")
+            print(f"  Profile: {dataset.get('profile_instance_id', 'N/A')}")
             print(f"  Type: {dataset.get('dataset_type', 'N/A')}")
             print(f"  Status: {dataset.get('status', 'N/A')}")
             print(f"  Source: {dataset.get('source', 'N/A')}")
@@ -396,11 +389,11 @@ class DatasetsMenu(BaseMenu):
 
         elif action == "merge":
             try:
-                project_id = dataset.get("project_id")
+                profile_instance_id = dataset.get("profile_instance_id")
                 list_result = self.api.list_datasets()
                 candidates = [
                     d for d in list_result.get("datasets", [])
-                    if d.get("project_id") == project_id
+                    if d.get("profile_instance_id") == profile_instance_id
                     and d.get("status") == "active"
                     and d.get("id") != dataset_id
                 ]
@@ -422,20 +415,20 @@ class DatasetsMenu(BaseMenu):
                     if not selections:
                         print(f"{Colors.warning('No datasets selected')}")
                     else:
-                        default_name = f"{dataset_id.split('/')[-1]}_merged"
+                        base_name = dataset.get("name") or dataset_id
+                        default_name = f"{base_name}_merged"
                         dataset_name = inquirer.text(
                             message="New dataset name:",
                             default=default_name,
                             style=hacker_style,
                         ).execute()
                         confirm = inquirer.confirm(
-                            message=f"Merge {len(selections) + 1} datasets into {project_id}/{dataset_name}?",
+                            message=f"Merge {len(selections) + 1} datasets into '{dataset_name}'?",
                             default=False,
                             style=hacker_style,
                         ).execute()
                         if confirm:
                             payload = {
-                                "project_id": project_id,
                                 "dataset_name": dataset_name,
                                 "source_dataset_ids": [dataset_id, *selections],
                             }
@@ -500,7 +493,8 @@ class ModelsMenu(BaseMenu):
         try:
             model = self.api.get_model(model_id)
             print(f"  ID: {model.get('id', 'N/A')}")
-            print(f"  Project: {model.get('project_id', 'N/A')}")
+            print(f"  Dataset: {model.get('dataset_id', 'N/A')}")
+            print(f"  Profile: {model.get('profile_instance_id', 'N/A')}")
             print(f"  Status: {model.get('status', 'N/A')}")
             print(f"  Source: {model.get('source', 'N/A')}")
             print(f"  Size: {format_size(model.get('size_bytes', 0))}")
@@ -709,28 +703,51 @@ class HuggingFaceMenu(BaseMenu):
 
         return result
 
-    def _select_project(self) -> Optional[str]:
+    def _select_profile_instance(self) -> Optional[str]:
         try:
-            result = self.api.list_projects()
-            projects = result.get("projects", [])
+            active_result = self.api.get_active_profile_instance()
+            active_instance = active_result.get("instance")
+        except Exception:
+            active_instance = None
+
+        try:
+            result = self.api.list_profile_instances()
+            instances = result.get("instances", [])
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return None
 
-        if not projects:
-            print(f"{Colors.warning('No projects found.')}")
+        if not instances and not active_instance:
+            print(f"{Colors.warning('No profile instances found.')}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return None
 
-        choices = [Choice(value=p, name=p) for p in projects]
+        choices: List[Choice] = []
+        if active_instance:
+            label = f"★ active: {active_instance.get('class_key', '?')}:{active_instance.get('name', 'active')}"
+            choices.append(Choice(value="__auto__", name=label))
+        else:
+            choices.append(Choice(value="__auto__", name="Use active profile (auto)"))
+
+        for inst in instances:
+            inst_id = inst.get("id") or ""
+            if not inst_id:
+                continue
+            label = f"{inst.get('class_key', '?')}:{inst.get('name', 'active')} ({inst_id[:8]})"
+            if inst.get("is_active"):
+                label = "★ " + label
+            choices.append(Choice(value=inst_id, name=label))
+
         choices.append(Choice(value="__back__", name="« Cancel"))
         selected = inquirer.select(
-            message="Select project:",
+            message="Select profile instance:",
             choices=choices,
             style=hacker_style,
         ).execute()
         if selected == "__back__":
+            return None
+        if selected == "__auto__":
             return None
         return selected
 
@@ -743,10 +760,7 @@ class HuggingFaceMenu(BaseMenu):
         if not repo_id:
             return MenuResult.CONTINUE
 
-        project_id = self._select_project()
-        if not project_id:
-            return MenuResult.CONTINUE
-
+        profile_instance_id = self._select_profile_instance()
         default_name = repo_id.split("/")[-1]
         dataset_name = inquirer.text(
             message="Dataset name:",
@@ -762,12 +776,10 @@ class HuggingFaceMenu(BaseMenu):
             style=hacker_style,
         ).execute()
 
-        dataset_id = f"{project_id}/{dataset_name}"
         payload = {
             "repo_id": repo_id,
-            "project_id": project_id,
-            "dataset_id": dataset_id,
-            "name": dataset_name,
+            "dataset_name": dataset_name,
+            "profile_instance_id": profile_instance_id,
             "force": force,
         }
 
@@ -792,10 +804,7 @@ class HuggingFaceMenu(BaseMenu):
         if not repo_id:
             return MenuResult.CONTINUE
 
-        project_id = self._select_project()
-        if not project_id:
-            return MenuResult.CONTINUE
-
+        profile_instance_id = self._select_profile_instance()
         default_name = repo_id.split("/")[-1]
         model_name = inquirer.text(
             message="Model name:",
@@ -820,10 +829,9 @@ class HuggingFaceMenu(BaseMenu):
 
         payload = {
             "repo_id": repo_id,
-            "project_id": project_id,
-            "model_id": model_name,
+            "model_name": model_name,
             "dataset_id": dataset_id,
-            "name": model_name,
+            "profile_instance_id": profile_instance_id,
             "force": force,
         }
 
@@ -1103,7 +1111,12 @@ class ArchiveMenu(BaseMenu):
             else:
                 item = self.api.get_model(item_id)
             print(f"  ID: {item.get('id', 'N/A')}")
-            print(f"  Project: {item.get('project_id', 'N/A')}")
+            if item_type == "dataset":
+                print(f"  Name: {item.get('name', 'N/A')}")
+                print(f"  Profile: {item.get('profile_instance_id', 'N/A')}")
+            else:
+                print(f"  Dataset: {item.get('dataset_id', 'N/A')}")
+                print(f"  Profile: {item.get('profile_instance_id', 'N/A')}")
             print(f"  Status: {item.get('status', 'N/A')}")
             print(f"  Size: {format_size(item.get('size_bytes', 0))}")
             print(f"  Created: {item.get('created_at', 'N/A')}")

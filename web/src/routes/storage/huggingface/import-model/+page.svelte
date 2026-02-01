@@ -15,8 +15,8 @@
       <input class="input mt-2" placeholder="username/model" />
     </div>
     <div>
-      <p class="label">project</p>
-      <input class="input mt-2" placeholder="project_id" />
+      <p class="label">profile instance (optional)</p>
+      <input class="input mt-2" placeholder="profile_instance_id" />
     </div>
     <div>
       <p class="label">model name</p>
@@ -24,7 +24,7 @@
     </div>
     <div>
       <p class="label">dataset_id (optional)</p>
-      <input class="input mt-2" placeholder="project/dataset" />
+      <input class="input mt-2" placeholder="dataset_id" />
     </div>
     <div>
       <p class="label">force overwrite</p>

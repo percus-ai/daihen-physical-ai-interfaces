@@ -10,7 +10,7 @@
   type Experiment = {
     id: string;
     model_id: string;
-    environment_id?: string | null;
+    profile_instance_id?: string | null;
     name?: string;
     purpose?: string | null;
     evaluation_count?: number;
@@ -28,9 +28,10 @@
     dataset_id?: string;
   };
 
-  type EnvironmentSummary = {
+  type ProfileInstanceSummary = {
     id: string;
     name?: string;
+    class_key?: string;
   };
 
   type DatasetSummary = {
@@ -56,9 +57,9 @@
     queryFn: api.storage.models
   });
 
-  const environmentsQuery = createQuery<{ environments?: EnvironmentSummary[] }>({
-    queryKey: ['storage', 'environments'],
-    queryFn: api.storage.environments
+  const profilesQuery = createQuery<{ instances?: ProfileInstanceSummary[] }>({
+    queryKey: ['profiles', 'instances'],
+    queryFn: api.profiles.instances
   });
 
   const datasetsQuery = createQuery<{ datasets?: DatasetSummary[] }>({
@@ -81,8 +82,8 @@
 
   $: experiment = $experimentQuery.data as Experiment | undefined;
   $: modelMap = new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]));
-  $: environmentMap = new Map(
-    ($environmentsQuery.data?.environments ?? []).map((env) => [env.id, env])
+  $: profileMap = new Map(
+    ($profilesQuery.data?.instances ?? []).map((inst) => [inst.id, inst])
   );
   $: datasetMap = new Map(($datasetsQuery.data?.datasets ?? []).map((dataset) => [dataset.id, dataset]));
 
@@ -250,7 +251,11 @@
     <div>
       <p class="label">環境</p>
       <p class="mt-1 font-semibold text-slate-800">
-        {experiment?.environment_id ? environmentMap.get(experiment.environment_id)?.name ?? experiment.environment_id : '未設定'}
+        {experiment?.profile_instance_id
+          ? profileMap.get(experiment.profile_instance_id)?.class_key ??
+            profileMap.get(experiment.profile_instance_id)?.name ??
+            experiment.profile_instance_id
+          : '未設定'}
       </p>
     </div>
     <div>

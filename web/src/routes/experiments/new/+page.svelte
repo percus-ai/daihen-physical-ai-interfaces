@@ -9,9 +9,10 @@
     name?: string;
   };
 
-  type EnvironmentSummary = {
+  type ProfileInstanceSummary = {
     id: string;
     name?: string;
+    class_key?: string;
   };
 
   const DEFAULT_METRIC_OPTIONS = ['成功', '失敗', '部分成功'];
@@ -21,9 +22,9 @@
     queryFn: api.storage.models
   });
 
-  const environmentsQuery = createQuery<{ environments?: EnvironmentSummary[] }>({
-    queryKey: ['storage', 'environments'],
-    queryFn: api.storage.environments
+  const profilesQuery = createQuery<{ instances?: ProfileInstanceSummary[] }>({
+    queryKey: ['profiles', 'instances'],
+    queryFn: api.profiles.instances
   });
 
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -35,7 +36,7 @@
   };
 
   let modelId = '';
-  let environmentId = '';
+  let profileInstanceId = '';
   let name = defaultName();
   let purpose = '';
   let evaluationCount: number | string = 10;
@@ -67,7 +68,7 @@
     try {
       const payload = {
         model_id: modelId,
-        environment_id: environmentId || null,
+        profile_instance_id: profileInstanceId || null,
         name: name || defaultName(),
         purpose: purpose || null,
         evaluation_count: Number(evaluationCount) || 1,
@@ -90,7 +91,7 @@
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1 class="text-3xl font-semibold text-slate-900">実験を作成</h1>
-      <p class="mt-2 text-sm text-slate-600">モデルと環境を選択して新しい実験を登録します。</p>
+      <p class="mt-2 text-sm text-slate-600">モデルとプロフィールを選択して新しい実験を登録します。</p>
     </div>
     <Button.Root class="btn-ghost" href="/experiments">一覧に戻る</Button.Root>
   </div>
@@ -111,11 +112,11 @@
       </select>
     </label>
     <label class="text-sm font-semibold text-slate-700">
-      <span class="label">環境（任意）</span>
-      <select class="input mt-2" bind:value={environmentId}>
+      <span class="label">プロフィール（任意）</span>
+      <select class="input mt-2" bind:value={profileInstanceId}>
         <option value="">未設定</option>
-        {#each $environmentsQuery.data?.environments ?? [] as env}
-          <option value={env.id}>{env.name ?? env.id}</option>
+        {#each $profilesQuery.data?.instances ?? [] as inst}
+          <option value={inst.id}>{inst.class_key}:{inst.name ?? 'active'}</option>
         {/each}
       </select>
     </label>

@@ -3,12 +3,33 @@
   import { page } from '$app/stores';
   import { navItems, quickActions } from '$lib/navigation';
   import { Button } from 'bits-ui';
+  import { Gear } from 'phosphor-svelte';
+  import { createQuery } from '@tanstack/svelte-query';
 
   import { api } from '$lib/api/client';
 
   let mobileOpen = false;
   let authenticated = false;
   let lastPath = '';
+  let switchingProfile = false;
+  let profileError = '';
+
+  type ProfileInstance = {
+    id: string;
+    class_key?: string;
+    name?: string;
+    is_active?: boolean;
+  };
+
+  const profileInstancesQuery = createQuery<{ instances?: ProfileInstance[] }>({
+    queryKey: ['profiles', 'instances'],
+    queryFn: api.profiles.instances
+  });
+
+  const activeProfileQuery = createQuery<{ instance?: ProfileInstance }>({
+    queryKey: ['profiles', 'instances', 'active'],
+    queryFn: api.profiles.activeInstance
+  });
 
   const authItems = {
     login: {
@@ -49,6 +70,30 @@
   }
 
   onMount(refreshAuth);
+
+  const formatProfileLabel = (profile: ProfileInstance) => {
+    const key = profile.class_key ?? 'profile';
+    const shortId = profile.id ? profile.id.slice(0, 6) : '';
+    return shortId ? `${key} / ${shortId}` : key;
+  };
+
+  const handleProfileChange = async (event: Event) => {
+    const target = event.target as HTMLSelectElement;
+    const nextId = target.value;
+    if (!nextId) return;
+    switchingProfile = true;
+    profileError = '';
+    try {
+      await api.profiles.updateInstance(nextId, { activate: true });
+      await activeProfileQuery.refetch();
+      await profileInstancesQuery.refetch();
+    } catch (err) {
+      console.error(err);
+      profileError = '切り替えに失敗しました';
+    } finally {
+      switchingProfile = false;
+    }
+  };
 </script>
 
 <div class="min-h-screen">
@@ -68,6 +113,23 @@
         </div>
       </div>
       <div class="hidden items-center gap-2 lg:flex">
+        <div class="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-sm h-10">
+          <span class="text-xs uppercase tracking-[0.2em] text-slate-400">Profile</span>
+          <select
+            class="bg-transparent text-sm font-semibold text-slate-700 focus:outline-none h-8"
+            on:change={handleProfileChange}
+            disabled={switchingProfile}
+            value={$activeProfileQuery.data?.instance?.id ?? ''}
+          >
+            <option value="" disabled>プロファイル未選択</option>
+            {#each $profileInstancesQuery.data?.instances ?? [] as instance}
+              <option value={instance.id}>{formatProfileLabel(instance)}</option>
+            {/each}
+          </select>
+          {#if profileError}
+            <span class="text-xs text-rose-500">{profileError}</span>
+          {/if}
+        </div>
         {#each quickActions as action}
           <Button.Root
             class={action.tone === 'primary' ? 'btn-primary' : 'btn-ghost'}
@@ -76,7 +138,13 @@
             {action.label}
           </Button.Root>
         {/each}
-        <Button.Root class="btn-ghost" href="/config">設定</Button.Root>
+        <Button.Root
+          class="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white"
+          href="/setup"
+          aria-label="プロファイル設定"
+        >
+          <Gear size={20} class="text-slate-700" />
+        </Button.Root>
       </div>
     </div>
   </header>

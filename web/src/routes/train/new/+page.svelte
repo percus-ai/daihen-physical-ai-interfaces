@@ -10,12 +10,12 @@
 
   type DatasetSummary = {
     id: string;
-    project_id?: string;
+    name?: string;
+    profile_instance_id?: string;
     dataset_type?: string;
     status?: string;
     created_at?: string;
     size_bytes?: number;
-    short_id?: string;
   };
 
   type DatasetListResponse = {
@@ -88,7 +88,6 @@
   let createEvents: Array<{ type: string; message: string; timestamp: string }> = [];
   let createWs: WebSocket | null = null;
 
-  let selectedProject = '';
   let selectedDataset = '';
 
   const applyPolicyDefaults = (policyId: string) => {
@@ -133,13 +132,6 @@
     applyPolicyDefaults(value);
   };
 
-  const normalizeProjectId = (dataset: DatasetSummary) => {
-    const projectId = dataset.project_id;
-    if (projectId) return projectId;
-    const datasetId = dataset.id ?? '';
-    return datasetId.includes('/') ? datasetId.split('/')[0] : datasetId;
-  };
-
   const isTrainingDataset = (dataset: DatasetSummary) => {
     const datasetId = dataset.id ?? '';
     const datasetType = dataset.dataset_type;
@@ -158,28 +150,22 @@
   $: selectedPretrained = pretrainedOptions.find((option) => option.id === selectedPretrainedId) ?? null;
 
   $: datasets = $datasetsQuery.data?.datasets?.filter(isTrainingDataset) ?? [];
-  $: projects = Array.from(
-    new Set(datasets.map((dataset) => normalizeProjectId(dataset)).filter((value) => value))
-  ).sort();
+  $: datasetsSorted = datasets.slice().sort(
+    (a, b) =>
+      new Date((b.created_at as string | undefined) ?? 0).getTime() -
+      new Date((a.created_at as string | undefined) ?? 0).getTime()
+  );
 
-  $: if (projects.length && !selectedProject) {
-    selectedProject = projects[0];
+  $: if (datasetsSorted.length && !selectedDataset) {
+    selectedDataset = datasetsSorted[0].id as string;
   }
 
-  $: sessions = datasets
-    .filter((dataset) => normalizeProjectId(dataset) === selectedProject)
-    .sort(
-      (a, b) =>
-        new Date((b.created_at as string | undefined) ?? 0).getTime() -
-        new Date((a.created_at as string | undefined) ?? 0).getTime()
-    );
-
-  $: if (selectedProject && sessions.length && !sessions.some((s) => s.id === selectedDataset)) {
-    selectedDataset = sessions[0].id as string;
+  $: if (selectedDataset && datasetsSorted.length && !datasetsSorted.some((s) => s.id === selectedDataset)) {
+    selectedDataset = datasetsSorted[0].id as string;
   }
 
-  $: selectedDatasetInfo = sessions.find((dataset) => dataset.id === selectedDataset) ?? null;
-  $: datasetShortId = selectedDatasetInfo?.short_id ?? '';
+  $: selectedDatasetInfo = datasetsSorted.find((dataset) => dataset.id === selectedDataset) ?? null;
+  $: datasetShortId = selectedDatasetInfo?.id?.slice(0, 6) ?? '';
 
   $: if (!validationEnable) {
     earlyStoppingEnable = false;
@@ -446,28 +432,16 @@
       <h2 class="text-xl font-semibold text-slate-900">データセット</h2>
       <div class="mt-4 grid gap-4 sm:grid-cols-2">
         <label class="text-sm font-semibold text-slate-700">
-          <span class="label">プロジェクト</span>
-          <select class="input mt-2" bind:value={selectedProject}>
-            {#if projects.length}
-              {#each projects as project}
-                <option value={project}>{project}</option>
-              {/each}
-            {:else}
-              <option value="">プロジェクトがありません</option>
-            {/if}
-          </select>
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">セッション</span>
+          <span class="label">データセット</span>
           <select class="input mt-2" bind:value={selectedDataset}>
-            {#if sessions.length}
-              {#each sessions as session}
-                <option value={session.id}>
-                  {session.id?.split('/')?.slice(-1)[0] ?? session.id}
+            {#if datasetsSorted.length}
+              {#each datasetsSorted as dataset}
+                <option value={dataset.id}>
+                  {dataset.name ?? dataset.id} (profile: {dataset.profile_instance_id?.slice(0, 8) ?? '-'})
                 </option>
               {/each}
             {:else}
-              <option value="">セッションがありません</option>
+              <option value="">データセットがありません</option>
             {/if}
           </select>
         </label>
@@ -476,7 +450,12 @@
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p class="label">選択中のデータセット</p>
-            <p class="mt-2 font-semibold text-slate-800">{selectedDatasetInfo?.id ?? '-'}</p>
+            <p class="mt-2 font-semibold text-slate-800">
+              {selectedDatasetInfo?.name ?? selectedDatasetInfo?.id ?? '-'}
+            </p>
+            <p class="text-xs text-slate-500">
+              profile: {selectedDatasetInfo?.profile_instance_id?.slice(0, 8) ?? '-'}
+            </p>
           </div>
           <div>
             <p class="label">サイズ / 作成日時</p>
