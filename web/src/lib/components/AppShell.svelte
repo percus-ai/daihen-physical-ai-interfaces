@@ -70,7 +70,10 @@
     }
   }
 
-  $: immersiveView = $page.url.pathname.startsWith('/record/sessions/');
+  $: {
+    const path = $page.url.pathname;
+    immersiveView = path.startsWith('/record/sessions/') || path.startsWith('/operate/sessions/');
+  }
   $: if (immersiveView && mobileOpen) {
     mobileOpen = false;
   }

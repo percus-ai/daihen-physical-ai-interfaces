@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 
 from interfaces_backend.clients.gpu_host import GpuHostClient
 from interfaces_backend.clients.runner_bridge import RunnerBridgeClient
+from interfaces_backend.api.teleop import has_running_local_teleop
 from interfaces_backend.models.inference import (
     InferenceDeviceCompatibility,
     InferenceDeviceCompatibilityResponse,
@@ -276,6 +277,17 @@ async def get_device_compatibility():
 
 @router.post("/runner/start", response_model=InferenceRunnerStartResponse)
 async def start_inference_runner(request: InferenceRunnerStartRequest):
+    if has_running_local_teleop():
+        raise HTTPException(status_code=409, detail="Teleop session is already running")
+
+    runner_client = RunnerBridgeClient()
+    try:
+        status = runner_client.status()
+    except Exception:
+        status = {}
+    if isinstance(status, dict) and (status.get("active") is True or status.get("session_id")):
+        raise HTTPException(status_code=409, detail="Inference session is already running")
+
     _ensure_runner_service()
 
     model_path = _resolve_model_path(request.model_id)
@@ -293,7 +305,6 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
     session_id = request.session_id or uuid4().hex[:8]
     zmq_endpoint = request.zmq_endpoint or _RUNNER_ZMQ_ENDPOINT
 
-    runner_client = RunnerBridgeClient()
     try:
         runner_client.start({
             "session_id": session_id,

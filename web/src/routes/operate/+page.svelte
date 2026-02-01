@@ -2,16 +2,34 @@
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { get } from 'svelte/store';
+  import { goto } from '$app/navigation';
   import { api } from '$lib/api/client';
 
+  type TeleopSession = {
+    session_id?: string;
+    mode?: string;
+    leader_port?: string;
+    follower_port?: string;
+    fps?: number;
+    is_running?: boolean;
+    errors?: number;
+  };
+
   type TeleopSessionsResponse = {
-    sessions?: Array<{
-      session_id?: string;
-      mode?: string;
+    sessions?: TeleopSession[];
+    total?: number;
+  };
+
+  type TeleopProfileConfigResponse = {
+    config?: {
+      profile_id?: string;
+      profile_class_key?: string;
       leader_port?: string;
       follower_port?: string;
-      is_running?: boolean;
-    }>;
+      mode?: string;
+      fps?: number;
+      robot_preset?: string;
+    };
   };
 
   type InferenceModel = {
@@ -58,31 +76,24 @@
     gpu_host_status?: GpuHostStatus;
   };
 
-  type ProfileStatusResponse = {
-    profile_id?: string;
-    profile_class_key?: string;
-    cameras?: Array<{
-      name?: string;
-      enabled?: boolean;
-      connected?: boolean;
-      topics?: string[];
-    }>;
-    arms?: Array<{
-      name?: string;
-      enabled?: boolean;
-      connected?: boolean;
-    }>;
-  };
-
-  type DevicesResponse = {
-    leader_right?: { port?: string };
-    follower_right?: { port?: string };
-    cameras?: Record<string, unknown>;
+  type OperateStatusResponse = {
+    backend?: { status?: string; message?: string };
+    vlabor?: { status?: string; message?: string };
+    lerobot?: { status?: string; message?: string };
+    network?: { status?: string; message?: string; details?: Record<string, any> };
+    driver?: { status?: string; message?: string; details?: Record<string, any> };
   };
 
   const teleopSessionsQuery = createQuery<TeleopSessionsResponse>({
     queryKey: ['teleop', 'sessions'],
-    queryFn: api.teleop.sessions
+    queryFn: api.teleop.sessions,
+    refetchInterval: 2000
+  });
+
+  const teleopProfileConfigQuery = createQuery<TeleopProfileConfigResponse>({
+    queryKey: ['teleop', 'profile-config'],
+    queryFn: api.teleop.profileConfig,
+    refetchInterval: 5000
   });
 
   const inferenceModelsQuery = createQuery<InferenceModelsResponse>({
@@ -101,18 +112,30 @@
     refetchInterval: 2000
   });
 
-  const profileStatusQuery = createQuery<ProfileStatusResponse>({
-    queryKey: ['profiles', 'instances', 'active', 'status', 'operate'],
-    queryFn: api.profiles.activeStatus,
+  const operateStatusQuery = createQuery<OperateStatusResponse>({
+    queryKey: ['operate', 'status'],
+    queryFn: api.operate.status,
     refetchInterval: 5000
   });
 
-  const devicesQuery = createQuery<DevicesResponse>({
-    queryKey: ['user', 'devices'],
-    queryFn: api.user.devices
-  });
-
   const resolveModelId = (model: InferenceModel) => model.model_id ?? model.name ?? '';
+
+  const renderStatusLabel = (status?: string) => {
+    switch (status) {
+      case 'running':
+      case 'healthy':
+        return '正常';
+      case 'degraded':
+        return '注意';
+      case 'stopped':
+        return '停止';
+      case 'error':
+        return 'エラー';
+      default:
+        return '不明';
+    }
+  };
+
   const renderGpuStatus = (status?: string) => {
     switch (status) {
       case 'running':
@@ -138,10 +161,16 @@
   let selectedModelId = '';
   let selectedDevice = '';
   let task = '';
-  let startError = '';
-  let stopError = '';
-  let startPending = false;
-  let stopPending = false;
+  let inferenceStartError = '';
+  let inferenceStopError = '';
+  let inferenceStartPending = false;
+  let inferenceStopPending = false;
+
+  let teleopStartError = '';
+  let teleopStopError = '';
+  let teleopStartPending = false;
+  let teleopStopPending = false;
+
   const emptyRunnerStatus: RunnerStatus = {};
   const emptyGpuStatus: GpuHostStatus = {};
 
@@ -153,46 +182,94 @@
     selectedDevice = $inferenceDeviceQuery.data.recommended ?? '';
   }
 
-  const handleStart = async () => {
+  const handleInferenceStart = async () => {
     if (!selectedModelId) {
-      startError = '推論モデルを選択してください。';
+      inferenceStartError = '推論モデルを選択してください。';
       return;
     }
-    startPending = true;
-    startError = '';
-    stopError = '';
+    inferenceStartPending = true;
+    inferenceStartError = '';
+    inferenceStopError = '';
     try {
-      await api.inference.runnerStart({
+      const result = (await api.inference.runnerStart({
         model_id: selectedModelId,
         device: selectedDevice || $inferenceDeviceQuery.data?.recommended,
         task: task.trim() || undefined
-      });
+      })) as { session_id?: string };
       await refetchQuery(inferenceRunnerStatusQuery);
+      const nextSessionId =
+        result?.session_id ?? ($inferenceRunnerStatusQuery.data?.runner_status?.session_id ?? '');
+      if (nextSessionId) {
+        await goto(`/operate/sessions/${encodeURIComponent(nextSessionId)}?kind=inference`);
+      }
     } catch (err) {
-      startError = err instanceof Error ? err.message : '推論の開始に失敗しました。';
+      inferenceStartError = err instanceof Error ? err.message : '推論の開始に失敗しました。';
     } finally {
-      startPending = false;
+      inferenceStartPending = false;
     }
   };
 
-  const handleStop = async () => {
-    stopPending = true;
-    stopError = '';
+  const handleInferenceStop = async () => {
+    inferenceStopPending = true;
+    inferenceStopError = '';
     try {
       const runnerStatus = $inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus;
       const sessionId = runnerStatus.session_id;
       await api.inference.runnerStop({ session_id: sessionId });
       await refetchQuery(inferenceRunnerStatusQuery);
     } catch (err) {
-      stopError = err instanceof Error ? err.message : '推論の停止に失敗しました。';
+      inferenceStopError = err instanceof Error ? err.message : '推論の停止に失敗しました。';
     } finally {
-      stopPending = false;
+      inferenceStopPending = false;
+    }
+  };
+
+  const handleTeleopStart = async () => {
+    teleopStartPending = true;
+    teleopStartError = '';
+    teleopStopError = '';
+    try {
+      const result = (await api.teleop.startProfile()) as { session?: { session_id?: string } };
+      const sessionId = result?.session?.session_id;
+      await refetchQuery(teleopSessionsQuery);
+      if (sessionId) {
+        await goto(`/operate/sessions/${encodeURIComponent(sessionId)}?kind=teleop`);
+      }
+    } catch (err) {
+      teleopStartError = err instanceof Error ? err.message : 'テレオペ開始に失敗しました。';
+    } finally {
+      teleopStartPending = false;
+    }
+  };
+
+  const handleTeleopStop = async (sessionId?: string) => {
+    if (!sessionId) return;
+    teleopStopPending = true;
+    teleopStopError = '';
+    try {
+      await api.teleop.stopLocal({ session_id: sessionId });
+      await refetchQuery(teleopSessionsQuery);
+    } catch (err) {
+      teleopStopError = err instanceof Error ? err.message : 'テレオペ停止に失敗しました。';
+    } finally {
+      teleopStopPending = false;
     }
   };
 
   $: runnerStatus = $inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus;
   $: gpuStatus = $inferenceRunnerStatusQuery.data?.gpu_host_status ?? emptyGpuStatus;
   $: runnerActive = Boolean(runnerStatus.active);
+
+  $: teleopSessions = $teleopSessionsQuery.data?.sessions ?? [];
+  $: runningTeleop = teleopSessions.find((session) => session.is_running);
+
+  $: teleopLocked = runnerActive;
+  $: inferenceLocked = Boolean(runningTeleop);
+
+  $: profileConfig = $teleopProfileConfigQuery.data?.config;
+  $: teleopConfigReady = Boolean(profileConfig?.leader_port && profileConfig?.follower_port);
+  $: networkDetails = $operateStatusQuery.data?.network?.details ?? {};
+  $: driverDetails = $operateStatusQuery.data?.driver?.details ?? {};
 </script>
 
 <section class="card-strong p-8">
@@ -200,18 +277,191 @@
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1 class="text-3xl font-semibold text-slate-900">テレオペ / 推論</h1>
-      <p class="mt-2 text-sm text-slate-600">テレオペレーションと推論セッションの状態を確認します。</p>
+      <p class="mt-2 text-sm text-slate-600">運用中セッションの確認と開始をまとめて行います。</p>
     </div>
     <div class="flex items-center gap-2">
-      <span class="chip">Runner: {runnerActive ? '実行中' : '停止中'}</span>
-      <span class="chip">GPU: {renderGpuStatus(gpuStatus.status)}</span>
+      <span class="chip">テレオペ: {runningTeleop ? '稼働中' : '未稼働'}</span>
+      <span class="chip">推論: {runnerActive ? '稼働中' : '未稼働'}</span>
     </div>
   </div>
 </section>
 
-<section class="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+<section class="grid gap-6 lg:grid-cols-2">
   <div class="card p-6">
-    <h2 class="text-xl font-semibold text-slate-900">推論コントロール</h2>
+    <div class="flex items-center justify-between">
+      <h2 class="text-xl font-semibold text-slate-900">稼働中テレオペ</h2>
+      <span class="chip">{runningTeleop ? '稼働中' : '停止'}</span>
+    </div>
+    <div class="mt-4 text-sm text-slate-600">
+      {#if $teleopSessionsQuery.isLoading}
+        <p>読み込み中...</p>
+      {:else if runningTeleop}
+        <div class="space-y-2">
+          <p class="text-xs text-slate-500">session_id: {runningTeleop.session_id}</p>
+          <p class="text-xs text-slate-500">
+            {runningTeleop.mode ?? 'simple'} / {runningTeleop.leader_port ?? '-'} →
+            {runningTeleop.follower_port ?? '-'}
+          </p>
+          <p class="text-xs text-slate-500">fps: {runningTeleop.fps ?? '-'}</p>
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <Button.Root
+            class="btn-primary"
+            href={`/operate/sessions/${encodeURIComponent(runningTeleop.session_id ?? '')}?kind=teleop`}
+          >
+            セッションを開く
+          </Button.Root>
+          <Button.Root
+            class="btn-ghost"
+            type="button"
+            onclick={() => handleTeleopStop(runningTeleop.session_id)}
+            disabled={teleopStopPending}
+          >
+            停止
+          </Button.Root>
+        </div>
+      {:else}
+        <p>稼働中のテレオペセッションはありません。</p>
+      {/if}
+      {#if teleopStopError}
+        <p class="mt-2 text-xs text-rose-600">{teleopStopError}</p>
+      {/if}
+    </div>
+  </div>
+
+  <div class="card p-6">
+    <div class="flex items-center justify-between">
+      <h2 class="text-xl font-semibold text-slate-900">稼働中推論</h2>
+      <span class="chip">{runnerActive ? '稼働中' : '停止'}</span>
+    </div>
+    <div class="mt-4 text-sm text-slate-600">
+      {#if $inferenceRunnerStatusQuery.isLoading}
+        <p>読み込み中...</p>
+      {:else if runnerActive}
+        <div class="space-y-2">
+          <p class="text-xs text-slate-500">session_id: {runnerStatus.session_id ?? '-'}</p>
+          <p class="text-xs text-slate-500">task: {runnerStatus.task ?? '-'}</p>
+          <p class="text-xs text-slate-500">queue: {runnerStatus.queue_length ?? 0}</p>
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <Button.Root
+            class="btn-primary"
+            href={`/operate/sessions/${encodeURIComponent(runnerStatus.session_id ?? '')}?kind=inference`}
+          >
+            セッションを開く
+          </Button.Root>
+          <Button.Root
+            class="btn-ghost"
+            type="button"
+            onclick={handleInferenceStop}
+            disabled={inferenceStopPending}
+          >
+            停止
+          </Button.Root>
+        </div>
+      {:else}
+        <p>稼働中の推論セッションはありません。</p>
+      {/if}
+      {#if runnerStatus.last_error}
+        <p class="mt-2 text-xs text-rose-600">{runnerStatus.last_error}</p>
+      {/if}
+      {#if inferenceStopError}
+        <p class="mt-2 text-xs text-rose-600">{inferenceStopError}</p>
+      {/if}
+    </div>
+  </div>
+</section>
+
+<section class="card p-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-xl font-semibold text-slate-900">バックエンド / ROS2 / ネットワーク / ドライバ</h2>
+    <span class="chip">GPU: {renderGpuStatus(gpuStatus.status)}</span>
+  </div>
+  <div class="mt-4 grid gap-4 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-5">
+    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+      <p class="label">Backend</p>
+      <p class="mt-1 text-base font-semibold text-slate-800">
+        {renderStatusLabel($operateStatusQuery.data?.backend?.status)}
+      </p>
+      <p class="text-xs text-slate-500">{$operateStatusQuery.data?.backend?.message ?? '-'}</p>
+    </div>
+    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+      <p class="label">VLABOR (ROS2)</p>
+      <p class="mt-1 text-base font-semibold text-slate-800">
+        {renderStatusLabel($operateStatusQuery.data?.vlabor?.status)}
+      </p>
+      <p class="text-xs text-slate-500">{$operateStatusQuery.data?.vlabor?.message ?? '-'}</p>
+    </div>
+    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+      <p class="label">LeRobot (ROS2)</p>
+      <p class="mt-1 text-base font-semibold text-slate-800">
+        {renderStatusLabel($operateStatusQuery.data?.lerobot?.status)}
+      </p>
+      <p class="text-xs text-slate-500">{$operateStatusQuery.data?.lerobot?.message ?? '-'}</p>
+    </div>
+    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+      <p class="label">Network</p>
+      <p class="mt-1 text-base font-semibold text-slate-800">
+        {renderStatusLabel($operateStatusQuery.data?.network?.status)}
+      </p>
+      <div class="mt-2 text-xs text-slate-500 space-y-1">
+        <p>Zenoh: {networkDetails?.zenoh?.status ?? '-'}</p>
+        <p>rosbridge: {networkDetails?.rosbridge?.status ?? '-'}</p>
+        <p>ZMQ: {networkDetails?.zmq?.status ?? '-'}</p>
+      </div>
+    </div>
+    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+      <p class="label">Driver (CUDA)</p>
+      <p class="mt-1 text-base font-semibold text-slate-800">
+        {renderStatusLabel($operateStatusQuery.data?.driver?.status)}
+      </p>
+      <div class="mt-2 text-xs text-slate-500 space-y-1">
+        <p>torch: {driverDetails?.torch_version ?? '-'}</p>
+        <p>cuda: {driverDetails?.cuda_available ? 'available' : 'unavailable'}</p>
+        <p>gpu: {driverDetails?.gpu_name ?? '-'}</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="grid gap-6 lg:grid-cols-2">
+  <div class="card p-6">
+    <h2 class="text-xl font-semibold text-slate-900">テレオペ開始</h2>
+    <div class="mt-4 grid gap-4 text-sm text-slate-600">
+      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+        <p class="text-xs text-slate-500">Active profile</p>
+        <p class="text-base font-semibold text-slate-800">
+          {profileConfig?.profile_class_key ?? 'unknown'}
+        </p>
+        <p class="text-xs text-slate-500 mt-2">
+          {profileConfig?.leader_port ?? '-'} → {profileConfig?.follower_port ?? '-'}
+        </p>
+        <p class="text-xs text-slate-500">mode: {profileConfig?.mode ?? 'simple'} / fps: {profileConfig?.fps ?? 60}</p>
+      </div>
+      {#if !teleopConfigReady}
+        <p class="text-xs text-rose-600">プロファイルのポート設定が不足しています。</p>
+      {:else if teleopLocked}
+        <p class="text-xs text-amber-600">推論が稼働中のため、テレオペ開始はできません。</p>
+      {/if}
+      <div class="flex flex-wrap gap-2">
+        <Button.Root
+          class="btn-primary"
+          type="button"
+          onclick={handleTeleopStart}
+          disabled={teleopStartPending || teleopLocked || Boolean(runningTeleop) || !teleopConfigReady}
+          aria-busy={teleopStartPending}
+        >
+          テレオペ開始
+        </Button.Root>
+      </div>
+      {#if teleopStartError}
+        <p class="text-xs text-rose-600">{teleopStartError}</p>
+      {/if}
+    </div>
+  </div>
+
+  <div class="card p-6">
+    <h2 class="text-xl font-semibold text-slate-900">推論開始</h2>
     <div class="mt-4 grid gap-4 text-sm text-slate-600">
       <label class="text-sm font-semibold text-slate-700">
         <span class="label">推論モデル</span>
@@ -249,9 +499,7 @@
               {/if}
             {/if}
           </select>
-          <p class="mt-2 text-xs text-slate-500">
-            推奨: {$inferenceDeviceQuery.data?.recommended ?? 'cpu'}
-          </p>
+          <p class="mt-2 text-xs text-slate-500">推奨: {$inferenceDeviceQuery.data?.recommended ?? 'cpu'}</p>
         </label>
 
         <label class="text-sm font-semibold text-slate-700">
@@ -260,166 +508,23 @@
         </label>
       </div>
 
+      {#if inferenceLocked}
+        <p class="text-xs text-amber-600">テレオペが稼働中のため、推論開始はできません。</p>
+      {/if}
       <div class="flex flex-wrap gap-3">
         <Button.Root
           class="btn-primary"
           type="button"
-          onclick={handleStart}
-          disabled={startPending || !selectedModelId || runnerActive}
-          aria-busy={startPending}
+          onclick={handleInferenceStart}
+          disabled={inferenceStartPending || !selectedModelId || runnerActive || inferenceLocked}
+          aria-busy={inferenceStartPending}
         >
           推論を開始
         </Button.Root>
-        <Button.Root
-          class="btn-ghost"
-          type="button"
-          onclick={handleStop}
-          disabled={stopPending || !runnerActive}
-          aria-busy={stopPending}
-        >
-          推論を停止
-        </Button.Root>
       </div>
-      {#if startError}
-        <p class="text-sm text-rose-600">{startError}</p>
-      {/if}
-      {#if stopError}
-        <p class="text-sm text-rose-600">{stopError}</p>
-      {/if}
-
-      <div class="mt-2 rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-        <div class="flex items-center justify-between">
-          <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">アクティブプロファイル</p>
-          <span class="text-[10px] text-slate-400">{$profileStatusQuery.data?.profile_class_key ?? '-'}</span>
-        </div>
-        <div class="mt-3 grid gap-3 sm:grid-cols-2">
-          <div class="space-y-2">
-            <p class="label">Arms</p>
-            {#each $profileStatusQuery.data?.arms ?? [] as arm}
-              <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-3 py-2">
-                <span class="font-semibold text-slate-700">{arm.name ?? 'arm'}</span>
-                <span class={`chip ${arm.connected ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                  {arm.connected ? '接続' : '未接続'}
-                </span>
-              </div>
-            {/each}
-          </div>
-          <div class="space-y-2">
-            <p class="label">Cameras</p>
-            {#each $profileStatusQuery.data?.cameras ?? [] as cam}
-              <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-3 py-2">
-                <span class="font-semibold text-slate-700">{cam.name ?? 'camera'}</span>
-                <span class={`chip ${cam.connected ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                  {cam.connected ? '接続' : '未接続'}
-                </span>
-              </div>
-            {/each}
-          </div>
-        </div>
-        <p class="mt-3 text-xs text-slate-500">推論カメラは compressed トピックを使用します。</p>
-      </div>
-    </div>
-  </div>
-
-  <div class="card p-6">
-    <h2 class="text-xl font-semibold text-slate-900">推論ステータス</h2>
-    <div class="mt-4 space-y-3 text-sm text-slate-600">
-      {#if $inferenceRunnerStatusQuery.isLoading}
-        <p>読み込み中...</p>
-      {:else}
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
-          <div class="flex items-center justify-between">
-            <p class="font-semibold text-slate-800">Runner</p>
-            <span class="chip">{runnerActive ? '実行中' : '停止'}</span>
-          </div>
-          <p class="mt-1 text-xs text-slate-500">session_id: {runnerStatus.session_id ?? '-'}</p>
-          <p class="text-xs text-slate-500">task: {runnerStatus.task ?? '-'}</p>
-          <p class="text-xs text-slate-500">queue: {runnerStatus.queue_length ?? 0}</p>
-          {#if runnerStatus.last_error}
-            <p class="mt-2 text-xs text-rose-600">{runnerStatus.last_error}</p>
-          {/if}
-        </div>
-
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
-          <div class="flex items-center justify-between">
-            <p class="font-semibold text-slate-800">GPU Host</p>
-            <span class="chip">{renderGpuStatus(gpuStatus.status)}</span>
-          </div>
-          <p class="mt-1 text-xs text-slate-500">session_id: {gpuStatus.session_id ?? '-'}</p>
-          <p class="text-xs text-slate-500">pid: {gpuStatus.pid ?? '-'}</p>
-          {#if gpuStatus.last_error}
-            <p class="mt-2 text-xs text-rose-600">{gpuStatus.last_error}</p>
-          {/if}
-        </div>
+      {#if inferenceStartError}
+        <p class="text-xs text-rose-600">{inferenceStartError}</p>
       {/if}
     </div>
-  </div>
-</section>
-
-<section class="grid gap-6 lg:grid-cols-[1.1fr_1fr]">
-  <div class="card p-6">
-    <h2 class="text-xl font-semibold text-slate-900">テレオペレーション状態</h2>
-    <div class="mt-4 space-y-3 text-sm text-slate-600">
-      {#if $teleopSessionsQuery.isLoading}
-        <p>読み込み中...</p>
-      {:else if $teleopSessionsQuery.data?.sessions?.length}
-        {#each $teleopSessionsQuery.data.sessions as session}
-          <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
-            <div>
-              <p class="font-semibold text-slate-800">{session.session_id}</p>
-              <p class="text-xs text-slate-500">{session.mode} / {session.leader_port} → {session.follower_port}</p>
-            </div>
-            <span class="chip">{session.is_running ? '実行中' : '待機'}</span>
-          </div>
-        {/each}
-      {:else}
-        <p>稼働中のセッションはありません。</p>
-      {/if}
-    </div>
-  </div>
-
-  <div class="card p-6">
-    <h2 class="text-xl font-semibold text-slate-900">デバイス設定</h2>
-    <div class="mt-4 space-y-3 text-sm text-slate-600">
-      <div>
-        <p class="label">リーダー右腕</p>
-        <p class="text-base font-semibold text-slate-800">
-          {$devicesQuery.data?.leader_right?.port ?? '-'}
-        </p>
-      </div>
-      <div>
-        <p class="label">フォロワー右腕</p>
-        <p class="text-base font-semibold text-slate-800">
-          {$devicesQuery.data?.follower_right?.port ?? '-'}
-        </p>
-      </div>
-      <div>
-        <p class="label">カメラ</p>
-        <p class="text-sm text-slate-600">
-          {Object.keys($devicesQuery.data?.cameras ?? {}).length} 台登録
-        </p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="card p-6">
-  <h2 class="text-xl font-semibold text-slate-900">推論モデル一覧</h2>
-  <div class="mt-4 space-y-3 text-sm text-slate-600">
-    {#if $inferenceModelsQuery.isLoading}
-      <p>読み込み中...</p>
-    {:else if $inferenceModelsQuery.data?.models?.length}
-      {#each $inferenceModelsQuery.data.models as model}
-        <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
-          <div>
-            <p class="font-semibold text-slate-800">{model.name ?? model.model_id}</p>
-            <p class="text-xs text-slate-500">{model.policy_type} / {model.source}</p>
-          </div>
-          <span class="chip">{model.is_local ? 'ローカル' : '未同期'}</span>
-        </div>
-      {/each}
-    {:else}
-      <p>利用可能なモデルがありません。</p>
-    {/if}
   </div>
 </section>

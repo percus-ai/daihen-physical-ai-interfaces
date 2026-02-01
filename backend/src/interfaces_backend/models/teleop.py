@@ -59,6 +59,24 @@ class TeleopSessionsResponse(BaseModel):
     total: int
 
 
+class TeleopProfileConfig(BaseModel):
+    """Resolved teleop configuration from the active profile."""
+
+    profile_id: str = Field(..., description="Active profile instance id")
+    profile_class_key: str = Field(..., description="Profile class key")
+    leader_port: str = Field(..., description="Leader arm serial port")
+    follower_port: str = Field(..., description="Follower arm serial port")
+    mode: str = Field("simple", description="Teleop mode")
+    fps: int = Field(60, ge=1, le=120, description="Control frequency in Hz")
+    robot_preset: str = Field("so101", description="Robot preset: so101, so100")
+
+
+class TeleopProfileConfigResponse(BaseModel):
+    """Response for profile-based teleop config endpoint."""
+
+    config: TeleopProfileConfig
+
+
 # Remote teleoperation models
 
 

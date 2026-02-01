@@ -9,6 +9,7 @@ from interfaces_backend.api.experiments import router as experiments_router
 from interfaces_backend.api.hardware import router as hardware_router
 from interfaces_backend.api.inference import router as inference_router
 from interfaces_backend.api.gpu_host import router as gpu_host_router
+from interfaces_backend.api.operate import router as operate_router
 from interfaces_backend.api.platform import router as platform_router
 from interfaces_backend.api.profiles import router as profiles_router
 from interfaces_backend.api.recording import router as recording_router
@@ -28,6 +29,7 @@ __all__ = [
     "hardware_router",
     "inference_router",
     "gpu_host_router",
+    "operate_router",
     "platform_router",
     "profiles_router",
     "recording_router",

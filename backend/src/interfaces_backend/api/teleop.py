@@ -20,6 +20,8 @@ from interfaces_backend.models.teleop import (
     TeleopStopRequest,
     TeleopStopResponse,
     TeleopSessionsResponse,
+    TeleopProfileConfig,
+    TeleopProfileConfigResponse,
     RemoteLeaderStartRequest,
     RemoteLeaderStartResponse,
     RemoteLeaderSession,
@@ -28,6 +30,8 @@ from interfaces_backend.models.teleop import (
     RemoteFollowerSession,
     RemoteSessionsResponse,
 )
+from interfaces_backend.clients.runner_bridge import RunnerBridgeClient
+from interfaces_backend.services.profile_settings import get_active_profile_settings
 from percus_ai.teleop import (
     SimpleTeleoperation,
     VisualTeleoperation,
@@ -44,6 +48,64 @@ _remote_leader_sessions: Dict[str, dict] = {}
 _remote_follower_sessions: Dict[str, dict] = {}
 
 
+def _get_running_local_session() -> Optional[dict]:
+    for session in _local_sessions.values():
+        if session.get("is_running"):
+            return session
+    return None
+
+
+def has_running_local_teleop() -> bool:
+    return _get_running_local_session() is not None
+
+
+def _inference_runner_active() -> bool:
+    runner_client = RunnerBridgeClient()
+    try:
+        status = runner_client.status()
+    except Exception:
+        return False
+    if not isinstance(status, dict):
+        return False
+    if status.get("active") is True:
+        return True
+    return bool(status.get("session_id"))
+
+
+def _resolve_robot_preset(profile_class_key: str, settings: dict) -> str:
+    preset = settings.get("robot_preset")
+    if isinstance(preset, str) and preset:
+        return preset
+    if "so100" in profile_class_key:
+        return "so100"
+    return "so101"
+
+
+def _build_profile_teleop_config() -> TeleopProfileConfig:
+    instance, profile_class, settings = get_active_profile_settings()
+    profile_class_key = getattr(profile_class, "class_key", "") or ""
+
+    leader_port = settings.get("right_serial_port") or settings.get("leader_port") or ""
+    follower_port = settings.get("left_serial_port") or settings.get("follower_port") or ""
+    mode = settings.get("teleop_mode") or settings.get("mode") or "simple"
+    fps_value = settings.get("teleop_fps") or settings.get("fps") or 60
+    try:
+        fps = int(fps_value)
+    except (TypeError, ValueError):
+        fps = 60
+    robot_preset = _resolve_robot_preset(profile_class_key, settings)
+
+    return TeleopProfileConfig(
+        profile_id=getattr(instance, "id", "") or "",
+        profile_class_key=profile_class_key,
+        leader_port=str(leader_port),
+        follower_port=str(follower_port),
+        mode=str(mode),
+        fps=fps,
+        robot_preset=str(robot_preset),
+    )
+
+
 # --- Local Teleoperation Endpoints ---
 
 
@@ -54,6 +116,11 @@ async def start_local_teleop(request: TeleopStartRequest):
     Creates a leader-follower teleoperation session where the follower
     arm mimics the leader arm movements.
     """
+    if _inference_runner_active():
+        raise HTTPException(status_code=409, detail="Inference session is already running")
+    if has_running_local_teleop():
+        raise HTTPException(status_code=409, detail="Teleop session is already running")
+
     session_id = str(uuid.uuid4())[:8]
     now = datetime.now().isoformat()
 
@@ -121,6 +188,13 @@ async def run_local_teleop(session_id: str, duration_sec: Optional[float] = None
 
     This runs the teleoperation loop in a background thread.
     """
+    if _inference_runner_active():
+        raise HTTPException(status_code=409, detail="Inference session is already running")
+
+    running_session = _get_running_local_session()
+    if running_session and running_session.get("session_id") != session_id:
+        raise HTTPException(status_code=409, detail="Another teleop session is already running")
+
     if session_id not in _local_sessions:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
@@ -152,6 +226,38 @@ async def run_local_teleop(session_id: str, duration_sec: Optional[float] = None
     session["thread"] = thread
 
     return {"session_id": session_id, "message": "Teleop started"}
+
+
+@router.get("/local/profile-config", response_model=TeleopProfileConfigResponse)
+async def get_local_profile_config():
+    config = _build_profile_teleop_config()
+    return TeleopProfileConfigResponse(config=config)
+
+
+@router.post("/local/start-profile", response_model=TeleopStartResponse)
+async def start_local_teleop_from_profile():
+    if _inference_runner_active():
+        raise HTTPException(status_code=409, detail="Inference session is already running")
+    if has_running_local_teleop():
+        raise HTTPException(status_code=409, detail="Teleop session is already running")
+
+    config = _build_profile_teleop_config()
+    if not config.leader_port or not config.follower_port:
+        raise HTTPException(status_code=400, detail="Teleop ports are not configured in the active profile")
+
+    start_request = TeleopStartRequest(
+        leader_port=config.leader_port,
+        follower_port=config.follower_port,
+        mode=config.mode,
+        fps=config.fps,
+        robot_preset=config.robot_preset,
+    )
+    start_response = await start_local_teleop(start_request)
+    await run_local_teleop(start_response.session.session_id)
+    return TeleopStartResponse(
+        session=start_response.session,
+        message="Teleop session started from active profile",
+    )
 
 
 @router.post("/local/stop", response_model=TeleopStopResponse)

@@ -5,6 +5,7 @@
 
   export let sessionId = '';
   export let title = 'Controls';
+  export let mode: 'recording' | 'operate' = 'recording';
 
   type RecordingSessionStatusResponse = {
     dataset_id?: string;
@@ -89,28 +90,34 @@
     <p class="text-xs text-emerald-600">{actionMessage}</p>
   {/if}
 
-  <div class="grid gap-2 text-sm">
-    <div class="grid gap-2 sm:grid-cols-2">
-      <Button.Root class="btn-primary" type="button" onclick={handleResume} disabled={!canResume || Boolean(actionBusy)}>
-        {actionBusy === '再開' ? '再開中...' : '再開'}
-      </Button.Root>
-      <Button.Root class="btn-ghost" type="button" onclick={handlePause} disabled={!canPause || Boolean(actionBusy)}>
-        {actionBusy === '中断' ? '中断中...' : '中断'}
-      </Button.Root>
-      <Button.Root class="btn-primary" type="button" onclick={handleStop} disabled={!canStop || Boolean(actionBusy)}>
-        {actionBusy === '終了' ? '終了中...' : '終了'}
-      </Button.Root>
-      <Button.Root class="btn-ghost" type="button" onclick={handleCancelSession} disabled={!canStop || Boolean(actionBusy)}>
-        保存せず終了
-      </Button.Root>
+  {#if mode !== 'recording'}
+    <div class="rounded-xl border border-amber-200/70 bg-amber-50/60 p-3 text-xs text-amber-700">
+      このビューは録画セッションのみ対応しています。
     </div>
-    <div class="grid gap-2 sm:grid-cols-2">
-      <Button.Root class="btn-ghost" type="button" onclick={handleRedoEpisode} disabled={!canRedo || Boolean(actionBusy)}>
-        1個前に戻る
-      </Button.Root>
-      <Button.Root class="btn-ghost" type="button" onclick={handleCancelEpisode} disabled={!canCancelEpisode || Boolean(actionBusy)}>
-        エピソード破棄
-      </Button.Root>
+  {:else}
+    <div class="grid gap-2 text-sm">
+      <div class="grid gap-2 sm:grid-cols-2">
+        <Button.Root class="btn-primary" type="button" onclick={handleResume} disabled={!canResume || Boolean(actionBusy)}>
+          {actionBusy === '再開' ? '再開中...' : '再開'}
+        </Button.Root>
+        <Button.Root class="btn-ghost" type="button" onclick={handlePause} disabled={!canPause || Boolean(actionBusy)}>
+          {actionBusy === '中断' ? '中断中...' : '中断'}
+        </Button.Root>
+        <Button.Root class="btn-primary" type="button" onclick={handleStop} disabled={!canStop || Boolean(actionBusy)}>
+          {actionBusy === '終了' ? '終了中...' : '終了'}
+        </Button.Root>
+        <Button.Root class="btn-ghost" type="button" onclick={handleCancelSession} disabled={!canStop || Boolean(actionBusy)}>
+          保存せず終了
+        </Button.Root>
+      </div>
+      <div class="grid gap-2 sm:grid-cols-2">
+        <Button.Root class="btn-ghost" type="button" onclick={handleRedoEpisode} disabled={!canRedo || Boolean(actionBusy)}>
+          1個前に戻る
+        </Button.Root>
+        <Button.Root class="btn-ghost" type="button" onclick={handleCancelEpisode} disabled={!canCancelEpisode || Boolean(actionBusy)}>
+          エピソード破棄
+        </Button.Root>
+      </div>
     </div>
-  </div>
+  {/if}
 </div>

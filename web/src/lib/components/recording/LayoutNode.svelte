@@ -8,6 +8,7 @@
   export let node: BlueprintNode;
   export let selectedId = '';
   export let sessionId = '';
+  export let mode: 'recording' | 'operate' = 'recording';
   export let editMode = true;
   export let onSelect: (id: string) => void;
   export let onResize: (id: string, sizes: [number, number]) => void;
@@ -26,7 +27,8 @@
     const definition = getViewDefinition(viewType);
     const baseProps = {
       ...(node.type === 'view' ? node.config : {}),
-      title: definition?.label ?? viewType
+      title: definition?.label ?? viewType,
+      mode
     } as Record<string, unknown>;
     if (viewType === 'controls' || viewType === 'progress') {
       baseProps.sessionId = sessionId;

@@ -308,7 +308,17 @@ export const api = {
     gpuAvailability: () => fetchApi('/api/training/gpu-availability')
   },
   teleop: {
-    sessions: () => fetchApi('/api/teleop/local/sessions')
+    sessions: () => fetchApi('/api/teleop/local/sessions'),
+    profileConfig: () => fetchApi('/api/teleop/local/profile-config'),
+    startProfile: () => fetchApi('/api/teleop/local/start-profile', { method: 'POST' }),
+    stopLocal: (payload: { session_id: string }) =>
+      fetchApi('/api/teleop/local/stop', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      })
+  },
+  operate: {
+    status: () => fetchApi('/api/operate/status')
   },
   inference: {
     models: () => fetchApi('/api/inference/models'),

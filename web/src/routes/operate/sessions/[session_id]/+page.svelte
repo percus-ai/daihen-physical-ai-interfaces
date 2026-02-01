@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { derived } from 'svelte/store';
   import { page } from '$app/stores';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
@@ -28,41 +27,58 @@
   } from '$lib/recording/blueprint';
   import { getViewDefinition, getViewOptions } from '$lib/recording/viewRegistry';
 
-  type RecordingSessionStatusResponse = {
-    dataset_id?: string;
-    status?: Record<string, unknown>;
-  };
-
   type ProfileStatusResponse = {
     topics?: string[];
   };
 
-  const STATUS_LABELS: Record<string, string> = {
-    idle: '待機',
-    warming: '準備中',
-    recording: '録画中',
-    paused: '一時停止',
-    resetting: 'リセット中',
-    completed: '完了'
+  type RunnerStatus = {
+    active?: boolean;
+    session_id?: string;
+    task?: string;
+    last_error?: string;
+  };
+
+  type InferenceRunnerStatusResponse = {
+    runner_status?: RunnerStatus;
+  };
+
+  type TeleopSession = {
+    session_id?: string;
+    mode?: string;
+    leader_port?: string;
+    follower_port?: string;
+    is_running?: boolean;
+    errors?: number;
+  };
+
+  type TeleopSessionsResponse = {
+    sessions?: TeleopSession[];
+  };
+
+  const KIND_LABELS: Record<string, string> = {
+    inference: '推論',
+    teleop: 'テレオペ'
   };
 
   let sessionId = '';
+  let sessionKindParam = '';
   $: sessionId = $page.params.session_id;
+  $: sessionKindParam = $page.url.searchParams.get('kind') ?? '';
 
-  const statusQuery = createQuery<RecordingSessionStatusResponse>(
-    derived(page, ($page) => {
-      const currentId = $page.params.session_id;
-      return {
-        queryKey: ['recording', 'session', currentId],
-        queryFn: api.recording.sessionStatus,
-        enabled: Boolean(currentId),
-        refetchInterval: 1500
-      };
-    })
-  );
+  const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
+    queryKey: ['inference', 'runner', 'status', 'operate-session'],
+    queryFn: api.inference.runnerStatus,
+    refetchInterval: 2000
+  });
+
+  const teleopSessionsQuery = createQuery<TeleopSessionsResponse>({
+    queryKey: ['teleop', 'sessions', 'operate-session'],
+    queryFn: api.teleop.sessions,
+    refetchInterval: 2000
+  });
 
   const topicsQuery = createQuery<ProfileStatusResponse>({
-    queryKey: ['profiles', 'instances', 'active', 'status', 'topics'],
+    queryKey: ['profiles', 'instances', 'active', 'status', 'topics', 'operate'],
     queryFn: api.profiles.activeStatus,
     refetchInterval: 5000
   });
@@ -71,17 +87,18 @@
   let selectedId = blueprint.id;
   let mounted = false;
   let lastSessionId = '';
+  let lastSessionKind = '';
   let filledDefaults = false;
-  let editMode = true;
+  let editMode = false;
 
-  const storageKey = (id: string) => `recording-blueprint:${id}`;
+  const storageKey = (id: string, kind: string) => `operate-blueprint:${kind || 'unknown'}:${id}`;
 
-  const loadBlueprint = (id: string) => {
+  const loadBlueprint = (id: string, kind: string) => {
     if (typeof localStorage === 'undefined') {
       blueprint = createDefaultBlueprint();
       return;
     }
-    const stored = localStorage.getItem(storageKey(id));
+    const stored = localStorage.getItem(storageKey(id, kind));
     if (stored) {
       try {
         blueprint = JSON.parse(stored) as BlueprintNode;
@@ -96,7 +113,7 @@
 
   const saveBlueprint = () => {
     if (!mounted || typeof localStorage === 'undefined') return;
-    localStorage.setItem(storageKey(sessionId || 'default'), JSON.stringify(blueprint));
+    localStorage.setItem(storageKey(sessionId || 'default', sessionKindParam), JSON.stringify(blueprint));
   };
 
   const fillDefaultConfig = (node: BlueprintNode, topics: string[]): BlueprintNode => {
@@ -131,10 +148,15 @@
     mounted = true;
   });
 
-  $: if (mounted && sessionId && sessionId !== lastSessionId) {
+  $: if (
+    mounted &&
+    sessionId &&
+    (sessionId !== lastSessionId || sessionKindParam !== lastSessionKind)
+  ) {
     lastSessionId = sessionId;
+    lastSessionKind = sessionKindParam;
     filledDefaults = false;
-    loadBlueprint(sessionId);
+    loadBlueprint(sessionId, sessionKindParam);
   }
 
   $: if (mounted && sessionId) {
@@ -222,45 +244,70 @@
     editMode = !editMode;
   };
 
-  $: status = $statusQuery.data?.status ?? {};
-  $: datasetId = $statusQuery.data?.dataset_id ?? sessionId;
-  $: statusState =
-    (status as Record<string, unknown>)?.state ?? (status as Record<string, unknown>)?.status ?? '';
-  $: statusLabel = STATUS_LABELS[String(statusState)] ?? String(statusState || 'unknown');
-  $: statusDetail =
-    (status as Record<string, unknown>)?.message ??
-    (status as Record<string, unknown>)?.detail ??
-    (status as Record<string, unknown>)?.error ??
-    (status as Record<string, unknown>)?.last_error ??
-    '';
-  $: taskLabel = (status as Record<string, unknown>)?.task ?? '';
+  const refreshStatus = async () => {
+    await Promise.all([
+      $inferenceRunnerStatusQuery.refetch?.(),
+      $teleopSessionsQuery.refetch?.(),
+      $topicsQuery.refetch?.()
+    ]);
+  };
+
+  $: runnerStatus = $inferenceRunnerStatusQuery.data?.runner_status ?? {};
+  $: teleopSessions = $teleopSessionsQuery.data?.sessions ?? [];
+  $: teleopSession = teleopSessions.find((session) => session.session_id === sessionId) ?? null;
+  $: inferenceMatches = runnerStatus.session_id === sessionId;
+
+  $: resolvedKind =
+    sessionKindParam || (inferenceMatches ? 'inference' : teleopSession ? 'teleop' : '');
+  $: sessionLabel = KIND_LABELS[resolvedKind] ?? 'セッション';
+
+  $: statusLabel = '不明';
+  if (resolvedKind === 'inference') {
+    statusLabel = inferenceMatches && runnerStatus.active ? '実行中' : '停止';
+  } else if (resolvedKind === 'teleop') {
+    statusLabel = teleopSession ? (teleopSession.is_running ? '実行中' : '待機') : '停止';
+  }
+
+  $: statusDetail = '';
+  if (resolvedKind === 'inference') {
+    statusDetail = runnerStatus.last_error ?? '';
+  } else if (resolvedKind === 'teleop' && teleopSession?.errors) {
+    statusDetail = `Errors: ${teleopSession.errors}`;
+  }
+
+  $: sessionSubtitle = '';
+  if (resolvedKind === 'inference') {
+    sessionSubtitle = runnerStatus.task ?? '';
+  } else if (resolvedKind === 'teleop' && teleopSession) {
+    const mode = teleopSession.mode ?? 'teleop';
+    const leader = teleopSession.leader_port ?? '-';
+    const follower = teleopSession.follower_port ?? '-';
+    sessionSubtitle = `${mode} / ${leader} → ${follower}`;
+  }
 </script>
 
 <section class="card-strong p-6">
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div>
-      <p class="section-title">Record Session</p>
-      <h1 class="text-3xl font-semibold text-slate-900">録画セッション</h1>
-      <p class="mt-2 text-sm text-slate-600">{taskLabel || 'タスク未設定 / 状態を同期中...'}</p>
+      <p class="section-title">Operate Session</p>
+      <h1 class="text-3xl font-semibold text-slate-900">{sessionLabel} セッション</h1>
+      <p class="mt-2 text-sm text-slate-600">{sessionSubtitle || 'セッション情報を同期中...'}</p>
       <div class="mt-3 flex flex-wrap gap-2">
         <span class="chip">状態: {statusLabel}</span>
-        {#if datasetId}
-          <span class="chip">Dataset: {datasetId}</span>
+        {#if sessionId}
+          <span class="chip">Session: {sessionId}</span>
         {/if}
       </div>
-      {#if $statusQuery.isLoading}
+      {#if $inferenceRunnerStatusQuery.isLoading || $teleopSessionsQuery.isLoading}
         <p class="mt-2 text-xs text-slate-500">ステータス取得中...</p>
-      {:else if $statusQuery.error}
-        <p class="mt-2 text-xs text-rose-600">ステータス取得に失敗しました。</p>
       {/if}
     </div>
     <div class="flex flex-wrap gap-3">
       <Button.Root class="btn-ghost" type="button" onclick={toggleEditMode}>
         {editMode ? '閲覧モード' : '編集モード'}
       </Button.Root>
-      <Button.Root class="btn-ghost" href="/record">録画一覧</Button.Root>
-      <Button.Root class="btn-ghost" href="/record/new">新規セッション</Button.Root>
-      <Button.Root class="btn-ghost" type="button" onclick={() => $statusQuery.refetch?.()}>更新</Button.Root>
+      <Button.Root class="btn-ghost" href="/operate">テレオペ / 推論一覧</Button.Root>
+      <Button.Root class="btn-ghost" type="button" onclick={refreshStatus}>更新</Button.Root>
     </div>
   </div>
 </section>
@@ -283,7 +330,7 @@
       node={blueprint}
       selectedId={selectedId}
       sessionId={sessionId}
-      mode="recording"
+      mode="operate"
       editMode={editMode}
       onSelect={updateSelection}
       onResize={handleResize}
@@ -409,30 +456,30 @@
                   value={tab.title}
                   on:change={(event) => handleRenameTab(tab.id, (event.target as HTMLInputElement).value)}
                 />
-              <Button.Root class="btn-ghost mt-2 w-full" type="button" onclick={() => handleRemoveTab(tab.id)}>
-                このタブを削除
-              </Button.Root>
-            </div>
-          {/each}
+                <Button.Root class="btn-ghost mt-2 w-full" type="button" onclick={() => handleRemoveTab(tab.id)}>
+                  このタブを削除
+                </Button.Root>
+              </div>
+            {/each}
+          </div>
+          <Button.Root
+            class="btn-ghost w-full border-rose-200/70 text-rose-600 hover:border-rose-300/80"
+            type="button"
+            onclick={() => handleDeleteSelected('tabs')}
+          >
+            タブセットを解除
+          </Button.Root>
         </div>
-        <Button.Root
-          class="btn-ghost w-full border-rose-200/70 text-rose-600 hover:border-rose-300/80"
-          type="button"
-          onclick={() => handleDeleteSelected('tabs')}
-        >
-          タブセットを解除
-        </Button.Root>
-      </div>
-    {/if}
-  </aside>
-{/if}
+      {/if}
+    </aside>
+  {/if}
 </section>
 
 <section class="card p-4">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div>
-      <p class="label">Timeline</p>
-      <p class="text-sm font-semibold text-slate-700">再生タイムライン（実装準備）</p>
+      <p class="label">Session Timeline</p>
+      <p class="text-sm font-semibold text-slate-700">セッションタイムライン（実装準備）</p>
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" type="button">⏮︎</Button.Root>
