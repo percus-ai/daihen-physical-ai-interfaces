@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, Tooltip } from 'bits-ui';
+  import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
   import { formatBytes, formatDate, formatPercent } from '$lib/format';
@@ -202,23 +202,6 @@
       <div class="text-xs text-slate-500">
         更新: {formatDate($resourcesQuery.data?.timestamp)}
       </div>
-    </div>
-    <div class="mt-6">
-      <Tooltip.Root>
-        <Tooltip.Trigger class="btn-ghost" type={null}>
-          {#snippet child({ props })}
-            <Button.Root {...props} href="/info">開く</Button.Root>
-          {/snippet}
-        </Tooltip.Trigger>
-        <Tooltip.Portal>
-          <Tooltip.Content
-            class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
-            sideOffset={6}
-          >
-            システム情報
-          </Tooltip.Content>
-        </Tooltip.Portal>
-      </Tooltip.Root>
     </div>
   </div>
 </section>

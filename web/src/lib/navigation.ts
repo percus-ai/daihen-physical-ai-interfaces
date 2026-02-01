@@ -47,20 +47,6 @@ export const navItems = [
     href: '/setup',
     icon: '🔧',
     description: 'プロファイル・デバイス・キャリブレーション'
-  },
-  {
-    id: 'info',
-    label: 'システム情報',
-    href: '/info',
-    icon: '📊',
-    description: '環境・バージョン・稼働状況'
-  },
-  {
-    id: 'config',
-    label: '環境設定',
-    href: '/config',
-    icon: '⚙️',
-    description: '設定とユーザー情報'
   }
 ];
 
