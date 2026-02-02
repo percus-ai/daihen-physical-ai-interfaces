@@ -1,10 +1,50 @@
 import { getBackendUrl } from '$lib/config';
 
-export async function fetchApi<T>(path: string, options: RequestInit = {}): Promise<T> {
+class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = 'ApiError';
+  }
+}
+
+let refreshPromise: Promise<boolean> | null = null;
+
+async function baseFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const baseUrl = getBackendUrl();
-  const response = await fetch(`${baseUrl}${path}`, {
+  return fetch(`${baseUrl}${path}`, {
     ...options,
     credentials: 'include',
+    headers: {
+      ...options.headers
+    }
+  });
+}
+
+async function parseApiError(response: Response): Promise<string> {
+  let detail = `API error: ${response.status}`;
+  try {
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      const payload = await response.json();
+      if (payload?.detail) {
+        detail = String(payload.detail);
+      }
+    } else {
+      const text = await response.text();
+      if (text) detail = text;
+    }
+  } catch {
+    // ignore parsing errors
+  }
+  return detail;
+}
+
+async function fetchJsonNoRefresh<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await baseFetch(path, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
       ...options.headers
@@ -12,42 +52,74 @@ export async function fetchApi<T>(path: string, options: RequestInit = {}): Prom
   });
 
   if (!response.ok) {
-    let detail = `API error: ${response.status}`;
-    try {
-      const contentType = response.headers.get('content-type') ?? '';
-      if (contentType.includes('application/json')) {
-        const payload = await response.json();
-        if (payload?.detail) {
-          detail = String(payload.detail);
-        }
-      } else {
-        const text = await response.text();
-        if (text) detail = text;
-      }
-    } catch {
-      // ignore parsing errors
-    }
-    throw new Error(detail);
+    throw new ApiError(response.status, await parseApiError(response));
   }
 
   return response.json();
 }
 
-export async function fetchText(path: string, options: RequestInit = {}): Promise<string> {
-  const baseUrl = getBackendUrl();
-  const response = await fetch(`${baseUrl}${path}`, {
+async function fetchTextNoRefresh(path: string, options: RequestInit = {}): Promise<string> {
+  const response = await baseFetch(path, options);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseApiError(response));
+  }
+  return response.text();
+}
+
+async function fetchFormNoRefresh<T>(
+  path: string,
+  formData: FormData,
+  options: RequestInit = {}
+): Promise<T> {
+  const response = await baseFetch(path, {
     ...options,
-    credentials: 'include',
-    headers: {
-      ...options.headers
-    }
+    method: options.method ?? 'POST',
+    body: formData
   });
 
   if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
+    throw new ApiError(response.status, await parseApiError(response));
   }
 
-  return response.text();
+  return response.json();
+}
+
+async function refreshSession(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        await fetchJsonNoRefresh('/api/auth/refresh', { method: 'POST' });
+        return true;
+      } catch {
+        return false;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+  return refreshPromise;
+}
+
+async function withAuthRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      const refreshed = await refreshSession();
+      if (refreshed) {
+        return await fn();
+      }
+    }
+    throw err;
+  }
+}
+
+export async function fetchApi<T>(path: string, options: RequestInit = {}): Promise<T> {
+  return withAuthRetry(() => fetchJsonNoRefresh<T>(path, options));
+}
+
+export async function fetchText(path: string, options: RequestInit = {}): Promise<string> {
+  return withAuthRetry(() => fetchTextNoRefresh(path, options));
 }
 
 export async function fetchForm<T>(
@@ -55,22 +127,7 @@ export async function fetchForm<T>(
   formData: FormData,
   options: RequestInit = {}
 ): Promise<T> {
-  const baseUrl = getBackendUrl();
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    method: options.method ?? 'POST',
-    credentials: 'include',
-    body: formData,
-    headers: {
-      ...options.headers
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
-  }
-
-  return response.json();
+  return withAuthRetry(() => fetchFormNoRefresh<T>(path, formData, options));
 }
 
 export const api = {
@@ -91,6 +148,13 @@ export const api = {
         expires_at?: number;
         session_expires_at?: number;
       }>('/api/auth/token'),
+    refresh: () =>
+      fetchJsonNoRefresh<{
+        authenticated: boolean;
+        user_id?: string;
+        expires_at?: number;
+        session_expires_at?: number;
+      }>('/api/auth/refresh', { method: 'POST' }),
     login: (email: string, password: string) =>
       fetchApi<{
         success: boolean;

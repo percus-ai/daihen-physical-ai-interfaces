@@ -5,6 +5,7 @@
   import { Button } from 'bits-ui';
   import { Gear } from 'phosphor-svelte';
   import { createQuery } from '@tanstack/svelte-query';
+  import { toStore } from 'svelte/store';
 
   import { api } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
@@ -26,15 +27,21 @@
     is_active?: boolean;
   };
 
-  const profileInstancesQuery = createQuery<{ instances?: ProfileInstance[] }>({
-    queryKey: ['profiles', 'instances'],
-    queryFn: api.profiles.instances
-  });
+  const profileInstancesQuery = createQuery<{ instances?: ProfileInstance[] }>(
+    toStore(() => ({
+      queryKey: ['profiles', 'instances'],
+      queryFn: api.profiles.instances,
+      enabled: authenticated
+    }))
+  );
 
-  const activeProfileQuery = createQuery<{ instance?: ProfileInstance }>({
-    queryKey: ['profiles', 'instances', 'active'],
-    queryFn: api.profiles.activeInstance
-  });
+  const activeProfileQuery = createQuery<{ instance?: ProfileInstance }>(
+    toStore(() => ({
+      queryKey: ['profiles', 'instances', 'active'],
+      queryFn: api.profiles.activeInstance,
+      enabled: authenticated
+    }))
+  );
 
   const authItems = {
     login: {
@@ -80,14 +87,25 @@
     }
   });
   let stopProfileStream = () => {};
+  let profileStreamActive = false;
 
-  onMount(() => {
-    stopProfileStream = connectStream({
-      path: '/api/stream/profiles/active',
-      onMessage: (payload) => {
-        queryClient.setQueryData(['profiles', 'instances', 'active', 'status'], payload);
-      }
-    });
+  $effect(() => {
+    if (authenticated && !profileStreamActive) {
+      stopProfileStream();
+      stopProfileStream = connectStream({
+        path: '/api/stream/profiles/active',
+        onMessage: (payload) => {
+          queryClient.setQueryData(['profiles', 'instances', 'active', 'status'], payload);
+        }
+      });
+      profileStreamActive = true;
+      return;
+    }
+    if (!authenticated && profileStreamActive) {
+      stopProfileStream();
+      stopProfileStream = () => {};
+      profileStreamActive = false;
+    }
   });
 
   onDestroy(() => {
@@ -108,8 +126,8 @@
     profileError = '';
     try {
       await api.profiles.updateInstance(nextId, { activate: true });
-      await activeProfileQuery.refetch();
-      await profileInstancesQuery.refetch();
+      await $activeProfileQuery?.refetch?.();
+      await $profileInstancesQuery?.refetch?.();
     } catch (err) {
       console.error(err);
       profileError = '切り替えに失敗しました';
@@ -225,7 +243,7 @@
             <a
               href={item.href}
               class={`group flex items-start gap-3 rounded-2xl border border-transparent px-3 py-2 transition hover:border-slate-200 hover:bg-white ${
-                $page.url.pathname === '/auth' ? 'text-slate-700' : 'text-slate-600'
+                page.url.pathname === '/auth' ? 'text-slate-700' : 'text-slate-600'
               }`}
               on:click={closeMobile}
             >

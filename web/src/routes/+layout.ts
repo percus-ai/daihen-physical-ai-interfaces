@@ -11,7 +11,32 @@ export const load: LayoutLoad = async ({ url }) => {
   }
   try {
     const status = await api.auth.status();
-    if (!status.authenticated) {
+    const now = Math.floor(Date.now() / 1000);
+    let authenticated = Boolean(status.authenticated);
+    let expiresAt = status.expires_at;
+    let sessionExpiresAt = status.session_expires_at;
+    const refreshLeewaySeconds = 60;
+
+    if (!authenticated && sessionExpiresAt && sessionExpiresAt > now) {
+      try {
+        const refreshed = await api.auth.refresh();
+        authenticated = Boolean(refreshed.authenticated);
+        expiresAt = refreshed.expires_at;
+        sessionExpiresAt = refreshed.session_expires_at;
+      } catch {
+        authenticated = false;
+      }
+    }
+
+    if (authenticated && expiresAt && expiresAt <= now + refreshLeewaySeconds) {
+      try {
+        await api.auth.refresh();
+      } catch {
+        authenticated = false;
+      }
+    }
+
+    if (!authenticated) {
       throw new Error('unauthenticated');
     }
   } catch {

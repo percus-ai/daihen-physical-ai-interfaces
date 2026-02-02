@@ -17,6 +17,7 @@ ACCESS_COOKIE_NAME = "phi_access_token"
 REFRESH_COOKIE_NAME = "phi_refresh_token"
 REFRESH_ISSUED_AT_COOKIE_NAME = "phi_refresh_issued_at"
 DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
+DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,16 @@ def _refresh_cookie_max_age() -> int:
     raw = os.environ.get("PHI_REFRESH_COOKIE_MAX_AGE_SECONDS")
     if raw is None or raw == "":
         return DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS
+
+
+def _refresh_timeout_seconds() -> int:
+    raw = os.environ.get("PHI_SUPABASE_REFRESH_TIMEOUT_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS
     try:
         return max(0, int(raw))
     except ValueError:
@@ -97,6 +108,12 @@ def set_session_cookies(response: Response, session: dict[str, Any]) -> None:
             path="/",
             max_age=refresh_max_age,
         )
+
+
+def clear_session_cookies(response: Response) -> None:
+    response.delete_cookie(ACCESS_COOKIE_NAME, path="/")
+    response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
+    response.delete_cookie(REFRESH_ISSUED_AT_COOKIE_NAME, path="/")
 
 
 def extract_access_token(request: Request) -> Optional[str]:
@@ -187,7 +204,7 @@ def _refresh_session(refresh_token: str) -> Optional[dict[str, Any]]:
     req.add_header("Authorization", f"Bearer {api_key}")
     req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=_refresh_timeout_seconds()) as resp:
             data = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         body = ""
@@ -231,17 +248,8 @@ def build_session_from_request(request: Request) -> Optional[dict[str, Any]]:
     return build_session_from_tokens(access_token, refresh_token)
 
 
-def build_session_from_request_with_refresh(
-    request: Request,
-) -> tuple[Optional[dict[str, Any]], bool]:
-    access_token = extract_access_token(request)
+def refresh_session_from_request(request: Request) -> Optional[dict[str, Any]]:
     refresh_token = extract_refresh_token(request)
-    session = build_session_from_tokens(access_token, refresh_token) if access_token else None
-    if session and not is_session_expired(session):
-        return session, False
     if not refresh_token:
-        return None, False
-    refreshed = _refresh_session(refresh_token)
-    if not refreshed:
-        return None, False
-    return refreshed, True
+        return None
+    return _refresh_session(refresh_token)
