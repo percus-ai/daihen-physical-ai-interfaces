@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { derived } from 'svelte/store';
-  import { page } from '$app/stores';
+  import { toStore } from 'svelte/store';
+  import { page } from '$app/state';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
@@ -49,18 +49,14 @@
     completed: '完了'
   };
 
-  let sessionId = '';
-  $: sessionId = $page.params.session_id;
+  const sessionId = $derived(page.params.session_id ?? '');
 
   const statusQuery = createQuery<RecordingSessionStatusResponse>(
-    derived(page, ($page) => {
-      const currentId = $page.params.session_id;
-      return {
-        queryKey: ['recording', 'session', currentId],
-        queryFn: () => api.recording.sessionStatus(currentId),
-        enabled: Boolean(currentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['recording', 'session', sessionId],
+      queryFn: () => api.recording.sessionStatus(sessionId),
+      enabled: Boolean(sessionId)
+    }))
   );
 
   const topicsQuery = createQuery<ProfileStatusResponse>({
@@ -68,12 +64,12 @@
     queryFn: api.profiles.activeStatus
   });
 
-  let blueprint: BlueprintNode = createDefaultBlueprint();
-  let selectedId = blueprint.id;
-  let mounted = false;
+  let blueprint: BlueprintNode = $state(createDefaultBlueprint());
+  let selectedId = $state(blueprint.id);
+  let mounted = $state(false);
   let lastSessionId = '';
-  let filledDefaults = false;
-  let editMode = true;
+  let filledDefaults = $state(false);
+  let editMode = $state(true);
 
   const storageKey = (id: string) => `recording-blueprint:${id}`;
 
@@ -135,40 +131,48 @@
   let stopRecordingStream = () => {};
   let lastStreamSessionId = '';
 
-  $: if (mounted && sessionId && sessionId !== lastStreamSessionId) {
-    stopRecordingStream();
-    lastStreamSessionId = sessionId;
-    stopRecordingStream = connectStream({
-      path: `/api/stream/recording/sessions/${encodeURIComponent(sessionId)}`,
-      onMessage: (payload) => {
-        queryClient.setQueryData(['recording', 'session', sessionId], payload);
-      }
-    });
-  }
+  $effect(() => {
+    if (mounted && sessionId && sessionId !== lastStreamSessionId) {
+      stopRecordingStream();
+      lastStreamSessionId = sessionId;
+      stopRecordingStream = connectStream({
+        path: `/api/stream/recording/sessions/${encodeURIComponent(sessionId)}`,
+        onMessage: (payload) => {
+          queryClient.setQueryData(['recording', 'session', sessionId], payload);
+        }
+      });
+    }
+  });
 
   onDestroy(() => {
     stopRecordingStream();
   });
 
-  $: if (mounted && sessionId && sessionId !== lastSessionId) {
-    lastSessionId = sessionId;
-    filledDefaults = false;
-    loadBlueprint(sessionId);
-  }
+  $effect(() => {
+    if (mounted && sessionId && sessionId !== lastSessionId) {
+      lastSessionId = sessionId;
+      filledDefaults = false;
+      loadBlueprint(sessionId);
+    }
+  });
 
-  $: if (mounted && sessionId) {
-    saveBlueprint();
-  }
+  $effect(() => {
+    if (mounted && sessionId) {
+      saveBlueprint();
+    }
+  });
 
-  $: if (!filledDefaults && ($topicsQuery.data?.topics ?? []).length > 0) {
-    blueprint = fillDefaultConfig(blueprint, $topicsQuery.data?.topics ?? []);
-    filledDefaults = true;
-  }
+  $effect(() => {
+    if (!filledDefaults && ($topicsQuery.data?.topics ?? []).length > 0) {
+      blueprint = fillDefaultConfig(blueprint, $topicsQuery.data?.topics ?? []);
+      filledDefaults = true;
+    }
+  });
 
-  $: selectedNode = selectedId ? findNode(blueprint, selectedId) : null;
-  $: selectedViewNode = selectedNode?.type === 'view' ? selectedNode : null;
-  $: selectedSplitNode = selectedNode?.type === 'split' ? selectedNode : null;
-  $: selectedTabsNode = selectedNode?.type === 'tabs' ? selectedNode : null;
+  const selectedNode = $derived(selectedId ? findNode(blueprint, selectedId) : null);
+  const selectedViewNode = $derived(selectedNode?.type === 'view' ? selectedNode : null);
+  const selectedSplitNode = $derived(selectedNode?.type === 'split' ? selectedNode : null);
+  const selectedTabsNode = $derived(selectedNode?.type === 'tabs' ? selectedNode : null);
 
   const updateSelection = (id: string) => {
     selectedId = id;

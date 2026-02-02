@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { Button } from 'bits-ui';
-  import { get } from 'svelte/store';
+  import { toStore } from 'svelte/store';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
@@ -50,49 +50,58 @@
     queryFn: api.profiles.activeInstance
   });
 
-  $: activeClassId = $activeInstanceQuery.data?.instance?.class_id ?? '';
-  $: activeProfileId = $activeInstanceQuery.data?.instance?.id ?? '';
-  $: vlaborState = $vlaborStatusQuery.data?.status ?? 'unknown';
-  $: vlaborDetail = $vlaborStatusQuery.data?.status_detail ?? $vlaborStatusQuery.data?.running_for ?? '';
+  const activeClassId = $derived($activeInstanceQuery.data?.instance?.class_id ?? '');
+  const activeProfileId = $derived($activeInstanceQuery.data?.instance?.id ?? '');
 
-  const activeClassQuery = createQuery<ProfileClassDetailResponse>({
-    queryKey: ['profiles', 'classes', activeClassId],
-    queryFn: async () => {
-      if (!activeClassId) return { profile_class: undefined };
-      return api.profiles.class(activeClassId);
-    }
-  });
+  const activeClassQuery = createQuery<ProfileClassDetailResponse>(
+    toStore(() => ({
+      queryKey: ['profiles', 'classes', activeClassId],
+      queryFn: async () => {
+        if (!activeClassId) return { profile_class: undefined };
+        return api.profiles.class(activeClassId);
+      },
+      enabled: Boolean(activeClassId)
+    }))
+  );
 
-  const activeStatusQuery = createQuery<ProfileStatusResponse>({
-    queryKey: ['profiles', 'instances', 'active', 'status'],
-    queryFn: async () => {
-      if (!activeProfileId) return { cameras: [], arms: [] };
-      return api.profiles.activeStatus();
-    }
-  });
-
-  let restartPending = false;
-  let actionPending = false;
-  let actionMessage = '';
-  let actionIntent: 'start' | 'stop' | '' = '';
+  const activeStatusQuery = createQuery<ProfileStatusResponse>(
+    toStore(() => ({
+      queryKey: ['profiles', 'instances', 'active', 'status'],
+      queryFn: async () => {
+        if (!activeProfileId) return { cameras: [], arms: [] };
+        return api.profiles.activeStatus();
+      },
+      enabled: Boolean(activeProfileId)
+    }))
+  );
 
   const vlaborStatusQuery = createQuery<VlaborStatusResponse>({
     queryKey: ['profiles', 'vlabor', 'status'],
     queryFn: api.profiles.vlaborStatus
   });
 
+  const vlaborState = $derived($vlaborStatusQuery.data?.status ?? 'unknown');
+  const vlaborDetail = $derived(
+    $vlaborStatusQuery.data?.status_detail ?? $vlaborStatusQuery.data?.running_for ?? ''
+  );
+
+  let restartPending = $state(false);
+  let actionPending = $state(false);
+  let actionMessage = $state('');
+  let actionIntent: 'start' | 'stop' | '' = $state('');
+
   type ProfileSettingsState = {
     flags: Record<string, boolean>;
     orderedKeys: string[];
   };
 
-  let profileSettings: ProfileSettingsState = {
+  let profileSettings: ProfileSettingsState = $state({
     flags: {},
     orderedKeys: []
-  };
+  });
   let lastInstanceId = '';
-  let savingProfileSettings = false;
-  let saveMessage = '';
+  let savingProfileSettings = $state(false);
+  let saveMessage = $state('');
 
   const labelMap: Record<string, string> = {
     overhead_camera_enabled: 'オーバーヘッドカメラ',
@@ -112,7 +121,7 @@
     return [...preferred.filter((k) => keys.includes(k)), ...rest];
   }
 
-  $: {
+  $effect(() => {
     const instance = $activeInstanceQuery.data?.instance;
     const profileClass = $activeClassQuery.data?.profile_class;
     const defaults = (profileClass?.defaults ?? {}) as Record<string, unknown>;
@@ -139,16 +148,16 @@
       lastInstanceId = instance.id;
       saveMessage = '';
     }
-  }
+  });
 
-  $: activeProfileTitle = (() => {
+  const activeProfileTitle = $derived.by(() => {
     const instance = $activeInstanceQuery.data?.instance;
     const classKey = instance?.class_key ?? $activeClassQuery.data?.profile_class?.class_key ?? '-';
     const instanceName = instance?.id ? instance?.id.slice(0, 6) : '-';
     return `${classKey} / ${instanceName}`;
-  })();
+  });
 
-  $: {
+  $effect(() => {
     const status = $vlaborStatusQuery.data?.status ?? 'unknown';
     if (restartPending && status === 'running') {
       restartPending = false;
@@ -158,17 +167,16 @@
       actionPending = false;
       actionIntent = '';
     }
-  }
+  });
 
-  $: actionStatusLabel = (() => {
+  const actionStatusLabel = $derived.by(() => {
     if (restartPending) return '再起動中…';
     if (actionIntent === 'start') return '起動中…';
     if (actionIntent === 'stop') return '停止中…';
     return '';
-  })();
+  });
 
-  async function refetchQuery(queryStore: typeof activeInstanceQuery) {
-    const snapshot = get(queryStore);
+  async function refetchQuery(snapshot?: { refetch?: () => Promise<unknown> }) {
     if (snapshot && typeof snapshot.refetch === 'function') {
       await snapshot.refetch();
     }
@@ -206,8 +214,8 @@
       });
       restartPending = true;
       saveMessage = '再起動中…';
-      await refetchQuery(activeInstanceQuery);
-      await refetchQuery(activeStatusQuery);
+      await refetchQuery($activeInstanceQuery);
+      await refetchQuery($activeStatusQuery);
     } catch (error) {
       console.error(error);
       saveMessage = '更新に失敗しました。';
@@ -222,8 +230,8 @@
     actionMessage = '';
     try {
       await api.profiles.vlaborStart();
-      await refetchQuery(vlaborStatusQuery);
-      await refetchQuery(activeStatusQuery);
+      await refetchQuery($vlaborStatusQuery);
+      await refetchQuery($activeStatusQuery);
     } catch (error) {
       console.error(error);
       const detail = error instanceof Error ? error.message : '起動に失敗しました。';
@@ -243,8 +251,8 @@
     actionMessage = '';
     try {
       await api.profiles.vlaborStop();
-      await refetchQuery(vlaborStatusQuery);
-      await refetchQuery(activeStatusQuery);
+      await refetchQuery($vlaborStatusQuery);
+      await refetchQuery($activeStatusQuery);
     } catch (error) {
       console.error(error);
       const detail = error instanceof Error ? error.message : '停止に失敗しました。';

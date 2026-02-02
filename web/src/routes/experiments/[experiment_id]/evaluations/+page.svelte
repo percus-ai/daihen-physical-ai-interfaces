@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { derived } from 'svelte/store';
-  import { page } from '$app/stores';
+  import { toStore } from 'svelte/store';
+  import { page } from '$app/state';
   import { Button, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
@@ -46,56 +46,50 @@
 
   const DEFAULT_METRIC_OPTIONS = ['成功', '失敗', '部分成功'];
 
+  const experimentId = $derived(page.params.experiment_id ?? '');
+
   const experimentQuery = createQuery<Experiment>(
-    derived(page, ($page) => {
-      const experimentId = $page.params.experiment_id;
-      return {
-        queryKey: ['experiments', 'detail', experimentId],
-        queryFn: () => api.experiments.get(experimentId),
-        enabled: Boolean(experimentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['experiments', 'detail', experimentId],
+      queryFn: () => api.experiments.get(experimentId),
+      enabled: Boolean(experimentId)
+    }))
   );
 
   const evaluationsQuery = createQuery<EvaluationListResponse>(
-    derived(page, ($page) => {
-      const experimentId = $page.params.experiment_id;
-      return {
-        queryKey: ['experiments', 'evaluations', experimentId],
-        queryFn: () => api.experiments.evaluations(experimentId),
-        enabled: Boolean(experimentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['experiments', 'evaluations', experimentId],
+      queryFn: () => api.experiments.evaluations(experimentId),
+      enabled: Boolean(experimentId)
+    }))
   );
 
   const summaryQuery = createQuery<EvaluationSummary>(
-    derived(page, ($page) => {
-      const experimentId = $page.params.experiment_id;
-      return {
-        queryKey: ['experiments', 'summary', experimentId],
-        queryFn: () => api.experiments.evaluationSummary(experimentId),
-        enabled: Boolean(experimentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['experiments', 'summary', experimentId],
+      queryFn: () => api.experiments.evaluationSummary(experimentId),
+      enabled: Boolean(experimentId)
+    }))
   );
 
-  let evaluationItems: EvaluationDraft[] = [];
-  let initializedId = '';
-  let submitting = false;
-  let error = '';
-  let success = '';
-  let uploadingIndex: number | null = null;
-  let uploadError = '';
-  let imageUrlsError = '';
-  let imageUrlMap: Record<string, string> = {};
-  let imageKeySignature = '';
+  let evaluationItems: EvaluationDraft[] = $state([]);
+  let initializedId = $state('');
+  let submitting = $state(false);
+  let error = $state('');
+  let success = $state('');
+  let uploadingIndex: number | null = $state(null);
+  let uploadError = $state('');
+  let imageUrlsError = $state('');
+  let imageUrlMap: Record<string, string> = $state({});
+  let imageKeySignature = $state('');
 
-  $: experiment = $experimentQuery.data as Experiment | undefined;
-  $: evaluationCount = experiment?.evaluation_count ?? 0;
-  $: metricOptions =
+  const experiment = $derived($experimentQuery.data as Experiment | undefined);
+  const evaluationCount = $derived(experiment?.evaluation_count ?? 0);
+  const metricOptions = $derived(
     experiment?.metric_options && experiment.metric_options.length
       ? experiment.metric_options
-      : DEFAULT_METRIC_OPTIONS;
+      : DEFAULT_METRIC_OPTIONS
+  );
 
   const buildEvaluationDrafts = (exp: Experiment, existing: Evaluation[]) => {
     const map = new Map(existing.map((item) => [item.trial_index, item]));
@@ -122,21 +116,26 @@
     evaluationItems = buildEvaluationDrafts(experiment, existing);
   };
 
-  $: if (experiment && $evaluationsQuery.data && experiment.id !== initializedId) {
-    resetFromServer();
-    initializedId = experiment.id;
-  }
+  $effect(() => {
+    if (experiment && $evaluationsQuery.data && experiment.id !== initializedId) {
+      resetFromServer();
+      initializedId = experiment.id;
+    }
+  });
 
-  $: filledCount = evaluationItems.filter((item) => item.value.trim()).length;
-  $: remainingCount = Math.max(0, (experiment?.evaluation_count ?? 0) - filledCount);
-  $: imageKeys = Array.from(
-    new Set(evaluationItems.flatMap((item) => item.image_files ?? []).filter(Boolean))
+  const filledCount = $derived(evaluationItems.filter((item) => item.value.trim()).length);
+  const remainingCount = $derived(Math.max(0, (experiment?.evaluation_count ?? 0) - filledCount));
+  const imageKeys = $derived(
+    Array.from(new Set(evaluationItems.flatMap((item) => item.image_files ?? []).filter(Boolean)))
   );
 
-  $: if (imageKeys.join('|') !== imageKeySignature) {
-    imageKeySignature = imageKeys.join('|');
-    void loadImageUrls();
-  }
+  $effect(() => {
+    const signature = imageKeys.join('|');
+    if (signature !== imageKeySignature) {
+      imageKeySignature = signature;
+      void loadImageUrls();
+    }
+  });
 
   const updateItem = (index: number, updates: Partial<EvaluationDraft>) => {
     evaluationItems = evaluationItems.map((item, idx) =>

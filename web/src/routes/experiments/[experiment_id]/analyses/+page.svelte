@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { derived } from 'svelte/store';
-  import { page } from '$app/stores';
+  import { toStore } from 'svelte/store';
+  import { page } from '$app/state';
   import { Button, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
@@ -33,40 +33,36 @@
     image_files: string[];
   };
 
+  const experimentId = $derived(page.params.experiment_id ?? '');
+
   const experimentQuery = createQuery<Experiment>(
-    derived(page, ($page) => {
-      const experimentId = $page.params.experiment_id;
-      return {
-        queryKey: ['experiments', 'detail', experimentId],
-        queryFn: () => api.experiments.get(experimentId),
-        enabled: Boolean(experimentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['experiments', 'detail', experimentId],
+      queryFn: () => api.experiments.get(experimentId),
+      enabled: Boolean(experimentId)
+    }))
   );
 
   const analysesQuery = createQuery<AnalysisListResponse>(
-    derived(page, ($page) => {
-      const experimentId = $page.params.experiment_id;
-      return {
-        queryKey: ['experiments', 'analyses', experimentId],
-        queryFn: () => api.experiments.analyses(experimentId),
-        enabled: Boolean(experimentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['experiments', 'analyses', experimentId],
+      queryFn: () => api.experiments.analyses(experimentId),
+      enabled: Boolean(experimentId)
+    }))
   );
 
-  let analysisBlocks: AnalysisDraft[] = [];
-  let initializedId = '';
-  let submitting = false;
-  let error = '';
-  let success = '';
-  let uploadingIndex: number | null = null;
-  let uploadError = '';
-  let imageUrlsError = '';
-  let imageUrlMap: Record<string, string> = {};
-  let imageKeySignature = '';
+  let analysisBlocks: AnalysisDraft[] = $state([]);
+  let initializedId = $state('');
+  let submitting = $state(false);
+  let error = $state('');
+  let success = $state('');
+  let uploadingIndex: number | null = $state(null);
+  let uploadError = $state('');
+  let imageUrlsError = $state('');
+  let imageUrlMap: Record<string, string> = $state({});
+  let imageKeySignature = $state('');
 
-  $: experiment = $experimentQuery.data as Experiment | undefined;
+  const experiment = $derived($experimentQuery.data as Experiment | undefined);
 
   const fromServer = () => {
     const blocks = $analysesQuery.data?.analyses ?? [];
@@ -78,10 +74,12 @@
     }));
   };
 
-  $: if (experiment && $analysesQuery.data && experiment.id !== initializedId) {
-    fromServer();
-    initializedId = experiment.id;
-  }
+  $effect(() => {
+    if (experiment && $analysesQuery.data && experiment.id !== initializedId) {
+      fromServer();
+      initializedId = experiment.id;
+    }
+  });
 
   const updateBlock = (index: number, updates: Partial<AnalysisDraft>) => {
     analysisBlocks = analysisBlocks.map((block, idx) =>
@@ -102,14 +100,17 @@
     updateBlock(index, { image_files: next });
   };
 
-  $: imageKeys = Array.from(
-    new Set(analysisBlocks.flatMap((block) => block.image_files ?? []).filter(Boolean))
+  const imageKeys = $derived(
+    Array.from(new Set(analysisBlocks.flatMap((block) => block.image_files ?? []).filter(Boolean)))
   );
 
-  $: if (imageKeys.join('|') !== imageKeySignature) {
-    imageKeySignature = imageKeys.join('|');
-    void loadImageUrls();
-  }
+  $effect(() => {
+    const signature = imageKeys.join('|');
+    if (signature !== imageKeySignature) {
+      imageKeySignature = signature;
+      void loadImageUrls();
+    }
+  });
 
   const loadImageUrls = async () => {
     if (!imageKeys.length) {

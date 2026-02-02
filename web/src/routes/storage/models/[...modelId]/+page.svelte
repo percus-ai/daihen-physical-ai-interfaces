@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Button } from 'bits-ui';
-  import { derived } from 'svelte/store';
-  import { page } from '$app/stores';
+  import { toStore } from 'svelte/store';
+  import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
@@ -19,27 +19,24 @@
     updated_at?: string;
   };
 
-  $: modelId = $page.params.modelId;
+  const modelId = $derived(page.params.modelId ?? '');
 
   const queryClient = useQueryClient();
 
   const modelQuery = createQuery<ModelInfo>(
-    derived(page, ($page) => {
-      const currentId = $page.params.modelId;
-      return {
-        queryKey: ['storage', 'model', currentId],
-        queryFn: () => api.storage.model(currentId) as Promise<ModelInfo>,
-        enabled: Boolean(currentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['storage', 'model', modelId],
+      queryFn: () => api.storage.model(modelId) as Promise<ModelInfo>,
+      enabled: Boolean(modelId)
+    }))
   );
 
-  $: model = $modelQuery.data;
-  $: isArchived = model?.status === 'archived';
+  const model = $derived($modelQuery.data);
+  const isArchived = $derived(model?.status === 'archived');
 
-  let actionMessage = '';
-  let actionError = '';
-  let actionLoading = false;
+  let actionMessage = $state('');
+  let actionError = $state('');
+  let actionLoading = $state(false);
 
   const refetchModel = async () => {
     if (!modelId) return;

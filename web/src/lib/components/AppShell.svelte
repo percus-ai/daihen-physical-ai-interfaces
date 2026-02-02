@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { navItems, quickActions } from '$lib/navigation';
   import { Button } from 'bits-ui';
   import { Gear } from 'phosphor-svelte';
@@ -10,12 +10,14 @@
   import { connectStream } from '$lib/realtime/stream';
   import { queryClient } from '$lib/queryClient';
 
-  let mobileOpen = false;
-  let authenticated = false;
+  let mobileOpen = $state(false);
+  let authenticated = $state(false);
+  let switchingProfile = $state(false);
+  let profileError = $state('');
+  const immersiveView = $derived(
+    page.url.pathname.startsWith('/record/sessions/') || page.url.pathname.startsWith('/operate/sessions/')
+  );
   let lastPath = '';
-  let switchingProfile = false;
-  let profileError = '';
-  let immersiveView = false;
 
   type ProfileInstance = {
     id: string;
@@ -64,23 +66,19 @@
     }
   };
 
-  $: {
-    const currentPath = $page.url.pathname + $page.url.search;
+  $effect(() => {
+    const currentPath = page.url.pathname + page.url.search;
     if (currentPath !== lastPath) {
       lastPath = currentPath;
       refreshAuth();
     }
-  }
+  });
 
-  $: {
-    const path = $page.url.pathname;
-    immersiveView = path.startsWith('/record/sessions/') || path.startsWith('/operate/sessions/');
-  }
-  $: if (immersiveView && mobileOpen) {
-    mobileOpen = false;
-  }
-
-  onMount(refreshAuth);
+  $effect(() => {
+    if (immersiveView && mobileOpen) {
+      mobileOpen = false;
+    }
+  });
   let stopProfileStream = () => {};
 
   onMount(() => {
@@ -205,7 +203,7 @@
             <a
               href={item.href}
               class={`group flex items-start gap-3 rounded-2xl border border-transparent px-3 py-2 transition hover:border-slate-200 hover:bg-white ${
-                $page.url.pathname === item.href
+                page.url.pathname === item.href
                   ? 'border-slate-200 bg-white shadow-sm'
                   : 'text-slate-600'
               }`}

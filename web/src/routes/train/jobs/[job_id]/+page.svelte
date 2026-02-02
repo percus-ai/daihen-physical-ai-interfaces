@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { derived } from 'svelte/store';
-  import { page } from '$app/stores';
+  import { toStore } from 'svelte/store';
+  import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
@@ -48,66 +48,66 @@
     summary?: Record<string, unknown> | null;
   };
 
-  let jobId = '';
-  $: jobId = $page.params.job_id;
+  const jobId = $derived(page.params.job_id ?? '');
 
   const jobQuery = createQuery<JobDetailResponse>(
-    derived(page, ($page) => {
-      const currentId = $page.params.job_id;
-      return {
-        queryKey: ['training', 'job', currentId],
-        queryFn: () => api.training.job(currentId) as Promise<JobDetailResponse>,
-        enabled: Boolean(currentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['training', 'job', jobId],
+      queryFn: () => api.training.job(jobId) as Promise<JobDetailResponse>,
+      enabled: Boolean(jobId)
+    }))
   );
 
-  let logsType: 'training' | 'setup' = 'training';
-  let logLines = 30;
-  let logs = '';
-  let logsSource = '';
-  let logsLoading = false;
-  let logsError = '';
+  let logsType: 'training' | 'setup' = $state('training');
+  let logLines = $state(30);
+  let logs = $state('');
+  let logsSource = $state('');
+  let logsLoading = $state(false);
+  let logsError = $state('');
 
   let metrics: { train?: Array<{ step?: number; loss?: number; ts?: string }>; val?: Array<{ step?: number; loss?: number; ts?: string }> } | null =
-    null;
-  let metricsLoading = false;
-  let metricsError = '';
+    $state(null);
+  let metricsLoading = $state(false);
+  let metricsError = $state('');
 
-  let copied = false;
+  let copied = $state(false);
   type TrainingJobStreamPayload = {
     job_detail?: JobDetailResponse;
     metrics?: { train?: MetricPoint[]; val?: MetricPoint[] };
   };
 
-  let streamStatus = 'idle';
-  let streamError = '';
-  let streamLines: string[] = [];
-  let streamWs: WebSocket | null = null;
+  let streamStatus = $state('idle');
+  let streamError = $state('');
+  let streamLines: string[] = $state([]);
+  let streamWs = $state.raw<WebSocket | null>(null);
 
   type MetricPoint = { step?: number; loss?: number; ts?: string };
 
-  $: jobInfo = $jobQuery.data?.job;
-  $: trainingConfig = $jobQuery.data?.training_config ?? {};
-  $: summary = $jobQuery.data?.summary ?? {};
-  $: status = jobInfo?.status ?? '';
-  $: datasetId = trainingConfig?.dataset?.id ?? '';
-  $: profileId = jobInfo?.profile_instance_id ?? '';
-  $: trainSeries =
+  const jobInfo = $derived($jobQuery.data?.job);
+  const trainingConfig = $derived($jobQuery.data?.training_config ?? {});
+  const summary = $derived($jobQuery.data?.summary ?? {});
+  const status = $derived(jobInfo?.status ?? '');
+  const datasetId = $derived(trainingConfig?.dataset?.id ?? '');
+  const profileId = $derived(jobInfo?.profile_instance_id ?? '');
+  const trainSeries = $derived(
     (metrics?.train ?? [])
       .filter((point: MetricPoint) => typeof point.step === 'number' && typeof point.loss === 'number')
-      .map((point: MetricPoint) => ({ step: point.step as number, loss: point.loss as number })) ?? [];
-  $: valSeries =
+      .map((point: MetricPoint) => ({ step: point.step as number, loss: point.loss as number })) ?? []
+  );
+  const valSeries = $derived(
     (metrics?.val ?? [])
       .filter((point: MetricPoint) => typeof point.step === 'number' && typeof point.loss === 'number')
-      .map((point: MetricPoint) => ({ step: point.step as number, loss: point.loss as number })) ?? [];
+      .map((point: MetricPoint) => ({ step: point.step as number, loss: point.loss as number })) ?? []
+  );
 
-  $: isRunning = ['running', 'starting', 'deploying'].includes(status);
-  $: canDelete = ['completed', 'failed', 'stopped', 'terminated'].includes(status);
+  const isRunning = $derived(['running', 'starting', 'deploying'].includes(status));
+  const canDelete = $derived(['completed', 'failed', 'stopped', 'terminated'].includes(status));
 
-  $: sshCommand = jobInfo?.ip
-    ? `ssh -i ${jobInfo?.ssh_private_key ?? '~/.ssh/id_rsa'} ${jobInfo?.ssh_user ?? 'root'}@${jobInfo.ip}`
-    : '';
+  const sshCommand = $derived(
+    jobInfo?.ip
+      ? `ssh -i ${jobInfo?.ssh_private_key ?? '~/.ssh/id_rsa'} ${jobInfo?.ssh_user ?? 'root'}@${jobInfo.ip}`
+      : ''
+  );
 
   const wsUrl = (path: string) => getBackendUrl().replace(/^http/, 'ws') + path;
 
@@ -246,45 +246,51 @@
     streamStatus = 'stopped';
   };
 
-  $: if (!isRunning && streamWs) {
-    stopLogStream();
-  }
+  $effect(() => {
+    if (!isRunning && streamWs) {
+      stopLogStream();
+    }
+  });
 
   let lastJobId = '';
-  $: if (jobId && jobId !== lastJobId) {
-    lastJobId = jobId;
-    streamWs?.close();
-    streamWs = null;
-    streamLines = [];
-    streamStatus = 'idle';
-    streamError = '';
-    logs = '';
-    logsSource = '';
-    logsError = '';
-    metrics = null;
-    metricsError = '';
-  }
+  $effect(() => {
+    if (jobId && jobId !== lastJobId) {
+      lastJobId = jobId;
+      streamWs?.close();
+      streamWs = null;
+      streamLines = [];
+      streamStatus = 'idle';
+      streamError = '';
+      logs = '';
+      logsSource = '';
+      logsError = '';
+      metrics = null;
+      metricsError = '';
+    }
+  });
 
   let stopTrainingStream = () => {};
   let lastStreamJobId = '';
 
-  $: if (jobId && jobId !== lastStreamJobId) {
-    stopTrainingStream();
-    lastStreamJobId = jobId;
-    stopTrainingStream = connectStream<TrainingJobStreamPayload>({
-      path: `/api/stream/training/jobs/${encodeURIComponent(jobId)}`,
-      onMessage: (payload) => {
-        if (payload.job_detail) {
-          queryClient.setQueryData(['training', 'job', jobId], payload.job_detail);
+  $effect(() => {
+    if (jobId && jobId !== lastStreamJobId) {
+      stopTrainingStream();
+      lastStreamJobId = jobId;
+      stopTrainingStream = connectStream<TrainingJobStreamPayload>({
+        path: `/api/stream/training/jobs/${encodeURIComponent(jobId)}`,
+        onMessage: (payload) => {
+          if (payload.job_detail) {
+            queryClient.setQueryData(['training', 'job', jobId], payload.job_detail);
+          }
+          if (payload.metrics) {
+            metrics = payload.metrics;
+            metricsLoading = false;
+            metricsError = '';
+          }
         }
-        if (payload.metrics) {
-          metrics = payload.metrics;
-          metricsLoading = false;
-          metricsError = '';
-        }
-      }
-    });
-  }
+      });
+    }
+  });
 
   onDestroy(() => {
     stopTrainingStream();

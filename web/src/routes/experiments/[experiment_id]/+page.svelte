@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { derived } from 'svelte/store';
-  import { page } from '$app/stores';
+  import { toStore } from 'svelte/store';
+  import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
@@ -41,15 +41,14 @@
 
   const DEFAULT_METRIC_OPTIONS = ['成功', '失敗', '部分成功'];
 
+  const experimentId = $derived(page.params.experiment_id ?? '');
+
   const experimentQuery = createQuery<Experiment>(
-    derived(page, ($page) => {
-      const experimentId = $page.params.experiment_id;
-      return {
-        queryKey: ['experiments', 'detail', experimentId],
-        queryFn: () => api.experiments.get(experimentId),
-        enabled: Boolean(experimentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['experiments', 'detail', experimentId],
+      queryFn: () => api.experiments.get(experimentId),
+      enabled: Boolean(experimentId)
+    }))
   );
 
   const modelsQuery = createQuery<{ models?: ModelSummary[] }>({
@@ -67,44 +66,48 @@
     queryFn: () => api.storage.datasets()
   });
 
-  let initializedId = '';
-  let name = '';
-  let purpose = '';
-  let evaluationCount: number | string = 1;
-  let metric = 'binary';
-  let metricOptionsText = DEFAULT_METRIC_OPTIONS.join(', ');
-  let notes = '';
-  let resultImageFiles: string[] = [];
-  let pendingFiles: FileList | null = null;
-  let submitting = false;
-  let error = '';
-  let success = '';
+  let initializedId = $state('');
+  let name = $state('');
+  let purpose = $state('');
+  let evaluationCount: number | string = $state(1);
+  let metric = $state('binary');
+  let metricOptionsText = $state(DEFAULT_METRIC_OPTIONS.join(', '));
+  let notes = $state('');
+  let resultImageFiles: string[] = $state([]);
+  let pendingFiles: FileList | null = $state(null);
+  let submitting = $state(false);
+  let error = $state('');
+  let success = $state('');
 
-  $: experiment = $experimentQuery.data as Experiment | undefined;
-  $: modelMap = new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]));
-  $: profileMap = new Map(
-    ($profilesQuery.data?.instances ?? []).map((inst) => [inst.id, inst])
+  const experiment = $derived($experimentQuery.data as Experiment | undefined);
+  const modelMap = $derived(new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model])));
+  const profileMap = $derived(
+    new Map(($profilesQuery.data?.instances ?? []).map((inst) => [inst.id, inst]))
   );
-  $: datasetMap = new Map(($datasetsQuery.data?.datasets ?? []).map((dataset) => [dataset.id, dataset]));
+  const datasetMap = $derived(
+    new Map(($datasetsQuery.data?.datasets ?? []).map((dataset) => [dataset.id, dataset]))
+  );
 
   const metricOptionsToText = (options?: string[] | null) => {
     if (!options || options.length === 0) return DEFAULT_METRIC_OPTIONS.join(', ');
     return options.join(', ');
   };
 
-  $: if (experiment && experiment.id !== initializedId) {
-    name = experiment.name ?? '';
-    purpose = experiment.purpose ?? '';
-    evaluationCount = experiment.evaluation_count ?? 1;
-    metric = experiment.metric ?? 'binary';
-    metricOptionsText = metricOptionsToText(experiment.metric_options ?? null);
-    notes = experiment.notes ?? '';
-    resultImageFiles = experiment.result_image_files ?? [];
-    pendingFiles = null;
-    error = '';
-    success = '';
-    initializedId = experiment.id;
-  }
+  $effect(() => {
+    if (experiment && experiment.id !== initializedId) {
+      name = experiment.name ?? '';
+      purpose = experiment.purpose ?? '';
+      evaluationCount = experiment.evaluation_count ?? 1;
+      metric = experiment.metric ?? 'binary';
+      metricOptionsText = metricOptionsToText(experiment.metric_options ?? null);
+      notes = experiment.notes ?? '';
+      resultImageFiles = experiment.result_image_files ?? [];
+      pendingFiles = null;
+      error = '';
+      success = '';
+      initializedId = experiment.id;
+    }
+  });
 
   const parseMetricOptions = (text: string) => {
     const items = text

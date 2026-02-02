@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { Button } from 'bits-ui';
 
@@ -13,13 +13,16 @@
     session_expires_at?: number;
   };
 
-  let status: AuthStatus | null = null;
-  let loading = true;
-  let submitting = false;
-  let error: string | null = null;
-  let email = '';
-  let password = '';
-  let mode: 'login' | 'logout' | null = null;
+  let status: AuthStatus | null = $state(null);
+  let loading = $state(true);
+  let submitting = $state(false);
+  let error: string | null = $state(null);
+  let email = $state('');
+  let password = $state('');
+  const mode = $derived.by(() => {
+    const next = page.url.searchParams.get('mode');
+    return next === 'login' || next === 'logout' ? next : null;
+  });
   const refreshStatus = async () => {
     loading = true;
     try {
@@ -68,12 +71,6 @@
       submitting = false;
     }
   };
-
-  $: mode = (['login', 'logout'] as const).includes(
-    $page.url.searchParams.get('mode') as 'login' | 'logout'
-  )
-    ? ($page.url.searchParams.get('mode') as 'login' | 'logout')
-    : null;
 
   onMount(refreshStatus);
 </script>

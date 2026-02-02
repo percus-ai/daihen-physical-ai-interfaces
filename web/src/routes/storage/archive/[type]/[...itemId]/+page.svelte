@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Button } from 'bits-ui';
-  import { derived } from 'svelte/store';
-  import { page } from '$app/stores';
+  import { toStore } from 'svelte/store';
+  import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
@@ -20,37 +20,35 @@
     dataset_id?: string;
   };
 
-  $: itemType = $page.params.type;
-  $: itemId = $page.params.itemId;
-  $: isDataset = itemType === 'dataset';
-  $: isModel = itemType === 'model';
+  const itemType = $derived(page.params.type ?? '');
+  const itemId = $derived(page.params.itemId ?? '');
+  const isDataset = $derived(itemType === 'dataset');
+  const isModel = $derived(itemType === 'model');
 
   const queryClient = useQueryClient();
 
   const itemQuery = createQuery<ArchiveItem>(
-    derived(page, ($page) => {
-      const currentType = $page.params.type;
-      const currentId = $page.params.itemId;
-      const currentIsDataset = currentType === 'dataset';
-      const currentIsModel = currentType === 'model';
+    toStore(() => {
+      const currentIsDataset = itemType === 'dataset';
+      const currentIsModel = itemType === 'model';
       return {
-        queryKey: ['storage', 'archive', currentType, currentId],
+        queryKey: ['storage', 'archive', itemType, itemId],
         queryFn: () => {
           const request = currentIsDataset
-            ? api.storage.dataset(currentId)
-            : api.storage.model(currentId);
+            ? api.storage.dataset(itemId)
+            : api.storage.model(itemId);
           return request as Promise<ArchiveItem>;
         },
-        enabled: Boolean(currentId) && (currentIsDataset || currentIsModel)
+        enabled: Boolean(itemId) && (currentIsDataset || currentIsModel)
       };
     })
   );
 
-  $: item = $itemQuery.data;
+  const item = $derived($itemQuery.data);
 
-  let actionMessage = '';
-  let actionError = '';
-  let actionLoading = false;
+  let actionMessage = $state('');
+  let actionError = $state('');
+  let actionLoading = $state(false);
 
   const refetchItem = async () => {
     if (!itemId) return;

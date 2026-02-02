@@ -2,7 +2,6 @@
   import { onDestroy, onMount } from 'svelte';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
-  import { get } from 'svelte/store';
   import { goto } from '$app/navigation';
   import { api } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
@@ -150,36 +149,39 @@
     }
   };
 
-  const refetchQuery = async (queryStore: { subscribe: (run: (value: any) => void) => () => void }) => {
-    const snapshot = get(queryStore);
+  const refetchQuery = async (snapshot?: { refetch?: () => Promise<unknown> }) => {
     if (snapshot && typeof snapshot.refetch === 'function') {
       await snapshot.refetch();
     }
   };
 
-  let selectedModelId = '';
-  let selectedDevice = '';
-  let task = '';
-  let inferenceStartError = '';
-  let inferenceStopError = '';
-  let inferenceStartPending = false;
-  let inferenceStopPending = false;
+  let selectedModelId = $state('');
+  let selectedDevice = $state('');
+  let task = $state('');
+  let inferenceStartError = $state('');
+  let inferenceStopError = $state('');
+  let inferenceStartPending = $state(false);
+  let inferenceStopPending = $state(false);
 
-  let teleopStartError = '';
-  let teleopStopError = '';
-  let teleopStartPending = false;
-  let teleopStopPending = false;
+  let teleopStartError = $state('');
+  let teleopStopError = $state('');
+  let teleopStartPending = $state(false);
+  let teleopStopPending = $state(false);
 
   const emptyRunnerStatus: RunnerStatus = {};
   const emptyGpuStatus: GpuHostStatus = {};
 
-  $: if (!selectedModelId && $inferenceModelsQuery.data?.models?.length) {
-    selectedModelId = resolveModelId($inferenceModelsQuery.data.models[0]);
-  }
+  $effect(() => {
+    if (!selectedModelId && $inferenceModelsQuery.data?.models?.length) {
+      selectedModelId = resolveModelId($inferenceModelsQuery.data.models[0]);
+    }
+  });
 
-  $: if (!selectedDevice && $inferenceDeviceQuery.data?.recommended) {
-    selectedDevice = $inferenceDeviceQuery.data.recommended ?? '';
-  }
+  $effect(() => {
+    if (!selectedDevice && $inferenceDeviceQuery.data?.recommended) {
+      selectedDevice = $inferenceDeviceQuery.data.recommended ?? '';
+    }
+  });
 
   const handleInferenceStart = async () => {
     if (!selectedModelId) {
@@ -195,7 +197,7 @@
         device: selectedDevice || $inferenceDeviceQuery.data?.recommended,
         task: task.trim() || undefined
       })) as { session_id?: string };
-      await refetchQuery(inferenceRunnerStatusQuery);
+      await refetchQuery($inferenceRunnerStatusQuery);
       const nextSessionId =
         result?.session_id ?? ($inferenceRunnerStatusQuery.data?.runner_status?.session_id ?? '');
       if (nextSessionId) {
@@ -215,7 +217,7 @@
       const runnerStatus = $inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus;
       const sessionId = runnerStatus.session_id;
       await api.inference.runnerStop({ session_id: sessionId });
-      await refetchQuery(inferenceRunnerStatusQuery);
+      await refetchQuery($inferenceRunnerStatusQuery);
     } catch (err) {
       inferenceStopError = err instanceof Error ? err.message : '推論の停止に失敗しました。';
     } finally {
@@ -230,7 +232,7 @@
     try {
       const result = (await api.teleop.startProfile()) as { session?: { session_id?: string } };
       const sessionId = result?.session?.session_id;
-      await refetchQuery(teleopSessionsQuery);
+      await refetchQuery($teleopSessionsQuery);
       if (sessionId) {
         await goto(`/operate/sessions/${encodeURIComponent(sessionId)}?kind=teleop`);
       }
@@ -247,7 +249,7 @@
     teleopStopError = '';
     try {
       await api.teleop.stopLocal({ session_id: sessionId });
-      await refetchQuery(teleopSessionsQuery);
+      await refetchQuery($teleopSessionsQuery);
     } catch (err) {
       teleopStopError = err instanceof Error ? err.message : 'テレオペ停止に失敗しました。';
     } finally {
@@ -255,20 +257,20 @@
     }
   };
 
-  $: runnerStatus = $inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus;
-  $: gpuStatus = $inferenceRunnerStatusQuery.data?.gpu_host_status ?? emptyGpuStatus;
-  $: runnerActive = Boolean(runnerStatus.active);
+  const runnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus);
+  const gpuStatus = $derived($inferenceRunnerStatusQuery.data?.gpu_host_status ?? emptyGpuStatus);
+  const runnerActive = $derived(Boolean(runnerStatus.active));
 
-  $: teleopSessions = $teleopSessionsQuery.data?.sessions ?? [];
-  $: runningTeleop = teleopSessions.find((session) => session.is_running);
+  const teleopSessions = $derived($teleopSessionsQuery.data?.sessions ?? []);
+  const runningTeleop = $derived(teleopSessions.find((session) => session.is_running));
 
-  $: teleopLocked = runnerActive;
-  $: inferenceLocked = Boolean(runningTeleop);
+  const teleopLocked = $derived(runnerActive);
+  const inferenceLocked = $derived(Boolean(runningTeleop));
 
-  $: profileConfig = $teleopProfileConfigQuery.data?.config;
-  $: teleopConfigReady = Boolean(profileConfig?.leader_port && profileConfig?.follower_port);
-  $: networkDetails = $operateStatusQuery.data?.network?.details ?? {};
-  $: driverDetails = $operateStatusQuery.data?.driver?.details ?? {};
+  const profileConfig = $derived($teleopProfileConfigQuery.data?.config);
+  const teleopConfigReady = $derived(Boolean(profileConfig?.leader_port && profileConfig?.follower_port));
+  const networkDetails = $derived($operateStatusQuery.data?.network?.details ?? {});
+  const driverDetails = $derived($operateStatusQuery.data?.driver?.details ?? {});
 
   let stopOperateStream = () => {};
 

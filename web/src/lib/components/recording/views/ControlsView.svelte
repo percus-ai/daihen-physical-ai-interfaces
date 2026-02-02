@@ -1,32 +1,31 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query';
-  import { derived, writable } from 'svelte/store';
+  import { toStore } from 'svelte/store';
   import { Button } from 'bits-ui';
   import { api } from '$lib/api/client';
 
-  export let sessionId = '';
-  export let title = 'Controls';
-  export let mode: 'recording' | 'operate' = 'recording';
+  let { sessionId = '', title = 'Controls', mode = 'recording' }: {
+    sessionId?: string;
+    title?: string;
+    mode?: 'recording' | 'operate';
+  } = $props();
 
   type RecordingSessionStatusResponse = {
     dataset_id?: string;
     status?: Record<string, unknown>;
   };
 
-  const sessionIdStore = writable(sessionId);
-  $: sessionIdStore.set(sessionId);
-
   const statusQuery = createQuery<RecordingSessionStatusResponse>(
-    derived(sessionIdStore, ($sessionId) => ({
-      queryKey: ['recording', 'session', $sessionId],
-      queryFn: () => api.recording.sessionStatus($sessionId),
-      enabled: Boolean($sessionId)
+    toStore(() => ({
+      queryKey: ['recording', 'session', sessionId],
+      queryFn: () => api.recording.sessionStatus(sessionId),
+      enabled: Boolean(sessionId)
     }))
   );
 
-  let actionBusy = '';
-  let actionError = '';
-  let actionMessage = '';
+  let actionBusy = $state('');
+  let actionError = $state('');
+  let actionMessage = $state('');
 
   const refresh = async () => {
     await $statusQuery?.refetch?.();
@@ -71,16 +70,17 @@
     await runAction('エピソード破棄', () => api.recording.cancelEpisode());
   };
 
-  $: status = $statusQuery.data?.status ?? {};
-  $: statusState =
-    (status as Record<string, unknown>)?.state ?? (status as Record<string, unknown>)?.status ?? '';
-  $: datasetId = $statusQuery.data?.dataset_id ?? sessionId;
+  const status = $derived($statusQuery.data?.status ?? {});
+  const statusState = $derived(
+    (status as Record<string, unknown>)?.state ?? (status as Record<string, unknown>)?.status ?? ''
+  );
+  const datasetId = $derived($statusQuery.data?.dataset_id ?? sessionId);
 
-  $: canPause = statusState === 'recording';
-  $: canResume = statusState === 'paused';
-  $: canStop = ['recording', 'paused', 'resetting', 'warming'].includes(String(statusState));
-  $: canRedo = Boolean(statusState) && !['recording', 'paused'].includes(String(statusState));
-  $: canCancelEpisode = statusState === 'recording';
+  const canPause = $derived(statusState === 'recording');
+  const canResume = $derived(statusState === 'paused');
+  const canStop = $derived(['recording', 'paused', 'resetting', 'warming'].includes(String(statusState)));
+  const canRedo = $derived(Boolean(statusState) && !['recording', 'paused'].includes(String(statusState)));
+  const canCancelEpisode = $derived(statusState === 'recording');
 </script>
 
 <div class="flex h-full flex-col gap-3">

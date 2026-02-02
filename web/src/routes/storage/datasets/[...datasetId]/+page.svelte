@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Button } from 'bits-ui';
-  import { derived } from 'svelte/store';
-  import { page } from '$app/stores';
+  import { toStore } from 'svelte/store';
+  import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
@@ -28,50 +28,48 @@
     dataset_id?: string;
   };
 
-  $: datasetId = $page.params.datasetId;
+  const datasetId = $derived(page.params.datasetId ?? '');
 
   const queryClient = useQueryClient();
 
   const datasetQuery = createQuery<DatasetInfo>(
-    derived(page, ($page) => {
-      const currentId = $page.params.datasetId;
-      return {
-        queryKey: ['storage', 'dataset', currentId],
-        queryFn: () => api.storage.dataset(currentId) as Promise<DatasetInfo>,
-        enabled: Boolean(currentId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['storage', 'dataset', datasetId],
+      queryFn: () => api.storage.dataset(datasetId) as Promise<DatasetInfo>,
+      enabled: Boolean(datasetId)
+    }))
   );
+
+  const dataset = $derived($datasetQuery.data);
+  const profileInstanceId = $derived(dataset?.profile_instance_id ?? '');
+  const isArchived = $derived(dataset?.status === 'archived');
 
   const candidatesQuery = createQuery<DatasetListResponse>(
-    derived(datasetQuery, ($datasetQuery) => {
-      const currentProfileId = $datasetQuery.data?.profile_instance_id;
-      return {
-        queryKey: ['storage', 'datasets', 'profile', currentProfileId],
-        queryFn: () => api.storage.datasets(currentProfileId) as Promise<DatasetListResponse>,
-        enabled: Boolean(currentProfileId)
-      };
-    })
+    toStore(() => ({
+      queryKey: ['storage', 'datasets', 'profile', profileInstanceId],
+      queryFn: () => api.storage.datasets(profileInstanceId) as Promise<DatasetListResponse>,
+      enabled: Boolean(profileInstanceId)
+    }))
   );
 
-  $: dataset = $datasetQuery.data;
-  $: profileInstanceId = dataset?.profile_instance_id ?? '';
-  $: isArchived = dataset?.status === 'archived';
+  const candidates = $derived(
+    ($candidatesQuery.data?.datasets ?? [])
+      .filter((item) => item.profile_instance_id === profileInstanceId)
+      .filter((item) => item.status === 'active' && item.id !== datasetId)
+  );
 
-  $: candidates = ($candidatesQuery.data?.datasets ?? [])
-    .filter((item) => item.profile_instance_id === profileInstanceId)
-    .filter((item) => item.status === 'active' && item.id !== datasetId);
+  let mergeSelection: string[] = $state([]);
+  let mergeName = $state('');
+  let actionMessage = $state('');
+  let actionError = $state('');
+  let actionLoading = $state(false);
 
-  let mergeSelection: string[] = [];
-  let mergeName = '';
-  let actionMessage = '';
-  let actionError = '';
-  let actionLoading = false;
-
-  $: mergeDefaultName = datasetId
-    ? `${dataset?.name ?? datasetId}_merged`
-    : '';
-  $: canMerge = !isArchived && mergeSelection.length > 0 && !actionLoading;
+  const mergeDefaultName = $derived(
+    datasetId
+      ? `${dataset?.name ?? datasetId}_merged`
+      : ''
+  );
+  const canMerge = $derived(!isArchived && mergeSelection.length > 0 && !actionLoading);
 
   const refetchDataset = async () => {
     if (!datasetId) return;

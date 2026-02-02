@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
@@ -62,10 +62,8 @@
     teleop: 'テレオペ'
   };
 
-  let sessionId = '';
-  let sessionKindParam = '';
-  $: sessionId = $page.params.session_id;
-  $: sessionKindParam = $page.url.searchParams.get('kind') ?? '';
+  const sessionId = $derived(page.params.session_id ?? '');
+  const sessionKindParam = $derived(page.url.searchParams.get('kind') ?? '');
 
   const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
     queryKey: ['inference', 'runner', 'status'],
@@ -82,13 +80,13 @@
     queryFn: api.profiles.activeStatus
   });
 
-  let blueprint: BlueprintNode = createDefaultBlueprint();
-  let selectedId = blueprint.id;
-  let mounted = false;
+  let blueprint: BlueprintNode = $state(createDefaultBlueprint());
+  let selectedId = $state(blueprint.id);
+  let mounted = $state(false);
   let lastSessionId = '';
   let lastSessionKind = '';
-  let filledDefaults = false;
-  let editMode = false;
+  let filledDefaults = $state(false);
+  let editMode = $state(false);
 
   const storageKey = (id: string, kind: string) => `operate-blueprint:${kind || 'unknown'}:${id}`;
 
@@ -165,30 +163,36 @@
     stopOperateStream();
   });
 
-  $: if (
-    mounted &&
-    sessionId &&
-    (sessionId !== lastSessionId || sessionKindParam !== lastSessionKind)
-  ) {
-    lastSessionId = sessionId;
-    lastSessionKind = sessionKindParam;
-    filledDefaults = false;
-    loadBlueprint(sessionId, sessionKindParam);
-  }
+  $effect(() => {
+    if (
+      mounted &&
+      sessionId &&
+      (sessionId !== lastSessionId || sessionKindParam !== lastSessionKind)
+    ) {
+      lastSessionId = sessionId;
+      lastSessionKind = sessionKindParam;
+      filledDefaults = false;
+      loadBlueprint(sessionId, sessionKindParam);
+    }
+  });
 
-  $: if (mounted && sessionId) {
-    saveBlueprint();
-  }
+  $effect(() => {
+    if (mounted && sessionId) {
+      saveBlueprint();
+    }
+  });
 
-  $: if (!filledDefaults && ($topicsQuery.data?.topics ?? []).length > 0) {
-    blueprint = fillDefaultConfig(blueprint, $topicsQuery.data?.topics ?? []);
-    filledDefaults = true;
-  }
+  $effect(() => {
+    if (!filledDefaults && ($topicsQuery.data?.topics ?? []).length > 0) {
+      blueprint = fillDefaultConfig(blueprint, $topicsQuery.data?.topics ?? []);
+      filledDefaults = true;
+    }
+  });
 
-  $: selectedNode = selectedId ? findNode(blueprint, selectedId) : null;
-  $: selectedViewNode = selectedNode?.type === 'view' ? selectedNode : null;
-  $: selectedSplitNode = selectedNode?.type === 'split' ? selectedNode : null;
-  $: selectedTabsNode = selectedNode?.type === 'tabs' ? selectedNode : null;
+  const selectedNode = $derived(selectedId ? findNode(blueprint, selectedId) : null);
+  const selectedViewNode = $derived(selectedNode?.type === 'view' ? selectedNode : null);
+  const selectedSplitNode = $derived(selectedNode?.type === 'split' ? selectedNode : null);
+  const selectedTabsNode = $derived(selectedNode?.type === 'tabs' ? selectedNode : null);
 
   const updateSelection = (id: string) => {
     selectedId = id;
