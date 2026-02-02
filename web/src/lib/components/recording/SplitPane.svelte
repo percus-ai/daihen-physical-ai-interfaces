@@ -1,14 +1,29 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, type Snippet } from 'svelte';
 
-  export let direction: 'row' | 'column' = 'row';
-  export let sizes: [number, number] = [0.5, 0.5];
-  export let min = 0.15;
-  export let editable = true;
-  export let handleSize = 10;
-  export let handleInset = 6;
-  export let handleGutter = 2;
-  export let gapSize = 16;
+  let {
+    direction = 'row',
+    sizes = [0.5, 0.5],
+    min = 0.15,
+    editable = true,
+    handleSize = 10,
+    handleInset = 6,
+    handleGutter = 2,
+    gapSize = 16,
+    first,
+    second
+  }: {
+    direction?: 'row' | 'column';
+    sizes?: [number, number];
+    min?: number;
+    editable?: boolean;
+    handleSize?: number;
+    handleInset?: number;
+    handleGutter?: number;
+    gapSize?: number;
+    first?: Snippet;
+    second?: Snippet;
+  } = $props();
 
   const dispatch = createEventDispatcher<{ resize: { sizes: [number, number] } }>();
   let container: HTMLDivElement | null = null;
@@ -55,7 +70,7 @@
     onpointerleave={handlePointerUp}
   >
     <div class="pane">
-      <slot name="first" />
+      {@render first?.()}
     </div>
     <div
       class={`handle ${editable ? 'active' : 'hidden'}`}
@@ -66,7 +81,7 @@
       <div class="handle-bar"></div>
     </div>
     <div class="pane">
-      <slot name="second" />
+      {@render second?.()}
     </div>
   </div>
 

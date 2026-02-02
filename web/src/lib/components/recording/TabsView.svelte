@@ -1,9 +1,12 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, type Snippet } from 'svelte';
   import type { TabItem } from '$lib/recording/blueprint';
 
-  export let tabs: TabItem[] = [];
-  export let activeId = '';
+  let { tabs = [], activeId = '', children }: {
+    tabs?: TabItem[];
+    activeId?: string;
+    children?: Snippet;
+  } = $props();
 
   const dispatch = createEventDispatcher<{ change: { activeId: string } }>();
 
@@ -22,13 +25,13 @@
             ? 'border-slate-200 bg-white text-slate-900'
             : 'border-transparent bg-slate-100 text-slate-500 hover:border-slate-200'
         }`}
-        on:click={() => setActive(tab.id)}
+        onclick={() => setActive(tab.id)}
       >
         {tab.title}
       </button>
     {/each}
   </div>
   <div class="mt-3 flex-1">
-    <slot />
+    {@render children?.()}
   </div>
 </div>

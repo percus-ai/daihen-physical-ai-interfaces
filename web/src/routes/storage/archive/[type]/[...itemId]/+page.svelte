@@ -115,7 +115,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage/archive">一覧へ戻る</Button.Root>
-      <button class="btn-ghost" type="button" on:click={refetchItem}>更新</button>
+      <button class="btn-ghost" type="button" onclick={refetchItem}>更新</button>
     </div>
   </div>
 </section>
@@ -180,7 +180,7 @@
         class={`btn-primary ${actionLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
         type="button"
         disabled={actionLoading}
-        on:click={handleRestore}
+        onclick={handleRestore}
       >
         復元
       </button>
@@ -188,7 +188,7 @@
         class={`btn-ghost ${actionLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
         type="button"
         disabled={actionLoading}
-        on:click={handleDelete}
+        onclick={handleDelete}
       >
         完全削除
       </button>

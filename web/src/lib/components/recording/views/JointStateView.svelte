@@ -21,7 +21,7 @@
   let lastPositions = $state<number[]>([]);
   let index = $state(0);
   let status = $state('idle');
-  let unsubscribe = $state<(() => void) | null>(null);
+  let unsubscribe: (() => void) | null = null;
 
   const handleMessage = (msg: Record<string, unknown>) => {
     const positions = (msg.position as number[] | undefined) ?? [];

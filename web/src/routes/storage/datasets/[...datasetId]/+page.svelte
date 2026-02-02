@@ -170,7 +170,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage/datasets">一覧へ戻る</Button.Root>
-      <button class="btn-ghost" type="button" on:click={refetchDataset}>更新</button>
+      <button class="btn-ghost" type="button" onclick={refetchDataset}>更新</button>
     </div>
   </div>
 </section>
@@ -222,7 +222,7 @@
           class={`btn-primary ${actionLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
           type="button"
           disabled={actionLoading}
-          on:click={handleRestore}
+          onclick={handleRestore}
         >
           復元
         </button>
@@ -231,12 +231,12 @@
           class={`btn-ghost ${actionLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
           type="button"
           disabled={actionLoading}
-          on:click={handleArchive}
+          onclick={handleArchive}
         >
           アーカイブ
         </button>
       {/if}
-      <button class="btn-ghost" type="button" on:click={() => goto('/storage/archive')}>アーカイブ一覧</button>
+      <button class="btn-ghost" type="button" onclick={() => goto('/storage/archive')}>アーカイブ一覧</button>
     </div>
   {:else}
     <p class="mt-4 text-sm text-slate-600">データセットが見つかりません。</p>
@@ -252,7 +252,7 @@
 <section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">マージ</h2>
-    <button class="btn-ghost" type="button" on:click={refetchCandidates}>候補を更新</button>
+    <button class="btn-ghost" type="button" onclick={refetchCandidates}>候補を更新</button>
   </div>
   <p class="mt-2 text-sm text-slate-600">同一プロジェクトの他データセットと統合できます。</p>
   {#if isArchived}
@@ -290,7 +290,7 @@
         class={`btn-primary ${canMerge ? '' : 'opacity-50 cursor-not-allowed'}`}
         type="button"
         disabled={!canMerge}
-        on:click={handleMerge}
+        onclick={handleMerge}
       >
         マージ実行
       </button>

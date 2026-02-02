@@ -253,7 +253,7 @@
                 class="input mt-2"
                 type="text"
                 value={block.name}
-                on:input={(event) =>
+                oninput={(event) =>
                   updateBlock(index, { name: (event.currentTarget as HTMLInputElement).value })
                 }
               />
@@ -264,7 +264,7 @@
                 class="input mt-2"
                 type="text"
                 value={block.purpose}
-                on:input={(event) =>
+                oninput={(event) =>
                   updateBlock(index, { purpose: (event.currentTarget as HTMLInputElement).value })
                 }
               />
@@ -274,7 +274,7 @@
               <textarea
                 class="input mt-2 min-h-[120px]"
                 value={block.notes}
-                on:input={(event) =>
+                oninput={(event) =>
                   updateBlock(index, { notes: (event.currentTarget as HTMLTextAreaElement).value })
                 }
               ></textarea>
@@ -322,7 +322,7 @@
                 accept="image/*"
                 multiple
                 disabled={uploadingIndex === index}
-                on:change={(event) => handleUpload(index, event)}
+                onchange={(event) => handleUpload(index, event)}
               />
             </label>
           </div>

@@ -35,7 +35,8 @@
     }
   };
 
-  const handleLogin = async () => {
+  const handleLogin = async (event?: Event) => {
+    event?.preventDefault();
     if (!email || !password) {
       error = 'メールアドレスとパスワードを入力してください。';
       return;
@@ -148,7 +149,7 @@
 {:else}
   <section class="card p-6">
     <h2 class="text-xl font-semibold text-slate-900">ログイン情報</h2>
-    <form class="mt-4 grid gap-4" on:submit|preventDefault={handleLogin}>
+    <form class="mt-4 grid gap-4" onsubmit={handleLogin}>
       <label class="text-sm font-semibold text-slate-700">
         <span class="label">メールアドレス</span>
         <input class="input mt-2" type="email" bind:value={email} autocomplete="email" />

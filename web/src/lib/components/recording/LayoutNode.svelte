@@ -77,28 +77,38 @@
       editable={editMode}
       on:resize={(event) => onResize?.(node.id, event.detail.sizes)}
     >
-      <div slot="first" class="h-full">
-        <LayoutNode
-          node={node.children[0]}
-          {selectedId}
-          {sessionId}
-          {editMode}
-          {onSelect}
-          {onResize}
-          {onTabChange}
-        />
-      </div>
-      <div slot="second" class="h-full">
-        <LayoutNode
-          node={node.children[1]}
-          {selectedId}
-          {sessionId}
-          {editMode}
-          {onSelect}
-          {onResize}
-          {onTabChange}
-        />
-      </div>
+      {#snippet first()}
+        <div class="h-full">
+          <LayoutNode
+            node={node.children[0]}
+            {selectedId}
+            {sessionId}
+            {recorderStatus}
+            {rosbridgeStatus}
+            {mode}
+            {editMode}
+            {onSelect}
+            {onResize}
+            {onTabChange}
+          />
+        </div>
+      {/snippet}
+      {#snippet second()}
+        <div class="h-full">
+          <LayoutNode
+            node={node.children[1]}
+            {selectedId}
+            {sessionId}
+            {recorderStatus}
+            {rosbridgeStatus}
+            {mode}
+            {editMode}
+            {onSelect}
+            {onResize}
+            {onTabChange}
+          />
+        </div>
+      {/snippet}
     </SplitPane>
   {:else if node.type === 'tabs'}
     <TabsView tabs={node.tabs} activeId={node.activeId} on:change={(event) => onTabChange?.(node.id, event.detail.activeId)}>
@@ -108,6 +118,9 @@
             node={tab.child}
             {selectedId}
             {sessionId}
+            {recorderStatus}
+            {rosbridgeStatus}
+            {mode}
             {editMode}
             {onSelect}
             {onResize}

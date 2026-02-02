@@ -62,7 +62,8 @@
     datasetName = buildDefaultName();
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (event?: Event) => {
+    event?.preventDefault();
     error = '';
     const nameErrors = validateDatasetName(datasetName);
     if (nameErrors.length) {
@@ -124,7 +125,7 @@
 </section>
 
 <section class="card p-6">
-  <form class="grid gap-4" on:submit|preventDefault={handleSubmit}>
+  <form class="grid gap-4" onsubmit={handleSubmit}>
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">データセット名</span>
       <div class="mt-2 flex flex-wrap gap-2">

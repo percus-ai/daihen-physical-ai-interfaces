@@ -7,7 +7,7 @@
   let raw = $state<string | null>(null);
   let status = $state('idle');
   let lastUpdated = $state('');
-  let unsubscribe = $state<(() => void) | null>(null);
+  let unsubscribe: (() => void) | null = null;
 
   const parsePayload = (msg: Record<string, unknown>) => {
     if (typeof msg.data === 'string') {

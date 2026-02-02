@@ -6,8 +6,8 @@
   let imageSrc = $state('');
   let error = $state('');
   let status = $state('idle');
-  let lastFrameAt = $state(0);
-  let unsubscribe = $state<(() => void) | null>(null);
+  let lastFrameAt = 0;
+  let unsubscribe: (() => void) | null = null;
 
   const handleMessage = (msg: Record<string, unknown>) => {
     const data = msg.data as string | undefined;

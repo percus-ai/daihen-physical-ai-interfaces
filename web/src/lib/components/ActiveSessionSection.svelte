@@ -1,12 +1,18 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
+
   let {
     title,
     description = '',
-    badges = []
+    badges = [],
+    actions,
+    children
   }: {
     title: string;
     description?: string;
     badges?: string[];
+    actions?: Snippet;
+    children?: Snippet;
   } = $props();
 </script>
 
@@ -22,10 +28,10 @@
       {#each badges as badge}
         <span class="chip">{badge}</span>
       {/each}
-      <slot name="actions" />
+      {@render actions?.()}
     </div>
   </div>
   <div class="mt-4">
-    <slot />
+    {@render children?.()}
   </div>
 </section>

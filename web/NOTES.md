@@ -78,3 +78,16 @@ Svelte 5 への全面移行を行ったため、以後の実装は以下を基�
 - 複数の非同期呼び出しがある場合は、**状態の競合**が起きないように `pending` を明示する。
 
 **理由**: Svelte 5 はリアクティブが強いため、更新順序が曖昧だとちらつきや状態破綻が起きやすい。
+
+### 8) DOM イベントは `on:` を使わず `onxxx` 属性で書く
+- DOM のイベントは **`on:click` ではなく `onclick`** の形式で書く。
+- `on:change` / `on:input` / `on:submit` なども同様に `onchange` / `oninput` / `onsubmit` を使う。
+- **コンポーネントのカスタムイベントのみ `on:xxx` を使う**（例: `<TabsView on:change={...} />`）。
+
+**理由**: runes モードでは DOM イベントの `on:` が deprecated。警告回避と一貫性のため属性形式で統一する。
+
+### 9) `<slot>` は使わず `Snippet` + `{@render ...}` を使う
+- 子要素の受け渡しは `Snippet` を `props` で受け取り、`{@render children?.()}` で描画する。
+- named slot 相当は `children` とは別の `Snippet` を props 化して `{@render}` する。
+
+**理由**: runes モードでは `<slot>` が deprecated。Svelte 5 の推奨パターンに合わせて統一する。

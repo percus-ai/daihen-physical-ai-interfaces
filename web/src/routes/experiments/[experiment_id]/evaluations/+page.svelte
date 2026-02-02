@@ -344,7 +344,7 @@
                 <select
                   class="input mt-2"
                   value={item.selection}
-                  on:change={(event) => handleSelect(index, (event.currentTarget as HTMLSelectElement).value)}
+                  onchange={(event) => handleSelect(index, (event.currentTarget as HTMLSelectElement).value)}
                 >
                   {#each metricOptions as option}
                     <option value={option}>{option}</option>
@@ -357,7 +357,7 @@
                     type="text"
                     placeholder="自由入力"
                     value={item.custom}
-                    on:input={(event) =>
+                    oninput={(event) =>
                       handleCustomInput(index, (event.currentTarget as HTMLInputElement).value)
                     }
                   />
@@ -369,7 +369,7 @@
                   class="input mt-2"
                   type="text"
                   value={item.notes}
-                  on:input={(event) =>
+                  oninput={(event) =>
                     handleNotesInput(index, (event.currentTarget as HTMLInputElement).value)
                   }
                 />
@@ -414,7 +414,7 @@
                 accept="image/*"
                 multiple
                 disabled={uploadingIndex === index}
-                on:change={(event) => handleUpload(index, event)}
+                onchange={(event) => handleUpload(index, event)}
               />
             </div>
           </div>
