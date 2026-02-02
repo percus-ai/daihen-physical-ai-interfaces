@@ -1,16 +1,13 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
 
-  export let topic = '';
-  export let title = 'Camera';
+  let { topic = '', title = 'Camera' }: { topic?: string; title?: string } = $props();
 
-  let imageSrc = '';
-  let error = '';
-  let status = 'idle';
-  let lastFrameAt = 0;
-  let unsubscribe: (() => void) | null = null;
-  let requiresCompressed = false;
+  let imageSrc = $state('');
+  let error = $state('');
+  let status = $state('idle');
+  let lastFrameAt = $state(0);
+  let unsubscribe = $state<(() => void) | null>(null);
 
   const handleMessage = (msg: Record<string, unknown>) => {
     const data = msg.data as string | undefined;
@@ -37,26 +34,30 @@
     status = client.getStatus();
   };
 
-  $: requiresCompressed = Boolean(topic) && !topic.endsWith('/compressed');
+  const requiresCompressed = $derived(Boolean(topic) && !topic.endsWith('/compressed'));
 
-  $: if (topic) {
+  $effect(() => {
+    if (!topic) {
+      unsubscribe?.();
+      unsubscribe = null;
+      imageSrc = '';
+      error = '';
+      return;
+    }
     if (requiresCompressed) {
       error = 'compressed 形式のみ対応しています。';
       unsubscribe?.();
       unsubscribe = null;
       imageSrc = '';
-    } else {
-      error = '';
-      subscribe();
+      return;
     }
-  } else {
-    unsubscribe?.();
-    unsubscribe = null;
+    error = '';
     imageSrc = '';
-  }
-
-  onDestroy(() => {
-    unsubscribe?.();
+    subscribe();
+    return () => {
+      unsubscribe?.();
+      unsubscribe = null;
+    };
   });
 </script>
 

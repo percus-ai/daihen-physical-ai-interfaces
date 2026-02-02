@@ -62,13 +62,19 @@
   let rosbridgeStatus = $state<'idle' | 'connecting' | 'connected' | 'disconnected' | 'error'>('idle');
 
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
-  let selectedId = $state(blueprint.id);
+  let selectedId = $state('');
   let mounted = $state(false);
   let lastSessionId = '';
   let filledDefaults = $state(false);
   let editMode = $state(true);
 
   const storageKey = (id: string) => `recording-blueprint:${id}`;
+
+  $effect(() => {
+    if (!selectedId && blueprint?.id) {
+      selectedId = blueprint.id;
+    }
+  });
 
   const loadBlueprint = (id: string) => {
     if (typeof localStorage === 'undefined') {
@@ -346,7 +352,7 @@
             <select
               class="input mt-2"
               value={selectedViewNode?.viewType}
-              on:change={(event) => handleViewTypeChange((event.target as HTMLSelectElement).value)}
+              onchange={(event) => handleViewTypeChange((event.target as HTMLSelectElement).value)}
             >
               <option value="placeholder">Empty</option>
               {#each getViewOptions() as option}
@@ -363,7 +369,7 @@
                   <select
                     class="input mt-2"
                     value={(selectedViewNode.config?.[field.key] as string) ?? ''}
-                    on:change={(event) => handleConfigChange(field.key, (event.target as HTMLSelectElement).value)}
+                    onchange={(event) => handleConfigChange(field.key, (event.target as HTMLSelectElement).value)}
                   >
                     <option value="">未選択</option>
                     {#each ($topicsQuery.data?.topics ?? []).filter((topic) => field.filter?.(topic) ?? true) as topic}
@@ -377,7 +383,7 @@
                     type="checkbox"
                     class="h-4 w-4 rounded border-slate-300"
                     checked={Boolean(selectedViewNode.config?.[field.key])}
-                    on:change={(event) => handleConfigChange(field.key, (event.target as HTMLInputElement).checked)}
+                    onchange={(event) => handleConfigChange(field.key, (event.target as HTMLInputElement).checked)}
                   />
                   {field.label}
                 </label>
@@ -389,7 +395,7 @@
                     type="number"
                     min="10"
                     value={Number(selectedViewNode.config?.[field.key] ?? 160)}
-                    on:change={(event) => handleConfigChange(field.key, Number((event.target as HTMLInputElement).value))}
+                    onchange={(event) => handleConfigChange(field.key, Number((event.target as HTMLInputElement).value))}
                   />
                 </div>
               {/if}
@@ -417,7 +423,7 @@
             <select
               class="input mt-2"
               value={selectedSplitNode?.direction}
-              on:change={(event) => {
+              onchange={(event) => {
                 const nextDirection = (event.target as HTMLSelectElement).value as 'row' | 'column';
                 if (selectedSplitNode) {
                   blueprint = updateSplitDirection(blueprint, selectedSplitNode.id, nextDirection);
@@ -450,7 +456,7 @@
                   class="input"
                   type="text"
                   value={tab.title}
-                  on:change={(event) => handleRenameTab(tab.id, (event.target as HTMLInputElement).value)}
+                  onchange={(event) => handleRenameTab(tab.id, (event.target as HTMLInputElement).value)}
                 />
               <Button.Root class="btn-ghost mt-2 w-full" type="button" onclick={() => handleRemoveTab(tab.id)}>
                 このタブを削除

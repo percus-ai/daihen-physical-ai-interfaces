@@ -1,21 +1,27 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import { AxisX, AxisY, GridY, Line, Plot } from 'svelteplot';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
 
-  export let topic = '';
-  export let title = 'Joint State';
-  export let maxPoints = 160;
-  export let showVelocity = true;
+  let {
+    topic = '',
+    title = 'Joint State',
+    maxPoints = 160,
+    showVelocity = true
+  }: {
+    topic?: string;
+    title?: string;
+    maxPoints?: number;
+    showVelocity?: boolean;
+  } = $props();
 
   type SeriesPoint = { i: number; value: number };
 
-  let posSeries: SeriesPoint[] = [];
-  let velSeries: SeriesPoint[] = [];
-  let lastPositions: number[] = [];
-  let index = 0;
-  let status = 'idle';
-  let unsubscribe: (() => void) | null = null;
+  let posSeries = $state<SeriesPoint[]>([]);
+  let velSeries = $state<SeriesPoint[]>([]);
+  let lastPositions = $state<number[]>([]);
+  let index = $state(0);
+  let status = $state('idle');
+  let unsubscribe = $state<(() => void) | null>(null);
 
   const handleMessage = (msg: Record<string, unknown>) => {
     const positions = (msg.position as number[] | undefined) ?? [];
@@ -49,18 +55,20 @@
     status = client.getStatus();
   };
 
-  $: if (topic) {
+  $effect(() => {
+    if (!topic) {
+      unsubscribe?.();
+      unsubscribe = null;
+      posSeries = [];
+      velSeries = [];
+      index = 0;
+      return;
+    }
     subscribe();
-  } else {
-    unsubscribe?.();
-    unsubscribe = null;
-    posSeries = [];
-    velSeries = [];
-    index = 0;
-  }
-
-  onDestroy(() => {
-    unsubscribe?.();
+    return () => {
+      unsubscribe?.();
+      unsubscribe = null;
+    };
   });
 </script>
 

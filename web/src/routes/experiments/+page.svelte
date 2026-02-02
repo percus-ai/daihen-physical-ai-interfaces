@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Button, DropdownMenu, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
+  import { toStore } from 'svelte/store';
   import { api } from '$lib/api/client';
   import { formatDate, formatPercent } from '$lib/format';
   import { goto } from '$app/navigation';
@@ -61,44 +62,49 @@
     queryFn: api.profiles.instances
   });
 
-  let selectedModel = '';
-  let selectedProfile = '';
+  let selectedModel = $state('');
+  let selectedProfile = $state('');
 
-  const experimentsQuery = createQuery<ExperimentListResponse>({
-    queryKey: ['experiments', selectedModel, selectedProfile],
-    queryFn: () =>
-      api.experiments.list({
-        model_id: selectedModel || undefined,
-        profile_instance_id: selectedProfile || undefined
-      })
-  });
-
-  let summaryById: Record<string, EvaluationSummary> = {};
-  let analysisById: Record<string, number> = {};
-  let summariesLoading = false;
-  let summariesError = '';
-  let summaryKey = '';
-  let experimentsError = '';
-
-  $: experiments = $experimentsQuery.data?.experiments ?? [];
-  $: modelMap = new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]));
-  $: profileMap = new Map(
-    ($profilesQuery.data?.instances ?? []).map((instance) => [instance.id, instance])
+  const experimentsQuery = createQuery<ExperimentListResponse>(
+    toStore(() => ({
+      queryKey: ['experiments', selectedModel, selectedProfile],
+      queryFn: () =>
+        api.experiments.list({
+          model_id: selectedModel || undefined,
+          profile_instance_id: selectedProfile || undefined
+        })
+    }))
   );
-  $: experimentsError =
+
+  let summaryById = $state<Record<string, EvaluationSummary>>({});
+  let analysisById = $state<Record<string, number>>({});
+  let summariesLoading = $state(false);
+  let summariesError = $state('');
+  let summaryKey = $state('');
+
+  const experiments = $derived($experimentsQuery.data?.experiments ?? []);
+  const modelMap = $derived(
+    new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]))
+  );
+  const profileMap = $derived(
+    new Map(($profilesQuery.data?.instances ?? []).map((instance) => [instance.id, instance]))
+  );
+  const experimentsError = $derived.by(() =>
     $experimentsQuery.isError
       ? $experimentsQuery.error instanceof Error
         ? $experimentsQuery.error.message
         : '実験一覧の取得に失敗しました。'
-      : '';
-  $: displayCount = experimentsError ? '-' : String(experiments.length);
-  $: {
+      : ''
+  );
+  const displayCount = $derived(experimentsError ? '-' : String(experiments.length));
+
+  $effect(() => {
     const key = experiments.map((exp) => exp.id).join('|');
     if (key !== summaryKey) {
       summaryKey = key;
       void loadSummaries();
     }
-  }
+  });
 
   const loadSummaries = async () => {
     if (!experiments.length) {

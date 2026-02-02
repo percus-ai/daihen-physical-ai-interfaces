@@ -46,49 +46,49 @@
   });
 
   const defaultPolicy = POLICY_TYPES[0];
-  let policyType = defaultPolicy?.id ?? '';
+  let policyType = $state(defaultPolicy?.id ?? '');
 
-  let steps = defaultPolicy?.defaultSteps ?? 100000;
-  let batchSize = defaultPolicy?.defaultBatchSize ?? 32;
-  let saveFreq = defaultPolicy?.defaultSaveFreq ?? 5000;
-  let logFreq = 200;
-  let numWorkers = 4;
-  let saveCheckpoint = true;
+  let steps = $state(defaultPolicy?.defaultSteps ?? 100000);
+  let batchSize = $state(defaultPolicy?.defaultBatchSize ?? 32);
+  let saveFreq = $state(defaultPolicy?.defaultSaveFreq ?? 5000);
+  let logFreq = $state(200);
+  let numWorkers = $state(4);
+  let saveCheckpoint = $state(true);
 
-  let validationEnable = true;
-  let validationEvalFreq = 100;
-  let validationMaxBatches = 0;
-  let validationBatchSize = 0;
+  let validationEnable = $state(true);
+  let validationEvalFreq = $state(100);
+  let validationMaxBatches = $state(0);
+  let validationBatchSize = $state(0);
 
-  let earlyStoppingEnable = true;
-  let earlyStoppingPatience = 5;
-  let earlyStoppingMinDelta = 0.002;
-  let earlyStoppingMode: 'min' | 'max' = 'min';
+  let earlyStoppingEnable = $state(true);
+  let earlyStoppingPatience = $state(5);
+  let earlyStoppingMinDelta = $state(0.002);
+  let earlyStoppingMode = $state<'min' | 'max'>('min');
 
-  let datasetVideoBackend: 'auto' | 'torchcodec' | 'pyav' = 'torchcodec';
-  let selectedPretrainedId = '';
+  let datasetVideoBackend = $state<'auto' | 'torchcodec' | 'pyav'>('torchcodec');
+  let selectedPretrainedId = $state('');
 
-  let policyDtype: 'auto' | 'float32' | 'bfloat16' | 'float16' = 'auto';
-  let policyUseAmp: 'auto' | 'true' | 'false' = 'auto';
-  let policyGradientCheckpointing: 'auto' | 'true' | 'false' = 'auto';
-  let policyCompileModel: 'auto' | 'true' | 'false' = 'auto';
+  let policyDtype = $state<'auto' | 'float32' | 'bfloat16' | 'float16'>('auto');
+  let policyUseAmp = $state<'auto' | 'true' | 'false'>('auto');
+  let policyGradientCheckpointing = $state<'auto' | 'true' | 'false'>('auto');
+  let policyCompileModel = $state<'auto' | 'true' | 'false'>('auto');
 
-  let gpuModel = defaultPolicy?.recommendedGpu ?? 'H100';
-  let gpuCount = GPU_COUNTS[0] ?? 1;
-  let storageSize = defaultPolicy?.recommendedStorage ?? 100;
-  let instanceType: 'spot' | 'ondemand' = 'spot';
+  let gpuModel = $state(defaultPolicy?.recommendedGpu ?? 'H100');
+  let gpuCount = $state(GPU_COUNTS[0] ?? 1);
+  let storageSize = $state(defaultPolicy?.recommendedStorage ?? 100);
+  let instanceType = $state<'spot' | 'ondemand'>('spot');
 
-  let jobName = '';
+  let jobName = $state('');
 
-  let submitting = false;
-  let submitError = '';
-  let createStage = '待機中';
-  let createMessage = '';
-  let createStatus: 'idle' | 'running' | 'complete' | 'error' = 'idle';
-  let createEvents: Array<{ type: string; message: string; timestamp: string }> = [];
-  let createWs: WebSocket | null = null;
+  let submitting = $state(false);
+  let submitError = $state('');
+  let createStage = $state('待機中');
+  let createMessage = $state('');
+  let createStatus = $state<'idle' | 'running' | 'complete' | 'error'>('idle');
+  let createEvents = $state<Array<{ type: string; message: string; timestamp: string }>>([]);
+  let createWs = $state<WebSocket | null>(null);
 
-  let selectedDataset = '';
+  let selectedDataset = $state('');
 
   const applyPolicyDefaults = (policyId: string) => {
     const info = POLICY_TYPES.find((policy) => policy.id === policyId);
@@ -140,39 +140,57 @@
     return Boolean(datasetId);
   };
 
-  $: policyInfo = POLICY_TYPES.find((policy) => policy.id === policyType) ?? null;
-  $: pretrainedOptions = policyInfo?.pretrainedModels ?? [];
-  $: if (policyInfo?.skipPretrained || pretrainedOptions.length === 0) {
-    selectedPretrainedId = '';
-  } else if (!pretrainedOptions.some((option) => option.id === selectedPretrainedId)) {
-    selectedPretrainedId = pretrainedOptions[0].id;
-  }
-  $: selectedPretrained = pretrainedOptions.find((option) => option.id === selectedPretrainedId) ?? null;
+  const policyInfo = $derived(POLICY_TYPES.find((policy) => policy.id === policyType) ?? null);
+  const pretrainedOptions = $derived(policyInfo?.pretrainedModels ?? []);
 
-  $: datasets = $datasetsQuery.data?.datasets?.filter(isTrainingDataset) ?? [];
-  $: datasetsSorted = datasets.slice().sort(
-    (a, b) =>
-      new Date((b.created_at as string | undefined) ?? 0).getTime() -
-      new Date((a.created_at as string | undefined) ?? 0).getTime()
+  $effect(() => {
+    if (policyInfo?.skipPretrained || pretrainedOptions.length === 0) {
+      if (selectedPretrainedId) {
+        selectedPretrainedId = '';
+      }
+      return;
+    }
+    if (!pretrainedOptions.some((option) => option.id === selectedPretrainedId)) {
+      selectedPretrainedId = pretrainedOptions[0]?.id ?? '';
+    }
+  });
+
+  const selectedPretrained = $derived(
+    pretrainedOptions.find((option) => option.id === selectedPretrainedId) ?? null
   );
 
-  $: if (datasetsSorted.length && !selectedDataset) {
-    selectedDataset = datasetsSorted[0].id as string;
-  }
+  const datasets = $derived($datasetsQuery.data?.datasets?.filter(isTrainingDataset) ?? []);
+  const datasetsSorted = $derived(
+    datasets.slice().sort(
+      (a, b) =>
+        new Date((b.created_at as string | undefined) ?? 0).getTime() -
+        new Date((a.created_at as string | undefined) ?? 0).getTime()
+    )
+  );
 
-  $: if (selectedDataset && datasetsSorted.length && !datasetsSorted.some((s) => s.id === selectedDataset)) {
-    selectedDataset = datasetsSorted[0].id as string;
-  }
+  $effect(() => {
+    if (datasetsSorted.length && !selectedDataset) {
+      selectedDataset = datasetsSorted[0].id as string;
+      return;
+    }
+    if (selectedDataset && datasetsSorted.length && !datasetsSorted.some((s) => s.id === selectedDataset)) {
+      selectedDataset = datasetsSorted[0].id as string;
+    }
+  });
 
-  $: selectedDatasetInfo = datasetsSorted.find((dataset) => dataset.id === selectedDataset) ?? null;
-  $: datasetShortId = selectedDatasetInfo?.id?.slice(0, 6) ?? '';
+  const selectedDatasetInfo = $derived(
+    datasetsSorted.find((dataset) => dataset.id === selectedDataset) ?? null
+  );
+  const datasetShortId = $derived(selectedDatasetInfo?.id?.slice(0, 6) ?? '');
 
-  $: if (!validationEnable) {
-    earlyStoppingEnable = false;
-  }
+  $effect(() => {
+    if (!validationEnable && earlyStoppingEnable) {
+      earlyStoppingEnable = false;
+    }
+  });
 
-  $: useAmpDisabled = policyDtype === 'bfloat16';
-  $: isSpot = instanceType === 'spot';
+  const useAmpDisabled = $derived(policyDtype === 'bfloat16');
+  const isSpot = $derived(instanceType === 'spot');
 
   const wsUrl = (path: string) => getBackendUrl().replace(/^http/, 'ws') + path;
 
@@ -210,7 +228,7 @@
     return parts.join('_');
   };
 
-  $: generatedJobName = buildJobName(policyType, datasetShortId);
+  const generatedJobName = $derived(buildJobName(policyType, datasetShortId));
 
   const toBool = (value: 'auto' | 'true' | 'false') => {
     if (value === 'auto') return null;
@@ -370,9 +388,9 @@
     };
   };
 
-  $: availability = $gpuAvailabilityQuery.data?.available ?? [];
-  $: selectedAvailability = availability.find(
-    (item) => item.gpu_model === gpuModel && item.gpu_count === gpuCount
+  const availability = $derived($gpuAvailabilityQuery.data?.available ?? []);
+  const selectedAvailability = $derived(
+    availability.find((item) => item.gpu_model === gpuModel && item.gpu_count === gpuCount)
   );
 
   onDestroy(() => {
@@ -400,7 +418,7 @@
       <div class="mt-4 grid gap-4 sm:grid-cols-2">
         <label class="text-sm font-semibold text-slate-700">
           <span class="label">ポリシータイプ</span>
-          <select class="input mt-2" bind:value={policyType} on:change={handlePolicyChange}>
+          <select class="input mt-2" bind:value={policyType} onchange={handlePolicyChange}>
             {#each POLICY_TYPES as policy}
               <option value={policy.id}>{policy.displayName}</option>
             {/each}

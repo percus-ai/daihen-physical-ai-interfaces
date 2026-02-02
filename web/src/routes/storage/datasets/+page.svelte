@@ -30,24 +30,28 @@
 
   const queryClient = useQueryClient();
 
-  let selectedIds: string[] = [];
-  let mergeName = '';
-  let actionMessage = '';
-  let actionError = '';
-  let actionLoading = false;
+  let selectedIds = $state<string[]>([]);
+  let mergeName = $state('');
+  let actionMessage = $state('');
+  let actionError = $state('');
+  let actionLoading = $state(false);
 
-  $: datasets = $datasetsQuery.data?.datasets ?? [];
-  $: selectedDatasets = datasets.filter((dataset) => selectedIds.includes(dataset.id));
-  $: profileIds = Array.from(
-    new Set(selectedDatasets.map((dataset) => dataset.profile_instance_id).filter(Boolean))
+  const datasets = $derived($datasetsQuery.data?.datasets ?? []);
+  const selectedDatasets = $derived(datasets.filter((dataset) => selectedIds.includes(dataset.id)));
+  const profileIds = $derived(
+    Array.from(
+      new Set(selectedDatasets.map((dataset) => dataset.profile_instance_id).filter(Boolean))
+    )
   );
-  $: profileMismatch = profileIds.length > 1;
-  $: profileInstanceId = profileIds.length === 1 ? profileIds[0] : '';
-  $: mergeDefaultName = selectedDatasets.length
-    ? `${selectedDatasets[0].name ?? selectedDatasets[0].id}_merged`
-    : '';
-  $: canMerge = selectedIds.length >= 2 && !profileMismatch && !actionLoading;
-  $: canArchive = selectedIds.length > 0 && !actionLoading;
+  const profileMismatch = $derived(profileIds.length > 1);
+  const profileInstanceId = $derived(profileIds.length === 1 ? profileIds[0] : '');
+  const mergeDefaultName = $derived(
+    selectedDatasets.length
+      ? `${selectedDatasets[0].name ?? selectedDatasets[0].id}_merged`
+      : ''
+  );
+  const canMerge = $derived(selectedIds.length >= 2 && !profileMismatch && !actionLoading);
+  const canArchive = $derived(selectedIds.length > 0 && !actionLoading);
 
   const refetchDatasets = async () => {
     await queryClient.invalidateQueries({ queryKey: ['storage', 'datasets', 'manage'] });
@@ -138,7 +142,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage">戻る</Button.Root>
-      <button class="btn-ghost" type="button" on:click={refetchDatasets}>更新</button>
+      <button class="btn-ghost" type="button" onclick={refetchDatasets}>更新</button>
     </div>
   </div>
 </section>
@@ -231,7 +235,7 @@
         class={`btn-primary ${canMerge ? '' : 'opacity-50 cursor-not-allowed'}`}
         type="button"
         disabled={!canMerge}
-        on:click={handleMerge}
+        onclick={handleMerge}
       >
         マージ実行
       </button>
@@ -245,7 +249,7 @@
         class={`btn-ghost ${canArchive ? '' : 'opacity-50 cursor-not-allowed'}`}
         type="button"
         disabled={!canArchive}
-        on:click={handleArchiveSelected}
+        onclick={handleArchiveSelected}
       >
         アーカイブ
       </button>

@@ -48,15 +48,21 @@
   <div
     class={`split-pane ${direction}`}
     bind:this={container}
+    role="presentation"
     style={`--first-size:${sizes[0]}; --second-size:${sizes[1]}; --handle-size:${editable ? handleSize : gapSize}px; --handle-inset:${handleInset}px; --handle-gutter:${handleGutter}px;`}
-    on:pointermove={handlePointerMove}
-    on:pointerup={handlePointerUp}
-    on:pointerleave={handlePointerUp}
+    onpointermove={handlePointerMove}
+    onpointerup={handlePointerUp}
+    onpointerleave={handlePointerUp}
   >
     <div class="pane">
       <slot name="first" />
     </div>
-    <div class={`handle ${editable ? 'active' : 'hidden'}`} on:pointerdown={handlePointerDown}>
+    <div
+      class={`handle ${editable ? 'active' : 'hidden'}`}
+      role="separator"
+      tabindex={editable ? 0 : -1}
+      onpointerdown={handlePointerDown}
+    >
       <div class="handle-bar"></div>
     </div>
     <div class="pane">

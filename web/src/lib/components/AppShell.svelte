@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import type { Snippet } from 'svelte';
   import { page } from '$app/state';
   import { navItems, quickActions } from '$lib/navigation';
   import { Button } from 'bits-ui';
@@ -11,6 +12,7 @@
   import { connectStream } from '$lib/realtime/stream';
   import { queryClient } from '$lib/queryClient';
 
+  let { children }: { children?: Snippet } = $props();
   let mobileOpen = $state(false);
   let authenticated = $state(false);
   let switchingProfile = $state(false);
@@ -169,10 +171,10 @@
           <span class="text-xs uppercase tracking-[0.2em] text-slate-400">Profile</span>
           <select
             class="bg-transparent text-sm font-semibold text-slate-700 focus:outline-none h-8"
-            on:change={handleProfileChange}
-            on:focus={ensureProfilesLoaded}
-            on:click={ensureProfilesLoaded}
-            on:mouseenter={ensureProfilesLoaded}
+            onchange={handleProfileChange}
+            onfocus={ensureProfilesLoaded}
+            onclick={ensureProfilesLoaded}
+            onmouseenter={ensureProfilesLoaded}
             disabled={switchingProfile}
             value={$activeProfileQuery.data?.instance?.id ?? ''}
           >
@@ -239,7 +241,7 @@
                   ? 'border-slate-200 bg-white shadow-sm'
                   : 'text-slate-600'
               }`}
-              on:click={closeMobile}
+              onclick={closeMobile}
             >
               <span class="text-lg">{item.icon}</span>
               <span>
@@ -259,7 +261,7 @@
               class={`group flex items-start gap-3 rounded-2xl border border-transparent px-3 py-2 transition hover:border-slate-200 hover:bg-white ${
                 page.url.pathname === '/auth' ? 'text-slate-700' : 'text-slate-600'
               }`}
-              on:click={closeMobile}
+              onclick={closeMobile}
             >
               <span class="text-lg">{item.icon}</span>
               <span>
@@ -273,7 +275,7 @@
     </aside>
 
     <main class={`space-y-8 ${immersiveView ? 'lg:space-y-6' : ''}`}>
-      <slot />
+      {@render children?.()}
     </main>
   </div>
 

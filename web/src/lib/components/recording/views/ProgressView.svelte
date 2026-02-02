@@ -24,6 +24,7 @@
   const episodeCountValue = $derived(asNumber((status as Record<string, unknown>)?.episode_count ?? 0, 0));
   const numEpisodes = $derived(asNumber((status as Record<string, unknown>)?.num_episodes ?? 0, 0));
   const frameCount = $derived(asNumber((status as Record<string, unknown>)?.frame_count ?? 0, 0));
+  const episodeFrameCount = $derived(asNumber((status as Record<string, unknown>)?.episode_frame_count ?? 0, 0));
   const episodeTime = $derived(asNumber((status as Record<string, unknown>)?.episode_time_s ?? 0, 0));
   const resetTime = $derived(asNumber((status as Record<string, unknown>)?.reset_time_s ?? 0, 0));
   const episodeElapsed = $derived(asNumber((status as Record<string, unknown>)?.episode_elapsed_s ?? 0, 0));
@@ -64,6 +65,7 @@
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
           <p class="label">frame</p>
           <p class="mt-1 text-sm font-semibold text-slate-800">{frameCount}</p>
+          <p class="text-[11px] text-slate-500">episode: {episodeFrameCount}</p>
         </div>
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
           <p class="label">episode time</p>

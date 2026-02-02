@@ -40,12 +40,14 @@
     queryFn: () => api.storage.datasets()
   });
 
-  $: models = $modelsQuery.data?.models ?? [];
-  $: datasetMap = new Map(
-    ($datasetsQuery.data?.datasets ?? []).map((dataset) => [
-      dataset.id,
-      dataset.name ?? dataset.id
-    ])
+  const models = $derived($modelsQuery.data?.models ?? []);
+  const datasetMap = $derived(
+    new Map(
+      ($datasetsQuery.data?.datasets ?? []).map((dataset) => [
+        dataset.id,
+        dataset.name ?? dataset.id
+      ])
+    )
   );
 
   const displayModelLabel = (model: ModelSummary) => model.name ?? model.id;
@@ -60,7 +62,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage">戻る</Button.Root>
-      <button class="btn-ghost" type="button" on:click={() => $modelsQuery?.refetch?.()}>
+      <button class="btn-ghost" type="button" onclick={() => $modelsQuery?.refetch?.()}>
         更新
       </button>
     </div>

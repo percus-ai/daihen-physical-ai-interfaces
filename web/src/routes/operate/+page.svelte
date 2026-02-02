@@ -5,6 +5,9 @@
   import { api } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
   import { queryClient } from '$lib/queryClient';
+  import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
+  import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
+  import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
 
   type TeleopSession = {
     session_id?: string;
@@ -116,22 +119,6 @@
   });
 
   const resolveModelId = (model: InferenceModel) => model.model_id ?? model.name ?? '';
-
-  const renderStatusLabel = (status?: string) => {
-    switch (status) {
-      case 'running':
-      case 'healthy':
-        return '正常';
-      case 'degraded':
-        return '注意';
-      case 'stopped':
-        return '停止';
-      case 'error':
-        return 'エラー';
-      default:
-        return '不明';
-    }
-  };
 
   const renderGpuStatus = (status?: string) => {
     switch (status) {
@@ -269,9 +256,6 @@
 
   const profileConfig = $derived($teleopProfileConfigQuery.data?.config);
   const teleopConfigReady = $derived(Boolean(profileConfig?.leader_port && profileConfig?.follower_port));
-  const networkDetails = $derived($operateStatusQuery.data?.network?.details ?? {});
-  const driverDetails = $derived($operateStatusQuery.data?.driver?.details ?? {});
-
   $effect(() => {
     const stopOperateStream = connectStream({
       path: '/api/stream/operate/status',
@@ -299,26 +283,19 @@
   </div>
 </section>
 
-<section class="card p-6">
-  <div class="flex flex-wrap items-center justify-between gap-4">
-    <div>
-      <h2 class="text-xl font-semibold text-slate-900">稼働中セッション</h2>
-      <p class="mt-1 text-sm text-slate-600">テレオペ/推論をセッション単位でまとめて表示します。</p>
-    </div>
-    <div class="flex items-center gap-2">
-      <span class="chip">テレオペ: {hasRunningTeleop ? '稼働中' : '停止'}</span>
-      <span class="chip">推論: {runnerActive ? '稼働中' : '停止'}</span>
-    </div>
-  </div>
-
-  <div class="mt-4 grid gap-4 lg:grid-cols-2">
+<ActiveSessionSection
+  title="稼働中セッション"
+  description="テレオペ/推論をセッション単位でまとめて表示します。"
+  badges={[`テレオペ: ${hasRunningTeleop ? '稼働中' : '停止'}`, `推論: ${runnerActive ? '稼働中' : '停止'}`]}
+>
+  <div class="grid gap-4 lg:grid-cols-2">
     {#if $teleopSessionsQuery.isLoading}
-      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+      <ActiveSessionCard tone="muted">
         <p class="text-sm text-slate-600">テレオペセッションを読み込み中...</p>
-      </div>
+      </ActiveSessionCard>
     {:else}
       {#each runningTeleopSessions as session}
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+        <ActiveSessionCard>
           <div class="flex items-start justify-between gap-3">
             <div>
               <p class="label">セッション種別</p>
@@ -351,16 +328,16 @@
               停止
             </Button.Root>
           </div>
-        </div>
+        </ActiveSessionCard>
       {/each}
     {/if}
 
     {#if $inferenceRunnerStatusQuery.isLoading}
-      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+      <ActiveSessionCard tone="muted">
         <p class="text-sm text-slate-600">推論セッションを読み込み中...</p>
-      </div>
+      </ActiveSessionCard>
     {:else if runnerActive}
-      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+      <ActiveSessionCard>
         <div class="flex items-start justify-between gap-3">
           <div>
             <p class="label">セッション種別</p>
@@ -381,12 +358,7 @@
           >
             セッションを開く
           </Button.Root>
-          <Button.Root
-            class="btn-ghost"
-            type="button"
-            onclick={handleInferenceStop}
-            disabled={inferenceStopPending}
-          >
+          <Button.Root class="btn-ghost" type="button" onclick={handleInferenceStop} disabled={inferenceStopPending}>
             停止
           </Button.Root>
         </div>
@@ -396,17 +368,19 @@
         {#if inferenceStopError}
           <p class="mt-2 text-xs text-rose-600">{inferenceStopError}</p>
         {/if}
-      </div>
+      </ActiveSessionCard>
     {/if}
   </div>
 
   {#if !hasRunningTeleop && !runnerActive && !$teleopSessionsQuery.isLoading && !$inferenceRunnerStatusQuery.isLoading}
-    <p class="mt-4 text-sm text-slate-600">稼働中のセッションはありません。</p>
+    <ActiveSessionCard tone="muted">
+      <p class="text-sm text-slate-600">稼働中のセッションはありません。</p>
+    </ActiveSessionCard>
   {/if}
   {#if teleopStopError}
     <p class="mt-2 text-xs text-rose-600">{teleopStopError}</p>
   {/if}
-</section>
+</ActiveSessionSection>
 
 <section class="card p-6">
   <div class="flex flex-wrap items-center justify-between gap-4">
@@ -541,54 +515,4 @@
   </div>
 </section>
 
-<section class="card p-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-xl font-semibold text-slate-900">バックエンド / ROS2 / ネットワーク / ドライバ</h2>
-    <span class="chip">GPU: {renderGpuStatus(gpuStatus.status)}</span>
-  </div>
-  <div class="mt-4 grid gap-4 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-5">
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
-      <p class="label">Backend</p>
-      <p class="mt-1 text-base font-semibold text-slate-800">
-        {renderStatusLabel($operateStatusQuery.data?.backend?.status)}
-      </p>
-      <p class="text-xs text-slate-500">{$operateStatusQuery.data?.backend?.message ?? '-'}</p>
-    </div>
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
-      <p class="label">VLABOR (ROS2)</p>
-      <p class="mt-1 text-base font-semibold text-slate-800">
-        {renderStatusLabel($operateStatusQuery.data?.vlabor?.status)}
-      </p>
-      <p class="text-xs text-slate-500">{$operateStatusQuery.data?.vlabor?.message ?? '-'}</p>
-    </div>
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
-      <p class="label">LeRobot (ROS2)</p>
-      <p class="mt-1 text-base font-semibold text-slate-800">
-        {renderStatusLabel($operateStatusQuery.data?.lerobot?.status)}
-      </p>
-      <p class="text-xs text-slate-500">{$operateStatusQuery.data?.lerobot?.message ?? '-'}</p>
-    </div>
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
-      <p class="label">Network</p>
-      <p class="mt-1 text-base font-semibold text-slate-800">
-        {renderStatusLabel($operateStatusQuery.data?.network?.status)}
-      </p>
-      <div class="mt-2 text-xs text-slate-500 space-y-1">
-        <p>Zenoh: {networkDetails?.zenoh?.status ?? '-'}</p>
-        <p>rosbridge: {networkDetails?.rosbridge?.status ?? '-'}</p>
-        <p>ZMQ: {networkDetails?.zmq?.status ?? '-'}</p>
-      </div>
-    </div>
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
-      <p class="label">Driver (CUDA)</p>
-      <p class="mt-1 text-base font-semibold text-slate-800">
-        {renderStatusLabel($operateStatusQuery.data?.driver?.status)}
-      </p>
-      <div class="mt-2 text-xs text-slate-500 space-y-1">
-        <p>torch: {driverDetails?.torch_version ?? '-'}</p>
-        <p>cuda: {driverDetails?.cuda_available ? 'available' : 'unavailable'}</p>
-        <p>gpu: {driverDetails?.gpu_name ?? '-'}</p>
-      </div>
-    </div>
-  </div>
-</section>
+<OperateStatusCards status={$operateStatusQuery.data} gpuLabel={renderGpuStatus(gpuStatus.status)} />

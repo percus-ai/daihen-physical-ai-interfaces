@@ -35,20 +35,22 @@
     )}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   };
 
-  let modelId = '';
-  let profileInstanceId = '';
-  let name = defaultName();
-  let purpose = '';
-  let evaluationCount: number | string = 10;
-  let metric = 'binary';
-  let metricOptionsText = DEFAULT_METRIC_OPTIONS.join(', ');
-  let notes = '';
-  let submitting = false;
-  let error = '';
+  let modelId = $state('');
+  let profileInstanceId = $state('');
+  let name = $state(defaultName());
+  let purpose = $state('');
+  let evaluationCount: number | string = $state(10);
+  let metric = $state('binary');
+  let metricOptionsText = $state(DEFAULT_METRIC_OPTIONS.join(', '));
+  let notes = $state('');
+  let submitting = $state(false);
+  let error = $state('');
 
-  $: if (!modelId && $modelsQuery.data?.models?.length) {
-    modelId = $modelsQuery.data.models[0].id;
-  }
+  $effect(() => {
+    if (!modelId && $modelsQuery.data?.models?.length) {
+      modelId = $modelsQuery.data.models[0].id;
+    }
+  });
 
   const parseMetricOptions = (text: string) => {
     const items = text
@@ -58,7 +60,8 @@
     return items.length ? items : null;
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (event?: Event) => {
+    event?.preventDefault();
     if (!modelId) {
       error = 'モデルを選択してください。';
       return;
@@ -98,7 +101,7 @@
 </section>
 
 <section class="card p-6">
-  <form class="grid gap-4" on:submit|preventDefault={handleSubmit}>
+  <form class="grid gap-4" onsubmit={handleSubmit}>
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">モデル</span>
       <select class="input mt-2" bind:value={modelId}>

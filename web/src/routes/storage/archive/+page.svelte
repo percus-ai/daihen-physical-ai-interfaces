@@ -16,15 +16,15 @@
 
   const queryClient = useQueryClient();
 
-  let selectedDatasetIds: string[] = [];
-  let selectedModelIds: string[] = [];
-  let actionMessage = '';
-  let actionError = '';
-  let actionLoading = false;
+  let selectedDatasetIds = $state<string[]>([]);
+  let selectedModelIds = $state<string[]>([]);
+  let actionMessage = $state('');
+  let actionError = $state('');
+  let actionLoading = $state(false);
 
-  $: datasets = $archiveQuery.data?.datasets ?? [];
-  $: models = $archiveQuery.data?.models ?? [];
-  $: selectedCount = selectedDatasetIds.length + selectedModelIds.length;
+  const datasets = $derived($archiveQuery.data?.datasets ?? []);
+  const models = $derived($archiveQuery.data?.models ?? []);
+  const selectedCount = $derived(selectedDatasetIds.length + selectedModelIds.length);
 
   const refetchArchive = async () => {
     await queryClient.invalidateQueries({ queryKey: ['storage', 'archive', 'manage'] });
@@ -98,7 +98,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage">戻る</Button.Root>
-      <button class="btn-ghost" type="button" on:click={refetchArchive}>更新</button>
+      <button class="btn-ghost" type="button" onclick={refetchArchive}>更新</button>
     </div>
   </div>
 </section>
@@ -114,7 +114,7 @@
         class={`btn-ghost ${selectedCount && !actionLoading ? '' : 'opacity-50 cursor-not-allowed'}`}
         type="button"
         disabled={!selectedCount || actionLoading}
-        on:click={handleBulkRestore}
+        onclick={handleBulkRestore}
       >
         一括復元
       </button>
@@ -122,7 +122,7 @@
         class={`btn-ghost ${selectedCount && !actionLoading ? '' : 'opacity-50 cursor-not-allowed'}`}
         type="button"
         disabled={!selectedCount || actionLoading}
-        on:click={handleBulkDelete}
+        onclick={handleBulkDelete}
       >
         一括削除
       </button>

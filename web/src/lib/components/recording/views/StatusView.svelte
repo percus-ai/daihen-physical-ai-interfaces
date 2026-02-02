@@ -1,15 +1,13 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
 
-  export let topic = '';
-  export let title = 'Status';
+  let { topic = '', title = 'Status' }: { topic?: string; title?: string } = $props();
 
-  let payload: Record<string, unknown> | null = null;
-  let raw: string | null = null;
-  let status = 'idle';
-  let lastUpdated = '';
-  let unsubscribe: (() => void) | null = null;
+  let payload = $state<Record<string, unknown> | null>(null);
+  let raw = $state<string | null>(null);
+  let status = $state('idle');
+  let lastUpdated = $state('');
+  let unsubscribe = $state<(() => void) | null>(null);
 
   const parsePayload = (msg: Record<string, unknown>) => {
     if (typeof msg.data === 'string') {
@@ -43,17 +41,19 @@
     status = client.getStatus();
   };
 
-  $: if (topic) {
+  $effect(() => {
+    if (!topic) {
+      unsubscribe?.();
+      unsubscribe = null;
+      payload = null;
+      raw = null;
+      return;
+    }
     subscribe();
-  } else {
-    unsubscribe?.();
-    unsubscribe = null;
-    payload = null;
-    raw = null;
-  }
-
-  onDestroy(() => {
-    unsubscribe?.();
+    return () => {
+      unsubscribe?.();
+      unsubscribe = null;
+    };
   });
 </script>
 
