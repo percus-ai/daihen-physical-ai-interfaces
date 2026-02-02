@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query';
+  import { derived, writable } from 'svelte/store';
   import { api } from '$lib/api/client';
 
   export let sessionId = '';
@@ -11,11 +12,17 @@
     status?: Record<string, unknown>;
   };
 
-  const statusQuery = createQuery<RecordingSessionStatusResponse>({
-    queryKey: ['recording', 'session'],
-    queryFn: api.recording.sessionStatus,
-    refetchInterval: 1500
-  });
+  const sessionIdStore = writable(sessionId);
+  $: sessionIdStore.set(sessionId);
+
+  const statusQuery = createQuery<RecordingSessionStatusResponse>(
+    derived(sessionIdStore, ($sessionId) => ({
+      queryKey: ['recording', 'session', $sessionId],
+      queryFn: () => api.recording.sessionStatus($sessionId),
+      enabled: Boolean($sessionId),
+      refetchInterval: 1500
+    }))
+  );
 
   const asNumber = (value: unknown, fallback = 0) => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;

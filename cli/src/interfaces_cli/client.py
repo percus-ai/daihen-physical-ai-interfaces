@@ -312,9 +312,9 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
-    def get_recording_status(self) -> Dict[str, Any]:
-        """GET /api/recording/session/status - Recorder status."""
-        response = self._client.get("/api/recording/session/status")
+    def get_recording_status(self, session_id: str) -> Dict[str, Any]:
+        """GET /api/recording/sessions/{session_id}/status - Recorder status."""
+        response = self._client.get(f"/api/recording/sessions/{session_id}/status")
         response.raise_for_status()
         return response.json()
 

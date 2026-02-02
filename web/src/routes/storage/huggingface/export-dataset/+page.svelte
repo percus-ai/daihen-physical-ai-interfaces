@@ -12,7 +12,7 @@
   <div class="grid gap-4 sm:grid-cols-2">
     <div>
       <p class="label">dataset_id</p>
-      <input class="input mt-2" placeholder="project/dataset" />
+      <input class="input mt-2" placeholder="dataset_id (UUID)" />
     </div>
     <div>
       <p class="label">repo_id</p>

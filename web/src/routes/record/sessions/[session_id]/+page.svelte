@@ -43,6 +43,7 @@
     recording: '録画中',
     paused: '一時停止',
     resetting: 'リセット中',
+    inactive: '停止',
     completed: '完了'
   };
 
@@ -54,7 +55,7 @@
       const currentId = $page.params.session_id;
       return {
         queryKey: ['recording', 'session', currentId],
-        queryFn: api.recording.sessionStatus,
+        queryFn: () => api.recording.sessionStatus(currentId),
         enabled: Boolean(currentId),
         refetchInterval: 1500
       };

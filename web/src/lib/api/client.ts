@@ -195,7 +195,8 @@ export const api = {
       fetchApi(`/api/recording/session/cancel${datasetId ? `?dataset_id=${datasetId}` : ''}`, {
         method: 'POST'
       }),
-    sessionStatus: () => fetchApi('/api/recording/session/status')
+    sessionStatus: (sessionId: string) =>
+      fetchApi(`/api/recording/sessions/${sessionId}/status`)
   },
   storage: {
     datasets: (profileInstanceId?: string) =>

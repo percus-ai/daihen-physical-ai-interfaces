@@ -225,19 +225,19 @@
     <div class="mt-4 grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
       <Button.Root class="btn-card w-full" href="/storage/huggingface/import-dataset">
         📥 データセットをインポート
-        <span class="text-xs text-slate-400">repo_id → project/dataset</span>
+        <span class="text-xs text-slate-400">repo_id → dataset_id</span>
       </Button.Root>
       <Button.Root class="btn-card w-full" href="/storage/huggingface/import-model">
         📥 モデルをインポート
-        <span class="text-xs text-slate-400">repo_id → project/model</span>
+        <span class="text-xs text-slate-400">repo_id → model_id</span>
       </Button.Root>
       <Button.Root class="btn-card w-full" href="/storage/huggingface/export-dataset">
         📤 データセットをエクスポート
-        <span class="text-xs text-slate-400">dataset → repo_id</span>
+        <span class="text-xs text-slate-400">dataset_id → repo_id</span>
       </Button.Root>
       <Button.Root class="btn-card w-full" href="/storage/huggingface/export-model">
         📤 モデルをエクスポート
-        <span class="text-xs text-slate-400">model → repo_id</span>
+        <span class="text-xs text-slate-400">model_id → repo_id</span>
       </Button.Root>
     </div>
   </div>

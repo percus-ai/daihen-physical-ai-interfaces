@@ -483,12 +483,20 @@ async def cancel_session(dataset_id: Optional[str] = None):
     return RecordingSessionActionResponse(success=True, message="Recording cancelled", dataset_id=dataset_id, status=result)
 
 
-@router.get("/session/status", response_model=RecordingSessionStatusResponse)
-async def get_session_status():
+@router.get("/sessions/{session_id}/status", response_model=RecordingSessionStatusResponse)
+async def get_session_status(session_id: str):
     _require_user_id()
     status = _call_recorder("/api/session/status")
-    dataset_id = status.get("dataset_id")
-    return RecordingSessionStatusResponse(dataset_id=dataset_id, status=status)
+    active_id = status.get("dataset_id")
+    if not active_id or active_id != session_id:
+        return RecordingSessionStatusResponse(
+            dataset_id=session_id,
+            status={
+                "state": "inactive",
+                "active_dataset_id": active_id,
+            },
+        )
+    return RecordingSessionStatusResponse(dataset_id=active_id, status=status)
 
 
 def _list_recordings() -> List[dict]:

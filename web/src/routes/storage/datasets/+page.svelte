@@ -6,7 +6,8 @@
 
   type DatasetSummary = {
     id: string;
-    project_id?: string;
+    name?: string;
+    profile_instance_id?: string;
     size_bytes?: number;
     episode_count?: number;
     status?: string;
@@ -37,27 +38,22 @@
 
   $: datasets = $datasetsQuery.data?.datasets ?? [];
   $: selectedDatasets = datasets.filter((dataset) => selectedIds.includes(dataset.id));
-  $: projectIds = Array.from(
-    new Set(selectedDatasets.map((dataset) => dataset.project_id).filter(Boolean))
+  $: profileIds = Array.from(
+    new Set(selectedDatasets.map((dataset) => dataset.profile_instance_id).filter(Boolean))
   );
-  $: projectMismatch = projectIds.length > 1;
-  $: projectId = projectIds.length === 1 ? projectIds[0] : '';
+  $: profileMismatch = profileIds.length > 1;
+  $: profileInstanceId = profileIds.length === 1 ? profileIds[0] : '';
   $: mergeDefaultName = selectedDatasets.length
-    ? `${selectedDatasets[0].id.split('/').pop() ?? 'dataset'}_merged`
+    ? `${selectedDatasets[0].name ?? selectedDatasets[0].id}_merged`
     : '';
-  $: canMerge = selectedIds.length >= 2 && !projectMismatch && !actionLoading;
+  $: canMerge = selectedIds.length >= 2 && !profileMismatch && !actionLoading;
   $: canArchive = selectedIds.length > 0 && !actionLoading;
 
   const refetchDatasets = async () => {
     await queryClient.invalidateQueries({ queryKey: ['storage', 'datasets', 'manage'] });
   };
 
-  const displayDatasetId = (id: string, projectId?: string | null) => {
-    if (projectId && id.startsWith(`${projectId}/`)) {
-      return id.slice(projectId.length + 1) || id;
-    }
-    return id.split('/').pop() ?? id;
-  };
+  const displayDatasetLabel = (dataset: DatasetSummary) => dataset.name ?? dataset.id;
 
   async function handleMerge() {
     actionMessage = '';
@@ -67,8 +63,8 @@
       actionError = '2件以上のデータセットを選択してください。';
       return;
     }
-    if (projectMismatch || !projectId) {
-      actionError = '同一プロジェクトのデータセットのみマージできます。';
+    if (profileMismatch || !profileInstanceId) {
+      actionError = '同一プロファイルのデータセットのみマージできます。';
       return;
     }
 
@@ -78,9 +74,7 @@
       return;
     }
 
-    const confirmed = confirm(
-      `${selectedIds.length}件のデータセットを ${projectId}/${datasetName} にマージしますか？`
-    );
+    const confirmed = confirm(`${selectedIds.length}件のデータセットを ${datasetName} にマージしますか？`);
     if (!confirmed) return;
 
     actionLoading = true;
@@ -88,7 +82,6 @@
 
     try {
       const result = await api.storage.mergeDatasets({
-        project_id: projectId,
         dataset_name: datasetName,
         source_dataset_ids: sourceIds
       }) as DatasetMergeResponse;
@@ -161,7 +154,7 @@
         <tr>
           <th class="pb-3"></th>
           <th class="pb-3">ID</th>
-          <th class="pb-3">プロジェクト</th>
+          <th class="pb-3">プロファイル</th>
           <th class="pb-3">サイズ</th>
           <th class="pb-3">エピソード</th>
           <th class="pb-3">状態</th>
@@ -185,10 +178,10 @@
               </td>
               <td class="py-3 font-semibold text-slate-800">
                 <span class="block max-w-[25ch] truncate" title={dataset.id}>
-                  {displayDatasetId(dataset.id, dataset.project_id)}
+                  {displayDatasetLabel(dataset)}
                 </span>
               </td>
-              <td class="py-3">{dataset.project_id}</td>
+              <td class="py-3">{dataset.profile_instance_id ?? '-'}</td>
               <td class="py-3">{formatBytes(dataset.size_bytes ?? 0)}</td>
               <td class="py-3">{dataset.episode_count ?? 0}</td>
               <td class="py-3"><span class="chip">{dataset.status}</span></td>
@@ -227,10 +220,10 @@
           placeholder={mergeDefaultName || 'dataset_name'}
           bind:value={mergeName}
         />
-        {#if projectMismatch}
-          <p class="mt-2 text-xs text-rose-500">プロジェクトが一致しません。</p>
-        {:else if projectId}
-          <p class="mt-2 text-xs text-slate-500">project: {projectId}</p>
+        {#if profileMismatch}
+          <p class="mt-2 text-xs text-rose-500">プロファイルが一致しません。</p>
+        {:else if profileInstanceId}
+          <p class="mt-2 text-xs text-slate-500">profile: {profileInstanceId}</p>
         {/if}
       </div>
       <div class="mt-4">

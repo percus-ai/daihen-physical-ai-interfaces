@@ -10,7 +10,7 @@
   type ModelInfo = {
     id: string;
     name?: string;
-    project_id?: string;
+    profile_instance_id?: string;
     dataset_id?: string;
     policy_type?: string;
     status?: string;
@@ -114,8 +114,8 @@
         <p class="text-base font-semibold text-slate-800">{model.id}</p>
       </div>
       <div>
-        <p class="label">プロジェクト</p>
-        <p class="text-base font-semibold text-slate-800">{model.project_id}</p>
+        <p class="label">プロファイル</p>
+        <p class="text-base font-semibold text-slate-800">{model.profile_instance_id ?? '-'}</p>
       </div>
       <div>
         <p class="label">状態</p>

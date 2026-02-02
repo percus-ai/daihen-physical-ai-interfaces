@@ -2,7 +2,6 @@ import type { SvelteComponent } from 'svelte';
 import CameraView from '$lib/components/recording/views/CameraView.svelte';
 import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
 import StatusView from '$lib/components/recording/views/StatusView.svelte';
-import LogView from '$lib/components/recording/views/LogView.svelte';
 import TopicsView from '$lib/components/recording/views/TopicsView.svelte';
 import ControlsView from '$lib/components/recording/views/ControlsView.svelte';
 import ProgressView from '$lib/components/recording/views/ProgressView.svelte';
@@ -31,7 +30,6 @@ const firstMatch = (topics: string[], filter: (topic: string) => boolean) =>
 const cameraFilter = (topic: string) => topic.endsWith('/compressed');
 const jointFilter = (topic: string) => topic.includes('joint_states');
 const statusFilter = (topic: string) => topic.includes('status') || topic.includes('client');
-const logFilter = (topic: string) => topic === '/rosout' || topic.includes('parameter');
 
 export const viewRegistry: ViewTypeDefinition[] = [
   {
@@ -100,23 +98,6 @@ export const viewRegistry: ViewTypeDefinition[] = [
     ],
     defaultConfig: (topics) => ({
       topic: firstMatch(topics, (t) => t.includes('session_recorder/status')) || firstMatch(topics, statusFilter)
-    })
-  },
-  {
-    type: 'log',
-    label: 'Log',
-    description: 'ROS log stream',
-    component: LogView,
-    fields: [
-      {
-        key: 'topic',
-        label: 'Topic',
-        type: 'topic',
-        filter: logFilter
-      }
-    ],
-    defaultConfig: (topics) => ({
-      topic: firstMatch(topics, logFilter)
     })
   },
   {

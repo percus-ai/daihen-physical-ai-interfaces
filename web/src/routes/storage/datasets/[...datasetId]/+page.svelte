@@ -10,7 +10,7 @@
   type DatasetInfo = {
     id: string;
     name?: string;
-    project_id?: string;
+    profile_instance_id?: string;
     dataset_type?: string;
     status?: string;
     size_bytes?: number;
@@ -45,21 +45,21 @@
 
   const candidatesQuery = createQuery<DatasetListResponse>(
     derived(datasetQuery, ($datasetQuery) => {
-      const currentProjectId = $datasetQuery.data?.project_id;
+      const currentProfileId = $datasetQuery.data?.profile_instance_id;
       return {
-        queryKey: ['storage', 'datasets', 'project', currentProjectId],
-        queryFn: () => api.storage.datasets(currentProjectId) as Promise<DatasetListResponse>,
-        enabled: Boolean(currentProjectId)
+        queryKey: ['storage', 'datasets', 'profile', currentProfileId],
+        queryFn: () => api.storage.datasets(currentProfileId) as Promise<DatasetListResponse>,
+        enabled: Boolean(currentProfileId)
       };
     })
   );
 
   $: dataset = $datasetQuery.data;
-  $: projectId = dataset?.project_id ?? '';
+  $: profileInstanceId = dataset?.profile_instance_id ?? '';
   $: isArchived = dataset?.status === 'archived';
 
   $: candidates = ($candidatesQuery.data?.datasets ?? [])
-    .filter((item) => item.project_id === projectId)
+    .filter((item) => item.profile_instance_id === profileInstanceId)
     .filter((item) => item.status === 'active' && item.id !== datasetId);
 
   let mergeSelection: string[] = [];
@@ -69,7 +69,7 @@
   let actionLoading = false;
 
   $: mergeDefaultName = datasetId
-    ? `${datasetId.split('/').pop() ?? 'dataset'}_merged`
+    ? `${dataset?.name ?? datasetId}_merged`
     : '';
   $: canMerge = !isArchived && mergeSelection.length > 0 && !actionLoading;
 
@@ -79,9 +79,9 @@
   };
 
   const refetchCandidates = async () => {
-    if (!projectId) return;
+    if (!profileInstanceId) return;
     await queryClient.invalidateQueries({
-      queryKey: ['storage', 'datasets', 'project', projectId]
+      queryKey: ['storage', 'datasets', 'profile', profileInstanceId]
     });
   };
 
@@ -129,7 +129,7 @@
     actionMessage = '';
     actionError = '';
 
-    if (!datasetId || !projectId) return;
+    if (!datasetId || !profileInstanceId) return;
     if (!mergeSelection.length) {
       actionError = 'マージ対象を選択してください。';
       return;
@@ -141,15 +141,12 @@
       return;
     }
 
-    const confirmed = confirm(
-      `${mergeSelection.length + 1}件を ${projectId}/${datasetName} にマージしますか？`
-    );
+    const confirmed = confirm(`${mergeSelection.length + 1}件を ${datasetName} にマージしますか？`);
     if (!confirmed) return;
 
     actionLoading = true;
     try {
       const result = await api.storage.mergeDatasets({
-        project_id: projectId,
         dataset_name: datasetName,
         source_dataset_ids: [datasetId, ...mergeSelection]
       }) as DatasetMergeResponse;
@@ -193,8 +190,8 @@
         <p class="text-base font-semibold text-slate-800">{dataset.id}</p>
       </div>
       <div>
-        <p class="label">プロジェクト</p>
-        <p class="text-base font-semibold text-slate-800">{dataset.project_id}</p>
+        <p class="label">プロファイル</p>
+        <p class="text-base font-semibold text-slate-800">{dataset.profile_instance_id ?? '-'}</p>
       </div>
       <div>
         <p class="label">タイプ</p>

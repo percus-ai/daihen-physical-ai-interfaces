@@ -9,7 +9,7 @@
 
   type ArchiveItem = {
     id: string;
-    project_id?: string;
+    profile_instance_id?: string;
     status?: string;
     size_bytes?: number;
     created_at?: string;
@@ -138,8 +138,8 @@
         <p class="text-base font-semibold text-slate-800">{item.id}</p>
       </div>
       <div>
-        <p class="label">プロジェクト</p>
-        <p class="text-base font-semibold text-slate-800">{item.project_id}</p>
+        <p class="label">プロファイル</p>
+        <p class="text-base font-semibold text-slate-800">{item.profile_instance_id ?? '-'}</p>
       </div>
       <div>
         <p class="label">状態</p>

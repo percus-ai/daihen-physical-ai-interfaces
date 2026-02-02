@@ -146,16 +146,9 @@ class RecordMenu(BaseMenu):
 
     def _stop_recording(self) -> MenuResult:
         show_section_header("Recording: Stop")
-        dataset_id = None
-        try:
-            status = self.api.get_recording_status()
-            dataset_id = status.get("dataset_id")
-        except Exception:
-            dataset_id = None
-
         dataset_id_input = inquirer.text(
-            message="Dataset ID (blank to auto):",
-            default=dataset_id or "",
+            message="Dataset ID (optional):",
+            default="",
             style=hacker_style,
         ).execute()
         dataset_id = dataset_id_input.strip() or None
@@ -227,7 +220,14 @@ class RecordMenu(BaseMenu):
     def _show_status(self) -> MenuResult:
         show_section_header("Recording: Status")
         try:
-            result = self.api.get_recording_status()
+            session_id = inquirer.text(
+                message="Dataset ID:",
+                default="",
+                style=hacker_style,
+            ).execute().strip()
+            if not session_id:
+                raise ValueError("Dataset ID is required")
+            result = self.api.get_recording_status(session_id)
             dataset_id = result.get("dataset_id")
             status = result.get("status", {})
             print(f"  Dataset ID: {dataset_id}")

@@ -6,7 +6,8 @@
 
   type ModelSummary = {
     id: string;
-    project_id?: string;
+    name?: string;
+    profile_instance_id?: string;
     policy_type?: string;
     dataset_id?: string;
     size_bytes?: number;
@@ -47,16 +48,7 @@
     ])
   );
 
-  const displayModelId = (id: string, projectId?: string | null) => {
-    if (projectId) {
-      const prefixes = [`${projectId}/`, `${projectId}_`, `${projectId}-`];
-      const matched = prefixes.find((prefix) => id.startsWith(prefix));
-      if (matched) {
-        return id.slice(matched.length) || id;
-      }
-    }
-    return id.split('/').pop() ?? id;
-  };
+  const displayModelLabel = (model: ModelSummary) => model.name ?? model.id;
 </script>
 
 <section class="card-strong p-8">
@@ -84,7 +76,7 @@
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">
         <tr>
           <th class="pb-3">ID</th>
-          <th class="pb-3">プロジェクト</th>
+          <th class="pb-3">プロファイル</th>
           <th class="pb-3">ポリシー</th>
           <th class="pb-3">データセット</th>
           <th class="pb-3">サイズ</th>
@@ -101,10 +93,10 @@
             <tr class="border-t border-slate-200/60">
               <td class="py-3 font-semibold text-slate-800">
                 <span class="block max-w-[25ch] truncate" title={model.id}>
-                  {displayModelId(model.id, model.project_id)}
+                  {displayModelLabel(model)}
                 </span>
               </td>
-              <td class="py-3">{model.project_id}</td>
+              <td class="py-3">{model.profile_instance_id ?? '-'}</td>
               <td class="py-3">{model.policy_type ?? '-'}</td>
               <td class="py-3">
                 {#if model.dataset_id}
