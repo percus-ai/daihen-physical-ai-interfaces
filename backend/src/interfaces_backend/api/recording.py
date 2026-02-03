@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -30,14 +31,19 @@ router = APIRouter(prefix="/api/recording", tags=["recording"])
 
 _RECORDER_URL = os.environ.get("LEROBOT_RECORDER_URL", "http://127.0.0.1:8082")
 _sync_service: Optional[R2DBSyncService] = None
+_PENDING_SESSIONS_DIRNAME = ".pending_sessions"
 
 
-class RecordingSessionStartRequest(BaseModel):
+class RecordingSessionCreateRequest(BaseModel):
     dataset_name: str = Field(..., description="Dataset display name")
     task: str = Field(..., description="Task description")
     num_episodes: int = Field(1, ge=1, description="Number of episodes")
     episode_time_s: float = Field(60.0, gt=0, description="Episode length in seconds")
     reset_time_s: float = Field(10.0, ge=0, description="Reset wait time in seconds")
+
+
+class RecordingSessionStartRequest(BaseModel):
+    dataset_id: str = Field(..., description="Dataset ID (UUID)")
 
 
 class RecordingSessionStopRequest(BaseModel):
@@ -90,6 +96,37 @@ def _get_sync_service() -> R2DBSyncService:
     if _sync_service is None:
         _sync_service = R2DBSyncService()
     return _sync_service
+
+
+def _pending_sessions_dir() -> Path:
+    directory = get_datasets_dir() / _PENDING_SESSIONS_DIRNAME
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _pending_session_path(dataset_id: str) -> Path:
+    return _pending_sessions_dir() / f"{dataset_id}.json"
+
+
+def _save_pending_session(dataset_id: str, payload: dict) -> None:
+    path = _pending_session_path(dataset_id)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_pending_session(dataset_id: str) -> dict:
+    path = _pending_session_path(dataset_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Pending session not found")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Pending session data corrupted") from exc
+
+
+def _delete_pending_session(dataset_id: str) -> None:
+    path = _pending_session_path(dataset_id)
+    if path.exists():
+        path.unlink()
 
 
 def _load_user_config() -> dict:
@@ -330,11 +367,24 @@ async def _update_dataset_stats(dataset_id: str) -> None:
     dataset_root = get_datasets_dir() / dataset_id
     if not dataset_root.exists():
         return
-    meta = LeRobotDatasetMetadata(dataset_id, root=dataset_root)
+    episode_count = 0
+    meta_path = dataset_root / "meta" / "info.json"
+    if meta_path.exists():
+        try:
+            info = json.loads(meta_path.read_text(encoding="utf-8"))
+            episode_count = int(info.get("total_episodes") or 0)
+        except Exception as exc:
+            logger.warning("Failed to read dataset info.json for %s: %s", dataset_id, exc)
+    else:
+        try:
+            meta = LeRobotDatasetMetadata(dataset_id, root=dataset_root)
+            episode_count = int(meta.total_episodes)
+        except Exception as exc:
+            logger.warning("Failed to read dataset metadata for %s: %s", dataset_id, exc)
     size_bytes = sum(p.stat().st_size for p in dataset_root.rglob("*") if p.is_file())
     payload = {
         "id": dataset_id,
-        "episode_count": meta.total_episodes,
+        "episode_count": episode_count,
         "size_bytes": size_bytes,
         "status": "active",
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -342,15 +392,13 @@ async def _update_dataset_stats(dataset_id: str) -> None:
     await upsert_with_owner("datasets", "id", payload)
 
 
-@router.post("/session/start", response_model=RecordingSessionActionResponse)
-async def start_session(request: RecordingSessionStartRequest):
+@router.post("/session/create", response_model=RecordingSessionActionResponse)
+async def create_session(request: RecordingSessionCreateRequest):
     _require_user_id()
 
     is_valid, errors = validate_dataset_name(request.dataset_name)
     if not is_valid:
         raise HTTPException(status_code=400, detail=f"Invalid dataset name: {'; '.join(errors)}")
-
-    _ensure_recorder_running()
 
     dataset_id = generate_dataset_id()
     profile_instance = await _resolve_profile_instance(None)
@@ -383,18 +431,44 @@ async def start_session(request: RecordingSessionStartRequest):
     if arm_namespaces:
         payload["arm_namespaces"] = arm_namespaces
 
+    _save_pending_session(dataset_id, payload)
+
+    await _upsert_dataset_record(dataset_id, request.dataset_name, request.task, profile_instance, "ready")
+
+    return RecordingSessionActionResponse(
+        success=True,
+        message="Recording session created",
+        dataset_id=dataset_id,
+    )
+
+
+@router.post("/session/start", response_model=RecordingSessionActionResponse)
+async def start_session(request: RecordingSessionStartRequest):
+    _require_user_id()
+
+    _ensure_recorder_running()
+
+    payload = _load_pending_session(request.dataset_id)
     result = _call_recorder("/api/session/start", payload)
     if not result.get("success", False):
         raise HTTPException(status_code=500, detail=result.get("error") or "Recorder start failed")
 
+    metadata = payload.get("metadata") or {}
+    profile_instance_id = metadata.get("profile_instance_id")
+    profile_instance = await _resolve_profile_instance(profile_instance_id)
     await _upsert_dataset_record(
-        dataset_id, request.dataset_name, request.task, profile_instance, "recording"
+        payload.get("dataset_id") or request.dataset_id,
+        payload.get("dataset_name") or request.dataset_id,
+        payload.get("task") or "",
+        profile_instance,
+        "recording",
     )
+    _delete_pending_session(request.dataset_id)
 
     return RecordingSessionActionResponse(
         success=True,
         message="Recording session started",
-        dataset_id=dataset_id,
+        dataset_id=payload.get("dataset_id") or request.dataset_id,
         status=result,
     )
 
@@ -458,6 +532,43 @@ async def redo_episode():
     )
 
 
+@router.post("/episode/redo-previous", response_model=RecordingSessionActionResponse)
+async def redo_previous_episode():
+    _require_user_id()
+    status = _call_recorder("/api/session/status")
+    state = status.get("state")
+    dataset_id = status.get("dataset_id")
+    if not dataset_id:
+        raise HTTPException(status_code=400, detail="No active session")
+    if state == "paused":
+        raise HTTPException(status_code=400, detail="Cannot redo while paused")
+
+    if state == "recording":
+        cancel = _call_recorder("/api/episode/cancel", {})
+        if not cancel.get("success", False):
+            raise HTTPException(
+                status_code=500, detail=cancel.get("error") or "Recorder episode cancel failed"
+            )
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            status = _call_recorder("/api/session/status")
+            state = status.get("state")
+            if state not in ("recording", "paused"):
+                break
+            time.sleep(0.1)
+
+    result = _call_recorder("/api/episode/redo", {})
+    if not result.get("success", False):
+        raise HTTPException(status_code=500, detail=result.get("error") or "Recorder redo failed")
+
+    return RecordingSessionActionResponse(
+        success=True,
+        message="Previous episode will be re-recorded",
+        dataset_id=dataset_id,
+        status=result,
+    )
+
+
 @router.post("/episode/cancel", response_model=RecordingSessionActionResponse)
 async def cancel_episode():
     _require_user_id()
@@ -470,13 +581,27 @@ async def cancel_episode():
 @router.post("/session/cancel", response_model=RecordingSessionActionResponse)
 async def cancel_session(dataset_id: Optional[str] = None):
     _require_user_id()
-    result = _call_recorder("/api/session/stop", {"save_current": False})
-    if not result.get("success", False):
-        raise HTTPException(status_code=500, detail=result.get("error") or "Recorder cancel failed")
-
+    result = {"success": True, "message": "Recording cancelled", "dataset_id": dataset_id}
     if dataset_id:
+        active_id = None
+        active_state = None
+        try:
+            status = _call_recorder("/api/session/status")
+            active_id = status.get("dataset_id")
+            active_state = status.get("state")
+        except HTTPException:
+            status = {}
+        if active_id and active_id == dataset_id and active_state not in ("idle", "completed"):
+            result = _call_recorder("/api/session/stop", {"save_current": False})
+            if not result.get("success", False):
+                raise HTTPException(status_code=500, detail=result.get("error") or "Recorder cancel failed")
         client = await get_supabase_async_client()
         await client.table("datasets").update({"status": "archived"}).eq("id", dataset_id).execute()
+        _delete_pending_session(dataset_id)
+    else:
+        result = _call_recorder("/api/session/stop", {"save_current": False})
+        if not result.get("success", False):
+            raise HTTPException(status_code=500, detail=result.get("error") or "Recorder cancel failed")
 
     return RecordingSessionActionResponse(success=True, message="Recording cancelled", dataset_id=dataset_id, status=result)
 

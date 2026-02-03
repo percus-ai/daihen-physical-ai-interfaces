@@ -48,10 +48,10 @@ class InferenceRunnerStartRequest(BaseModel):
     policy_type: Optional[str] = Field(None, description="Policy type override")
     device: Optional[str] = Field(None, description="Device override (e.g., cuda:0)")
     actions_per_chunk: int = Field(default=1, ge=1)
-    arm_namespaces: List[str] = Field(default_factory=lambda: ["left_arm", "right_arm"])
+    arm_namespaces: List[str] = Field(default_factory=list)
     joint_names: List[str] = Field(
-        default_factory=lambda: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
-        description="Joint name list per arm",
+        default_factory=list,
+        description="Joint name list per arm (defaults to runner status/robot_config)",
     )
     camera_shapes: Optional[Dict[str, List[int]]] = Field(default=None)
     rename_map: Dict[str, str] = Field(default_factory=dict)

@@ -35,6 +35,9 @@ def get_torch_info(use_cache: bool = True) -> Dict[str, Any]:
         "torch_version": None,
         "cuda_available": False,
         "cuda_version": None,
+        "cuda_supported_arches": None,
+        "gpu_capability": None,
+        "cuda_compatible": None,
         "gpu_name": None,
         "gpu_count": 0,
         "mps_available": False,
@@ -72,10 +75,20 @@ if info["cuda_available"]:
     if info["gpu_count"] > 0:
         info["gpu_name"] = torch.cuda.get_device_name(0)
         props = torch.cuda.get_device_properties(0)
+        info["gpu_capability"] = f"sm_{props.major}{props.minor}"
         info["cuda_memory_total"] = props.total_memory / (1024 * 1024)  # MB
         info["cuda_memory_free"] = (
             props.total_memory - torch.cuda.memory_allocated(0)
         ) / (1024 * 1024)  # MB
+        if hasattr(torch.cuda, "get_arch_list"):
+            info["cuda_supported_arches"] = torch.cuda.get_arch_list()
+            if info["cuda_supported_arches"]:
+                info["cuda_compatible"] = info["gpu_capability"] in info["cuda_supported_arches"]
+            else:
+                info["cuda_compatible"] = True
+        else:
+            info["cuda_supported_arches"] = None
+            info["cuda_compatible"] = True
 else:
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         info["mps_available"] = True

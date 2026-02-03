@@ -61,6 +61,10 @@ def _refresh_cookie_max_age() -> int:
     raw = os.environ.get("PHI_REFRESH_COOKIE_MAX_AGE_SECONDS")
     if raw is None or raw == "":
         return DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS
 
 
 def _refresh_timeout_seconds() -> int:
@@ -71,10 +75,6 @@ def _refresh_timeout_seconds() -> int:
         return max(1, int(raw))
     except ValueError:
         return DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return DEFAULT_REFRESH_COOKIE_MAX_AGE_SECONDS
 
 
 def set_session_cookies(response: Response, session: dict[str, Any]) -> None:

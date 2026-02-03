@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -43,8 +44,6 @@ _RUNNER_COMPOSE_SERVICE = os.environ.get("RUNNER_BRIDGE_SERVICE", "lerobot-ros2"
 _RUNNER_AUTO_START = os.environ.get("RUNNER_BRIDGE_AUTO_START", "1") != "0"
 _GPU_WORKER_DEVICE = os.environ.get("GPU_WORKER_DEVICE", "cuda:0")
 
-_DEFAULT_ARM_NAMESPACES = ["left_arm", "right_arm"]
-_DEFAULT_JOINT_NAMES = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 
 
 async def _list_models() -> list[dict]:
@@ -85,6 +84,44 @@ def _ensure_runner_service() -> None:
     )
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=f"runner bridge start failed: {result.stderr.strip()}")
+
+
+def _fetch_runner_status(runner_client: RunnerBridgeClient, retries: int = 10, delay_s: float = 0.3) -> dict:
+    last_exc: Exception | None = None
+    for _ in range(retries):
+        try:
+            status = runner_client.status()
+            if isinstance(status, dict):
+                return status
+        except Exception as exc:
+            last_exc = exc
+        time.sleep(delay_s)
+    if last_exc:
+        logger.warning("Runner bridge status unavailable: %s", last_exc)
+    return {}
+
+
+def _wait_runner_ready(
+    runner_client: RunnerBridgeClient,
+    session_id: str,
+    timeout_s: float = 20.0,
+    poll_s: float = 0.5,
+) -> dict:
+    deadline = time.time() + timeout_s
+    last_status: dict = {}
+    while time.time() < deadline:
+        status = _fetch_runner_status(runner_client, retries=1, delay_s=0)
+        if isinstance(status, dict):
+            last_status = status
+            if session_id and status.get("session_id") not in (None, session_id):
+                time.sleep(poll_s)
+                continue
+            if status.get("state") == "error":
+                raise RuntimeError(status.get("last_error") or "runner bridge error")
+            if status.get("ready") is True or (status.get("inference_count") or 0) > 0:
+                return status
+        time.sleep(poll_s)
+    raise RuntimeError("runner bridge not ready")
 
 
 async def _resolve_model_path(model_id: str) -> Path:
@@ -233,9 +270,12 @@ async def list_inference_models():
 @router.get("/device-compatibility", response_model=InferenceDeviceCompatibilityResponse)
 async def get_device_compatibility():
     """Check device compatibility for inference."""
-    torch_info = get_torch_info()
+    torch_info = get_torch_info(use_cache=False)
 
     cuda_available = torch_info.get("cuda_available", False)
+    cuda_compatible = torch_info.get("cuda_compatible")
+    if cuda_compatible is False:
+        cuda_available = False
     mps_available = torch_info.get("mps_available", False)
 
     devices = [
@@ -278,14 +318,18 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
         raise HTTPException(status_code=409, detail="Teleop session is already running")
 
     runner_client = RunnerBridgeClient()
+    status = {}
     try:
         status = runner_client.status()
     except Exception:
         status = {}
-    if isinstance(status, dict) and (status.get("active") is True or status.get("session_id")):
+    if isinstance(status, dict) and status.get("active") is True:
         raise HTTPException(status_code=409, detail="Inference session is already running")
 
     _ensure_runner_service()
+    status = _fetch_runner_status(runner_client)
+    if not status:
+        raise HTTPException(status_code=502, detail="Runner bridge unavailable")
 
     model_path = await _resolve_model_path(request.model_id)
     policy_type = await _resolve_model_policy_type(
@@ -297,8 +341,47 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
     if request.rename_map:
         rename_map = request.rename_map
 
-    arm_namespaces = request.arm_namespaces or _DEFAULT_ARM_NAMESPACES
-    joint_names = request.joint_names or _DEFAULT_JOINT_NAMES
+    status_arm_namespaces = status.get("arm_namespaces") if isinstance(status, dict) else None
+    if request.arm_namespaces:
+        if (
+            isinstance(status_arm_namespaces, list)
+            and status_arm_namespaces
+            and request.arm_namespaces != status_arm_namespaces
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="arm_namespaces must match runner status (robot_config)",
+            )
+        arm_namespaces = request.arm_namespaces
+    else:
+        if isinstance(status_arm_namespaces, list) and status_arm_namespaces:
+            arm_namespaces = status_arm_namespaces
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="arm_namespaces is required (runner status unavailable)",
+            )
+
+    status_joint_names = status.get("joint_names") if isinstance(status, dict) else None
+    if request.joint_names:
+        if (
+            isinstance(status_joint_names, list)
+            and status_joint_names
+            and request.joint_names != status_joint_names
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="joint_names must match runner status (robot_config)",
+            )
+        joint_names = request.joint_names
+    else:
+        if isinstance(status_joint_names, list) and status_joint_names:
+            joint_names = status_joint_names
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="joint_names is required (runner status unavailable)",
+            )
     full_joint_names = [f"{ns}_{joint}" for ns in arm_namespaces for joint in joint_names]
 
     session_id = request.session_id or uuid4().hex[:8]
@@ -316,11 +399,41 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
 
     gpu_client = GpuHostClient()
     try:
+        gpu_status = gpu_client.status().model_dump()
+    except Exception as exc:
+        logger.exception("GPU host status failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if gpu_status.get("status") == "running":
+        running_session = gpu_status.get("session_id")
+        if running_session:
+            try:
+                gpu_client.stop(StopRequest(session_id=running_session))
+            except Exception as exc:
+                logger.exception("GPU host stop failed")
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+        else:
+            raise HTTPException(status_code=502, detail="GPU host already running")
+
+    device = request.device or _GPU_WORKER_DEVICE
+    if device.startswith("cuda"):
+        torch_info = get_torch_info(use_cache=False)
+        if not torch_info.get("cuda_available", False):
+            device = "cpu"
+        elif torch_info.get("cuda_compatible") is False:
+            logger.warning(
+                "CUDA device incompatible (capability=%s, supported=%s). Falling back to CPU.",
+                torch_info.get("gpu_capability"),
+                torch_info.get("cuda_supported_arches"),
+            )
+            device = "cpu"
+
+    try:
         gpu_resp = gpu_client.start(StartRequest(
             session_id=session_id,
             policy_type=policy_type,
             model_path=str(model_path),
-            device=request.device or _GPU_WORKER_DEVICE,
+            device=device,
             actions_per_chunk=request.actions_per_chunk,
             joint_names=full_joint_names,
             camera_shapes=camera_shapes,
@@ -332,9 +445,18 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     try:
-        runner_status = runner_client.status()
-    except Exception:
-        runner_status = {}
+        runner_status = _wait_runner_ready(runner_client, session_id=session_id)
+    except Exception as exc:
+        logger.exception("Runner bridge did not become ready")
+        try:
+            runner_client.stop()
+        except Exception:
+            logger.exception("Runner bridge stop failed after readiness error")
+        try:
+            gpu_client.stop(StopRequest(session_id=session_id))
+        except Exception:
+            logger.exception("GPU host stop failed after readiness error")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return InferenceRunnerStartResponse(
         success=True,
@@ -392,14 +514,23 @@ async def get_inference_runner_status():
     try:
         runner_status = runner_client.status()
     except Exception as exc:
-        logger.exception("Runner bridge status failed")
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.warning("Runner bridge status failed: %s", exc)
+        runner_status = {
+            "active": False,
+            "session_id": None,
+            "last_error": str(exc),
+        }
 
     try:
         gpu_status = gpu_client.status().model_dump()
     except Exception as exc:
-        logger.exception("GPU host status failed")
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.warning("GPU host status failed: %s", exc)
+        gpu_status = {
+            "status": "unavailable",
+            "session_id": None,
+            "pid": None,
+            "last_error": str(exc),
+        }
 
     return InferenceRunnerStatusResponse(
         runner_status=runner_status,
