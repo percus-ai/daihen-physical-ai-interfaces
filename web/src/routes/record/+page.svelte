@@ -121,7 +121,7 @@
       <h1 class="text-3xl font-semibold text-slate-900">データ録画</h1>
       <p class="mt-2 text-sm text-slate-600">録画セッションの状況を表示します。</p>
     </div>
-    <Button.Root class="btn-primary" href="/record/new">新規録画を開始</Button.Root>
+    <Button.Root class="btn-primary" href="/record/new">新規セッションを作成</Button.Root>
   </div>
 </section>
 

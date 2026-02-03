@@ -220,13 +220,18 @@ export const api = {
   },
   recording: {
     list: () => fetchApi('/api/recording/recordings'),
-    startSession: (payload: {
+    createSession: (payload: {
       dataset_name: string;
       task: string;
       num_episodes: number;
       episode_time_s: number;
       reset_time_s: number;
     }) =>
+      fetchApi('/api/recording/session/create', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    startSession: (payload: { dataset_id: string }) =>
       fetchApi('/api/recording/session/start', {
         method: 'POST',
         body: JSON.stringify(payload)
@@ -249,6 +254,10 @@ export const api = {
       }),
     redoEpisode: () =>
       fetchApi('/api/recording/episode/redo', {
+        method: 'POST'
+      }),
+    redoPreviousEpisode: () =>
+      fetchApi('/api/recording/episode/redo-previous', {
         method: 'POST'
       }),
     cancelEpisode: () =>

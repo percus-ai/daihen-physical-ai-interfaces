@@ -52,8 +52,17 @@
   type RecorderStatus = Record<string, unknown> & {
     state?: string;
     status?: string;
+    phase?: string;
     task?: string;
     dataset_id?: string;
+    episode_index?: number | null;
+    num_episodes?: number;
+    episode_time_s?: number;
+    reset_time_s?: number;
+    episode_elapsed_s?: number;
+    episode_remaining_s?: number;
+    reset_elapsed_s?: number;
+    reset_remaining_s?: number;
     last_error?: string;
   };
 
@@ -265,6 +274,29 @@
   const statusLabel = $derived(STATUS_LABELS[String(statusState)] ?? String(statusState || 'unknown'));
   const statusDetail = $derived((status as RecorderStatus)?.last_error ?? '');
   const taskLabel = $derived((status as RecorderStatus)?.task ?? '');
+  const statusPhase = $derived(String((status as RecorderStatus)?.phase ?? 'wait'));
+
+  const episodeIndex = $derived((status as RecorderStatus)?.episode_index ?? null);
+  const episodeTotal = $derived(Number((status as RecorderStatus)?.num_episodes ?? 0));
+  const episodeTime = $derived(Number((status as RecorderStatus)?.episode_time_s ?? 0));
+  const episodeElapsed = $derived(Number((status as RecorderStatus)?.episode_elapsed_s ?? 0));
+  const resetTime = $derived(Number((status as RecorderStatus)?.reset_time_s ?? 0));
+  const resetElapsed = $derived(Number((status as RecorderStatus)?.reset_elapsed_s ?? 0));
+
+  const timelineMode = $derived(
+    statusPhase === 'recording' ? 'recording' : statusPhase === 'reset' ? 'reset' : 'wait'
+  );
+  const timelineTotal = $derived(timelineMode === 'recording' ? episodeTime : timelineMode === 'reset' ? resetTime : 0);
+  const timelineElapsed = $derived(
+    timelineMode === 'recording' ? episodeElapsed : timelineMode === 'reset' ? resetElapsed : 0
+  );
+  const timelineProgress = $derived(
+    timelineTotal > 0 ? Math.min(Math.max(timelineElapsed / timelineTotal, 0), 1) : 0
+  );
+  const timelineLabel = $derived(
+    timelineMode === 'recording' ? '録画中' : timelineMode === 'reset' ? 'リセット中' : '待機中'
+  );
+  const formatSeconds = (value: number) => `${value.toFixed(1)}s`;
 
   const connectionLabel = $derived(
     rosbridgeStatus === 'connected'
@@ -481,12 +513,27 @@
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div>
       <p class="label">Timeline</p>
-      <p class="text-sm font-semibold text-slate-700">再生タイムライン（実装準備）</p>
+      <p class="text-sm font-semibold text-slate-700">録画タイムライン</p>
+      <p class="mt-1 text-xs text-slate-500">{timelineLabel}</p>
     </div>
-    <div class="flex flex-wrap gap-2">
-      <Button.Root class="btn-ghost" type="button">⏮︎</Button.Root>
-      <Button.Root class="btn-primary" type="button">⏯︎</Button.Root>
-      <Button.Root class="btn-ghost" type="button">⏭︎</Button.Root>
+    <div class="text-xs text-slate-500">
+      {#if episodeIndex != null}
+        エピソード {episodeIndex + 1}{episodeTotal ? ` / ${episodeTotal}` : ''}
+      {:else}
+        エピソード待機中
+      {/if}
+    </div>
+  </div>
+  <div class="mt-3">
+    <div class="h-3 w-full overflow-hidden rounded-full bg-slate-200/70">
+      <div
+        class={`h-full rounded-full ${timelineMode === 'reset' ? 'bg-amber-400' : 'bg-brand'}`}
+        style={`width:${(timelineProgress * 100).toFixed(1)}%`}
+      ></div>
+    </div>
+    <div class="mt-2 flex justify-between text-[10px] text-slate-500">
+      <span>{formatSeconds(timelineElapsed)}</span>
+      <span>{formatSeconds(timelineTotal)}</span>
     </div>
   </div>
   {#if statusDetail}

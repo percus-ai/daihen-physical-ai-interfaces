@@ -100,13 +100,13 @@
         episode_time_s: episodeTime,
         reset_time_s: resetWait
       };
-      const result = (await api.recording.startSession(payload)) as RecordingSessionResponse;
+      const result = (await api.recording.createSession(payload)) as RecordingSessionResponse;
       if (!result?.dataset_id) {
-        throw new Error('録画セッションの開始に失敗しました。');
+        throw new Error('録画セッションの作成に失敗しました。');
       }
       await goto(`/record/sessions/${result.dataset_id}`);
     } catch (err) {
-      error = err instanceof Error ? err.message : '録画セッションの開始に失敗しました。';
+      error = err instanceof Error ? err.message : '録画セッションの作成に失敗しました。';
     } finally {
       submitting = false;
     }
@@ -118,7 +118,7 @@
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1 class="text-3xl font-semibold text-slate-900">新規録画セッション</h1>
-      <p class="mt-2 text-sm text-slate-600">録画を開始するためのパラメータを入力します。</p>
+      <p class="mt-2 text-sm text-slate-600">録画セッションを作成します。開始は次の画面で行います。</p>
     </div>
     <Button.Root class="btn-ghost" href="/record">録画一覧に戻る</Button.Root>
   </div>
@@ -161,7 +161,7 @@
     {/if}
     <div class="mt-2 flex flex-wrap gap-3">
       <Button.Root class="btn-primary" type="submit" disabled={submitting} aria-busy={submitting}>
-        録画セッションを開始
+        録画セッションを作成
       </Button.Root>
       <Button.Root class="btn-ghost" href="/record">キャンセル</Button.Root>
     </div>

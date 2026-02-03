@@ -36,6 +36,14 @@
 
   const handlePause = async () => runAction('中断', () => api.recording.pauseSession());
   const handleResume = async () => runAction('再開', () => api.recording.resumeSession());
+  const handleStart = async () => {
+    if (!sessionId) return;
+    await runAction('開始', () => api.recording.startSession({ dataset_id: sessionId }));
+  };
+  const handleRedoPrevious = async () => {
+    if (!confirm('現在と1つ前のエピソードを破棄して撮り直しますか？')) return;
+    await runAction('撮り直し', () => api.recording.redoPreviousEpisode());
+  };
   const handleStop = async () => {
     if (!confirm('録画セッションを終了しますか？（現在のエピソードは保存されます）')) return;
     await runAction('終了', () =>
@@ -67,8 +75,12 @@
   const canPause = $derived(statusState === 'recording');
   const canResume = $derived(statusState === 'paused');
   const canStop = $derived(['recording', 'paused', 'resetting', 'warming'].includes(String(statusState)));
-  const canRedo = $derived(Boolean(statusState) && !['recording', 'paused'].includes(String(statusState)));
   const canCancelEpisode = $derived(statusState === 'recording');
+  const canStart = $derived(
+    Boolean(sessionId) && ['idle', 'completed', 'inactive', ''].includes(String(statusState))
+  );
+  const canCancelSession = $derived(Boolean(sessionId) && (canStop || canStart));
+  const canRedoPrevious = $derived(['recording', 'resetting', 'warming'].includes(String(statusState)));
   const connectionWarning = $derived(
     rosbridgeStatus !== 'connected' ? 'rosbridge が切断されています。状態は更新されません。' : ''
   );
@@ -96,6 +108,21 @@
     </div>
   {:else}
     <div class="grid gap-2 text-sm">
+      {#if canStart}
+        <div class="grid gap-2 sm:grid-cols-2">
+          <Button.Root class="btn-primary" type="button" onclick={handleStart} disabled={Boolean(actionBusy)}>
+            {actionBusy === '開始' ? '開始中...' : '開始'}
+          </Button.Root>
+          <Button.Root
+            class="btn-ghost"
+            type="button"
+            onclick={handleCancelSession}
+            disabled={!canCancelSession || Boolean(actionBusy)}
+          >
+            セッション破棄
+          </Button.Root>
+        </div>
+      {/if}
       <div class="grid gap-2 sm:grid-cols-2">
         <Button.Root class="btn-primary" type="button" onclick={handleResume} disabled={!canResume || Boolean(actionBusy)}>
           {actionBusy === '再開' ? '再開中...' : '再開'}
@@ -106,13 +133,13 @@
         <Button.Root class="btn-primary" type="button" onclick={handleStop} disabled={!canStop || Boolean(actionBusy)}>
           {actionBusy === '終了' ? '終了中...' : '終了'}
         </Button.Root>
-        <Button.Root class="btn-ghost" type="button" onclick={handleCancelSession} disabled={!canStop || Boolean(actionBusy)}>
+        <Button.Root class="btn-ghost" type="button" onclick={handleCancelSession} disabled={!canCancelSession || Boolean(actionBusy)}>
           保存せず終了
         </Button.Root>
       </div>
       <div class="grid gap-2 sm:grid-cols-2">
-        <Button.Root class="btn-ghost" type="button" onclick={handleRedoEpisode} disabled={!canRedo || Boolean(actionBusy)}>
-          1個前に戻る
+        <Button.Root class="btn-ghost" type="button" onclick={handleRedoPrevious} disabled={!canRedoPrevious || Boolean(actionBusy)}>
+          前を撮り直し
         </Button.Root>
         <Button.Root class="btn-ghost" type="button" onclick={handleCancelEpisode} disabled={!canCancelEpisode || Boolean(actionBusy)}>
           エピソード破棄
