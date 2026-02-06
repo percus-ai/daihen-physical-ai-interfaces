@@ -14,6 +14,7 @@ WebUIの設計・実装で後回しの項目をここに記録。
 - /api/hardware, /api/hardware/cameras, /api/hardware/serial-ports
 - /api/teleop/local/sessions
 - /api/inference/models, /api/inference/sessions
+- /api/webui/blueprints
 
 ## フロント定義を参照している箇所
 - POLICY_TYPES / GPU_MODELS / GPU_COUNTS: `interfaces/web/src/lib/policies.ts`

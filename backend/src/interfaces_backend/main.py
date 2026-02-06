@@ -73,6 +73,7 @@ from interfaces_backend.api import (
     teleop_router,
     training_router,
     user_router,
+    webui_blueprints_router,
 )
 from interfaces_backend.core.request_auth import build_session_from_request, is_session_expired
 from percus_ai.db import reset_request_session, set_request_session
@@ -156,6 +157,7 @@ app.include_router(system_router)
 app.include_router(teleop_router)
 app.include_router(training_router)
 app.include_router(user_router)
+app.include_router(webui_blueprints_router)
 
 
 # --- Health ---

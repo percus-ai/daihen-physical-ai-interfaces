@@ -198,6 +198,41 @@ export const api = {
     cameras: () => fetchApi('/api/hardware/cameras'),
     serialPorts: () => fetchApi('/api/hardware/serial-ports')
   },
+  webuiBlueprints: {
+    list: () => fetchApi('/api/webui/blueprints'),
+    create: (payload: { name: string; blueprint: Record<string, unknown> }) =>
+      fetchApi('/api/webui/blueprints', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    get: (blueprintId: string) => fetchApi(`/api/webui/blueprints/${encodeURIComponent(blueprintId)}`),
+    update: (
+      blueprintId: string,
+      payload: { name?: string; blueprint?: Record<string, unknown> }
+    ) =>
+      fetchApi(`/api/webui/blueprints/${encodeURIComponent(blueprintId)}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      }),
+    delete: (blueprintId: string) =>
+      fetchApi(`/api/webui/blueprints/${encodeURIComponent(blueprintId)}`, {
+        method: 'DELETE'
+      }),
+    resolveSession: (payload: { session_kind: 'recording' | 'teleop' | 'inference'; session_id: string }) =>
+      fetchApi('/api/webui/blueprints/session/resolve', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    bindSession: (payload: {
+      session_kind: 'recording' | 'teleop' | 'inference';
+      session_id: string;
+      blueprint_id: string;
+    }) =>
+      fetchApi('/api/webui/blueprints/session/binding', {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      })
+  },
   profiles: {
     classes: () => fetchApi('/api/profiles/classes'),
     class: (classId: string) => fetchApi(`/api/profiles/classes/${classId}`),

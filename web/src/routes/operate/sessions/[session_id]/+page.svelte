@@ -9,6 +9,7 @@
 
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import BlueprintTree from '$lib/components/recording/BlueprintTree.svelte';
+  import BlueprintCombobox from '$lib/components/blueprints/BlueprintCombobox.svelte';
 
   import {
     addTab,
@@ -28,6 +29,16 @@
     type BlueprintNode
   } from '$lib/recording/blueprint';
   import { getViewDefinition, getViewOptions } from '$lib/recording/viewRegistry';
+  import {
+    loadBlueprintDraft,
+    saveBlueprintDraft,
+    type BlueprintSessionKind
+  } from '$lib/blueprints/draftStorage';
+  import {
+    createBlueprintManager,
+    type WebuiBlueprintDetail,
+    type WebuiBlueprintSummary
+  } from '$lib/blueprints/blueprintManager';
 
   type ProfileStatusResponse = {
     topics?: string[];
@@ -57,6 +68,13 @@
     sessions?: TeleopSession[];
   };
 
+  type OperateStatusStreamPayload = {
+    teleop_sessions?: TeleopSessionsResponse;
+    teleop_profile_config?: unknown;
+    inference_runner_status?: InferenceRunnerStatusResponse;
+    operate_status?: unknown;
+  };
+
   const KIND_LABELS: Record<string, string> = {
     inference: '推論',
     teleop: 'テレオペ'
@@ -81,37 +99,26 @@
   });
 
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
-  let selectedId = $state(blueprint.id);
+  let selectedId = $state('');
   let mounted = $state(false);
   let lastSessionId = '';
   let lastSessionKind = '';
   let filledDefaults = $state(false);
   let editMode = $state(false);
 
-  const storageKey = (id: string, kind: string) => `operate-blueprint:${kind || 'unknown'}:${id}`;
+  let activeBlueprintId = $state('');
+  let activeBlueprintName = $state('');
+  let savedBlueprints = $state<WebuiBlueprintSummary[]>([]);
+  let blueprintBusy = $state(false);
+  let blueprintActionPending = $state(false);
+  let blueprintError = $state('');
+  let blueprintNotice = $state('');
 
-  const loadBlueprint = (id: string, kind: string) => {
-    if (typeof localStorage === 'undefined') {
-      blueprint = createDefaultBlueprint();
-      return;
+  $effect(() => {
+    if (!selectedId && blueprint?.id) {
+      selectedId = blueprint.id;
     }
-    const stored = localStorage.getItem(storageKey(id, kind));
-    if (stored) {
-      try {
-        blueprint = JSON.parse(stored) as BlueprintNode;
-      } catch {
-        blueprint = createDefaultBlueprint();
-      }
-    } else {
-      blueprint = createDefaultBlueprint();
-    }
-    selectedId = ensureValidSelection(blueprint, selectedId);
-  };
-
-  const saveBlueprint = () => {
-    if (!mounted || typeof localStorage === 'undefined') return;
-    localStorage.setItem(storageKey(sessionId || 'default', sessionKindParam), JSON.stringify(blueprint));
-  };
+  });
 
   const fillDefaultConfig = (node: BlueprintNode, topics: string[]): BlueprintNode => {
     if (node.type === 'view') {
@@ -141,6 +148,57 @@
     };
   };
 
+  const applyBlueprintDetail = (
+    detail: WebuiBlueprintDetail,
+    useDraft: boolean,
+    kind: BlueprintSessionKind
+  ) => {
+    activeBlueprintId = detail.id;
+    activeBlueprintName = detail.name;
+    blueprint = detail.blueprint;
+
+    if (useDraft && sessionId) {
+      const draft = loadBlueprintDraft(kind, sessionId, detail.id);
+      if (draft) {
+        blueprint = draft;
+      }
+    }
+
+    selectedId = ensureValidSelection(blueprint, selectedId);
+    filledDefaults = false;
+  };
+
+  const blueprintManager = createBlueprintManager({
+    getSessionId: () => sessionId,
+    getSessionKind: () => blueprintKind,
+    getActiveBlueprintId: () => activeBlueprintId,
+    getActiveBlueprintName: () => activeBlueprintName,
+    getBlueprint: () => blueprint,
+    setSavedBlueprints: (items) => {
+      savedBlueprints = items;
+    },
+    setBusy: (value) => {
+      blueprintBusy = value;
+    },
+    setActionPending: (value) => {
+      blueprintActionPending = value;
+    },
+    setError: (message) => {
+      blueprintError = message;
+    },
+    setNotice: (message) => {
+      blueprintNotice = message;
+    },
+    applyBlueprintDetail
+  });
+
+  const resolveSessionBlueprint = blueprintManager.resolveSessionBlueprint;
+  const handleOpenBlueprint = blueprintManager.openBlueprint;
+  const handleSaveBlueprint = blueprintManager.saveBlueprint;
+  const handleDuplicateBlueprint = blueprintManager.duplicateBlueprint;
+  const handleDeleteBlueprint = blueprintManager.deleteBlueprint;
+  const handleResetBlueprint = blueprintManager.resetBlueprint;
+
   onMount(() => {
     mounted = true;
   });
@@ -148,7 +206,7 @@
   let stopOperateStream = () => {};
 
   onMount(() => {
-    stopOperateStream = connectStream({
+    stopOperateStream = connectStream<OperateStatusStreamPayload>({
       path: '/api/stream/operate/status',
       onMessage: (payload) => {
         queryClient.setQueryData(['teleop', 'sessions'], payload.teleop_sessions);
@@ -163,22 +221,36 @@
     stopOperateStream();
   });
 
+  const runnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
+  const teleopSessions = $derived($teleopSessionsQuery.data?.sessions ?? []);
+  const teleopSession = $derived(
+    teleopSessions.find((session) => session.session_id === sessionId) ?? null
+  );
+  const inferenceMatches = $derived(runnerStatus.session_id === sessionId);
+
+  const resolvedKind = $derived(
+    sessionKindParam || (inferenceMatches ? 'inference' : teleopSession ? 'teleop' : '')
+  );
+  const blueprintKind = $derived(
+    resolvedKind === 'inference' ? 'inference' : resolvedKind === 'teleop' ? 'teleop' : ''
+  );
+
   $effect(() => {
     if (
       mounted &&
       sessionId &&
-      (sessionId !== lastSessionId || sessionKindParam !== lastSessionKind)
+      blueprintKind &&
+      (sessionId !== lastSessionId || blueprintKind !== lastSessionKind)
     ) {
       lastSessionId = sessionId;
-      lastSessionKind = sessionKindParam;
-      filledDefaults = false;
-      loadBlueprint(sessionId, sessionKindParam);
+      lastSessionKind = blueprintKind;
+      void resolveSessionBlueprint();
     }
   });
 
   $effect(() => {
-    if (mounted && sessionId) {
-      saveBlueprint();
+    if (mounted && sessionId && blueprintKind && activeBlueprintId) {
+      saveBlueprintDraft(blueprintKind, sessionId, activeBlueprintId, blueprint);
     }
   });
 
@@ -186,6 +258,7 @@
     if (!filledDefaults && ($topicsQuery.data?.topics ?? []).length > 0) {
       blueprint = fillDefaultConfig(blueprint, $topicsQuery.data?.topics ?? []);
       filledDefaults = true;
+      selectedId = ensureValidSelection(blueprint, selectedId);
     }
   });
 
@@ -273,16 +346,6 @@
     ]);
   };
 
-  const runnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
-  const teleopSessions = $derived($teleopSessionsQuery.data?.sessions ?? []);
-  const teleopSession = $derived(
-    teleopSessions.find((session) => session.session_id === sessionId) ?? null
-  );
-  const inferenceMatches = $derived(runnerStatus.session_id === sessionId);
-
-  const resolvedKind = $derived(
-    sessionKindParam || (inferenceMatches ? 'inference' : teleopSession ? 'teleop' : '')
-  );
   const sessionLabel = $derived(KIND_LABELS[resolvedKind] ?? 'セッション');
 
   const statusLabel = $derived.by(() => {
@@ -353,6 +416,79 @@
         <span class="text-[10px] text-slate-400">{selectedNode?.type ?? 'none'}</span>
       </div>
       <div class="mt-3 space-y-3">
+        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+          <p class="label">保存済みブループリント</p>
+          <div class="mt-2">
+            <BlueprintCombobox
+              items={savedBlueprints}
+              value={activeBlueprintId}
+              disabled={blueprintBusy || blueprintActionPending || !blueprintKind}
+              onSelect={(blueprintId) => {
+                handleOpenBlueprint(blueprintId);
+              }}
+            />
+          </div>
+          <p class="mt-2 text-[11px] text-slate-500">編集中の内容はローカルに自動保存されます。</p>
+
+          <label class="mt-3 block text-xs font-semibold text-slate-600">
+            <span>名前</span>
+            <input class="input mt-1" type="text" bind:value={activeBlueprintName} />
+          </label>
+
+          <div class="mt-3 grid grid-cols-2 gap-2">
+            <Button.Root
+              class="btn-primary"
+              type="button"
+              disabled={blueprintBusy || blueprintActionPending || !activeBlueprintId || !blueprintKind}
+              onclick={() => {
+                handleSaveBlueprint();
+              }}
+            >
+              保存
+            </Button.Root>
+            <Button.Root
+              class="btn-ghost"
+              type="button"
+              disabled={blueprintBusy || blueprintActionPending || !activeBlueprintId || !blueprintKind}
+              onclick={() => {
+                handleDuplicateBlueprint();
+              }}
+            >
+              複製
+            </Button.Root>
+            <Button.Root
+              class="btn-ghost"
+              type="button"
+              disabled={blueprintBusy || blueprintActionPending || !activeBlueprintId || !blueprintKind}
+              onclick={() => {
+                handleResetBlueprint();
+              }}
+            >
+              リセット
+            </Button.Root>
+            <Button.Root
+              class="btn-ghost border-rose-200/70 text-rose-600 hover:border-rose-300/80"
+              type="button"
+              disabled={blueprintBusy || blueprintActionPending || !activeBlueprintId || !blueprintKind}
+              onclick={() => {
+                handleDeleteBlueprint();
+              }}
+            >
+              削除
+            </Button.Root>
+          </div>
+
+          {#if blueprintBusy || blueprintActionPending}
+            <p class="mt-2 text-xs text-slate-500">ブループリント処理中...</p>
+          {/if}
+          {#if blueprintError}
+            <p class="mt-2 text-xs text-rose-600">{blueprintError}</p>
+          {/if}
+          {#if blueprintNotice}
+            <p class="mt-2 text-xs text-emerald-600">{blueprintNotice}</p>
+          {/if}
+        </div>
+
         <BlueprintTree node={blueprint} selectedId={selectedId} onSelect={updateSelection} />
       </div>
     </aside>

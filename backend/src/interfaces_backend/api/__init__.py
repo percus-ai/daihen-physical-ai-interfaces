@@ -18,6 +18,7 @@ from interfaces_backend.api.system import router as system_router
 from interfaces_backend.api.teleop import router as teleop_router
 from interfaces_backend.api.training import router as training_router
 from interfaces_backend.api.user import router as user_router
+from interfaces_backend.api.webui_blueprints import router as webui_blueprints_router
 
 __all__ = [
     "analytics_router",
@@ -38,4 +39,5 @@ __all__ = [
     "teleop_router",
     "training_router",
     "user_router",
+    "webui_blueprints_router",
 ]
