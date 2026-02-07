@@ -25,16 +25,18 @@ from interfaces_backend.models.inference import (
 )
 from interfaces_backend.utils.torch_info import get_torch_info
 from percus_ai.environment.env_manager import EnvironmentManager
+from percus_ai.observability import ArmId, CommOverheadReporter, EventStatus, PointId, resolve_ids
 from percus_ai.storage.paths import get_models_dir, get_project_root
 
 _PROTOCOL_NAME = "infer_v2"
-_PROTOCOL_VERSION = 2
+_PROTOCOL_VERSION = 3
 _IPC_BASE_DIR = Path("/tmp/percus_infer")
 _DEFAULT_BRIDGE_ENDPOINT = os.environ.get("INFERENCE_BRIDGE_ZMQ_ENDPOINT", "tcp://127.0.0.1:5556")
 _CTRL_TIMEOUT_MS = int(os.environ.get("INFERENCE_CTRL_TIMEOUT_MS", "1200"))
 _START_SESSION_TIMEOUT_MS = int(os.environ.get("INFERENCE_START_SESSION_TIMEOUT_MS", "120000"))
 _STARTUP_TIMEOUT_S = float(os.environ.get("INFERENCE_STARTUP_TIMEOUT_S", "20.0"))
 _ACTION_HZ = float(os.environ.get("INFERENCE_ACTION_HZ", "30.0"))
+_COMM_REPORTER = CommOverheadReporter("backend")
 
 
 def _now_ns() -> int:
@@ -499,13 +501,25 @@ class InferenceRuntimeManager:
         timeout_ms: int = _CTRL_TIMEOUT_MS,
         raise_on_error: bool = True,
     ) -> dict[str, Any]:
+        session_id, trace_id = resolve_ids(self._session_id, None)
+        payload_size = len(json.dumps(payload, ensure_ascii=True).encode("utf-8"))
+        timer = _COMM_REPORTER.timed(
+            point_id=PointId.CP_03,
+            session_id=session_id,
+            trace_id=trace_id,
+            arm=ArmId.NONE,
+            payload_bytes=payload_size,
+            tags={"command_type": command_type, "timeout_ms": timeout_ms},
+        )
         with self._lock:
             if not self._ctrl_socket:
+                timer.error("control socket is not connected")
                 raise RuntimeError("Control socket is not connected")
             request_id = self._next_request_id_locked()
             request = {
                 "type": command_type,
-                "session_id": self._session_id or "",
+                "session_id": session_id,
+                "trace_id": trace_id,
                 "request_id": request_id,
                 "timestamp_ns": _now_ns(),
                 "payload": payload,
@@ -517,9 +531,11 @@ class InferenceRuntimeManager:
                 response = self._ctrl_socket.recv_json()
             except Exception as exc:
                 self._connect_ctrl_socket_locked()
+                timer.error(str(exc))
                 raise RuntimeError(f"control command '{command_type}' failed: {exc}") from exc
 
         if not isinstance(response, dict):
+            timer.error("invalid response type")
             raise RuntimeError(f"Invalid control response for '{command_type}'")
 
         ok = bool(response.get("ok", False))
@@ -529,8 +545,10 @@ class InferenceRuntimeManager:
 
         if not ok and raise_on_error:
             detail = response_payload.get("error") or response.get("message") or "unknown error"
+            timer.error(str(detail), extra_tags={"ok": ok})
             raise RuntimeError(f"Worker rejected '{command_type}': {detail}")
 
+        timer.success(extra_tags={"ok": ok, "response_type": str(response.get("type") or "")})
         return response_payload
 
     def _start_event_listener_locked(self) -> None:
@@ -576,6 +594,31 @@ class InferenceRuntimeManager:
             code = str(event.get("code") or "")
             message = str(event.get("message") or "")
             detail = event.get("detail")
+            raw_timestamp = event.get("timestamp_ns")
+            try:
+                event_timestamp_ns = int(raw_timestamp) if raw_timestamp is not None else _now_ns()
+            except Exception:
+                event_timestamp_ns = _now_ns()
+            event_session_hint = str(event.get("session_id") or "").strip() or self._session_id
+            event_trace_hint = str(event.get("trace_id") or "").strip() or None
+            session_id, trace_id = resolve_ids(event_session_hint, event_trace_hint)
+            status = EventStatus.OK
+            if severity in {"warn", "error", "fatal"}:
+                status = EventStatus.ERROR
+            _COMM_REPORTER.export(
+                point_id=PointId.CP_04,
+                session_id=session_id,
+                trace_id=trace_id,
+                arm=ArmId.NONE,
+                status=status,
+                latency_ns=max(_now_ns() - event_timestamp_ns, 0),
+                payload_bytes=len(json.dumps(event, ensure_ascii=True).encode("utf-8")),
+                tags={
+                    "event_type": str(event.get("type") or ""),
+                    "severity": severity,
+                    "code": code,
+                },
+            )
 
             with self._lock:
                 self._last_event = event

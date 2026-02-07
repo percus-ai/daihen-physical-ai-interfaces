@@ -2,8 +2,9 @@
 
 from datetime import datetime
 from pathlib import Path
+import shutil
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from interfaces_backend.models.analytics import (
     OverviewStats,
@@ -15,8 +16,15 @@ from interfaces_backend.models.analytics import (
     StorageCategory,
     StorageStatsResponse,
 )
+from interfaces_backend.models.comm_overhead import (
+    CommPointResponse,
+    CommSummaryResponse,
+    CommTraceResponse,
+)
+from interfaces_backend.services.comm_overhead_store import get_comm_overhead_store
+from percus_ai.observability import PointId
 from percus_ai.db import get_supabase_async_client
-from percus_ai.storage import get_datasets_dir, get_models_dir
+from percus_ai.storage import get_datasets_dir, get_models_dir, get_storage_root
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -280,3 +288,54 @@ async def get_storage_stats():
         used_percentage=used_percentage,
         categories=storage_categories,
     )
+
+
+@router.get("/comm-overhead/summary", response_model=CommSummaryResponse)
+async def get_comm_overhead_summary(
+    window_sec: int = 900,
+    session_id: str | None = None,
+    arm: str | None = None,
+):
+    store = get_comm_overhead_store()
+    payload = store.get_summary(
+        window_sec=max(window_sec, 1),
+        session_id=session_id,
+        arm=arm,
+    )
+    return CommSummaryResponse(**payload)
+
+
+@router.get("/comm-overhead/points/{point_id}", response_model=CommPointResponse)
+async def get_comm_overhead_point(
+    point_id: str,
+    window_sec: int = 900,
+    session_id: str | None = None,
+    arm: str | None = None,
+):
+    try:
+        point_enum = PointId(point_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid point_id: {point_id}") from exc
+    store = get_comm_overhead_store()
+    payload = store.get_point(
+        point_id=point_enum,
+        window_sec=max(window_sec, 1),
+        session_id=session_id,
+        arm=arm,
+    )
+    return CommPointResponse(**payload)
+
+
+@router.get("/comm-overhead/traces/{trace_id}", response_model=CommTraceResponse)
+async def get_comm_overhead_trace(
+    trace_id: str,
+    window_sec: int = 900,
+    limit: int = 500,
+):
+    store = get_comm_overhead_store()
+    payload = store.get_trace(
+        trace_id=trace_id,
+        window_sec=max(window_sec, 1),
+        limit=max(limit, 1),
+    )
+    return CommTraceResponse(**payload)

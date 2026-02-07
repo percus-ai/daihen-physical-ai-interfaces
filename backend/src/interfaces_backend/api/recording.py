@@ -17,6 +17,7 @@ import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from percus_ai.observability import ArmId, CommOverheadReporter, PointId, resolve_ids
 from percus_ai.db import get_current_user_id, get_supabase_async_client, upsert_with_owner
 from percus_ai.profiles import ProfileRegistry
 from percus_ai.profiles.models import ProfileInstance
@@ -32,6 +33,7 @@ router = APIRouter(prefix="/api/recording", tags=["recording"])
 _RECORDER_URL = os.environ.get("LEROBOT_RECORDER_URL", "http://127.0.0.1:8082")
 _sync_service: Optional[R2DBSyncService] = None
 _PENDING_SESSIONS_DIRNAME = ".pending_sessions"
+_COMM_REPORTER = CommOverheadReporter("backend")
 
 
 class RecordingSessionCreateRequest(BaseModel):
@@ -220,15 +222,31 @@ def _call_recorder(path: str, payload: Optional[dict] = None) -> dict:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
         method = "POST"
+    session_hint = None
+    if isinstance(payload, dict):
+        session_hint = str(payload.get("dataset_id") or payload.get("session_id") or "").strip() or None
+    session_id, trace_id = resolve_ids(session_hint, None)
+    timer = _COMM_REPORTER.timed(
+        point_id=PointId.CP_02,
+        session_id=session_id,
+        trace_id=trace_id,
+        arm=ArmId.NONE,
+        payload_bytes=len(data) if data is not None else 0,
+        tags={"method": method, "path": path},
+    )
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode("utf-8")
+            body_bytes = resp.read()
+            timer.success(extra_tags={"status_code": resp.status, "response_bytes": len(body_bytes)})
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8") if exc.fp else str(exc)
+        timer.error(detail, extra_tags={"status_code": exc.code})
         raise HTTPException(status_code=exc.code, detail=detail) from exc
     except urllib.error.URLError as exc:
+        timer.error(str(exc), extra_tags={"status_code": 503})
         raise HTTPException(status_code=503, detail=f"Recorder unreachable: {exc}") from exc
+    body = body_bytes.decode("utf-8")
     try:
         return json.loads(body) if body else {}
     except json.JSONDecodeError:

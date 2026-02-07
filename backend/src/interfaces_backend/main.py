@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Optional
 
 import uvicorn
 from dotenv import load_dotenv
@@ -53,6 +54,7 @@ else:
     load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Request
 
 from interfaces_backend.api import (
     analytics_router,
@@ -76,6 +78,16 @@ from interfaces_backend.api import (
     webui_blueprints_router,
 )
 from interfaces_backend.core.request_auth import build_session_from_request, is_session_expired
+from percus_ai.observability import (
+    ArmId,
+    CommOverheadReporter,
+    PointId,
+    new_trace_id,
+    reset_session_id,
+    reset_trace_id,
+    set_session_id,
+    set_trace_id,
+)
 from percus_ai.db import reset_request_session, set_request_session
 
 app = FastAPI(
@@ -83,6 +95,24 @@ app = FastAPI(
     version="0.1.0",
 )
 SLOW_REQUEST_THRESHOLD_MS = int(os.environ.get("PHI_SLOW_REQUEST_THRESHOLD_MS", "1000"))
+_COMM_REPORTER = CommOverheadReporter("backend")
+
+
+def _extract_request_session_id(request: Request) -> Optional[str]:
+    header = (request.headers.get("x-session-id") or "").strip()
+    if header:
+        return header
+    query = (request.query_params.get("session_id") or "").strip()
+    if query:
+        return query
+    path_parts = [part for part in request.url.path.split("/") if part]
+    if "sessions" in path_parts:
+        index = path_parts.index("sessions")
+        if index + 1 < len(path_parts):
+            candidate = path_parts[index + 1].strip()
+            if candidate:
+                return candidate
+    return None
 
 # CORS for web/tauri clients
 cors_origins = os.environ.get(
@@ -97,6 +127,48 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def record_comm_cp01(request: Request, call_next):
+    path = request.url.path
+    method = request.method
+    target = (
+        path == "/api/recording"
+        or path.startswith("/api/recording/")
+        or path == "/api/inference"
+        or path.startswith("/api/inference/")
+        or path == "/api/profiles"
+        or path.startswith("/api/profiles/")
+    )
+    if not target:
+        return await call_next(request)
+
+    trace_id = (request.headers.get("x-trace-id") or "").strip() or new_trace_id()
+    session_id = _extract_request_session_id(request) or "unknown-session"
+    request.state.trace_id = trace_id
+    request.state.session_id = session_id
+
+    trace_token = set_trace_id(trace_id)
+    session_token = set_session_id(session_id)
+    timer = _COMM_REPORTER.timed(
+        point_id=PointId.CP_01,
+        session_id=session_id,
+        trace_id=trace_id,
+        arm=ArmId.NONE,
+        tags={"path": path, "method": method},
+    )
+    try:
+        response = await call_next(request)
+        timer.success(extra_tags={"status_code": response.status_code})
+        response.headers["x-trace-id"] = trace_id
+        return response
+    except Exception as exc:
+        timer.error(str(exc))
+        raise
+    finally:
+        reset_session_id(session_token)
+        reset_trace_id(trace_token)
 
 
 @app.middleware("http")
