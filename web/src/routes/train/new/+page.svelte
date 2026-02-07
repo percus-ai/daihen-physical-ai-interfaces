@@ -4,9 +4,11 @@
   import { createQuery } from '@tanstack/svelte-query';
   import { goto } from '$app/navigation';
   import { api } from '$lib/api/client';
+  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
   import { getBackendUrl } from '$lib/config';
   import { formatBytes, formatDate } from '$lib/format';
   import { GPU_COUNTS, GPU_MODELS, POLICY_TYPES } from '$lib/policies';
+  import type { GpuAvailabilityResponse } from '$lib/types/training';
 
   type DatasetSummary = {
     id: string;
@@ -23,18 +25,6 @@
     total?: number;
   };
 
-  type GpuAvailability = {
-    gpu_model: string;
-    gpu_count: number;
-    spot_available?: boolean;
-    ondemand_available?: boolean;
-    spot_price_per_hour?: number;
-  };
-
-  type GpuAvailabilityResponse = {
-    available?: GpuAvailability[];
-  };
-
   const datasetsQuery = createQuery<DatasetListResponse>({
     queryKey: ['datasets', 'train'],
     queryFn: () => api.storage.datasets()
@@ -44,6 +34,8 @@
     queryKey: ['training', 'gpu-availability'],
     queryFn: api.training.gpuAvailability
   });
+
+  const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.name));
 
   const defaultPolicy = POLICY_TYPES[0];
   let policyType = $state(defaultPolicy?.id ?? '');
@@ -389,9 +381,6 @@
   };
 
   const availability = $derived($gpuAvailabilityQuery.data?.available ?? []);
-  const selectedAvailability = $derived(
-    availability.find((item) => item.gpu_model === gpuModel && item.gpu_count === gpuCount)
-  );
 
   onDestroy(() => {
     createWs?.close();
@@ -693,23 +682,16 @@
           </div>
         </label>
       </div>
-      <div class="mt-4 rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
-        <p class="label">空き状況</p>
-        {#if $gpuAvailabilityQuery.isLoading}
-          <p class="mt-2">取得中...</p>
-        {:else if selectedAvailability}
-          <div class="mt-2 flex flex-wrap gap-2">
-            <span class="chip">Spot: {selectedAvailability.spot_available ? '可' : '不可'}</span>
-            <span class="chip">On-demand: {selectedAvailability.ondemand_available ? '可' : '不可'}</span>
-          </div>
-          {#if selectedAvailability.spot_price_per_hour}
-            <p class="mt-2 text-xs text-slate-500">
-              Spot価格: ${selectedAvailability.spot_price_per_hour}/hour
-            </p>
-          {/if}
-        {:else}
-          <p class="mt-2">対象構成の情報がありません。</p>
-        {/if}
+      <div class="mt-4">
+        <p class="label mb-2">空き状況</p>
+        <GpuAvailabilityBoard
+          items={availability}
+          loading={$gpuAvailabilityQuery.isLoading}
+          selectedGpuModel={gpuModel}
+          selectedGpuCount={gpuCount}
+          showOnlyAvailableDefault={true}
+          preferredModelOrder={gpuModelOrder}
+        />
       </div>
     </section>
 

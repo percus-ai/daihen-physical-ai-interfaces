@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { Button } from 'bits-ui';
+  import { Button, Tabs } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
   import { formatDate } from '$lib/format';
   import { GPU_MODELS } from '$lib/policies';
+  import type { GpuAvailabilityResponse } from '$lib/types/training';
 
   type TrainingJob = {
     job_id: string;
@@ -19,17 +21,6 @@
     total?: number;
   };
 
-  type GpuAvailability = {
-    gpu_model: string;
-    gpu_count: number;
-    spot_available?: boolean;
-    ondemand_available?: boolean;
-  };
-
-  type GpuAvailabilityResponse = {
-    available?: GpuAvailability[];
-  };
-
   const jobsQuery = createQuery<JobListResponse>({
     queryKey: ['training', 'jobs'],
     queryFn: api.training.jobs
@@ -39,6 +30,9 @@
     queryKey: ['training', 'gpu-availability'],
     queryFn: api.training.gpuAvailability
   });
+
+  const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.name));
+  let activeTab = $state<'availability' | 'jobs'>('availability');
 </script>
 
 <section class="card-strong p-8">
@@ -59,63 +53,65 @@
   </div>
 </section>
 
-<section class="grid gap-6 lg:grid-cols-[1fr_1fr]">
-  <div class="card p-6">
-    <h3 class="text-lg font-semibold text-slate-900">GPU 空き状況 (Verda)</h3>
-    <div class="mt-4 space-y-2 text-sm text-slate-600">
-      {#if $gpuAvailabilityQuery.isLoading}
-        <p>読み込み中...</p>
-      {:else if $gpuAvailabilityQuery.data?.available?.length}
-        {#each $gpuAvailabilityQuery.data.available as gpu}
-          <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/60 bg-white/70 px-4 py-2">
-            <span class="font-semibold text-slate-800">{gpu.gpu_model} x {gpu.gpu_count}</span>
-            <span class="chip">{gpu.spot_available ? 'Spot可' : 'Spot不可'}</span>
-            <span class="chip">{gpu.ondemand_available ? 'On-demand可' : 'On-demand不可'}</span>
-          </div>
-        {/each}
-      {:else}
-        <p>GPU 情報がありません。</p>
+<section class="card p-6">
+  <Tabs.Root bind:value={activeTab}>
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+        <Tabs.Trigger
+          value="availability"
+          class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+        >
+          GPU空き状況
+        </Tabs.Trigger>
+        <Tabs.Trigger
+          value="jobs"
+          class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+        >
+          学習ジョブ一覧
+        </Tabs.Trigger>
+      </Tabs.List>
+
+      {#if activeTab === 'jobs'}
+        <Button.Root class="btn-ghost" type="button" onclick={() => $jobsQuery?.refetch?.()}>更新</Button.Root>
       {/if}
     </div>
-  </div>
 
-  <div class="card p-6">
-    <h3 class="text-lg font-semibold text-slate-900">GPU モデル一覧 (Provider: Verda)</h3>
-    <div class="mt-4 space-y-2 text-sm text-slate-600">
-      {#each GPU_MODELS as gpu}
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-2">
-          <p class="font-semibold text-slate-800">{gpu.name}</p>
-          <p class="text-xs text-slate-500">{gpu.description}</p>
-        </div>
-      {/each}
-    </div>
-  </div>
-</section>
+    <Tabs.Content value="availability" class="mt-4">
+      <h2 class="text-xl font-semibold text-slate-900">GPU 空き状況 (Verda)</h2>
+      <p class="mt-1 text-sm text-slate-500">モデルごとに展開して可否・価格・拠点数を確認できます。</p>
+      <div class="mt-4">
+        <GpuAvailabilityBoard
+          items={$gpuAvailabilityQuery.data?.available ?? []}
+          loading={$gpuAvailabilityQuery.isLoading}
+          showOnlyAvailableDefault={true}
+          preferredModelOrder={gpuModelOrder}
+        />
+      </div>
+    </Tabs.Content>
 
-<section class="card p-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-xl font-semibold text-slate-900">学習ジョブ一覧</h2>
-    <Button.Root class="btn-ghost" type="button" onclick={() => $jobsQuery?.refetch?.()}>更新</Button.Root>
-  </div>
-  <div class="mt-4 space-y-3 text-sm text-slate-600">
-    {#if $jobsQuery.isLoading}
-      <p>読み込み中...</p>
-    {:else if $jobsQuery.data?.jobs?.length}
-      {#each $jobsQuery.data.jobs as job}
-        <a
-          class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3 transition hover:border-brand/40 hover:bg-white"
-          href={`/train/jobs/${job.job_id}`}
-        >
-          <div>
-            <p class="font-semibold text-slate-800">{job.job_name}</p>
-            <p class="text-xs text-slate-500">{job.dataset_id ?? '-'} / {job.policy_type ?? '-'}</p>
-          </div>
-          <span class="chip">{job.status}</span>
-        </a>
-      {/each}
-    {:else}
-      <p>学習ジョブがありません。</p>
-    {/if}
-  </div>
-  <div class="mt-4 text-xs text-slate-500">最終更新: {formatDate($jobsQuery.data?.jobs?.[0]?.updated_at)}</div>
+    <Tabs.Content value="jobs" class="mt-4">
+      <h2 class="text-xl font-semibold text-slate-900">学習ジョブ一覧</h2>
+      <div class="mt-4 space-y-3 text-sm text-slate-600">
+        {#if $jobsQuery.isLoading}
+          <p>読み込み中...</p>
+        {:else if $jobsQuery.data?.jobs?.length}
+          {#each $jobsQuery.data.jobs as job}
+            <a
+              class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3 transition hover:border-brand/40 hover:bg-white"
+              href={`/train/jobs/${job.job_id}`}
+            >
+              <div>
+                <p class="font-semibold text-slate-800">{job.job_name}</p>
+                <p class="text-xs text-slate-500">{job.dataset_id ?? '-'} / {job.policy_type ?? '-'}</p>
+              </div>
+              <span class="chip">{job.status}</span>
+            </a>
+          {/each}
+        {:else}
+          <p>学習ジョブがありません。</p>
+        {/if}
+      </div>
+      <div class="mt-4 text-xs text-slate-500">最終更新: {formatDate($jobsQuery.data?.jobs?.[0]?.updated_at)}</div>
+    </Tabs.Content>
+  </Tabs.Root>
 </section>

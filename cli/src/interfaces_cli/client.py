@@ -785,12 +785,13 @@ class PhiClient:
     # Training
     # =========================================================================
 
-    def get_gpu_availability(self) -> Dict[str, Any]:
+    def get_gpu_availability(self, scan: str = "all") -> Dict[str, Any]:
         """GET /api/training/gpu-availability - Check GPU availability.
 
         Returns availability info for all GPU model/count combinations.
         """
-        response = self._client.get("/api/training/gpu-availability")
+        params = {"scan": scan} if scan else None
+        response = self._client.get("/api/training/gpu-availability", params=params)
         response.raise_for_status()
         return response.json()
 
@@ -836,6 +837,7 @@ class PhiClient:
 
     def get_gpu_availability_ws(
         self,
+        scan: str = "all",
         on_checking: Optional[Callable[[str], None]] = None,
         on_result: Optional[Callable[[str, int, bool, bool], None]] = None,
         on_complete: Optional[Callable[[], None]] = None,
@@ -859,6 +861,8 @@ class PhiClient:
 
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/api/training/ws/gpu-availability"
+        if scan:
+            ws_url = f"{ws_url}?scan={scan}"
 
         results: Dict[str, Any] = {"available": [], "cached": False}
 

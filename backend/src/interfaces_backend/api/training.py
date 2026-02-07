@@ -11,10 +11,17 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 from verda import VerdaClient
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import PlainTextResponse
 
 from interfaces_backend.core.request_auth import (
@@ -78,6 +85,8 @@ def _default_author_user_id() -> str:
         return get_current_user_id()
     except ValueError:
         return "unknown"
+
+
 router = APIRouter(prefix="/api/training", tags=["training"])
 
 # Thread pool for WebSocket operations
@@ -127,12 +136,16 @@ def _extract_record(payload: object) -> Optional[dict]:
 
 def _extract_event_type(payload: object) -> str:
     if isinstance(payload, dict):
-        event_type = payload.get("eventType") or payload.get("event_type") or payload.get("type")
+        event_type = (
+            payload.get("eventType") or payload.get("event_type") or payload.get("type")
+        )
         if isinstance(event_type, str):
             return event_type.upper()
         data = payload.get("data")
         if isinstance(data, dict):
-            event_type = data.get("eventType") or data.get("event_type") or data.get("type")
+            event_type = (
+                data.get("eventType") or data.get("event_type") or data.get("type")
+            )
             if isinstance(event_type, str):
                 return event_type.upper()
 
@@ -175,7 +188,9 @@ async def _maybe_await(result: object) -> None:
 
 
 class _TrainingJobRealtimeSubscriber:
-    def __init__(self, job_id: str, loop: asyncio.AbstractEventLoop, queue: "asyncio.Queue") -> None:
+    def __init__(
+        self, job_id: str, loop: asyncio.AbstractEventLoop, queue: "asyncio.Queue"
+    ) -> None:
         self.job_id = job_id
         self.loop = loop
         self.queue = queue
@@ -199,7 +214,9 @@ class TrainingJobRealtimeManager:
         queue: asyncio.Queue = asyncio.Queue()
         subscriber_id = uuid.uuid4().hex
         with self._subscribers_lock:
-            self._subscribers[subscriber_id] = _TrainingJobRealtimeSubscriber(job_id, loop, queue)
+            self._subscribers[subscriber_id] = _TrainingJobRealtimeSubscriber(
+                job_id, loop, queue
+            )
         return subscriber_id, queue
 
     def unsubscribe(self, subscriber_id: str) -> None:
@@ -218,9 +235,13 @@ class TrainingJobRealtimeManager:
                 None,
             )
             if realtime is None:
-                raise RuntimeError("Supabase Realtime client is not available (async client required)")
+                raise RuntimeError(
+                    "Supabase Realtime client is not available (async client required)"
+                )
 
-            channel_factory = getattr(realtime, "channel", None) or getattr(self._client, "channel", None)
+            channel_factory = getattr(realtime, "channel", None) or getattr(
+                self._client, "channel", None
+            )
             if channel_factory is None or not callable(channel_factory):
                 raise RuntimeError("Supabase Realtime channel API is not available")
 
@@ -236,7 +257,9 @@ class TrainingJobRealtimeManager:
             else:
                 on_method = getattr(channel, "on", None)
                 if on_method is None or not callable(on_method):
-                    raise RuntimeError("Supabase Realtime channel handler is not available")
+                    raise RuntimeError(
+                        "Supabase Realtime channel handler is not available"
+                    )
                 on_method(
                     "postgres_changes",
                     {"event": "*", "schema": "public", "table": DB_TABLE},
@@ -249,7 +272,9 @@ class TrainingJobRealtimeManager:
 
             subscribe = getattr(channel, "subscribe", None)
             if subscribe is None or not callable(subscribe):
-                raise RuntimeError("Supabase Realtime channel.subscribe is not available")
+                raise RuntimeError(
+                    "Supabase Realtime channel.subscribe is not available"
+                )
 
             await _maybe_await(subscribe())
 
@@ -289,9 +314,16 @@ def _get_training_job_realtime_manager() -> TrainingJobRealtimeManager:
         _training_job_realtime_manager = TrainingJobRealtimeManager()
     return _training_job_realtime_manager
 
+
 # Remote scripts directory - contains setup_env.sh, run_training.sh, entry.py, etc.
 # These scripts are deployed to remote instances for training
-REMOTE_SCRIPTS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "features" / "percus_ai" / "training" / "remote"
+REMOTE_SCRIPTS_DIR = (
+    Path(__file__).parent.parent.parent.parent.parent.parent
+    / "features"
+    / "percus_ai"
+    / "training"
+    / "remote"
+)
 REPO_ROOT = REMOTE_SCRIPTS_DIR.parents[4]
 
 
@@ -330,8 +362,12 @@ def _build_pipeline_config(request: "JobCreateRequest", job_id: str) -> dict:
     training = {k: v for k, v in request.training.model_dump().items() if v is not None}
     training.setdefault("save_checkpoint", True)
 
-    validation = {k: v for k, v in request.validation.model_dump().items() if v is not None}
-    early_stopping = {k: v for k, v in request.early_stopping.model_dump().items() if v is not None}
+    validation = {
+        k: v for k, v in request.validation.model_dump().items() if v is not None
+    }
+    early_stopping = {
+        k: v for k, v in request.early_stopping.model_dump().items() if v is not None
+    }
     if early_stopping.get("enable"):
         validation.setdefault("enable", True)
         if not training.get("save_checkpoint", True):
@@ -367,7 +403,9 @@ def _build_pipeline_config(request: "JobCreateRequest", job_id: str) -> dict:
         config["policy"]["gradient_checkpointing"] = policy.gradient_checkpointing
     if policy.use_amp is not None:
         config["policy"]["use_amp"] = policy.use_amp
-    if config["policy"].get("dtype") in ("bfloat16", "bf16") and config["policy"].get("use_amp"):
+    if config["policy"].get("dtype") in ("bfloat16", "bf16") and config["policy"].get(
+        "use_amp"
+    ):
         config["policy"]["use_amp"] = False
     if dataset.video_backend:
         config["dataset"]["video_backend"] = dataset.video_backend
@@ -500,8 +538,12 @@ def _generate_env_file(
 
     # Supabase credentials for remote status updates
     supabase_url = os.environ.get("SUPABASE_URL") or env_fallback.get("SUPABASE_URL")
-    supabase_secret_key = os.environ.get("SUPABASE_SECRET_KEY") or env_fallback.get("SUPABASE_SECRET_KEY")
-    supabase_anon_key = os.environ.get("SUPABASE_ANON_KEY") or env_fallback.get("SUPABASE_ANON_KEY")
+    supabase_secret_key = os.environ.get("SUPABASE_SECRET_KEY") or env_fallback.get(
+        "SUPABASE_SECRET_KEY"
+    )
+    supabase_anon_key = os.environ.get("SUPABASE_ANON_KEY") or env_fallback.get(
+        "SUPABASE_ANON_KEY"
+    )
     if supabase_url and (supabase_secret_key or supabase_anon_key):
         lines.append(f"SUPABASE_URL={supabase_url}")
         if supabase_secret_key:
@@ -518,7 +560,9 @@ def _generate_env_file(
     return "\n".join(lines) + "\n"
 
 
-def _generate_instance_info_env(job_id: str, instance_id: str, auto_delete: bool = True) -> str:
+def _generate_instance_info_env(
+    job_id: str, instance_id: str, auto_delete: bool = True
+) -> str:
     """Generate instance_info.env content."""
     lines = [
         f"DATACRUNCH_INSTANCE_ID={instance_id}",
@@ -610,7 +654,9 @@ def _select_cpu_instance_type(client: VerdaClient) -> str:
     instance_types = client.instance_types.get()
     cpu_types = [t for t in instance_types if _gpu_count_from_instance_type(t) == 0]
     if not cpu_types:
-        raise HTTPException(status_code=503, detail="CPUインスタンスタイプが見つかりません")
+        raise HTTPException(
+            status_code=503, detail="CPUインスタンスタイプが見つかりません"
+        )
     cpu_types.sort(key=lambda t: getattr(t, "price_per_hour", float("inf")))
     return cpu_types[0].instance_type
 
@@ -653,11 +699,15 @@ def _pick_os_volume_for_job(
     candidates = os_matches or matches
     if not candidates:
         return None
-    candidates.sort(key=lambda item: getattr(item[1], "created_at", "") or "", reverse=True)
+    candidates.sort(
+        key=lambda item: getattr(item[1], "created_at", "") or "", reverse=True
+    )
     return candidates[0]
 
 
-def _wait_for_volume_restore(client: VerdaClient, volume_id: str, timeout_sec: int = 120) -> None:
+def _wait_for_volume_restore(
+    client: VerdaClient, volume_id: str, timeout_sec: int = 120
+) -> None:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         try:
@@ -668,14 +718,20 @@ def _wait_for_volume_restore(client: VerdaClient, volume_id: str, timeout_sec: i
         except Exception:
             pass
         time.sleep(5)
-    raise HTTPException(status_code=504, detail="ストレージ復活の完了待ちがタイムアウトしました")
+    raise HTTPException(
+        status_code=504, detail="ストレージ復活の完了待ちがタイムアウトしました"
+    )
 
 
-def _ensure_volume_detached(client: VerdaClient, volume_id: str, timeout_sec: int = 120) -> None:
+def _ensure_volume_detached(
+    client: VerdaClient, volume_id: str, timeout_sec: int = 120
+) -> None:
     try:
         volume = client.volumes.get_by_id(volume_id)
     except Exception as exc:
-        raise HTTPException(status_code=404, detail=f"ストレージ取得に失敗しました: {exc}") from exc
+        raise HTTPException(
+            status_code=404, detail=f"ストレージ取得に失敗しました: {exc}"
+        ) from exc
 
     if getattr(volume, "instance_id", None) is None:
         return
@@ -683,7 +739,9 @@ def _ensure_volume_detached(client: VerdaClient, volume_id: str, timeout_sec: in
     try:
         client.volumes.detach(volume_id)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"ストレージのデタッチに失敗しました: {exc}") from exc
+        raise HTTPException(
+            status_code=400, detail=f"ストレージのデタッチに失敗しました: {exc}"
+        ) from exc
 
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
@@ -695,21 +753,29 @@ def _ensure_volume_detached(client: VerdaClient, volume_id: str, timeout_sec: in
             pass
         time.sleep(5)
 
-    raise HTTPException(status_code=504, detail="ストレージのデタッチ完了待ちがタイムアウトしました")
+    raise HTTPException(
+        status_code=504, detail="ストレージのデタッチ完了待ちがタイムアウトしました"
+    )
 
 
-def _wait_for_volume_detached(client: VerdaClient, volume_id: str, timeout_sec: int = 180) -> None:
+def _wait_for_volume_detached(
+    client: VerdaClient, volume_id: str, timeout_sec: int = 180
+) -> None:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         try:
             volume = client.volumes.get_by_id(volume_id)
         except Exception as exc:
-            raise HTTPException(status_code=404, detail=f"ストレージ取得に失敗しました: {exc}") from exc
+            raise HTTPException(
+                status_code=404, detail=f"ストレージ取得に失敗しました: {exc}"
+            ) from exc
         if getattr(volume, "instance_id", None) is None:
             return
         time.sleep(5)
 
-    raise HTTPException(status_code=504, detail="ストレージのデタッチ完了待ちがタイムアウトしました")
+    raise HTTPException(
+        status_code=504, detail="ストレージのデタッチ完了待ちがタイムアウトしました"
+    )
 
 
 def _wait_for_instance_offline(
@@ -731,7 +797,9 @@ def _wait_for_instance_offline(
             return
         time.sleep(5)
 
-    raise HTTPException(status_code=504, detail="インスタンス停止の完了待ちがタイムアウトしました")
+    raise HTTPException(
+        status_code=504, detail="インスタンス停止の完了待ちがタイムアウトしました"
+    )
 
 
 def _restore_verda_volumes(client: VerdaClient, volume_ids: list[str]) -> None:
@@ -742,7 +810,7 @@ def _restore_verda_volumes(client: VerdaClient, volume_ids: list[str]) -> None:
 
 def _chunk_list(items: list[str], chunk_size: int = 20) -> list[list[str]]:
     """Split items into smaller chunks."""
-    return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+    return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
 
 _verda_client_local = threading.local()
@@ -757,11 +825,15 @@ def _get_thread_verda_client() -> Optional[VerdaClient]:
     return client
 
 
-def _perform_verda_volume_action(action: str, volume_id: str, is_permanent: bool) -> None:
+def _perform_verda_volume_action(
+    action: str, volume_id: str, is_permanent: bool
+) -> None:
     """Perform a Verda volume action for a single volume."""
     client = _get_thread_verda_client()
     if not client:
-        raise RuntimeError("Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)")
+        raise RuntimeError(
+            "Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)"
+        )
 
     if action == "delete":
         client.volumes.delete(volume_id, is_permanent=is_permanent)
@@ -779,7 +851,9 @@ def _perform_verda_volume_action_batch(
     """Perform a Verda volume action for a batch of volumes."""
     client = _get_thread_verda_client()
     if not client:
-        raise RuntimeError("Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)")
+        raise RuntimeError(
+            "Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)"
+        )
 
     if action == "delete":
         client.volumes.delete(volume_ids, is_permanent=is_permanent)
@@ -902,7 +976,9 @@ def _update_cleanup_status_sync(job_id: str, status: str) -> None:
     _run_async(_update_cleanup_status(job_id, status))
 
 
-def _resolve_profile_info_sync(dataset_id: Optional[str]) -> tuple[Optional[str], Optional[dict]]:
+def _resolve_profile_info_sync(
+    dataset_id: Optional[str],
+) -> tuple[Optional[str], Optional[dict]]:
     return _run_async(_resolve_profile_info(dataset_id))
 
 
@@ -914,7 +990,9 @@ async def _update_cleanup_status(job_id: str, status: str) -> None:
     await _save_job(job_data)
 
 
-async def _resolve_profile_info(dataset_id: Optional[str]) -> tuple[Optional[str], Optional[dict]]:
+async def _resolve_profile_info(
+    dataset_id: Optional[str],
+) -> tuple[Optional[str], Optional[dict]]:
     if not dataset_id:
         return None, None
     client = await get_supabase_async_client()
@@ -934,13 +1012,17 @@ async def _upsert_model_for_job(job_data: dict) -> None:
     profile_instance_id = job_data.get("profile_instance_id")
     profile_snapshot = job_data.get("profile_snapshot")
     if not profile_instance_id:
-        profile_instance_id, profile_snapshot = await _resolve_profile_info(job_data.get("dataset_id"))
+        profile_instance_id, profile_snapshot = await _resolve_profile_info(
+            job_data.get("dataset_id")
+        )
     if not model_id:
         logger.warning("Model upsert skipped (model_id missing)")
         return
 
     training_cfg = job_data.get("training_config") or {}
-    training_params = training_cfg.get("training") if isinstance(training_cfg, dict) else {}
+    training_params = (
+        training_cfg.get("training") if isinstance(training_cfg, dict) else {}
+    )
     policy_type = job_data.get("policy_type")
     if not policy_type and isinstance(training_cfg, dict):
         policy = training_cfg.get("policy") or {}
@@ -964,7 +1046,9 @@ async def _upsert_model_for_job(job_data: dict) -> None:
     await upsert_with_owner("models", "id", payload)
 
 
-async def _mark_job_completed(job_id: str, termination_reason: str = "REMOTE_EXIT") -> None:
+async def _mark_job_completed(
+    job_id: str, termination_reason: str = "REMOTE_EXIT"
+) -> None:
     job_data = await _load_job(job_id, include_deleted=True)
     if not job_data:
         return
@@ -979,7 +1063,7 @@ async def _mark_job_completed(job_id: str, termination_reason: str = "REMOTE_EXI
     await _upsert_model_for_job(job_data)
 
 
-async def _list_jobs(days: int = 7) -> list[dict]:
+async def _list_jobs(days: int = 365) -> list[dict]:
     """List jobs from DB.
 
     Args:
@@ -987,7 +1071,9 @@ async def _list_jobs(days: int = 7) -> list[dict]:
               Running/starting jobs are always included.
     """
     client = await get_supabase_async_client()
-    response = await client.table(DB_TABLE).select("*").is_("deleted_at", "null").execute()
+    response = (
+        await client.table(DB_TABLE).select("*").is_("deleted_at", "null").execute()
+    )
     jobs = response.data or []
 
     cutoff_date = datetime.now() - timedelta(days=days)
@@ -1053,7 +1139,9 @@ def _get_training_log_file_path(job_data: dict) -> str:
     return f"{remote_base_dir}/run/training_{mode}.log"
 
 
-def _get_ssh_connection_for_job(job_data: dict, timeout: int = 30) -> Optional[SSHConnection]:
+def _get_ssh_connection_for_job(
+    job_data: dict, timeout: int = 30
+) -> Optional[SSHConnection]:
     """Get SSHConnection for job instance.
 
     Args:
@@ -1108,7 +1196,9 @@ def _check_remote_status(job_data: dict) -> str:
         conn.disconnect()
 
 
-def _get_remote_logs(job_data: dict, lines: int = 100, log_type: str = "training") -> Optional[str]:
+def _get_remote_logs(
+    job_data: dict, lines: int = 100, log_type: str = "training"
+) -> Optional[str]:
     """Get remote logs via SSH."""
     conn = _get_ssh_connection_for_job(job_data)
     if not conn:
@@ -1284,6 +1374,7 @@ def _check_logs_in_r2(job_data: dict, log_type: str) -> dict:
     except Exception as e:
         return {"exists": False, "key": key, "error": str(e)}
 
+
 async def _get_remote_progress(job_id: str) -> Optional[dict]:
     """Get training progress from Supabase metrics."""
     client = await get_supabase_async_client()
@@ -1326,7 +1417,9 @@ async def _get_latest_metric(job_id: str, split: str) -> Optional[dict]:
 
 
 async def _get_latest_metrics(job_id: str) -> tuple[Optional[dict], Optional[dict]]:
-    return await _get_latest_metric(job_id, "train"), await _get_latest_metric(job_id, "val")
+    return await _get_latest_metric(job_id, "train"), await _get_latest_metric(
+        job_id, "val"
+    )
 
 
 async def _get_metrics_series(job_id: str, split: str, limit: int) -> list[dict]:
@@ -1350,8 +1443,12 @@ def _stop_remote_job(job_data: dict) -> bool:
         return False
 
     try:
-        conn.exec_command(f"tmux kill-session -t {TMUX_SETUP_SESSION_NAME} 2>/dev/null || true")
-        conn.exec_command(f"tmux kill-session -t {TMUX_TRAIN_SESSION_NAME} 2>/dev/null || true")
+        conn.exec_command(
+            f"tmux kill-session -t {TMUX_SETUP_SESSION_NAME} 2>/dev/null || true"
+        )
+        conn.exec_command(
+            f"tmux kill-session -t {TMUX_TRAIN_SESSION_NAME} 2>/dev/null || true"
+        )
         return True
     except Exception:
         return False
@@ -1365,64 +1462,188 @@ def _stop_remote_job(job_data: dict) -> bool:
 # Known GPU models to check (in priority order)
 GPU_MODELS_QUICK = ["B300", "B200", "H200", "H100", "A100"]
 GPU_COUNTS_QUICK = [1]  # Only check count=1 for speed
-KNOWN_LOCATIONS = ["FIN-01", "FIN-02", "FIN-03"]
+KNOWN_LOCATIONS = ["FIN-01", "FIN-02", "FIN-03", "ICE-01"]
 
 # Cache for GPU availability (TTL: 10 minutes)
 _gpu_availability_cache: dict = {}
-_gpu_availability_cache_time: float = 0
+_gpu_availability_cache_time: dict[str, float] = {}
 _GPU_CACHE_TTL = 600  # 10 minutes
 
 
-def _extract_availability_instance_type(item: object) -> Optional[str]:
-    if isinstance(item, str):
-        return item
-    if isinstance(item, dict):
-        for key in ("instance_type", "instanceType", "type", "name"):
-            value = item.get(key)
-            if value:
-                return str(value)
-    return None
+def _extract_availability_entry(item: object) -> tuple[Optional[str], list[str]]:
+    if not isinstance(item, dict):
+        return None, []
+
+    location_code_raw = item.get("location_code") or item.get("locationCode")
+    location_code = (
+        location_code_raw
+        if isinstance(location_code_raw, str) and location_code_raw
+        else None
+    )
+
+    availabilities = item.get("availabilities")
+    if not isinstance(availabilities, list):
+        return location_code, []
+
+    instance_types = [
+        instance_type
+        for instance_type in availabilities
+        if isinstance(instance_type, str) and instance_type
+    ]
+    return location_code, instance_types
 
 
-def _fetch_availability_sets(client: VerdaClient) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    spot_available_by_loc = {loc: set() for loc in KNOWN_LOCATIONS}
-    ondemand_available_by_loc = {loc: set() for loc in KNOWN_LOCATIONS}
+def _extract_gpu_model(instance_type: str) -> str:
+    prefix = instance_type.split(".", 1)[0]
+    idx = 0
+    while idx < len(prefix) and prefix[idx].isdigit():
+        idx += 1
+    return prefix[idx:] or prefix
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {}
-        for loc in KNOWN_LOCATIONS:
-            futures[executor.submit(client.instances.get_availabilities, True, loc)] = (True, loc)
-            futures[executor.submit(client.instances.get_availabilities, False, loc)] = (False, loc)
+
+def _build_quick_configs(
+    instance_types: list[object],
+) -> list[tuple[str, int, str, Optional[float]]]:
+    configs_to_check = []
+    for gpu_model in GPU_MODELS_QUICK:
+        for gpu_count in GPU_COUNTS_QUICK:
+            for item in instance_types:
+                instance_type = getattr(item, "instance_type", None)
+                if not isinstance(instance_type, str):
+                    continue
+
+                count = _extract_gpu_count(instance_type)
+                if count is None:
+                    continue
+
+                if count == gpu_count and gpu_model.upper() in instance_type.upper():
+                    spot_price = getattr(item, "spot_price_per_hour", None)
+                    configs_to_check.append(
+                        (gpu_model, gpu_count, instance_type, spot_price)
+                    )
+                    break
+
+    return configs_to_check
+
+
+def _build_all_configs(
+    instance_types: list[object],
+) -> list[tuple[str, int, str, Optional[float]]]:
+    configs_to_check: list[tuple[str, int, str, Optional[float]]] = []
+
+    for item in instance_types:
+        instance_type = getattr(item, "instance_type", None)
+        if not isinstance(instance_type, str) or not instance_type:
+            continue
+
+        gpu_count = _extract_gpu_count(instance_type)
+        if gpu_count is None or gpu_count <= 0:
+            continue
+
+        gpu_model = _extract_gpu_model(instance_type)
+        if not gpu_model or gpu_model.upper() == "CPU":
+            continue
+
+        spot_price = getattr(item, "spot_price_per_hour", None)
+        configs_to_check.append((gpu_model, gpu_count, instance_type, spot_price))
+
+    configs_to_check.sort(key=lambda item: (item[0], item[1], item[2]))
+    return configs_to_check
+
+
+def _ordered_availability_locations(
+    preferred_locations: list[str],
+    *availability_maps: dict[str, set[str]],
+) -> list[str]:
+    known = []
+    for location in preferred_locations:
+        if location not in known:
+            known.append(location)
+
+    extras = sorted(
+        {
+            location
+            for availability_map in availability_maps
+            for location in availability_map
+            if location not in known
+        }
+    )
+    return known + extras
+
+
+def _get_location_codes(client: VerdaClient) -> list[str]:
+    try:
+        items = client.locations.get() or []
+    except Exception:
+        return list(KNOWN_LOCATIONS)
+
+    codes = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        code = item.get("code")
+        if isinstance(code, str) and code:
+            codes.append(code)
+
+    return codes or list(KNOWN_LOCATIONS)
+
+
+def _fetch_availability_sets(
+    client: VerdaClient,
+    preferred_locations: list[str],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    spot_available_by_loc = {loc: set() for loc in preferred_locations}
+    ondemand_available_by_loc = {loc: set() for loc in preferred_locations}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            executor.submit(client.instances.get_availabilities, True, None): True,
+            executor.submit(client.instances.get_availabilities, False, None): False,
+        }
 
         for future in as_completed(futures, timeout=30):
-            is_spot, loc = futures[future]
+            is_spot = futures[future]
             try:
                 items = future.result() or []
             except Exception:
                 continue
             target = spot_available_by_loc if is_spot else ondemand_available_by_loc
             for item in items:
-                instance_type = _extract_availability_instance_type(item)
-                if instance_type:
-                    target[loc].add(instance_type)
+                location_code, instance_types = _extract_availability_entry(item)
+                if (
+                    not location_code
+                    or location_code not in preferred_locations
+                    or not instance_types
+                ):
+                    continue
+
+                target.setdefault(location_code, set()).update(instance_types)
 
     return spot_available_by_loc, ondemand_available_by_loc
 
 
 @router.get("/gpu-availability", response_model=GpuAvailabilityResponse)
-def get_gpu_availability():
-    """Check GPU availability for main configurations (B300, B200, H200, H100, A100 x1).
+def get_gpu_availability(scan: Literal["quick", "all"] = "all"):
+    """Check GPU availability.
 
-    Uses parallel API calls and caching (10 min TTL) for fast response.
-    Stops location search as soon as one available location is found.
+    scan="quick": checks main configurations only (B300, B200, H200, H100, A100 x1)
+    scan="all": checks all GPU instance types and all locations
     """
     global _gpu_availability_cache, _gpu_availability_cache_time
 
+    cache_key = f"gpu_availability:{scan}"
+    should_use_cache = True
+
     # Check cache
-    if time.time() - _gpu_availability_cache_time < _GPU_CACHE_TTL and _gpu_availability_cache:
+    cache_time = _gpu_availability_cache_time.get(cache_key, 0.0)
+    if (
+        should_use_cache
+        and time.time() - cache_time < _GPU_CACHE_TTL
+        and cache_key in _gpu_availability_cache
+    ):
         return GpuAvailabilityResponse(
-            available=_gpu_availability_cache.get("available", []),
-            checked_at=datetime.fromtimestamp(_gpu_availability_cache_time),
+            available=_gpu_availability_cache[cache_key],
+            checked_at=datetime.fromtimestamp(cache_time),
         )
 
     client = _get_verda_client()
@@ -1438,42 +1659,52 @@ def get_gpu_availability():
         # Get all instance types (single API call)
         instance_types = client.instance_types.get()
 
-        # Build list of (gpu_model, gpu_count, instance_type, spot_price) to check
-        configs_to_check = []
-        for gpu_model in GPU_MODELS_QUICK:
-            for gpu_count in GPU_COUNTS_QUICK:
-                # Find matching instance type
-                for t in instance_types:
-                    itype = t.instance_type
-                    count = _extract_gpu_count(itype)
-                    if count is None:
-                        continue
+        if scan == "all":
+            preferred_locations = _get_location_codes(client)
+            configs_to_check = _build_all_configs(instance_types)
+        else:
+            preferred_locations = list(KNOWN_LOCATIONS)
+            configs_to_check = _build_quick_configs(instance_types)
 
-                    if count == gpu_count and gpu_model.upper() in itype.upper():
-                        spot_price = getattr(t, "spot_price_per_hour", None)
-                        configs_to_check.append((gpu_model, gpu_count, itype, spot_price))
-                        break
+        spot_available_by_loc, ondemand_available_by_loc = _fetch_availability_sets(
+            client, preferred_locations
+        )
 
-        spot_available_by_loc, ondemand_available_by_loc = _fetch_availability_sets(client)
+        availability_locations = _ordered_availability_locations(
+            preferred_locations,
+            spot_available_by_loc,
+            ondemand_available_by_loc,
+        )
 
         # Build response
         for gpu_model, gpu_count, instance_type, spot_price in configs_to_check:
-            spot_locs = [loc for loc in KNOWN_LOCATIONS if instance_type in spot_available_by_loc[loc]]
-            ondemand_locs = [loc for loc in KNOWN_LOCATIONS if instance_type in ondemand_available_by_loc[loc]]
-            available.append(GpuAvailabilityInfo(
-                gpu_model=gpu_model,
-                gpu_count=gpu_count,
-                instance_type=instance_type,
-                spot_available=len(spot_locs) > 0,
-                ondemand_available=len(ondemand_locs) > 0,
-                spot_locations=spot_locs,
-                ondemand_locations=ondemand_locs,
-                spot_price_per_hour=spot_price,
-            ))
+            spot_locs = [
+                loc
+                for loc in availability_locations
+                if instance_type in spot_available_by_loc.get(loc, set())
+            ]
+            ondemand_locs = [
+                loc
+                for loc in availability_locations
+                if instance_type in ondemand_available_by_loc.get(loc, set())
+            ]
+            available.append(
+                GpuAvailabilityInfo(
+                    gpu_model=gpu_model,
+                    gpu_count=gpu_count,
+                    instance_type=instance_type,
+                    spot_available=len(spot_locs) > 0,
+                    ondemand_available=len(ondemand_locs) > 0,
+                    spot_locations=spot_locs,
+                    ondemand_locations=ondemand_locs,
+                    spot_price_per_hour=spot_price,
+                )
+            )
 
         # Update cache
-        _gpu_availability_cache = {"available": available}
-        _gpu_availability_cache_time = time.time()
+        if should_use_cache:
+            _gpu_availability_cache[cache_key] = available
+            _gpu_availability_cache_time[cache_key] = time.time()
 
     except Exception as e:
         logger.exception("Failed to check GPU availability")
@@ -1496,7 +1727,9 @@ async def list_verda_storage():
         volumes_by_id = _collect_verda_volumes(client)
     except Exception as e:
         logger.exception("Failed to list Verda volumes")
-        raise HTTPException(status_code=502, detail=f"Verda APIに接続できません: {e}") from e
+        raise HTTPException(
+            status_code=502, detail=f"Verda APIに接続できません: {e}"
+        ) from e
 
     items = [
         _build_verda_storage_item(volume, state)
@@ -1523,7 +1756,9 @@ async def delete_verda_storage(request: VerdaStorageActionRequest):
         volumes_by_id = _collect_verda_volumes(client)
     except Exception as e:
         logger.exception("Failed to list Verda volumes for delete")
-        raise HTTPException(status_code=502, detail=f"Verda APIに接続できません: {e}") from e
+        raise HTTPException(
+            status_code=502, detail=f"Verda APIに接続できません: {e}"
+        ) from e
 
     eligible_ids: list[str] = []
     for volume_id in request.volume_ids:
@@ -1588,7 +1823,9 @@ async def restore_verda_storage(request: VerdaStorageActionRequest):
         volumes_by_id = _collect_verda_volumes(client)
     except Exception as e:
         logger.exception("Failed to list Verda volumes for restore")
-        raise HTTPException(status_code=502, detail=f"Verda APIに接続できません: {e}") from e
+        raise HTTPException(
+            status_code=502, detail=f"Verda APIに接続できません: {e}"
+        ) from e
 
     eligible_ids: list[str] = []
     for volume_id in request.volume_ids:
@@ -1653,7 +1890,9 @@ async def purge_verda_storage(request: VerdaStorageActionRequest):
         volumes_by_id = _collect_verda_volumes(client)
     except Exception as e:
         logger.exception("Failed to list Verda volumes for purge")
-        raise HTTPException(status_code=502, detail=f"Verda APIに接続できません: {e}") from e
+        raise HTTPException(
+            status_code=502, detail=f"Verda APIに接続できません: {e}"
+        ) from e
 
     eligible_ids: list[str] = []
     for volume_id in request.volume_ids:
@@ -1717,92 +1956,125 @@ async def websocket_gpu_availability(websocket: WebSocket):
     global _gpu_availability_cache, _gpu_availability_cache_time
 
     try:
+        scan = websocket.query_params.get("scan", "all")
+        if scan not in {"quick", "all"}:
+            scan = "all"
+        cache_key = f"gpu_availability:{scan}"
+        should_use_cache = True
+
         # Check cache first
-        if time.time() - _gpu_availability_cache_time < _GPU_CACHE_TTL and _gpu_availability_cache:
-            await websocket.send_json({"type": "cached", "message": "キャッシュから取得"})
-            for item in _gpu_availability_cache.get("available", []):
-                await websocket.send_json({
-                    "type": "result",
-                    "gpu_model": item.gpu_model,
-                    "gpu_count": item.gpu_count,
-                    "spot_available": item.spot_available,
-                    "ondemand_available": item.ondemand_available,
-                })
+        cache_time = _gpu_availability_cache_time.get(cache_key, 0.0)
+        if (
+            should_use_cache
+            and time.time() - cache_time < _GPU_CACHE_TTL
+            and cache_key in _gpu_availability_cache
+        ):
+            await websocket.send_json(
+                {"type": "cached", "message": "キャッシュから取得"}
+            )
+            for item in _gpu_availability_cache[cache_key]:
+                await websocket.send_json(
+                    {
+                        "type": "result",
+                        "gpu_model": item.gpu_model,
+                        "gpu_count": item.gpu_count,
+                        "spot_available": item.spot_available,
+                        "ondemand_available": item.ondemand_available,
+                    }
+                )
             await websocket.send_json({"type": "complete", "message": "確認完了"})
             await websocket.close()
             return
 
         client = _get_verda_client()
         if not client:
-            await websocket.send_json({
-                "type": "error",
-                "error": "Verda認証情報が設定されていません"
-            })
+            await websocket.send_json(
+                {"type": "error", "error": "Verda認証情報が設定されていません"}
+            )
             await websocket.close()
             return
 
-        await websocket.send_json({"type": "start", "message": "GPU空き状況を確認中..."})
+        await websocket.send_json(
+            {"type": "start", "message": "GPU空き状況を確認中..."}
+        )
 
         # Get instance types
         loop = asyncio.get_event_loop()
-        instance_types = await loop.run_in_executor(_executor, client.instance_types.get)
+        instance_types = await loop.run_in_executor(
+            _executor, client.instance_types.get
+        )
 
         # Build configs to check
-        configs_to_check = []
-        for gpu_model in GPU_MODELS_QUICK:
-            for gpu_count in GPU_COUNTS_QUICK:
-                for t in instance_types:
-                    itype = t.instance_type
-                    count = _extract_gpu_count(itype)
-                    if count is None:
-                        continue
-
-                    if count == gpu_count and gpu_model.upper() in itype.upper():
-                        spot_price = getattr(t, "spot_price_per_hour", None)
-                        configs_to_check.append((gpu_model, gpu_count, itype, spot_price))
-                        break
+        if scan == "all":
+            preferred_locations = await loop.run_in_executor(
+                _executor, _get_location_codes, client
+            )
+            configs_to_check = _build_all_configs(instance_types)
+        else:
+            preferred_locations = list(KNOWN_LOCATIONS)
+            configs_to_check = _build_quick_configs(instance_types)
 
         # Check each GPU and stream results
         available = []
         for gpu_model, _, _, _ in configs_to_check:
-            await websocket.send_json({
-                "type": "checking",
-                "gpu_model": gpu_model,
-                "message": f"{gpu_model}を確認中..."
-            })
+            await websocket.send_json(
+                {
+                    "type": "checking",
+                    "gpu_model": gpu_model,
+                    "message": f"{gpu_model}を確認中...",
+                }
+            )
 
         spot_available_by_loc, ondemand_available_by_loc = await loop.run_in_executor(
-            _executor, _fetch_availability_sets, client
+            _executor, _fetch_availability_sets, client, preferred_locations
+        )
+        availability_locations = _ordered_availability_locations(
+            preferred_locations,
+            spot_available_by_loc,
+            ondemand_available_by_loc,
         )
 
         for gpu_model, gpu_count, instance_type, spot_price in configs_to_check:
-            spot_locs = [loc for loc in KNOWN_LOCATIONS if instance_type in spot_available_by_loc[loc]]
-            ondemand_locs = [loc for loc in KNOWN_LOCATIONS if instance_type in ondemand_available_by_loc[loc]]
+            spot_locs = [
+                loc
+                for loc in availability_locations
+                if instance_type in spot_available_by_loc.get(loc, set())
+            ]
+            ondemand_locs = [
+                loc
+                for loc in availability_locations
+                if instance_type in ondemand_available_by_loc.get(loc, set())
+            ]
             spot_available = len(spot_locs) > 0
             ondemand_available = len(ondemand_locs) > 0
 
-            await websocket.send_json({
-                "type": "result",
-                "gpu_model": gpu_model,
-                "gpu_count": gpu_count,
-                "spot_available": spot_available,
-                "ondemand_available": ondemand_available,
-            })
+            await websocket.send_json(
+                {
+                    "type": "result",
+                    "gpu_model": gpu_model,
+                    "gpu_count": gpu_count,
+                    "spot_available": spot_available,
+                    "ondemand_available": ondemand_available,
+                }
+            )
 
-            available.append(GpuAvailabilityInfo(
-                gpu_model=gpu_model,
-                gpu_count=gpu_count,
-                instance_type=instance_type,
-                spot_available=spot_available,
-                ondemand_available=ondemand_available,
-                spot_locations=spot_locs,
-                ondemand_locations=ondemand_locs,
-                spot_price_per_hour=spot_price,
-            ))
+            available.append(
+                GpuAvailabilityInfo(
+                    gpu_model=gpu_model,
+                    gpu_count=gpu_count,
+                    instance_type=instance_type,
+                    spot_available=spot_available,
+                    ondemand_available=ondemand_available,
+                    spot_locations=spot_locs,
+                    ondemand_locations=ondemand_locs,
+                    spot_price_per_hour=spot_price,
+                )
+            )
 
         # Update cache
-        _gpu_availability_cache = {"available": available}
-        _gpu_availability_cache_time = time.time()
+        if should_use_cache:
+            _gpu_availability_cache[cache_key] = available
+            _gpu_availability_cache_time[cache_key] = time.time()
 
         await websocket.send_json({"type": "complete", "message": "確認完了"})
 
@@ -1835,7 +2107,10 @@ async def websocket_verda_storage(websocket: WebSocket):
     client = _get_verda_client()
     if not client:
         await websocket.send_json(
-            {"type": "error", "error": "Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)"}
+            {
+                "type": "error",
+                "error": "Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)",
+            }
         )
         await websocket.close()
         return
@@ -1844,7 +2119,9 @@ async def websocket_verda_storage(websocket: WebSocket):
         volumes_by_id = _collect_verda_volumes(client)
     except Exception as e:
         logger.exception("Failed to list Verda volumes for WS action")
-        await websocket.send_json({"type": "error", "error": f"Verda APIに接続できません: {e}"})
+        await websocket.send_json(
+            {"type": "error", "error": f"Verda APIに接続できません: {e}"}
+        )
         await websocket.close()
         return
 
@@ -1857,7 +2134,10 @@ async def websocket_verda_storage(websocket: WebSocket):
         state_volume = volumes_by_id.get(volume_id)
         if not state_volume:
             skipped.append(
-                {"id": volume_id, "reason": "対象が見つかりません（既に削除済みの可能性）"}
+                {
+                    "id": volume_id,
+                    "reason": "対象が見つかりません（既に削除済みの可能性）",
+                }
             )
             continue
         state, _ = state_volume
@@ -1879,7 +2159,9 @@ async def websocket_verda_storage(websocket: WebSocket):
     done_count = {"value": 0}
     done_lock = threading.Lock()
 
-    def emit_progress(volume_id: str, status: str, reason: Optional[str] = None) -> None:
+    def emit_progress(
+        volume_id: str, status: str, reason: Optional[str] = None
+    ) -> None:
         with done_lock:
             done_count["value"] += 1
             current = done_count["value"]
@@ -1953,7 +2235,7 @@ async def websocket_verda_storage(websocket: WebSocket):
 
 
 @router.get("/jobs", response_model=JobListResponse)
-async def list_jobs(days: int = Query(7, ge=1, le=365)):
+async def list_jobs(days: int = Query(365, ge=1, le=365)):
     """List training jobs.
 
     Args:
@@ -2180,7 +2462,9 @@ async def revive_job_instance(job_id: str):
     return JobReviveResponse(**result)
 
 
-async def _revive_job_with_progress(job_id: str, emit_progress: Callable[[dict], None]) -> dict:
+async def _revive_job_with_progress(
+    job_id: str, emit_progress: Callable[[dict], None]
+) -> dict:
     emit_progress({"type": "start", "message": "蘇生を開始しました"})
     job_data = await _load_job(job_id, include_deleted=True)
     if not job_data:
@@ -2211,13 +2495,27 @@ async def _revive_job_with_progress(job_id: str, emit_progress: Callable[[dict],
     state, volume = picked
     volume_id = getattr(volume, "id", "") or ""
     if not volume_id:
-        raise HTTPException(status_code=404, detail="ストレージIDが取得できませんでした")
+        raise HTTPException(
+            status_code=404, detail="ストレージIDが取得できませんでした"
+        )
 
     if state == "deleted":
-        emit_progress({"type": "restore_storage", "message": "ストレージを復活中...", "volume_id": volume_id})
+        emit_progress(
+            {
+                "type": "restore_storage",
+                "message": "ストレージを復活中...",
+                "volume_id": volume_id,
+            }
+        )
         _restore_verda_volumes(client, [volume_id])
         _wait_for_volume_restore(client, volume_id)
-        emit_progress({"type": "restore_complete", "message": "ストレージ復活完了", "volume_id": volume_id})
+        emit_progress(
+            {
+                "type": "restore_complete",
+                "message": "ストレージ復活完了",
+                "volume_id": volume_id,
+            }
+        )
 
     detach_ready_statuses = {"offline", "discontinued", "deleted"}
     attached_instance_id = getattr(volume, "instance_id", None)
@@ -2232,7 +2530,9 @@ async def _revive_job_with_progress(job_id: str, emit_progress: Callable[[dict],
         attached_status = _check_instance_via_api(attached_instance_id)
         if attached_status is not None and attached_status not in detach_ready_statuses:
             _delete_verda_instance(attached_instance_id)
-            _wait_for_instance_offline(client, attached_instance_id, allowed_statuses=detach_ready_statuses)
+            _wait_for_instance_offline(
+                client, attached_instance_id, allowed_statuses=detach_ready_statuses
+            )
 
     instance_status = _check_instance_via_api(instance_id)
     if instance_status is not None and instance_status not in detach_ready_statuses:
@@ -2244,25 +2544,43 @@ async def _revive_job_with_progress(job_id: str, emit_progress: Callable[[dict],
             }
         )
         _delete_verda_instance(instance_id)
-        _wait_for_instance_offline(client, instance_id, allowed_statuses=detach_ready_statuses)
+        _wait_for_instance_offline(
+            client, instance_id, allowed_statuses=detach_ready_statuses
+        )
 
-    emit_progress({"type": "detaching_storage", "message": "ストレージをデタッチ中...", "volume_id": volume_id})
+    emit_progress(
+        {
+            "type": "detaching_storage",
+            "message": "ストレージをデタッチ中...",
+            "volume_id": volume_id,
+        }
+    )
     _ensure_volume_detached(client, volume_id)
     _wait_for_volume_detached(client, volume_id)
-    emit_progress({"type": "detached_storage", "message": "ストレージのデタッチ完了", "volume_id": volume_id})
+    emit_progress(
+        {
+            "type": "detached_storage",
+            "message": "ストレージのデタッチ完了",
+            "volume_id": volume_id,
+        }
+    )
 
     emit_progress({"type": "select_instance", "message": "CPUインスタンスを選択中..."})
     instance_type = _select_cpu_instance_type(client)
     ssh_key_name = os.environ.get("VERDA_SSH_KEY_NAME", "")
     if not ssh_key_name:
-        raise HTTPException(status_code=400, detail="VERDA_SSH_KEY_NAMEが設定されていません")
+        raise HTTPException(
+            status_code=400, detail="VERDA_SSH_KEY_NAMEが設定されていません"
+        )
     ssh_key_id = _get_ssh_key_id(client, ssh_key_name)
 
     preferred_location = getattr(volume, "location", None) or "auto"
     location = _find_location(client, instance_type, preferred_location, is_spot=False)
     hostname = f"revive-{job_id[:8]}"
 
-    emit_progress({"type": "creating_instance", "message": "CPUインスタンスを作成中..."})
+    emit_progress(
+        {"type": "creating_instance", "message": "CPUインスタンスを作成中..."}
+    )
     instance = client.instances.create(
         instance_type=instance_type,
         image=volume_id,
@@ -2298,7 +2616,9 @@ async def _revive_job_with_progress(job_id: str, emit_progress: Callable[[dict],
     if not ip:
         raise HTTPException(status_code=504, detail="IP取得タイムアウト (15分)")
 
-    ssh_private_key = job_data.get("ssh_private_key") or os.environ.get("VERDA_SSH_PRIVATE_KEY")
+    ssh_private_key = job_data.get("ssh_private_key") or os.environ.get(
+        "VERDA_SSH_PRIVATE_KEY"
+    )
     if not ssh_private_key:
         ssh_private_key = str(Path.home() / ".ssh" / "id_rsa")
     ssh_user = job_data.get("ssh_user") or "root"
@@ -2388,7 +2708,9 @@ def _delete_verda_instance(instance_id: str, wait_timeout: int = 30) -> bool:
     """
     client = _get_verda_client()
     if not client:
-        logger.warning(f"Cannot delete instance {instance_id}: Verda client not available")
+        logger.warning(
+            f"Cannot delete instance {instance_id}: Verda client not available"
+        )
         return False
 
     try:
@@ -2398,7 +2720,9 @@ def _delete_verda_instance(instance_id: str, wait_timeout: int = 30) -> bool:
         logger.info(f"Instance {instance_id} current status: {current_status}")
 
         if current_status in ("offline", "deleted", "deleting", "discontinued"):
-            logger.info(f"Instance {instance_id} already terminated or deleting (status: {current_status})")
+            logger.info(
+                f"Instance {instance_id} already terminated or deleting (status: {current_status})"
+            )
             return True
 
         # Send delete request
@@ -2412,18 +2736,26 @@ def _delete_verda_instance(instance_id: str, wait_timeout: int = 30) -> bool:
             try:
                 instance = client.instances.get_by_id(instance_id)
                 new_status = instance.status
-                logger.info(f"Instance {instance_id} status after delete request: {new_status}")
+                logger.info(
+                    f"Instance {instance_id} status after delete request: {new_status}"
+                )
 
                 if new_status in ("deleted", "deleting", "offline", "discontinued"):
-                    logger.info(f"Instance {instance_id} deletion confirmed (status: {new_status})")
+                    logger.info(
+                        f"Instance {instance_id} deletion confirmed (status: {new_status})"
+                    )
                     return True
             except Exception as check_error:
                 # Instance not found - likely deleted
-                logger.info(f"Instance {instance_id} no longer found (likely deleted): {check_error}")
+                logger.info(
+                    f"Instance {instance_id} no longer found (likely deleted): {check_error}"
+                )
                 return True
 
         # Timeout - deletion may still be in progress
-        logger.warning(f"Instance {instance_id} deletion not confirmed within {wait_timeout}s, but request was sent")
+        logger.warning(
+            f"Instance {instance_id} deletion not confirmed within {wait_timeout}s, but request was sent"
+        )
         return True
 
     except Exception as e:
@@ -2670,15 +3002,28 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
         )
 
         # Save job info (status: starting)
-        training_payload = {k: v for k, v in training_config.model_dump().items() if v is not None}
-        validation_payload = {k: v for k, v in request.validation.model_dump().items() if v is not None}
-        early_stopping_payload = {k: v for k, v in request.early_stopping.model_dump().items() if v is not None}
+        training_payload = {
+            k: v for k, v in training_config.model_dump().items() if v is not None
+        }
+        validation_payload = {
+            k: v for k, v in request.validation.model_dump().items() if v is not None
+        }
+        early_stopping_payload = {
+            k: v
+            for k, v in request.early_stopping.model_dump().items()
+            if v is not None
+        }
         if early_stopping_payload.get("enable"):
             validation_payload.setdefault("enable", True)
             if training_payload.get("save_checkpoint") is False:
                 training_payload["save_checkpoint"] = True
-        if validation_payload.get("enable") and validation_payload.get("eval_freq") is None:
-            validation_payload["eval_freq"] = training_payload.get("save_freq") or 20_000
+        if (
+            validation_payload.get("enable")
+            and validation_payload.get("eval_freq") is None
+        ):
+            validation_payload["eval_freq"] = (
+                training_payload.get("save_freq") or 20_000
+            )
 
         policy_payload = {"type": checkpoint_entry.policy_type}
         if request.policy:
@@ -2689,7 +3034,9 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
             if request.policy.compile_model is not None:
                 policy_payload["compile_model"] = request.policy.compile_model
             if request.policy.gradient_checkpointing is not None:
-                policy_payload["gradient_checkpointing"] = request.policy.gradient_checkpointing
+                policy_payload["gradient_checkpointing"] = (
+                    request.policy.gradient_checkpointing
+                )
             if request.policy.use_amp is not None:
                 policy_payload["use_amp"] = request.policy.use_amp
 
@@ -2925,7 +3272,9 @@ def _create_job_with_progress(
 
             job_name = request_data.get("job_name")
             if not job_name:
-                emit_progress({"type": "error", "error": "ジョブ名が指定されていません"})
+                emit_progress(
+                    {"type": "error", "error": "ジョブ名が指定されていません"}
+                )
                 return {"success": False, "error": "ジョブ名が指定されていません"}
 
             dataset_data = request_data.get("dataset", {})
@@ -2979,7 +3328,9 @@ def _create_job_with_progress(
         # Get Verda client
         client = _get_verda_client()
         if not client:
-            emit_progress({"type": "error", "error": "Verda認証情報が設定されていません"})
+            emit_progress(
+                {"type": "error", "error": "Verda認証情報が設定されていません"}
+            )
             return {"success": False, "error": "Verda認証情報が設定されていません"}
 
         # Track instance_id for cleanup on failure
@@ -2989,8 +3340,15 @@ def _create_job_with_progress(
             """Clean up instance if creation succeeded but subsequent steps failed."""
             nonlocal instance_id
             if instance_id:
-                emit_progress({"type": "cleanup", "message": f"エラー発生のためインスタンスを削除中: {instance_id}"})
-                logger.warning(f"Cleaning up instance {instance_id} due to failure: {error_msg}")
+                emit_progress(
+                    {
+                        "type": "cleanup",
+                        "message": f"エラー発生のためインスタンスを削除中: {instance_id}",
+                    }
+                )
+                logger.warning(
+                    f"Cleaning up instance {instance_id} due to failure: {error_msg}"
+                )
                 _update_cleanup_status_sync(job_id, "running")
                 cleanup_ok = _delete_verda_instance(instance_id)
                 _update_cleanup_status_sync(job_id, "done" if cleanup_ok else "failed")
@@ -2998,13 +3356,22 @@ def _create_job_with_progress(
 
         try:
             # Select instance type
-            emit_progress({"type": "selecting_instance", "message": "インスタンスタイプを選択中..."})
-            instance_type = _select_instance_type(client, cloud.gpu_model, cloud.gpus_per_instance)
-            emit_progress({
-                "type": "instance_selected",
-                "message": f"インスタンスタイプ: {instance_type}",
-                "instance_type": instance_type,
-            })
+            emit_progress(
+                {
+                    "type": "selecting_instance",
+                    "message": "インスタンスタイプを選択中...",
+                }
+            )
+            instance_type = _select_instance_type(
+                client, cloud.gpu_model, cloud.gpus_per_instance
+            )
+            emit_progress(
+                {
+                    "type": "instance_selected",
+                    "message": f"インスタンスタイプ: {instance_type}",
+                    "instance_type": instance_type,
+                }
+            )
 
             # Get SSH key
             emit_progress({"type": "getting_ssh_key", "message": "SSHキーを取得中..."})
@@ -3014,21 +3381,37 @@ def _create_job_with_progress(
                 str(Path.home() / ".ssh" / "id_rsa"),
             )
             if not ssh_key_name:
-                emit_progress({"type": "error", "error": "VERDA_SSH_KEY_NAMEが設定されていません"})
-                return {"success": False, "error": "VERDA_SSH_KEY_NAMEが設定されていません"}
+                emit_progress(
+                    {"type": "error", "error": "VERDA_SSH_KEY_NAMEが設定されていません"}
+                )
+                return {
+                    "success": False,
+                    "error": "VERDA_SSH_KEY_NAMEが設定されていません",
+                }
             ssh_key_id = _get_ssh_key_id(client, ssh_key_name)
 
             # Find location
-            emit_progress({"type": "finding_location", "message": "利用可能なロケーションを検索中..."})
-            location = _find_location(client, instance_type, cloud.location, cloud.is_spot)
-            emit_progress({
-                "type": "location_found",
-                "message": f"ロケーション: {location}",
-                "location": location,
-            })
+            emit_progress(
+                {
+                    "type": "finding_location",
+                    "message": "利用可能なロケーションを検索中...",
+                }
+            )
+            location = _find_location(
+                client, instance_type, cloud.location, cloud.is_spot
+            )
+            emit_progress(
+                {
+                    "type": "location_found",
+                    "message": f"ロケーション: {location}",
+                    "location": location,
+                }
+            )
 
             # Create instance
-            emit_progress({"type": "creating_instance", "message": "インスタンスを作成中..."})
+            emit_progress(
+                {"type": "creating_instance", "message": "インスタンスを作成中..."}
+            )
             instance_id = _create_instance(
                 client,
                 instance_type=instance_type,
@@ -3038,20 +3421,26 @@ def _create_job_with_progress(
                 storage_size=cloud.storage_size,
                 hostname=f"train-{job_id[:16]}",
             )
-            emit_progress({
-                "type": "instance_created",
-                "message": f"インスタンス作成完了: {instance_id}",
-                "instance_id": instance_id,
-            })
+            emit_progress(
+                {
+                    "type": "instance_created",
+                    "message": f"インスタンス作成完了: {instance_id}",
+                    "instance_id": instance_id,
+                }
+            )
 
             request_model = JobCreateRequest(
                 job_name=job_name,
                 dataset=dataset,
                 policy=policy,
                 training=training,
-                validation=ValidationConfig(**validation_data) if validation_data else ValidationConfig(),
+                validation=ValidationConfig(**validation_data)
+                if validation_data
+                else ValidationConfig(),
                 early_stopping=(
-                    EarlyStoppingConfig(**early_stopping_data) if early_stopping_data else EarlyStoppingConfig()
+                    EarlyStoppingConfig(**early_stopping_data)
+                    if early_stopping_data
+                    else EarlyStoppingConfig()
                 ),
                 cloud=cloud,
                 checkpoint_repo_id=checkpoint_repo_id,
@@ -3061,7 +3450,9 @@ def _create_job_with_progress(
 
             # Save job info
             now = datetime.now().isoformat()
-            profile_instance_id, profile_snapshot = _resolve_profile_info_sync(dataset.id)
+            profile_instance_id, profile_snapshot = _resolve_profile_info_sync(
+                dataset.id
+            )
             job_data = {
                 "job_id": job_id,
                 "job_name": job_name,
@@ -3086,7 +3477,14 @@ def _create_job_with_progress(
             _save_job_sync(job_data)
 
             # Wait for IP (up to 15 minutes)
-            emit_progress({"type": "waiting_ip", "message": "IPアドレス割り当て待機中...", "elapsed": 0, "timeout": 900})
+            emit_progress(
+                {
+                    "type": "waiting_ip",
+                    "message": "IPアドレス割り当て待機中...",
+                    "elapsed": 0,
+                    "timeout": 900,
+                }
+            )
             ip = None
             start_time = time.time()
             deadline = start_time + IP_WAIT_TIMEOUT_SEC
@@ -3099,12 +3497,14 @@ def _create_job_with_progress(
                 except Exception:
                     pass
                 elapsed = int(time.time() - start_time)
-                emit_progress({
-                    "type": "waiting_ip",
-                    "message": f"IPアドレス割り当て待機中... ({elapsed}秒経過)",
-                    "elapsed": elapsed,
-                    "timeout": 900,
-                })
+                emit_progress(
+                    {
+                        "type": "waiting_ip",
+                        "message": f"IPアドレス割り当て待機中... ({elapsed}秒経過)",
+                        "elapsed": elapsed,
+                        "timeout": 900,
+                    }
+                )
                 time.sleep(15)
 
             if not ip:
@@ -3116,7 +3516,9 @@ def _create_job_with_progress(
                 emit_progress({"type": "error", "error": "IP取得タイムアウト (15分)"})
                 return cleanup_instance_on_failure("IP取得タイムアウト (15分)")
 
-            emit_progress({"type": "ip_assigned", "message": f"IP取得完了: {ip}", "ip": ip})
+            emit_progress(
+                {"type": "ip_assigned", "message": f"IP取得完了: {ip}", "ip": ip}
+            )
 
             # Update job with IP
             job_data["ip"] = ip
@@ -3127,7 +3529,14 @@ def _create_job_with_progress(
             ssh_user = "root"
 
             # Wait for SSH (up to 5 minutes)
-            emit_progress({"type": "connecting_ssh", "message": "SSH接続中...", "attempt": 0, "max_attempts": 30})
+            emit_progress(
+                {
+                    "type": "connecting_ssh",
+                    "message": "SSH接続中...",
+                    "attempt": 0,
+                    "max_attempts": 30,
+                }
+            )
             conn: Optional[SSHConnection] = None
             start_time = time.time()
             ssh_deadline = start_time + SSH_WAIT_TIMEOUT_SEC
@@ -3139,13 +3548,15 @@ def _create_job_with_progress(
                     break
                 except Exception:
                     elapsed = int(time.time() - start_time)
-                    emit_progress({
-                        "type": "connecting_ssh",
-                        "message": f"SSH接続中... (試行 {attempt}/30, {elapsed}秒経過)",
-                        "attempt": attempt,
-                        "max_attempts": 30,
-                        "elapsed": elapsed,
-                    })
+                    emit_progress(
+                        {
+                            "type": "connecting_ssh",
+                            "message": f"SSH接続中... (試行 {attempt}/30, {elapsed}秒経過)",
+                            "attempt": attempt,
+                            "max_attempts": 30,
+                            "elapsed": elapsed,
+                        }
+                    )
                     time.sleep(10)
 
             if not conn:
@@ -3167,26 +3578,54 @@ def _create_job_with_progress(
                 _save_job_sync(job_data)
 
                 # Create remote directory
-                emit_progress({"type": "deploying", "message": "リモートディレクトリを作成中..."})
+                emit_progress(
+                    {"type": "deploying", "message": "リモートディレクトリを作成中..."}
+                )
                 conn.mkdir_p(remote_run_dir)
 
                 # Upload remote scripts
-                emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "setup_env.sh"})
+                emit_progress(
+                    {
+                        "type": "deploying",
+                        "message": "スクリプトをアップロード中...",
+                        "file": "setup_env.sh",
+                    }
+                )
                 setup_env_path = REMOTE_SCRIPTS_DIR / "setup_env.sh"
                 entry_path = REMOTE_SCRIPTS_DIR / "entry.py"
                 run_training_path = REMOTE_SCRIPTS_DIR / "run_training.sh"
 
                 if setup_env_path.exists():
                     conn.upload_file(setup_env_path, f"{remote_run_dir}/setup_env.sh")
-                emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "entry.py"})
+                emit_progress(
+                    {
+                        "type": "deploying",
+                        "message": "スクリプトをアップロード中...",
+                        "file": "entry.py",
+                    }
+                )
                 if entry_path.exists():
                     conn.upload_file(entry_path, f"{remote_run_dir}/entry.py")
-                emit_progress({"type": "deploying", "message": "スクリプトをアップロード中...", "file": "run_training.sh"})
+                emit_progress(
+                    {
+                        "type": "deploying",
+                        "message": "スクリプトをアップロード中...",
+                        "file": "run_training.sh",
+                    }
+                )
                 if run_training_path.exists():
-                    conn.upload_file(run_training_path, f"{remote_run_dir}/run_training.sh")
+                    conn.upload_file(
+                        run_training_path, f"{remote_run_dir}/run_training.sh"
+                    )
 
                 # Generate and upload .env file
-                emit_progress({"type": "deploying", "message": "環境変数をアップロード中...", "file": ".env"})
+                emit_progress(
+                    {
+                        "type": "deploying",
+                        "message": "環境変数をアップロード中...",
+                        "file": ".env",
+                    }
+                )
                 env_content = _generate_env_file(
                     job_id,
                     instance_id,
@@ -3198,9 +3637,19 @@ def _create_job_with_progress(
                 conn.upload_content(env_content, f"{remote_run_dir}/.env")
 
                 # Generate and upload instance_info.env
-                emit_progress({"type": "deploying", "message": "インスタンス情報をアップロード中...", "file": "instance_info.env"})
-                instance_info = _generate_instance_info_env(job_id, instance_id, auto_delete=True)
-                conn.upload_content(instance_info, f"{remote_run_dir}/instance_info.env")
+                emit_progress(
+                    {
+                        "type": "deploying",
+                        "message": "インスタンス情報をアップロード中...",
+                        "file": "instance_info.env",
+                    }
+                )
+                instance_info = _generate_instance_info_env(
+                    job_id, instance_id, auto_delete=True
+                )
+                conn.upload_content(
+                    instance_info, f"{remote_run_dir}/instance_info.env"
+                )
 
                 # Make scripts executable
                 conn.exec_command(f"chmod +x {remote_run_dir}/setup_env.sh")
@@ -3229,11 +3678,17 @@ def _create_job_with_progress(
                         job_data["completed_at"] = datetime.now().isoformat()
                         _save_job_sync(job_data)
                         _run_async(_upload_remote_logs_to_r2(conn, job_data))
-                        emit_progress({"type": "error", "error": "環境構築がタイムアウトしました"})
-                        return cleanup_instance_on_failure("環境構築がタイムアウトしました")
+                        emit_progress(
+                            {"type": "error", "error": "環境構築がタイムアウトしました"}
+                        )
+                        return cleanup_instance_on_failure(
+                            "環境構築がタイムアウトしました"
+                        )
                     job_data["status"] = "failed"
                     job_data["failure_reason"] = "SETUP_FAILED"
-                    job_data["error_message"] = f"環境構築に失敗しました (exit={setup_exit_code})"
+                    job_data["error_message"] = (
+                        f"環境構築に失敗しました (exit={setup_exit_code})"
+                    )
                     job_data["completed_at"] = datetime.now().isoformat()
                     _save_job_sync(job_data)
                     _run_async(_upload_remote_logs_to_r2(conn, job_data))
@@ -3242,25 +3697,34 @@ def _create_job_with_progress(
 
                 # Start training in separate tmux session
                 executor = RemoteExecutor(conn, remote_base_dir=remote_run_dir)
-                emit_progress({"type": "starting_training", "message": "学習を開始中..."})
+                emit_progress(
+                    {"type": "starting_training", "message": "学習を開始中..."}
+                )
                 success = executor.run_background(
                     "bash run_training.sh train",
                     session_name=TMUX_TRAIN_SESSION_NAME,
                 )
                 if not success:
-                    emit_progress({"type": "training_log", "message": "警告: 学習用tmuxセッションの開始を確認できませんでした"})
+                    emit_progress(
+                        {
+                            "type": "training_log",
+                            "message": "警告: 学習用tmuxセッションの開始を確認できませんでした",
+                        }
+                    )
                 else:
                     job_data["status"] = "starting"
                     _save_job_sync(job_data)
 
-                emit_progress({
-                    "type": "complete",
-                    "message": "学習プロセスを起動しました。リモート側の開始確認待ちです。",
-                    "job_id": job_id,
-                    "instance_id": instance_id,
-                    "ip": ip,
-                    "status": "starting",
-                })
+                emit_progress(
+                    {
+                        "type": "complete",
+                        "message": "学習プロセスを起動しました。リモート側の開始確認待ちです。",
+                        "job_id": job_id,
+                        "instance_id": instance_id,
+                        "ip": ip,
+                        "status": "starting",
+                    }
+                )
 
                 return {
                     "success": True,
@@ -3350,10 +3814,12 @@ async def websocket_create_job(websocket: WebSocket):
         refresh_token = websocket.cookies.get(REFRESH_COOKIE_NAME)
         supabase_session = build_session_from_tokens(access_token, refresh_token)
         if not supabase_session or not supabase_session.get("user_id"):
-            await websocket.send_json({
-                "type": "error",
-                "error": "認証情報がありません。ログインし直してください。",
-            })
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "error": "認証情報がありません。ログインし直してください。",
+                }
+            )
             await websocket.close()
             return
 
@@ -3368,17 +3834,16 @@ async def websocket_create_job(websocket: WebSocket):
 
         def emit_progress(progress: dict):
             """Callback to put progress in queue (called from thread)."""
-            asyncio.run_coroutine_threadsafe(
-                progress_queue.put(progress),
-                main_loop
-            )
+            asyncio.run_coroutine_threadsafe(progress_queue.put(progress), main_loop)
 
         # Run job creation in thread pool
         async def run_job_creation():
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(
                 _executor,
-                lambda: _create_job_with_progress(data, emit_progress, supabase_session)
+                lambda: _create_job_with_progress(
+                    data, emit_progress, supabase_session
+                ),
             )
 
         # Start job creation task
@@ -3459,7 +3924,9 @@ async def _deploy_and_start_training(
 
         async def cleanup_on_failure(error_msg: str) -> None:
             """Clean up instance on deployment failure."""
-            logger.warning(f"Cleaning up instance {instance_id} due to failure: {error_msg}")
+            logger.warning(
+                f"Cleaning up instance {instance_id} due to failure: {error_msg}"
+            )
             await _update_cleanup_status(job_id, "running")
             cleanup_ok = _delete_verda_instance(instance_id)
             await _update_cleanup_status(job_id, "done" if cleanup_ok else "failed")
@@ -3494,7 +3961,9 @@ async def _deploy_and_start_training(
 
             # SSH deployment using SSHConnection
             ssh_user = job_data.get("ssh_user", "root")
-            ssh_private_key = job_data.get("ssh_private_key", str(Path.home() / ".ssh" / "id_rsa"))
+            ssh_private_key = job_data.get(
+                "ssh_private_key", str(Path.home() / ".ssh" / "id_rsa")
+            )
 
             # Wait for SSH to be ready (up to 5 minutes)
             conn: Optional[SSHConnection] = None
@@ -3535,7 +4004,9 @@ async def _deploy_and_start_training(
                 if entry_path.exists():
                     conn.upload_file(entry_path, f"{remote_run_dir}/entry.py")
                 if run_training_path.exists():
-                    conn.upload_file(run_training_path, f"{remote_run_dir}/run_training.sh")
+                    conn.upload_file(
+                        run_training_path, f"{remote_run_dir}/run_training.sh"
+                    )
 
                 # Generate and upload .env file
                 env_content = _generate_env_file(
@@ -3549,8 +4020,12 @@ async def _deploy_and_start_training(
                 conn.upload_content(env_content, f"{remote_run_dir}/.env")
 
                 # Generate and upload instance_info.env
-                instance_info = _generate_instance_info_env(job_id, instance_id, auto_delete=True)
-                conn.upload_content(instance_info, f"{remote_run_dir}/instance_info.env")
+                instance_info = _generate_instance_info_env(
+                    job_id, instance_id, auto_delete=True
+                )
+                conn.upload_content(
+                    instance_info, f"{remote_run_dir}/instance_info.env"
+                )
 
                 # Make scripts executable
                 conn.exec_command(f"chmod +x {remote_run_dir}/setup_env.sh")
@@ -3575,7 +4050,9 @@ async def _deploy_and_start_training(
                         return
                     job_data["status"] = "failed"
                     job_data["failure_reason"] = "SETUP_FAILED"
-                    job_data["error_message"] = f"環境構築に失敗しました (exit={setup_exit_code})"
+                    job_data["error_message"] = (
+                        f"環境構築に失敗しました (exit={setup_exit_code})"
+                    )
                     job_data["completed_at"] = datetime.now().isoformat()
                     await _save_job(job_data)
                     await _upload_remote_logs_to_r2(conn, job_data)
@@ -3584,7 +4061,9 @@ async def _deploy_and_start_training(
 
                 # Start training using RemoteExecutor with tmux
                 executor = RemoteExecutor(conn, remote_base_dir=remote_run_dir)
-                executor.run_background("bash run_training.sh train", session_name=TMUX_TRAIN_SESSION_NAME)
+                executor.run_background(
+                    "bash run_training.sh train", session_name=TMUX_TRAIN_SESSION_NAME
+                )
                 job_data["status"] = "starting"
                 await _save_job(job_data)
 
@@ -3614,7 +4093,11 @@ def _get_checkpoint_index_manager():
         try:
             import os
 
-            from percus_ai.storage import CheckpointIndexManager, ManifestManager, R2SyncService
+            from percus_ai.storage import (
+                CheckpointIndexManager,
+                ManifestManager,
+                R2SyncService,
+            )
 
             manifest = ManifestManager()
             manifest.init_directories()
@@ -3624,8 +4107,7 @@ def _get_checkpoint_index_manager():
             _checkpoint_index_manager = CheckpointIndexManager(r2_service)
         except Exception as e:
             raise HTTPException(
-                status_code=503,
-                detail=f"Failed to initialize checkpoint manager: {e}"
+                status_code=503, detail=f"Failed to initialize checkpoint manager: {e}"
             )
     return _checkpoint_index_manager
 
@@ -3676,7 +4158,7 @@ def _get_dataset_info_from_manifest(dataset_id: str) -> CheckpointDatasetInfo:
 
 @router.get("/checkpoints", response_model=CheckpointListResponse)
 async def list_checkpoints(
-    policy_type: Optional[str] = Query(None, description="Filter by policy type")
+    policy_type: Optional[str] = Query(None, description="Filter by policy type"),
 ):
     """List all checkpoints with optional filtering.
 
@@ -3699,22 +4181,26 @@ async def list_checkpoints(
 
             # Convert dataset_info
             ds_info = CheckpointDatasetInfo(
-                camera_names=entry.dataset_info.camera_names if entry.dataset_info else [],
+                camera_names=entry.dataset_info.camera_names
+                if entry.dataset_info
+                else [],
                 action_dim=entry.dataset_info.action_dim if entry.dataset_info else 0,
                 state_dim=entry.dataset_info.state_dim if entry.dataset_info else 0,
             )
 
-            checkpoints.append(CheckpointInfo(
-                job_name=entry.job_name,
-                policy_type=entry.policy_type,
-                step=entry.latest_step,
-                dataset_id=entry.dataset_id,
-                dataset_info=ds_info,
-                created_at=entry.created_at,
-                size_mb=entry.size_mb,
-                pretrained_path=entry.pretrained_path,
-                author=entry.author if hasattr(entry, 'author') else None,
-            ))
+            checkpoints.append(
+                CheckpointInfo(
+                    job_name=entry.job_name,
+                    policy_type=entry.policy_type,
+                    step=entry.latest_step,
+                    dataset_id=entry.dataset_id,
+                    dataset_info=ds_info,
+                    created_at=entry.created_at,
+                    size_mb=entry.size_mb,
+                    pretrained_path=entry.pretrained_path,
+                    author=entry.author if hasattr(entry, "author") else None,
+                )
+            )
 
         # Sort by created_at descending
         checkpoints.sort(key=lambda c: c.created_at, reverse=True)
@@ -3727,8 +4213,7 @@ async def list_checkpoints(
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=503,
-            detail=f"Failed to list checkpoints from R2: {e}"
+            status_code=503, detail=f"Failed to list checkpoints from R2: {e}"
         )
 
 
@@ -3745,8 +4230,7 @@ async def get_checkpoint(job_name: str):
         entry = checkpoint_mgr.get_job_info(job_name)
         if not entry:
             raise HTTPException(
-                status_code=404,
-                detail=f"Checkpoint not found: {job_name}"
+                status_code=404, detail=f"Checkpoint not found: {job_name}"
             )
 
         # Get available steps
@@ -3769,18 +4253,19 @@ async def get_checkpoint(job_name: str):
             latest_step=entry.latest_step,
             created_at=entry.created_at,
             size_mb=entry.size_mb,
-            author=entry.author if hasattr(entry, 'author') else None,
+            author=entry.author if hasattr(entry, "author") else None,
         )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=503,
-            detail=f"Failed to get checkpoint info: {e}"
+            status_code=503, detail=f"Failed to get checkpoint info: {e}"
         )
 
 
-@router.post("/checkpoints/{job_name}/download", response_model=CheckpointDownloadResponse)
+@router.post(
+    "/checkpoints/{job_name}/download", response_model=CheckpointDownloadResponse
+)
 async def download_checkpoint(
     job_name: str,
     request: Optional[CheckpointDownloadRequest] = None,
@@ -3799,8 +4284,7 @@ async def download_checkpoint(
         entry = checkpoint_mgr.get_job_info(job_name)
         if not entry:
             raise HTTPException(
-                status_code=404,
-                detail=f"Checkpoint not found: {job_name}"
+                status_code=404, detail=f"Checkpoint not found: {job_name}"
             )
 
         # Determine target path
@@ -3820,7 +4304,7 @@ async def download_checkpoint(
             if step not in available_steps:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Step {step} not found. Available steps: {available_steps}"
+                    detail=f"Step {step} not found. Available steps: {available_steps}",
                 )
             success, error = checkpoint_mgr.download_step_checkpoint(
                 job_name, step, download_path
@@ -3833,10 +4317,7 @@ async def download_checkpoint(
             downloaded_step = entry.latest_step
 
         if not success:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Download failed: {error}"
-            )
+            raise HTTPException(status_code=500, detail=f"Download failed: {error}")
 
         return CheckpointDownloadResponse(
             success=True,
@@ -3849,12 +4330,13 @@ async def download_checkpoint(
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=503,
-            detail=f"Failed to download checkpoint: {e}"
+            status_code=503, detail=f"Failed to download checkpoint: {e}"
         )
 
 
-@router.post("/checkpoints/compatibility-check", response_model=DatasetCompatibilityCheckResponse)
+@router.post(
+    "/checkpoints/compatibility-check", response_model=DatasetCompatibilityCheckResponse
+)
 async def check_dataset_compatibility(request: DatasetCompatibilityCheckRequest):
     """Check if a dataset is compatible with a checkpoint for continue training.
 
@@ -3871,7 +4353,7 @@ async def check_dataset_compatibility(request: DatasetCompatibilityCheckRequest)
         if not entry:
             raise HTTPException(
                 status_code=404,
-                detail=f"Checkpoint not found: {request.checkpoint_job_name}"
+                detail=f"Checkpoint not found: {request.checkpoint_job_name}",
             )
 
         # Get dataset info
@@ -3893,7 +4375,10 @@ async def check_dataset_compatibility(request: DatasetCompatibilityCheckRequest)
                 )
 
             # Action dimension check (critical)
-            if checkpoint_ds_info.action_dim != dataset_info.action_dim and checkpoint_ds_info.action_dim > 0:
+            if (
+                checkpoint_ds_info.action_dim != dataset_info.action_dim
+                and checkpoint_ds_info.action_dim > 0
+            ):
                 errors.append(
                     f"Action dimension mismatch. "
                     f"Checkpoint: {checkpoint_ds_info.action_dim}, "
@@ -3901,7 +4386,10 @@ async def check_dataset_compatibility(request: DatasetCompatibilityCheckRequest)
                 )
 
             # State dimension check (warning only)
-            if checkpoint_ds_info.state_dim != dataset_info.state_dim and checkpoint_ds_info.state_dim > 0:
+            if (
+                checkpoint_ds_info.state_dim != dataset_info.state_dim
+                and checkpoint_ds_info.state_dim > 0
+            ):
                 warnings.append(
                     f"State dimension differs. "
                     f"Checkpoint: {checkpoint_ds_info.state_dim}, "
@@ -3927,10 +4415,7 @@ async def check_dataset_compatibility(request: DatasetCompatibilityCheckRequest)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Compatibility check failed: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Compatibility check failed: {e}")
 
 
 @router.post("/jobs/continue", response_model=JobCreateResponse)
@@ -3954,7 +4439,7 @@ async def create_continue_job(
         if not checkpoint_entry:
             raise HTTPException(
                 status_code=404,
-                detail=f"Checkpoint not found: {checkpoint_config.job_name}"
+                detail=f"Checkpoint not found: {checkpoint_config.job_name}",
             )
 
         # Determine step to use
@@ -3965,7 +4450,7 @@ async def create_continue_job(
         if step not in available_steps:
             raise HTTPException(
                 status_code=400,
-                detail=f"Step {step} not available. Available: {available_steps}"
+                detail=f"Step {step} not available. Available: {available_steps}",
             )
 
         # 2. Validate dataset compatibility if using different dataset
@@ -3979,7 +4464,7 @@ async def create_continue_job(
             if not compat_result.is_compatible:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Dataset incompatible: {'; '.join(compat_result.errors)}"
+                    detail=f"Dataset incompatible: {'; '.join(compat_result.errors)}",
                 )
 
         # 3. Generate job name
@@ -4104,8 +4589,7 @@ async def create_continue_job(
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to create continue job: {e}"
+            status_code=500, detail=f"Failed to create continue job: {e}"
         )
 
 
@@ -4129,14 +4613,18 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
     await websocket.accept()
     log_type = websocket.query_params.get("log_type", "training")
     if log_type not in ("training", "setup"):
-        await websocket.send_json({"type": "error", "error": f"Invalid log_type: {log_type}"})
+        await websocket.send_json(
+            {"type": "error", "error": f"Invalid log_type: {log_type}"}
+        )
         await websocket.close()
         return
     logger.info(f"WebSocket log stream client connected for job {job_id}")
 
     job_data = await _load_job(job_id)
     if not job_data:
-        await websocket.send_json({"type": "error", "error": f"Job not found: {job_id}"})
+        await websocket.send_json(
+            {"type": "error", "error": f"Job not found: {job_id}"}
+        )
         await websocket.close()
         return
 
@@ -4159,19 +4647,22 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
                 asyncio.get_running_loop(),
             )
         except Exception as e:
-            await websocket.send_json({"type": "error", "error": f"Realtime購読に失敗しました: {e}"})
+            await websocket.send_json(
+                {"type": "error", "error": f"Realtime購読に失敗しました: {e}"}
+            )
             await websocket.close()
             return
 
         # Connect SSH in thread pool
         loop = asyncio.get_event_loop()
         ssh_conn = await loop.run_in_executor(
-            _executor,
-            lambda: _get_ssh_connection_for_job(job_data, timeout=30)
+            _executor, lambda: _get_ssh_connection_for_job(job_data, timeout=30)
         )
 
         if not ssh_conn:
-            await websocket.send_json({"type": "error", "error": "SSH接続に失敗しました"})
+            await websocket.send_json(
+                {"type": "error", "error": "SSH接続に失敗しました"}
+            )
             await websocket.close()
             return
 
@@ -4204,11 +4695,13 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
 
                 # Check if channel closed (process ended)
                 if channel.exit_status_ready():
-                    await websocket.send_json({
-                        "type": "status",
-                        "status": "stream_ended",
-                        "message": "ログストリーム終了"
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "status",
+                            "status": "stream_ended",
+                            "message": "ログストリーム終了",
+                        }
+                    )
                     await _mark_job_completed(job_id)
                     break
 
@@ -4223,11 +4716,13 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
 
             status = _drain_latest_status(status_queue) if status_queue else None
             if status and status not in RUNNING_STATUSES:
-                await websocket.send_json({
-                    "type": "status",
-                    "status": status,
-                    "message": f"ジョブ状態: {status}"
-                })
+                await websocket.send_json(
+                    {
+                        "type": "status",
+                        "status": status,
+                        "message": f"ジョブ状態: {status}",
+                    }
+                )
                 break
 
             # Small delay to avoid busy loop
@@ -4281,7 +4776,9 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
     # Load job data immediately
     job_data = await _load_job(job_id)
     if not job_data:
-        await websocket.send_json({"type": "error", "error": f"Job not found: {job_id}"})
+        await websocket.send_json(
+            {"type": "error", "error": f"Job not found: {job_id}"}
+        )
         await websocket.close()
         return
 
@@ -4295,30 +4792,34 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
             asyncio.get_running_loop(),
         )
     except Exception as e:
-        await websocket.send_json({"type": "error", "error": f"Realtime購読に失敗しました: {e}"})
+        await websocket.send_json(
+            {"type": "error", "error": f"Realtime購読に失敗しました: {e}"}
+        )
         await websocket.close()
         return
 
     # Send job info immediately (no SSH needed)
-    await websocket.send_json({
-        "type": "job_info",
-        "data": {
-            "job_id": job_data.get("job_id"),
-            "job_name": job_data.get("job_name"),
-            "status": job_data.get("status"),
-            "mode": job_data.get("mode"),
-            "gpu_model": job_data.get("gpu_model"),
-            "gpus_per_instance": job_data.get("gpus_per_instance"),
-            "ip": job_data.get("ip"),
-            "instance_id": job_data.get("instance_id"),
-            "created_at": job_data.get("created_at"),
-            "started_at": job_data.get("started_at"),
-            "failure_reason": job_data.get("failure_reason"),
-            "termination_reason": job_data.get("termination_reason"),
-            "cleanup_status": job_data.get("cleanup_status"),
-            "deleted_at": job_data.get("deleted_at"),
+    await websocket.send_json(
+        {
+            "type": "job_info",
+            "data": {
+                "job_id": job_data.get("job_id"),
+                "job_name": job_data.get("job_name"),
+                "status": job_data.get("status"),
+                "mode": job_data.get("mode"),
+                "gpu_model": job_data.get("gpu_model"),
+                "gpus_per_instance": job_data.get("gpus_per_instance"),
+                "ip": job_data.get("ip"),
+                "instance_id": job_data.get("instance_id"),
+                "created_at": job_data.get("created_at"),
+                "started_at": job_data.get("started_at"),
+                "failure_reason": job_data.get("failure_reason"),
+                "termination_reason": job_data.get("termination_reason"),
+                "cleanup_status": job_data.get("cleanup_status"),
+                "deleted_at": job_data.get("deleted_at"),
+            },
         }
-    })
+    )
 
     ssh_conn: Optional[SSHConnection] = None
     log_channel = None
@@ -4328,10 +4829,12 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
         # Check if job has IP (needed for SSH)
         ip = job_data.get("ip")
         if not ip:
-            await websocket.send_json({
-                "type": "ssh_error",
-                "error": "Job has no IP address (instance may not be ready)"
-            })
+            await websocket.send_json(
+                {
+                    "type": "ssh_error",
+                    "error": "Job has no IP address (instance may not be ready)",
+                }
+            )
             # Continue without SSH - user can still see local info
             await _run_session_loop_no_ssh(websocket, status_queue, job_id)
             return
@@ -4342,12 +4845,13 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
         # Connect SSH in thread pool
         loop = asyncio.get_event_loop()
         ssh_conn = await loop.run_in_executor(
-            _executor,
-            lambda: _get_ssh_connection_for_job(job_data, timeout=30)
+            _executor, lambda: _get_ssh_connection_for_job(job_data, timeout=30)
         )
 
         if not ssh_conn:
-            await websocket.send_json({"type": "ssh_error", "error": "SSH接続に失敗しました"})
+            await websocket.send_json(
+                {"type": "ssh_error", "error": "SSH接続に失敗しました"}
+            )
             await _run_session_loop_no_ssh(websocket, status_queue, job_id)
             return
 
@@ -4369,10 +4873,7 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
             # Handle incoming client messages (non-blocking)
             try:
                 # Use wait_for with short timeout to check for messages
-                message = await asyncio.wait_for(
-                    websocket.receive_json(),
-                    timeout=0.1
-                )
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
                 action = message.get("action")
 
                 if action == "start_logs" and not is_streaming_logs:
@@ -4413,7 +4914,9 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
                             lines = data.decode("utf-8", errors="replace").split("\n")
                             for line in lines:
                                 if line.strip():
-                                    await websocket.send_json({"type": "log", "line": line})
+                                    await websocket.send_json(
+                                        {"type": "log", "line": line}
+                                    )
 
                     # Check if log process ended
                     if log_channel.exit_status_ready():
@@ -4436,10 +4939,9 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
 
             status = _drain_latest_status(status_queue) if status_queue else None
             if status and status not in RUNNING_STATUSES:
-                await websocket.send_json({
-                    "type": "job_status_changed",
-                    "status": status
-                })
+                await websocket.send_json(
+                    {"type": "job_status_changed", "status": status}
+                )
                 break
 
             await asyncio.sleep(0.05)
@@ -4482,17 +4984,16 @@ async def _run_session_loop_no_ssh(
 
             # Handle incoming client messages
             try:
-                message = await asyncio.wait_for(
-                    websocket.receive_json(),
-                    timeout=0.1
-                )
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
                 action = message.get("action")
 
                 if action == "start_logs":
-                    await websocket.send_json({
-                        "type": "ssh_error",
-                        "error": "SSH接続がないためログを取得できません"
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "ssh_error",
+                            "error": "SSH接続がないためログを取得できません",
+                        }
+                    )
 
             except asyncio.TimeoutError:
                 pass
@@ -4508,10 +5009,9 @@ async def _run_session_loop_no_ssh(
 
             status = _drain_latest_status(status_queue) if status_queue else None
             if status and status not in RUNNING_STATUSES_WITH_PENDING:
-                await websocket.send_json({
-                    "type": "job_status_changed",
-                    "status": status
-                })
+                await websocket.send_json(
+                    {"type": "job_status_changed", "status": status}
+                )
                 break
 
             await asyncio.sleep(0.1)
@@ -4534,12 +5034,11 @@ async def _send_remote_status(websocket: WebSocket, ssh_client) -> None:
                     f"tmux has-session -t {TMUX_TRAIN_SESSION_NAME} 2>/dev/null && echo 'running' "
                     f"|| (tmux has-session -t {TMUX_SETUP_SESSION_NAME} 2>/dev/null && echo 'starting' || echo 'stopped')"
                 ),
-            )
+            ),
         )
-        await websocket.send_json({
-            "type": "remote_status",
-            "status": status.strip() if status else "unknown"
-        })
+        await websocket.send_json(
+            {"type": "remote_status", "status": status.strip() if status else "unknown"}
+        )
     except Exception as e:
         logger.debug(f"Failed to get remote status: {e}")
         await websocket.send_json({"type": "remote_status", "status": "error"})
@@ -4556,13 +5055,15 @@ async def _send_progress(websocket: WebSocket, job_id: str) -> None:
         latest = latest_train or latest_val
         step = latest.get("step") if latest else None
         loss = latest.get("loss") if latest else None
-        await websocket.send_json({
-            "type": "progress",
-            "step": str(step) if step is not None else "N/A",
-            "loss": str(loss) if loss is not None else "N/A",
-            "train": latest_train,
-            "val": latest_val,
-        })
+        await websocket.send_json(
+            {
+                "type": "progress",
+                "step": str(step) if step is not None else "N/A",
+                "loss": str(loss) if loss is not None else "N/A",
+                "train": latest_train,
+                "val": latest_val,
+            }
+        )
     except Exception as e:
         logger.debug(f"Failed to get progress: {e}")
 
