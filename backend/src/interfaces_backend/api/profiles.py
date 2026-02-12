@@ -33,8 +33,6 @@ from interfaces_backend.models.profile import (
 from interfaces_backend.services.vlabor_runtime import (
     VlaborCommandError,
     restart_vlabor as run_vlabor_restart,
-    start_vlabor as run_vlabor_start,
-    stop_vlabor as run_vlabor_stop,
 )
 from interfaces_backend.utils.docker_compose import (
     build_compose_command,
@@ -77,25 +75,11 @@ def _get_vlabor_compose_cmd(*, strict: bool) -> tuple[list[str], Path]:
     return build_compose_command(compose_file, get_vlabor_env_file()), compose_file
 
 
-def _start_vlabor() -> None:
-    try:
-        run_vlabor_start()
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"vlabor start failed: {exc}") from exc
-
-
 def _restart_vlabor() -> None:
     try:
         run_vlabor_restart()
     except VlaborCommandError as exc:
         raise HTTPException(status_code=500, detail=f"vlabor restart failed: {exc}") from exc
-
-
-def _stop_vlabor() -> None:
-    try:
-        run_vlabor_stop()
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"vlabor stop failed: {exc}") from exc
 
 
 def _get_vlabor_status() -> dict:
@@ -670,21 +654,6 @@ async def get_active_instance_status():
 @router.get("/vlabor/status", response_model=VlaborStatusResponse)
 async def get_vlabor_status():
     return VlaborStatusResponse(**_get_vlabor_status())
-
-
-@router.post("/vlabor/start", response_model=VlaborStatusResponse)
-async def start_vlabor():
-    _start_vlabor()
-    return VlaborStatusResponse(**_get_vlabor_status())
-
-
-@router.post("/vlabor/stop", response_model=VlaborStatusResponse)
-async def stop_vlabor():
-    _stop_vlabor()
-    return VlaborStatusResponse(**_get_vlabor_status())
-
-
-
 
 @router.post("/instances", response_model=ProfileInstanceResponse)
 async def create_profile_instance(request: ProfileInstanceCreateRequest):

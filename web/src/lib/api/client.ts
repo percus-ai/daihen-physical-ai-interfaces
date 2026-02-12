@@ -246,8 +246,6 @@ export const api = {
     activeInstance: () => fetchApi('/api/profiles/instances/active'),
     activeStatus: () => fetchApi('/api/profiles/instances/active/status'),
     vlaborStatus: () => fetchApi('/api/profiles/vlabor/status'),
-    vlaborStart: () => fetchApi('/api/profiles/vlabor/start', { method: 'POST' }),
-    vlaborStop: () => fetchApi('/api/profiles/vlabor/stop', { method: 'POST' }),
     createInstance: (payload: Record<string, unknown>) =>
       fetchApi('/api/profiles/instances', { method: 'POST', body: JSON.stringify(payload) }),
     updateInstance: (instanceId: string, payload: Record<string, unknown>) =>

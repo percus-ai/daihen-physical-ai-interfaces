@@ -45,6 +45,13 @@
     container_id?: string;
   };
 
+  type TeleopSessionActionResponse = {
+    success?: boolean;
+    session_id?: string;
+    message?: string;
+    status?: VlaborStatusResponse;
+  };
+
   const activeInstanceQuery = createQuery<ProfileInstanceResponse>({
     queryKey: ['profiles', 'instances', 'active'],
     queryFn: api.profiles.activeInstance
@@ -229,7 +236,9 @@
     actionIntent = 'start';
     actionMessage = '';
     try {
-      await api.profiles.vlaborStart();
+      const created = (await api.teleop.createSession()) as TeleopSessionActionResponse;
+      const sessionId = created?.session_id ?? 'teleop';
+      await api.teleop.startSession({ session_id: sessionId });
       await refetchQuery($vlaborStatusQuery);
       await refetchQuery($activeStatusQuery);
     } catch (error) {
@@ -250,7 +259,7 @@
     actionIntent = 'stop';
     actionMessage = '';
     try {
-      await api.profiles.vlaborStop();
+      await api.teleop.stopSession({ session_id: 'teleop' });
       await refetchQuery($vlaborStatusQuery);
       await refetchQuery($activeStatusQuery);
     } catch (error) {
