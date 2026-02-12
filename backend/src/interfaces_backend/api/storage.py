@@ -28,6 +28,7 @@ from interfaces_backend.models.storage import (
     ModelListResponse,
     StorageUsageResponse,
 )
+from interfaces_backend.services.vlabor_profiles import resolve_profile_spec
 from percus_ai.db import get_supabase_async_client, upsert_with_owner
 from percus_ai.storage.hash import compute_directory_hash, compute_directory_size
 from percus_ai.storage.hub import download_model, ensure_hf_token, get_local_model_info, upload_model
@@ -69,12 +70,27 @@ async def _detach_models_from_dataset(dataset_id: str) -> None:
     await client.table("models").update({"dataset_id": None}).eq("dataset_id", dataset_id).execute()
 
 
+def _extract_profile_name(snapshot: object) -> Optional[str]:
+    if not isinstance(snapshot, dict):
+        return None
+    name = snapshot.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    profile = snapshot.get("profile")
+    if isinstance(profile, dict):
+        nested_name = profile.get("name")
+        if isinstance(nested_name, str) and nested_name.strip():
+            return nested_name.strip()
+    return None
+
+
 def _dataset_row_to_info(row: dict) -> DatasetInfo:
+    profile_snapshot = row.get("profile_snapshot")
     return DatasetInfo(
         id=row.get("id"),
         name=row.get("name") or row.get("id"),
-        profile_instance_id=row.get("profile_instance_id"),
-        profile_snapshot=row.get("profile_snapshot"),
+        profile_name=_extract_profile_name(profile_snapshot),
+        profile_snapshot=profile_snapshot if isinstance(profile_snapshot, dict) else None,
         source=row.get("source") or "r2",
         status=row.get("status") or "active",
         dataset_type=row.get("dataset_type") or "recorded",
@@ -87,12 +103,13 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
 
 
 def _model_row_to_info(row: dict) -> ModelInfo:
+    profile_snapshot = row.get("profile_snapshot")
     return ModelInfo(
         id=row.get("id"),
         name=row.get("name") or row.get("id"),
         dataset_id=row.get("dataset_id"),
-        profile_instance_id=row.get("profile_instance_id"),
-        profile_snapshot=row.get("profile_snapshot"),
+        profile_name=_extract_profile_name(profile_snapshot),
+        profile_snapshot=profile_snapshot if isinstance(profile_snapshot, dict) else None,
         policy_type=row.get("policy_type"),
         training_steps=row.get("training_steps"),
         batch_size=row.get("batch_size"),
@@ -107,16 +124,16 @@ def _model_row_to_info(row: dict) -> ModelInfo:
 @router.get("/datasets", response_model=DatasetListResponse)
 async def list_datasets(
     include_archived: bool = Query(False, description="Include archived datasets"),
-    profile_instance_id: Optional[str] = Query(None, description="Filter by profile instance"),
+    profile_name: Optional[str] = Query(None, description="Filter by profile name"),
 ):
     """List datasets from DB."""
     client = await get_supabase_async_client()
     query = client.table("datasets").select("*")
     if not include_archived:
         query = query.eq("status", "active")
-    if profile_instance_id:
-        query = query.eq("profile_instance_id", profile_instance_id)
     rows = (await query.execute()).data or []
+    if profile_name:
+        rows = [row for row in rows if _extract_profile_name(row.get("profile_snapshot")) == profile_name]
 
     datasets = [_dataset_row_to_info(row) for row in rows]
     return DatasetListResponse(datasets=datasets, total=len(datasets))
@@ -155,11 +172,18 @@ async def _merge_datasets(
         source_rows.append(row)
     report({"type": "step_complete", "step": "validate", "message": "Validation complete"})
 
-    profile_ids = {row.get("profile_instance_id") for row in source_rows if row.get("profile_instance_id")}
-    if len(profile_ids) > 1:
-        raise HTTPException(status_code=400, detail="Profile instance mismatch across source datasets")
-    profile_instance_id = next(iter(profile_ids), None)
-    profile_snapshot = next((row.get("profile_snapshot") for row in source_rows if row.get("profile_snapshot")), None)
+    profile_names = {
+        profile_name
+        for row in source_rows
+        for profile_name in [_extract_profile_name(row.get("profile_snapshot"))]
+        if profile_name
+    }
+    if len(profile_names) > 1:
+        raise HTTPException(status_code=400, detail="Profile mismatch across source datasets")
+    profile_snapshot = next(
+        (row.get("profile_snapshot") for row in source_rows if isinstance(row.get("profile_snapshot"), dict)),
+        None,
+    )
 
     report({"type": "start", "step": "download", "message": "Ensuring local datasets"})
     sync_service = R2DBSyncService()
@@ -219,7 +243,6 @@ async def _merge_datasets(
     payload = {
         "id": merged_dataset_id,
         "name": request.dataset_name,
-        "profile_instance_id": profile_instance_id,
         "profile_snapshot": profile_snapshot,
         "episode_count": episode_count,
         "dataset_type": "merged",
@@ -342,16 +365,16 @@ async def restore_dataset(dataset_id: str):
 @router.get("/models", response_model=ModelListResponse)
 async def list_models(
     include_archived: bool = Query(False, description="Include archived models"),
-    profile_instance_id: Optional[str] = Query(None, description="Filter by profile instance"),
+    profile_name: Optional[str] = Query(None, description="Filter by profile name"),
 ):
     """List models from DB."""
     client = await get_supabase_async_client()
     query = client.table("models").select("*")
     if not include_archived:
         query = query.eq("status", "active")
-    if profile_instance_id:
-        query = query.eq("profile_instance_id", profile_instance_id)
     rows = (await query.execute()).data or []
+    if profile_name:
+        rows = [row for row in rows if _extract_profile_name(row.get("profile_snapshot")) == profile_name]
     models = [_model_row_to_info(row) for row in rows]
     return ModelListResponse(models=models, total=len(models))
 
@@ -561,13 +584,11 @@ async def delete_archived_items(request: ArchiveBulkRequest):
 async def _upsert_dataset_from_hf(
     dataset_id: str,
     name: str,
-    profile_instance_id: Optional[str],
     profile_snapshot: Optional[dict],
 ) -> None:
     payload = {
         "id": dataset_id,
         "name": name,
-        "profile_instance_id": profile_instance_id,
         "profile_snapshot": profile_snapshot,
         "dataset_type": "huggingface",
         "source": "huggingface",
@@ -580,7 +601,6 @@ async def _upsert_model_from_hf(
     model_id: str,
     name: str,
     dataset_id: Optional[str],
-    profile_instance_id: Optional[str],
     profile_snapshot: Optional[dict],
     policy_type: Optional[str],
 ) -> None:
@@ -588,7 +608,6 @@ async def _upsert_model_from_hf(
         "id": model_id,
         "name": name,
         "dataset_id": dataset_id,
-        "profile_instance_id": profile_instance_id,
         "profile_snapshot": profile_snapshot,
         "policy_type": policy_type,
         "model_type": "huggingface",
@@ -652,30 +671,15 @@ async def _import_dataset_from_huggingface(
         })
 
     name = request.dataset_name or request.name or request.repo_id.split("/")[-1]
-    profile_snapshot = None
-    if request.profile_instance_id:
-        client = await get_supabase_async_client()
-        rows = (
-            await client.table("profile_instances")
-            .select("profile_snapshot,variables,metadata,class_id,class_version")
-            .eq("id", request.profile_instance_id)
-            .limit(1)
-            .execute()
-        ).data or []
-        if rows:
-            profile_snapshot = {
-                "class_id": rows[0].get("class_id"),
-                "class_version": rows[0].get("class_version"),
-                "variables": rows[0].get("variables") or {},
-                "metadata": rows[0].get("metadata") or {},
-            }
+    profile_name = request.profile_name.strip() if request.profile_name else None
+    profile_snapshot = resolve_profile_spec(profile_name).snapshot if profile_name else None
     if progress_callback:
         progress_callback({
             "type": "start",
             "step": "db_upsert",
             "message": "Registering dataset",
         })
-    await _upsert_dataset_from_hf(dataset_id, name, request.profile_instance_id, profile_snapshot)
+    await _upsert_dataset_from_hf(dataset_id, name, profile_snapshot)
     if progress_callback:
         progress_callback({
             "type": "step_complete",
@@ -729,23 +733,8 @@ async def _import_model_from_huggingface(
     local_info = get_local_model_info(local_path)
     policy_type = local_info.policy_type if local_info else None
     name = request.model_name or model_id
-    profile_snapshot = None
-    if request.profile_instance_id:
-        client = await get_supabase_async_client()
-        rows = (
-            await client.table("profile_instances")
-            .select("class_id,class_version,variables,metadata")
-            .eq("id", request.profile_instance_id)
-            .limit(1)
-            .execute()
-        ).data or []
-        if rows:
-            profile_snapshot = {
-                "class_id": rows[0].get("class_id"),
-                "class_version": rows[0].get("class_version"),
-                "variables": rows[0].get("variables") or {},
-                "metadata": rows[0].get("metadata") or {},
-            }
+    profile_name = request.profile_name.strip() if request.profile_name else None
+    profile_snapshot = resolve_profile_spec(profile_name).snapshot if profile_name else None
 
     if progress_callback:
         progress_callback({
@@ -757,7 +746,6 @@ async def _import_model_from_huggingface(
         model_id,
         name,
         request.dataset_id,
-        request.profile_instance_id,
         profile_snapshot,
         policy_type,
     )

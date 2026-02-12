@@ -15,8 +15,8 @@
       <input class="input mt-2" placeholder="username/model" />
     </div>
     <div>
-      <p class="label">profile instance (optional)</p>
-      <input class="input mt-2" placeholder="profile_instance_id" />
+      <p class="label">profile name (optional)</p>
+      <input class="input mt-2" placeholder="so101_dual_teleop" />
     </div>
     <div>
       <p class="label">model name</p>

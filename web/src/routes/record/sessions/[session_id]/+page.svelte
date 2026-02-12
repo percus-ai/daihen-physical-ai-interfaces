@@ -58,7 +58,7 @@
   const sessionId = $derived(page.params.session_id ?? '');
 
   const topicsQuery = createQuery<ProfileStatusResponse>({
-    queryKey: ['profiles', 'instances', 'active', 'status'],
+    queryKey: ['profiles', 'active', 'status'],
     queryFn: api.profiles.activeStatus
   });
 

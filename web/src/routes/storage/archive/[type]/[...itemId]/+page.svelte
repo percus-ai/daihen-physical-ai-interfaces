@@ -9,7 +9,7 @@
 
   type ArchiveItem = {
     id: string;
-    profile_instance_id?: string;
+    profile_name?: string;
     status?: string;
     size_bytes?: number;
     created_at?: string;
@@ -137,7 +137,7 @@
       </div>
       <div>
         <p class="label">プロファイル</p>
-        <p class="text-base font-semibold text-slate-800">{item.profile_instance_id ?? '-'}</p>
+        <p class="text-base font-semibold text-slate-800">{item.profile_name ?? '-'}</p>
       </div>
       <div>
         <p class="label">状態</p>

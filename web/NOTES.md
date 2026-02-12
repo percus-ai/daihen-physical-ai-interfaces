@@ -12,6 +12,7 @@ WebUIの設計・実装で後回しの項目をここに記録。
 - /api/config, /api/config/environments
 - /api/user/config, /api/user/devices
 - /api/hardware, /api/hardware/cameras, /api/hardware/serial-ports
+- /api/profiles, /api/profiles/active, /api/profiles/active/status
 - /api/profiles/vlabor/status
 - /api/teleop/session/create, /api/teleop/session/start, /api/teleop/session/stop, /api/teleop/session/status
 - /api/inference/models, /api/inference/sessions

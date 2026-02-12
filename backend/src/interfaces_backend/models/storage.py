@@ -13,7 +13,7 @@ class DatasetInfo(BaseModel):
 
     id: str = Field(..., description="Dataset ID")
     name: str = Field(..., description="Dataset name")
-    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
+    profile_name: Optional[str] = Field(None, description="VLAbor profile name")
     profile_snapshot: Optional[dict] = Field(None, description="Profile snapshot")
     source: str = Field("r2", description="Data source")
     status: str = Field("active", description="Data status")
@@ -55,7 +55,7 @@ class ModelInfo(BaseModel):
     id: str = Field(..., description="Model ID")
     name: str = Field(..., description="Model name")
     dataset_id: Optional[str] = Field(None, description="Dataset ID")
-    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
+    profile_name: Optional[str] = Field(None, description="VLAbor profile name")
     profile_snapshot: Optional[dict] = Field(None, description="Profile snapshot")
     policy_type: Optional[str] = Field(None, description="Policy type")
     training_steps: Optional[int] = Field(None, description="Training steps")
@@ -125,7 +125,7 @@ class HuggingFaceDatasetImportRequest(BaseModel):
     repo_id: str = Field(..., description="HuggingFace repo ID")
     dataset_id: Optional[str] = Field(None, description="Dataset ID to store (UUID)")
     dataset_name: Optional[str] = Field(None, description="Dataset display name")
-    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
+    profile_name: Optional[str] = Field(None, description="VLAbor profile name")
     name: Optional[str] = Field(None, description="Dataset display name")
     force: bool = Field(False, description="Overwrite local data if exists")
 
@@ -137,7 +137,7 @@ class HuggingFaceModelImportRequest(BaseModel):
     model_id: Optional[str] = Field(None, description="Model ID to store (UUID)")
     model_name: Optional[str] = Field(None, description="Model display name")
     dataset_id: Optional[str] = Field(None, description="Associated dataset ID")
-    profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
+    profile_name: Optional[str] = Field(None, description="VLAbor profile name")
     force: bool = Field(False, description="Overwrite local data if exists")
 
 

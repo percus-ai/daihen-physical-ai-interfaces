@@ -28,12 +28,6 @@
     dataset_id?: string;
   };
 
-  type ProfileInstanceSummary = {
-    id: string;
-    name?: string;
-    class_key?: string;
-  };
-
   type DatasetSummary = {
     id: string;
     name?: string;
@@ -53,12 +47,7 @@
 
   const modelsQuery = createQuery<{ models?: ModelSummary[] }>({
     queryKey: ['storage', 'models'],
-    queryFn: api.storage.models
-  });
-
-  const profilesQuery = createQuery<{ instances?: ProfileInstanceSummary[] }>({
-    queryKey: ['profiles', 'instances'],
-    queryFn: api.profiles.instances
+    queryFn: () => api.storage.models()
   });
 
   const datasetsQuery = createQuery<{ datasets?: DatasetSummary[] }>({
@@ -81,9 +70,6 @@
 
   const experiment = $derived($experimentQuery.data as Experiment | undefined);
   const modelMap = $derived(new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model])));
-  const profileMap = $derived(
-    new Map(($profilesQuery.data?.instances ?? []).map((inst) => [inst.id, inst]))
-  );
   const datasetMap = $derived(
     new Map(($datasetsQuery.data?.datasets ?? []).map((dataset) => [dataset.id, dataset]))
   );
@@ -254,11 +240,7 @@
     <div>
       <p class="label">環境</p>
       <p class="mt-1 font-semibold text-slate-800">
-        {experiment?.profile_instance_id
-          ? profileMap.get(experiment.profile_instance_id)?.class_key ??
-            profileMap.get(experiment.profile_instance_id)?.name ??
-            experiment.profile_instance_id
-          : '未設定'}
+        {experiment?.profile_instance_id ?? '未設定'}
       </p>
     </div>
     <div>

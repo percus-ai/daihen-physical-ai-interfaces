@@ -18,6 +18,7 @@
     status?: string;
     dataset_id?: string;
     profile_instance_id?: string;
+    profile_name?: string;
     policy_type?: string;
     ip?: string;
     ssh_user?: string;
@@ -88,7 +89,7 @@
   const summary = $derived($jobQuery.data?.summary ?? {});
   const status = $derived(jobInfo?.status ?? '');
   const datasetId = $derived(trainingConfig?.dataset?.id ?? '');
-  const profileId = $derived(jobInfo?.profile_instance_id ?? '');
+  const profileId = $derived(jobInfo?.profile_name ?? jobInfo?.profile_instance_id ?? '');
   const trainSeries = $derived(
     (metrics?.train ?? [])
       .filter((point: MetricPoint) => typeof point.step === 'number' && typeof point.loss === 'number')

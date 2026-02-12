@@ -15,10 +15,11 @@ from interfaces_backend.models.inference import (
     InferenceSetTaskRequest,
     InferenceSetTaskResponse,
 )
-from interfaces_backend.services.profile_settings import (
+from interfaces_backend.services.vlabor_profiles import (
     build_inference_camera_aliases,
     build_inference_joint_names,
-    get_active_profile_settings,
+    get_active_profile_spec,
+    save_session_profile_binding,
 )
 from interfaces_backend.services.inference_runtime import get_inference_runtime_manager
 from interfaces_backend.services.vlabor_runtime import (
@@ -34,9 +35,9 @@ def _manager():
     return get_inference_runtime_manager()
 
 
-def _start_vlabor_for_session() -> None:
+def _start_vlabor_for_session(profile_name: str | None = None) -> None:
     try:
-        run_vlabor_start()
+        run_vlabor_start(profile=profile_name)
     except VlaborCommandError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start VLAbor container: {exc}") from exc
 
@@ -70,12 +71,12 @@ async def get_inference_runner_diagnostics():
 
 @router.post("/runner/start", response_model=InferenceRunnerStartResponse)
 async def start_inference_runner(request: InferenceRunnerStartRequest):
-    _, profile_class, settings = await get_active_profile_settings()
-    joint_names = build_inference_joint_names(profile_class, settings)
+    active_profile = await get_active_profile_spec()
+    joint_names = build_inference_joint_names(active_profile.snapshot)
     if not joint_names:
         raise HTTPException(status_code=400, detail="No inference joints configured in active profile")
-    camera_key_aliases = build_inference_camera_aliases(profile_class, settings)
-    _start_vlabor_for_session()
+    camera_key_aliases = build_inference_camera_aliases(active_profile.snapshot)
+    _start_vlabor_for_session(active_profile.name)
 
     try:
         session_id = _manager().start(
@@ -94,6 +95,11 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
         raise HTTPException(status_code=400, detail=message) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start inference worker: {exc}") from exc
+    await save_session_profile_binding(
+        session_kind="inference",
+        session_id=session_id,
+        profile=active_profile,
+    )
 
     return InferenceRunnerStartResponse(session_id=session_id, message="inference worker started")
 

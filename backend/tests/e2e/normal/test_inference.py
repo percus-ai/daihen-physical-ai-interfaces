@@ -39,8 +39,15 @@ def test_inference_runner_diagnostics_endpoint_with_mock_manager(client, monkeyp
 
 
 def test_inference_runner_start_and_stop_with_mock_manager(client, monkeypatch):
-    async def _mock_profile_settings():
-        return object(), object(), {}
+    class MockProfile:
+        name = "so101_dual_teleop"
+        snapshot = {}
+
+    async def _mock_active_profile():
+        return MockProfile()
+
+    async def _mock_save_session_profile_binding(**_kwargs):
+        return None
 
     class MockManager:
         def start(
@@ -62,15 +69,16 @@ def test_inference_runner_start_and_stop_with_mock_manager(client, monkeypatch):
             assert session_id == "sess-001"
             return True
 
-    monkeypatch.setattr(inference_api, "get_active_profile_settings", _mock_profile_settings)
+    monkeypatch.setattr(inference_api, "get_active_profile_spec", _mock_active_profile)
     monkeypatch.setattr(inference_api, "build_inference_joint_names", lambda *_args, **_kwargs: ["joint_a", "joint_b"])
     monkeypatch.setattr(
         inference_api,
         "build_inference_camera_aliases",
         lambda *_args, **_kwargs: {"front": "cam_front"},
     )
-    monkeypatch.setattr(inference_api, "_start_vlabor_for_session", lambda: None)
+    monkeypatch.setattr(inference_api, "_start_vlabor_for_session", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(inference_api, "_stop_vlabor_for_session", lambda: None)
+    monkeypatch.setattr(inference_api, "save_session_profile_binding", _mock_save_session_profile_binding)
     monkeypatch.setattr(inference_api, "_manager", lambda: MockManager())
 
     start = client.post(

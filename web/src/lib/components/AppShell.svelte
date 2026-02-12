@@ -23,25 +23,23 @@
   );
   let lastPath = '';
 
-  type ProfileInstance = {
-    id: string;
-    class_key?: string;
-    name?: string;
-    is_active?: boolean;
+  type VlaborProfile = {
+    name: string;
+    description?: string;
   };
 
-  const profileInstancesQuery = createQuery<{ instances?: ProfileInstance[] }>(
+  const profileListQuery = createQuery<{ profiles?: VlaborProfile[]; active_profile_name?: string }>(
     toStore(() => ({
-      queryKey: ['profiles', 'instances'],
-      queryFn: api.profiles.instances,
+      queryKey: ['profiles', 'list'],
+      queryFn: api.profiles.list,
       enabled: authenticated && profilesReady
     }))
   );
 
-  const activeProfileQuery = createQuery<{ instance?: ProfileInstance }>(
+  const activeProfileQuery = createQuery<{ profile_name?: string }>(
     toStore(() => ({
-      queryKey: ['profiles', 'instances', 'active'],
-      queryFn: api.profiles.activeInstance,
+      queryKey: ['profiles', 'active'],
+      queryFn: api.profiles.active,
       enabled: authenticated && profilesReady
     }))
   );
@@ -98,7 +96,7 @@
       stopProfileStream = connectStream({
         path: '/api/stream/profiles/active',
         onMessage: (payload) => {
-          queryClient.setQueryData(['profiles', 'instances', 'active', 'status'], payload);
+          queryClient.setQueryData(['profiles', 'active', 'status'], payload);
         }
       });
       profileStreamActive = true;
@@ -115,22 +113,20 @@
     stopProfileStream();
   });
 
-  const formatProfileLabel = (profile: ProfileInstance) => {
-    const key = profile.class_key ?? 'profile';
-    const shortId = profile.id ? profile.id.slice(0, 6) : '';
-    return shortId ? `${key} / ${shortId}` : key;
+  const formatProfileLabel = (profile: VlaborProfile) => {
+    return profile.name;
   };
 
   const handleProfileChange = async (event: Event) => {
     const target = event.target as HTMLSelectElement;
-    const nextId = target.value;
-    if (!nextId) return;
+    const nextName = target.value;
+    if (!nextName) return;
     switchingProfile = true;
     profileError = '';
     try {
-      await api.profiles.updateInstance(nextId, { activate: true });
+      await api.profiles.setActive({ profile_name: nextName });
       await $activeProfileQuery?.refetch?.();
-      await $profileInstancesQuery?.refetch?.();
+      await $profileListQuery?.refetch?.();
     } catch (err) {
       console.error(err);
       profileError = '切り替えに失敗しました';
@@ -143,7 +139,7 @@
     if (profilesReady) return;
     profilesReady = true;
     try {
-      await Promise.all([$activeProfileQuery?.refetch?.(), $profileInstancesQuery?.refetch?.()]);
+      await Promise.all([$activeProfileQuery?.refetch?.(), $profileListQuery?.refetch?.()]);
     } catch (err) {
       console.error(err);
     }
@@ -176,11 +172,11 @@
             onclick={ensureProfilesLoaded}
             onmouseenter={ensureProfilesLoaded}
             disabled={switchingProfile}
-            value={$activeProfileQuery.data?.instance?.id ?? ''}
+            value={$activeProfileQuery.data?.profile_name ?? $profileListQuery.data?.active_profile_name ?? ''}
           >
             <option value="" disabled>プロファイル未選択</option>
-            {#each $profileInstancesQuery.data?.instances ?? [] as instance}
-              <option value={instance.id}>{formatProfileLabel(instance)}</option>
+            {#each $profileListQuery.data?.profiles ?? [] as profile}
+              <option value={profile.name}>{formatProfileLabel(profile)}</option>
             {/each}
           </select>
           {#if profileError}

@@ -43,49 +43,50 @@ class RecordMenu(BaseMenu):
             return self.submenu(RecordingsListMenu)
         return MenuResult.CONTINUE
 
-    def _select_profile_instance(self, allow_auto: bool = True) -> Optional[str]:
-        """Select profile instance (or use active)."""
-        active_instance = None
+    def _select_profile_name(self, allow_auto: bool = True) -> Optional[str]:
+        """Select VLAbor profile name (or use active)."""
+        active_profile_name = None
         try:
-            active_result = self.api.get_active_profile_instance()
-            active_instance = active_result.get("instance")
+            active_result = self.api.get_active_profile()
+            active_profile_name = active_result.get("profile_name")
         except Exception:
-            active_instance = None
+            active_profile_name = None
 
         try:
-            result = self.api.list_profile_instances()
-            instances = result.get("instances", [])
+            result = self.api.list_profiles()
+            profiles = result.get("profiles", [])
+            active_profile_name = active_profile_name or result.get("active_profile_name")
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")
             return None
 
-        if not instances and not active_instance:
-            print(f"{Colors.warning('No profile instances found.')}")
-            print(f"{Colors.muted('プロフィールを作成してから録画を開始してください。')}")
+        if not profiles and not active_profile_name:
+            print(f"{Colors.warning('No VLAbor profiles found.')}")
+            print(f"{Colors.muted('VLabor側でプロフィールを作成してから録画を開始してください。')}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return None
 
         choices: List[Choice] = []
         if allow_auto:
-            if active_instance:
-                label = f"★ active: {active_instance.get('class_key', '?')}:{active_instance.get('name', 'active')}"
+            if active_profile_name:
+                label = f"★ active: {active_profile_name}"
             else:
                 label = "Use active profile (auto)"
             choices.append(Choice(value="__auto__", name=label))
 
-        for inst in instances:
-            inst_id = inst.get("id") or ""
-            if not inst_id:
+        for profile in profiles:
+            profile_name = profile.get("name") or ""
+            if not profile_name:
                 continue
-            label = f"{inst.get('class_key', '?')}:{inst.get('name', 'active')} ({inst_id[:8]})"
-            if inst.get("is_active"):
+            label = profile_name
+            if profile_name == active_profile_name:
                 label = "★ " + label
-            choices.append(Choice(value=inst_id, name=label))
+            choices.append(Choice(value=profile_name, name=label))
 
         choices.append(Choice(value="__back__", name="« Cancel"))
 
         selection = inquirer.select(
-            message="Select profile instance:",
+            message="Select profile:",
             choices=choices,
             style=hacker_style,
         ).execute()
@@ -99,8 +100,8 @@ class RecordMenu(BaseMenu):
     def _start_recording(self) -> MenuResult:
         show_section_header("Recording: Start")
 
-        profile_instance_id = self._select_profile_instance()
-        if profile_instance_id is None:
+        profile_name = self._select_profile_name()
+        if profile_name is None:
             # None means auto; proceed
             pass
 
@@ -126,7 +127,7 @@ class RecordMenu(BaseMenu):
         tags = [t.strip() for t in (tags_raw or "").split(",") if t.strip()]
 
         payload = {
-            "profile_instance_id": profile_instance_id,
+            "profile": profile_name,
             "dataset_name": dataset_name,
             "task": task,
             "tags": tags,
@@ -255,11 +256,10 @@ class RecordingsListMenu(BaseMenu):
                 name = r.get("dataset_name", rec_id)
                 episodes = r.get("episode_count", 0)
                 size = format_size(r.get("size_bytes", 0))
-                profile_id = r.get("profile_instance_id")
-                profile_short = profile_id[:8] if profile_id else "-"
+                profile_name = r.get("profile_name") or "-"
                 choices.append(Choice(
                     value=rec_id,
-                    name=f"{name} ({episodes} eps, {size}) [profile:{profile_short}]",
+                    name=f"{name} ({episodes} eps, {size}) [profile:{profile_name}]",
                 ))
         except Exception:
             pass
@@ -283,7 +283,7 @@ class RecordingsListMenu(BaseMenu):
             recording = self.api.get_recording(recording_id)
             print(f"  ID: {recording.get('recording_id', 'N/A')}")
             print(f"  Name: {recording.get('dataset_name', 'N/A')}")
-            print(f"  Profile: {recording.get('profile_instance_id', 'N/A')}")
+            print(f"  Profile: {recording.get('profile_name', 'N/A')}")
             print(f"  Episodes: {recording.get('episode_count', 0)}")
             print(f"  Size: {format_size(recording.get('size_bytes', 0))}")
             print(f"  Created: {recording.get('created_at', 'N/A')}")

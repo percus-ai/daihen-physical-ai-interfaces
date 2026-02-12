@@ -10,7 +10,7 @@
   type DatasetInfo = {
     id: string;
     name?: string;
-    profile_instance_id?: string;
+    profile_name?: string;
     dataset_type?: string;
     status?: string;
     size_bytes?: number;
@@ -41,20 +41,20 @@
   );
 
   const dataset = $derived($datasetQuery.data);
-  const profileInstanceId = $derived(dataset?.profile_instance_id ?? '');
+  const profileName = $derived(dataset?.profile_name ?? '');
   const isArchived = $derived(dataset?.status === 'archived');
 
   const candidatesQuery = createQuery<DatasetListResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'datasets', 'profile', profileInstanceId],
-      queryFn: () => api.storage.datasets(profileInstanceId) as Promise<DatasetListResponse>,
-      enabled: Boolean(profileInstanceId)
+      queryKey: ['storage', 'datasets', 'profile', profileName],
+      queryFn: () => api.storage.datasets(profileName) as Promise<DatasetListResponse>,
+      enabled: Boolean(profileName)
     }))
   );
 
   const candidates = $derived(
     ($candidatesQuery.data?.datasets ?? [])
-      .filter((item) => item.profile_instance_id === profileInstanceId)
+      .filter((item) => item.profile_name === profileName)
       .filter((item) => item.status === 'active' && item.id !== datasetId)
   );
 
@@ -77,9 +77,9 @@
   };
 
   const refetchCandidates = async () => {
-    if (!profileInstanceId) return;
+    if (!profileName) return;
     await queryClient.invalidateQueries({
-      queryKey: ['storage', 'datasets', 'profile', profileInstanceId]
+      queryKey: ['storage', 'datasets', 'profile', profileName]
     });
   };
 
@@ -127,7 +127,7 @@
     actionMessage = '';
     actionError = '';
 
-    if (!datasetId || !profileInstanceId) return;
+    if (!datasetId || !profileName) return;
     if (!mergeSelection.length) {
       actionError = 'マージ対象を選択してください。';
       return;
@@ -189,7 +189,7 @@
       </div>
       <div>
         <p class="label">プロファイル</p>
-        <p class="text-base font-semibold text-slate-800">{dataset.profile_instance_id ?? '-'}</p>
+        <p class="text-base font-semibold text-slate-800">{dataset.profile_name ?? '-'}</p>
       </div>
       <div>
         <p class="label">タイプ</p>

@@ -224,57 +224,21 @@ class PhiClient:
     # Profiles
     # =========================================================================
 
-    def list_profile_classes(self) -> Dict[str, Any]:
-        """GET /api/profiles/classes - List profile classes."""
-        response = self._client.get("/api/profiles/classes")
+    def list_profiles(self) -> Dict[str, Any]:
+        """GET /api/profiles - List VLAbor profiles."""
+        response = self._client.get("/api/profiles")
         response.raise_for_status()
         return response.json()
 
-    def get_profile_class(self, class_id: str) -> Dict[str, Any]:
-        """GET /api/profiles/classes/{class_id} - Get profile class detail."""
-        response = self._client.get(f"/api/profiles/classes/{class_id}")
+    def get_active_profile(self) -> Dict[str, Any]:
+        """GET /api/profiles/active - Get active VLAbor profile."""
+        response = self._client.get("/api/profiles/active")
         response.raise_for_status()
         return response.json()
 
-    def create_profile_class(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/profiles/classes - Create profile class."""
-        response = self._client.post("/api/profiles/classes", json=data)
-        response.raise_for_status()
-        return response.json()
-
-    def update_profile_class(self, class_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """PUT /api/profiles/classes/{class_id} - Update profile class."""
-        response = self._client.put(f"/api/profiles/classes/{class_id}", json=data)
-        response.raise_for_status()
-        return response.json()
-
-    def delete_profile_class(self, class_id: str) -> Dict[str, Any]:
-        """DELETE /api/profiles/classes/{class_id} - Delete profile class."""
-        response = self._client.delete(f"/api/profiles/classes/{class_id}")
-        response.raise_for_status()
-        return response.json()
-
-    def list_profile_instances(self) -> Dict[str, Any]:
-        """GET /api/profiles/instances - List profile instances."""
-        response = self._client.get("/api/profiles/instances")
-        response.raise_for_status()
-        return response.json()
-
-    def get_active_profile_instance(self) -> Dict[str, Any]:
-        """GET /api/profiles/instances/active - Get active profile instance."""
-        response = self._client.get("/api/profiles/instances/active")
-        response.raise_for_status()
-        return response.json()
-
-    def create_profile_instance(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/profiles/instances - Create profile instance."""
-        response = self._client.post("/api/profiles/instances", json=data)
-        response.raise_for_status()
-        return response.json()
-
-    def update_profile_instance(self, instance_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """PUT /api/profiles/instances/{instance_id} - Update profile instance."""
-        response = self._client.put(f"/api/profiles/instances/{instance_id}", json=data)
+    def set_active_profile(self, profile_name: str) -> Dict[str, Any]:
+        """PUT /api/profiles/active - Switch active VLAbor profile."""
+        response = self._client.put("/api/profiles/active", json={"profile_name": profile_name})
         response.raise_for_status()
         return response.json()
 
@@ -346,11 +310,11 @@ class PhiClient:
     # Storage
     # =========================================================================
 
-    def list_datasets(self, profile_instance_id: Optional[str] = None) -> Dict[str, Any]:
+    def list_datasets(self, profile_name: Optional[str] = None) -> Dict[str, Any]:
         """GET /api/storage/datasets - List datasets."""
         params = {}
-        if profile_instance_id:
-            params["profile_instance_id"] = profile_instance_id
+        if profile_name:
+            params["profile_name"] = profile_name
         response = self._client.get("/api/storage/datasets", params=params)
         response.raise_for_status()
         return response.json()

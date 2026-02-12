@@ -21,6 +21,11 @@ from interfaces_backend.services.vlabor_runtime import (
     start_vlabor as run_vlabor_start,
     stop_vlabor as run_vlabor_stop,
 )
+from interfaces_backend.services.vlabor_profiles import (
+    get_active_profile_spec,
+    resolve_profile_spec,
+    save_session_profile_binding,
+)
 from percus_ai.db import get_current_user_id
 
 router = APIRouter(prefix="/api/teleop", tags=["teleop"])
@@ -54,10 +59,12 @@ def _active_session_copy() -> dict[str, Any] | None:
 async def create_session(request: Optional[TeleopSessionCreateRequest] = None):
     _require_user_id()
     payload = request or TeleopSessionCreateRequest()
+    profile = resolve_profile_spec(payload.profile) if payload.profile else await get_active_profile_spec()
     try:
-        run_vlabor_start(profile=payload.profile, domain_id=payload.domain_id, dev_mode=payload.dev_mode)
+        run_vlabor_start(profile=profile.name, domain_id=payload.domain_id, dev_mode=payload.dev_mode)
     except VlaborCommandError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to create teleop session: {exc}") from exc
+    await save_session_profile_binding(session_kind="teleop", session_id=_SESSION_ID, profile=profile)
 
     now = _now_iso()
     with _SESSION_LOCK:
@@ -74,7 +81,8 @@ async def create_session(request: Optional[TeleopSessionCreateRequest] = None):
             "state": "created",
             "created_at": now,
             "started_at": _ACTIVE_SESSION.get("started_at") if _ACTIVE_SESSION else None,
-            "profile": payload.profile,
+            "profile": profile.name,
+            "profile_snapshot": profile.snapshot,
             "domain_id": payload.domain_id,
             "dev_mode": bool(payload.dev_mode),
         }

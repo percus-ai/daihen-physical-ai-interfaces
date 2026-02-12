@@ -48,31 +48,44 @@ def _get_dir_size(path: Path) -> float:
     return total
 
 
+def _extract_profile_name(snapshot: object) -> str:
+    if not isinstance(snapshot, dict):
+        return ""
+    name = snapshot.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    profile = snapshot.get("profile")
+    if isinstance(profile, dict):
+        nested_name = profile.get("name")
+        if isinstance(nested_name, str):
+            return nested_name.strip()
+    return ""
+
+
 async def _get_profile_stats() -> list[dict]:
-    """Collect statistics for profile instances from DB."""
+    """Collect statistics for VLAbor profiles from DB snapshots."""
     client = await get_supabase_async_client()
-    profile_rows = (
-        await client.table("profile_instances").select("id,name,updated_at").execute()
+    selected_rows = (
+        await client.table("vlabor_profile_selections").select("profile_name,updated_at").execute()
     ).data or []
     dataset_rows = (
         await client.table("datasets")
-        .select("profile_instance_id,episode_count,size_bytes,updated_at,status")
+        .select("profile_snapshot,episode_count,size_bytes,updated_at,status")
         .execute()
     ).data or []
     model_rows = (
         await client.table("models")
-        .select("profile_instance_id,size_bytes,updated_at,status")
+        .select("profile_snapshot,size_bytes,updated_at,status")
         .execute()
     ).data or []
 
     stats: dict[str, dict] = {}
-    for row in profile_rows:
-        profile_id = row.get("id")
-        if not profile_id:
+    for row in selected_rows:
+        profile_name = str(row.get("profile_name") or "").strip()
+        if not profile_name:
             continue
-        stats[profile_id] = {
-            "profile_instance_id": profile_id,
-            "name": row.get("name") or "",
+        stats[profile_name] = {
+            "profile_name": profile_name,
             "dataset_count": 0,
             "model_count": 0,
             "episode_count": 0,
@@ -83,14 +96,13 @@ async def _get_profile_stats() -> list[dict]:
     for row in dataset_rows:
         if row.get("status") and row.get("status") != "active":
             continue
-        profile_id = row.get("profile_instance_id")
-        if not profile_id:
+        profile_name = _extract_profile_name(row.get("profile_snapshot"))
+        if not profile_name:
             continue
         entry = stats.setdefault(
-            profile_id,
+            profile_name,
             {
-                "profile_instance_id": profile_id,
-                "name": "",
+                "profile_name": profile_name,
                 "dataset_count": 0,
                 "model_count": 0,
                 "episode_count": 0,
@@ -108,14 +120,13 @@ async def _get_profile_stats() -> list[dict]:
     for row in model_rows:
         if row.get("status") and row.get("status") != "active":
             continue
-        profile_id = row.get("profile_instance_id")
-        if not profile_id:
+        profile_name = _extract_profile_name(row.get("profile_snapshot"))
+        if not profile_name:
             continue
         entry = stats.setdefault(
-            profile_id,
+            profile_name,
             {
-                "profile_instance_id": profile_id,
-                "name": "",
+                "profile_name": profile_name,
                 "dataset_count": 0,
                 "model_count": 0,
                 "episode_count": 0,
@@ -153,7 +164,7 @@ def _get_training_stats() -> dict:
 async def get_overview():
     """Get overall statistics."""
     client = await get_supabase_async_client()
-    profiles = (await client.table("profile_instances").select("id").execute()).data or []
+    profile_stats = await _get_profile_stats()
     datasets = (
         await client.table("datasets").select("episode_count,size_bytes,status").execute()
     ).data or []
@@ -168,13 +179,12 @@ async def get_overview():
         + sum(m.get("size_bytes") or 0 for m in models)
     ) / (1024 * 1024)
 
-    training_stats = _get_training_stats()
     active_jobs = sum(1 for job in jobs if job.get("status") in ("running", "starting", "deploying"))
     total_jobs = len(jobs)
 
     return OverviewResponse(
         stats=OverviewStats(
-            total_profiles=len(profiles),
+            total_profiles=len(profile_stats),
             total_datasets=total_datasets,
             total_episodes=total_episodes,
             total_models=total_models,
@@ -192,8 +202,7 @@ async def get_profile_stats():
     profile_stats = await _get_profile_stats()
     profiles = [
         ProfileStats(
-            profile_instance_id=p["profile_instance_id"],
-            name=p.get("name") or "",
+            profile_name=p.get("profile_name") or "",
             dataset_count=p.get("dataset_count", 0),
             model_count=p.get("model_count", 0),
             episode_count=p.get("episode_count", 0),

@@ -234,22 +234,12 @@ export const api = {
       })
   },
   profiles: {
-    classes: () => fetchApi('/api/profiles/classes'),
-    class: (classId: string) => fetchApi(`/api/profiles/classes/${classId}`),
-    createClass: (payload: Record<string, unknown>) =>
-      fetchApi('/api/profiles/classes', { method: 'POST', body: JSON.stringify(payload) }),
-    updateClass: (classId: string, payload: Record<string, unknown>) =>
-      fetchApi(`/api/profiles/classes/${classId}`, { method: 'PUT', body: JSON.stringify(payload) }),
-    deleteClass: (classId: string) =>
-      fetchApi(`/api/profiles/classes/${classId}`, { method: 'DELETE' }),
-    instances: () => fetchApi('/api/profiles/instances'),
-    activeInstance: () => fetchApi('/api/profiles/instances/active'),
-    activeStatus: () => fetchApi('/api/profiles/instances/active/status'),
-    vlaborStatus: () => fetchApi('/api/profiles/vlabor/status'),
-    createInstance: (payload: Record<string, unknown>) =>
-      fetchApi('/api/profiles/instances', { method: 'POST', body: JSON.stringify(payload) }),
-    updateInstance: (instanceId: string, payload: Record<string, unknown>) =>
-      fetchApi(`/api/profiles/instances/${instanceId}`, { method: 'PUT', body: JSON.stringify(payload) })
+    list: () => fetchApi('/api/profiles'),
+    active: () => fetchApi('/api/profiles/active'),
+    setActive: (payload: { profile_name: string }) =>
+      fetchApi('/api/profiles/active', { method: 'PUT', body: JSON.stringify(payload) }),
+    activeStatus: () => fetchApi('/api/profiles/active/status'),
+    vlaborStatus: () => fetchApi('/api/profiles/vlabor/status')
   },
   teleop: {
     createSession: (payload: {
@@ -278,6 +268,7 @@ export const api = {
     createSession: (payload: {
       dataset_name: string;
       task: string;
+      profile?: string;
       num_episodes: number;
       episode_time_s: number;
       reset_time_s: number;
@@ -327,9 +318,10 @@ export const api = {
       fetchApi(`/api/recording/sessions/${sessionId}/status`)
   },
   storage: {
-    datasets: (profileInstanceId?: string) =>
-      fetchApi(`/api/storage/datasets${profileInstanceId ? `?profile_instance_id=${profileInstanceId}` : ''}`),
-    models: () => fetchApi('/api/storage/models'),
+    datasets: (profileName?: string) =>
+      fetchApi(`/api/storage/datasets${profileName ? `?profile_name=${profileName}` : ''}`),
+    models: (profileName?: string) =>
+      fetchApi(`/api/storage/models${profileName ? `?profile_name=${profileName}` : ''}`),
     dataset: (datasetId: string) => fetchApi(`/api/storage/datasets/${datasetId}`),
     model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),
     usage: () => fetchApi('/api/storage/usage'),

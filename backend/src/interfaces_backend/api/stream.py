@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from interfaces_backend.api.inference import get_inference_runner_status
 from interfaces_backend.api.operate import get_operate_status
-from interfaces_backend.api.profiles import get_active_instance_status, get_vlabor_status
+from interfaces_backend.api.profiles import get_active_profile_status, get_vlabor_status
 from interfaces_backend.api.recording import get_session_status
 from interfaces_backend.api.training import get_job, get_job_metrics
 from interfaces_backend.utils.sse import sse_response
@@ -26,7 +26,7 @@ def _require_user_id() -> str:
 async def stream_active_profile(request: Request):
     _require_user_id()
     async def build_payload() -> dict:
-        status = await get_active_instance_status()
+        status = await get_active_profile_status()
         return status.model_dump(mode="json")
 
     return sse_response(request, build_payload, interval=5.0)

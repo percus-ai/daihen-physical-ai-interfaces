@@ -13,7 +13,7 @@
   type DatasetSummary = {
     id: string;
     name?: string;
-    profile_instance_id?: string;
+    profile_name?: string;
     dataset_type?: string;
     status?: string;
     created_at?: string;
@@ -444,7 +444,7 @@
             {#if datasetsSorted.length}
               {#each datasetsSorted as dataset}
                 <option value={dataset.id}>
-                  {dataset.name ?? dataset.id} (profile: {dataset.profile_instance_id?.slice(0, 8) ?? '-'})
+                  {dataset.name ?? dataset.id} (profile: {dataset.profile_name ?? '-'})
                 </option>
               {/each}
             {:else}
@@ -461,7 +461,7 @@
               {selectedDatasetInfo?.name ?? selectedDatasetInfo?.id ?? '-'}
             </p>
             <p class="text-xs text-slate-500">
-              profile: {selectedDatasetInfo?.profile_instance_id?.slice(0, 8) ?? '-'}
+              profile: {selectedDatasetInfo?.profile_name ?? '-'}
             </p>
           </div>
           <div>

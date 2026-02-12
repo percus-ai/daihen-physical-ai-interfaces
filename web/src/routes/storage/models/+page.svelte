@@ -7,7 +7,7 @@
   type ModelSummary = {
     id: string;
     name?: string;
-    profile_instance_id?: string;
+    profile_name?: string;
     policy_type?: string;
     dataset_id?: string;
     size_bytes?: number;
@@ -32,7 +32,7 @@
 
   const modelsQuery = createQuery<ModelListResponse>({
     queryKey: ['storage', 'models', 'manage'],
-    queryFn: api.storage.models
+    queryFn: () => api.storage.models()
   });
 
   const datasetsQuery = createQuery<DatasetListResponse>({
@@ -98,7 +98,7 @@
                   {displayModelLabel(model)}
                 </span>
               </td>
-              <td class="py-3">{model.profile_instance_id ?? '-'}</td>
+              <td class="py-3">{model.profile_name ?? '-'}</td>
               <td class="py-3">{model.policy_type ?? '-'}</td>
               <td class="py-3">
                 {#if model.dataset_id}

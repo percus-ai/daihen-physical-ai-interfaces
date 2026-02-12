@@ -11,7 +11,7 @@
   type RecordingSummary = {
     recording_id: string;
     dataset_name?: string;
-    profile_instance_id?: string;
+    profile_name?: string;
     created_at?: string;
     episode_count?: number;
     size_bytes?: number;
@@ -191,7 +191,7 @@
                   {recording.dataset_name ?? recording.recording_id}
                 </a>
               </td>
-              <td class="py-3">{recording.profile_instance_id ?? '-'}</td>
+              <td class="py-3">{recording.profile_name ?? '-'}</td>
               <td class="py-3">{recording.episode_count ?? '-'}</td>
               <td class="py-3">{formatBytes(recording.size_bytes ?? 0)}</td>
               <td class="py-3">{formatDate(recording.created_at)}</td>

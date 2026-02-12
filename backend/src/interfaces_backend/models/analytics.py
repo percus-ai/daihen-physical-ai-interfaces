@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class OverviewStats(BaseModel):
     """Overview statistics."""
 
-    total_profiles: int = Field(0, description="Total number of profile instances")
+    total_profiles: int = Field(0, description="Total number of VLAbor profiles")
     total_datasets: int = Field(0, description="Total number of datasets")
     total_episodes: int = Field(0, description="Total number of recorded episodes")
     total_models: int = Field(0, description="Total number of trained models")
@@ -25,10 +25,9 @@ class OverviewResponse(BaseModel):
 
 
 class ProfileStats(BaseModel):
-    """Statistics for a single profile instance."""
+    """Statistics for a single VLAbor profile."""
 
-    profile_instance_id: str = Field(..., description="Profile instance ID")
-    name: str = Field("", description="Profile instance name")
+    profile_name: str = Field(..., description="VLAbor profile name")
     dataset_count: int = Field(0, description="Number of datasets")
     model_count: int = Field(0, description="Number of models")
     episode_count: int = Field(0, description="Number of episodes")

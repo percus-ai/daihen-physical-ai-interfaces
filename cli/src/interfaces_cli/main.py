@@ -3,7 +3,7 @@
 Usage:
     phi           # Launch interactive menu
     phi health    # Check backend health
-    phi profiles  # List profile instances
+    phi profiles  # List VLAbor profiles
 """
 
 import logging
@@ -71,20 +71,24 @@ def health():
 
 @cli.command()
 def profiles():
-    """List profile instances."""
+    """List VLAbor profiles."""
     client = PhiClient()
     try:
-        result = client.list_profile_instances()
-        instances = result.get("instances", [])
-        if instances:
-            rprint("[green]Profile Instances:[/green]")
-            for inst in instances:
-                name = inst.get("name") or "active"
-                inst_id = inst.get("id", "")
-                class_key = inst.get("class_key", "")
-                rprint(f"  - {name} ({class_key}) {inst_id}")
+        result = client.list_profiles()
+        profiles = result.get("profiles", [])
+        active_name = result.get("active_profile_name")
+        if profiles:
+            rprint("[green]VLAbor Profiles:[/green]")
+            for profile in profiles:
+                name = profile.get("name") or "-"
+                marker = "★ " if active_name and name == active_name else "  "
+                description = profile.get("description") or ""
+                if description:
+                    rprint(f"{marker}{name}: {description}")
+                else:
+                    rprint(f"{marker}{name}")
         else:
-            rprint("[yellow]No profile instances found[/yellow]")
+            rprint("[yellow]No VLAbor profiles found[/yellow]")
     except Exception as e:
         rprint(f"[red]Error listing profiles: {e}[/red]")
         raise typer.Exit(1)

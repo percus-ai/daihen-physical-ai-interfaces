@@ -16,12 +16,6 @@
     dataset_id?: string;
   };
 
-  type ProfileInstanceSummary = {
-    id: string;
-    name?: string;
-    class_key?: string;
-  };
-
   type Experiment = {
     id: string;
     model_id: string;
@@ -54,24 +48,17 @@
 
   const modelsQuery = createQuery<{ models?: ModelSummary[] }>({
     queryKey: ['storage', 'models'],
-    queryFn: api.storage.models
-  });
-
-  const profilesQuery = createQuery<{ instances?: ProfileInstanceSummary[] }>({
-    queryKey: ['profiles', 'instances'],
-    queryFn: api.profiles.instances
+    queryFn: () => api.storage.models()
   });
 
   let selectedModel = $state('');
-  let selectedProfile = $state('');
 
   const experimentsQuery = createQuery<ExperimentListResponse>(
     toStore(() => ({
-      queryKey: ['experiments', selectedModel, selectedProfile],
+      queryKey: ['experiments', selectedModel],
       queryFn: () =>
         api.experiments.list({
-          model_id: selectedModel || undefined,
-          profile_instance_id: selectedProfile || undefined
+          model_id: selectedModel || undefined
         })
     }))
   );
@@ -85,9 +72,6 @@
   const experiments = $derived($experimentsQuery.data?.experiments ?? []);
   const modelMap = $derived(
     new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]))
-  );
-  const profileMap = $derived(
-    new Map(($profilesQuery.data?.instances ?? []).map((instance) => [instance.id, instance]))
   );
   const experimentsError = $derived.by(() =>
     $experimentsQuery.isError
@@ -179,7 +163,6 @@
 
   const resetFilters = () => {
     selectedModel = '';
-    selectedProfile = '';
   };
 
   const refreshAll = async () => {
@@ -206,31 +189,20 @@
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div>
       <h2 class="text-xl font-semibold text-slate-900">フィルタ</h2>
-      <p class="text-xs text-slate-500">モデル・プロフィールで絞り込みできます。</p>
+      <p class="text-xs text-slate-500">モデルで絞り込みできます。</p>
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" type="button" onclick={resetFilters}>リセット</Button.Root>
       <Button.Root class="btn-ghost" type="button" onclick={refreshAll}>更新</Button.Root>
     </div>
   </div>
-  <div class="mt-4 grid gap-4 md:grid-cols-3">
+  <div class="mt-4 grid gap-4 md:grid-cols-2">
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">モデル</span>
       <select class="input mt-2" bind:value={selectedModel}>
         <option value="">すべて</option>
         {#each $modelsQuery.data?.models ?? [] as model}
           <option value={model.id}>{model.name ?? model.id}</option>
-        {/each}
-      </select>
-    </label>
-    <label class="text-sm font-semibold text-slate-700">
-      <span class="label">プロフィール</span>
-      <select class="input mt-2" bind:value={selectedProfile}>
-        <option value="">すべて</option>
-        {#each $profilesQuery.data?.instances ?? [] as inst}
-          <option value={inst.id}>
-            {inst.class_key}:{inst.name ?? 'active'}
-          </option>
         {/each}
       </select>
     </label>
@@ -303,23 +275,7 @@
               </td>
               <td class="py-3">
                 {#if exp.profile_instance_id}
-                  <Tooltip.Root>
-                    <Tooltip.Trigger type={null}>
-                      {#snippet child({ props })}
-                        <span {...props} class="text-xs font-semibold text-slate-700">
-                          {profileMap.get(exp.profile_instance_id)?.class_key ?? exp.profile_instance_id}
-                        </span>
-                      {/snippet}
-                    </Tooltip.Trigger>
-                    <Tooltip.Portal>
-                      <Tooltip.Content
-                        class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
-                        sideOffset={6}
-                      >
-                        {profileMap.get(exp.profile_instance_id)?.name ?? exp.profile_instance_id}
-                      </Tooltip.Content>
-                    </Tooltip.Portal>
-                  </Tooltip.Root>
+                  <span class="text-xs font-semibold text-slate-700">{exp.profile_instance_id}</span>
                 {:else}
                   <span class="text-xs text-slate-400">未設定</span>
                 {/if}

@@ -7,7 +7,7 @@
   type DatasetSummary = {
     id: string;
     name?: string;
-    profile_instance_id?: string;
+    profile_name?: string;
     size_bytes?: number;
     episode_count?: number;
     status?: string;
@@ -38,13 +38,13 @@
 
   const datasets = $derived($datasetsQuery.data?.datasets ?? []);
   const selectedDatasets = $derived(datasets.filter((dataset) => selectedIds.includes(dataset.id)));
-  const profileIds = $derived(
+  const profileNames = $derived(
     Array.from(
-      new Set(selectedDatasets.map((dataset) => dataset.profile_instance_id).filter(Boolean))
+      new Set(selectedDatasets.map((dataset) => dataset.profile_name).filter(Boolean))
     )
   );
-  const profileMismatch = $derived(profileIds.length > 1);
-  const profileInstanceId = $derived(profileIds.length === 1 ? profileIds[0] : '');
+  const profileMismatch = $derived(profileNames.length > 1);
+  const profileName = $derived(profileNames.length === 1 ? profileNames[0] : '');
   const mergeDefaultName = $derived(
     selectedDatasets.length
       ? `${selectedDatasets[0].name ?? selectedDatasets[0].id}_merged`
@@ -67,7 +67,7 @@
       actionError = '2件以上のデータセットを選択してください。';
       return;
     }
-    if (profileMismatch || !profileInstanceId) {
+    if (profileMismatch || !profileName) {
       actionError = '同一プロファイルのデータセットのみマージできます。';
       return;
     }
@@ -185,7 +185,7 @@
                   {displayDatasetLabel(dataset)}
                 </span>
               </td>
-              <td class="py-3">{dataset.profile_instance_id ?? '-'}</td>
+              <td class="py-3">{dataset.profile_name ?? '-'}</td>
               <td class="py-3">{formatBytes(dataset.size_bytes ?? 0)}</td>
               <td class="py-3">{dataset.episode_count ?? 0}</td>
               <td class="py-3"><span class="chip">{dataset.status}</span></td>
@@ -226,8 +226,8 @@
         />
         {#if profileMismatch}
           <p class="mt-2 text-xs text-rose-500">プロファイルが一致しません。</p>
-        {:else if profileInstanceId}
-          <p class="mt-2 text-xs text-slate-500">profile: {profileInstanceId}</p>
+        {:else if profileName}
+          <p class="mt-2 text-xs text-slate-500">profile: {profileName}</p>
         {/if}
       </div>
       <div class="mt-4">

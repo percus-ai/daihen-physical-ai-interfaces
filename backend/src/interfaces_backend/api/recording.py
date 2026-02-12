@@ -22,11 +22,16 @@ from interfaces_backend.services.vlabor_runtime import (
     start_vlabor as run_vlabor_start,
     stop_vlabor as run_vlabor_stop,
 )
+from interfaces_backend.services.vlabor_profiles import (
+    extract_arm_namespaces,
+    extract_camera_specs,
+    get_active_profile_spec,
+    resolve_profile_spec,
+    save_session_profile_binding,
+)
 from interfaces_backend.utils.docker_compose import build_compose_command, get_lerobot_compose_file
 from percus_ai.observability import ArmId, CommOverheadReporter, PointId, resolve_ids
 from percus_ai.db import get_current_user_id, get_supabase_async_client, upsert_with_owner
-from percus_ai.profiles import ProfileRegistry
-from percus_ai.profiles.models import ProfileInstance
 from percus_ai.storage.naming import generate_dataset_id, validate_dataset_name
 from percus_ai.storage.paths import get_datasets_dir, get_user_config_path
 from percus_ai.storage.r2_db_sync import R2DBSyncService
@@ -45,6 +50,7 @@ _COMM_REPORTER = CommOverheadReporter("backend")
 class RecordingSessionCreateRequest(BaseModel):
     dataset_name: str = Field(..., description="Dataset display name")
     task: str = Field(..., description="Task description")
+    profile: Optional[str] = Field(None, description="Optional VLAbor profile name")
     num_episodes: int = Field(1, ge=1, description="Number of episodes")
     episode_time_s: float = Field(60.0, gt=0, description="Episode length in seconds")
     reset_time_s: float = Field(10.0, ge=0, description="Reset wait time in seconds")
@@ -74,7 +80,7 @@ class RecordingSessionStatusResponse(BaseModel):
 class RecordingInfo(BaseModel):
     recording_id: str
     dataset_name: str
-    profile_instance_id: Optional[str] = None
+    profile_name: Optional[str] = None
     created_at: Optional[str] = None
     episode_count: int = 0
     size_bytes: int = 0
@@ -149,9 +155,9 @@ def _load_user_config() -> dict:
     }
 
 
-def _start_vlabor_for_session() -> None:
+def _start_vlabor_for_session(profile_name: Optional[str] = None) -> None:
     try:
-        run_vlabor_start()
+        run_vlabor_start(profile=profile_name)
     except VlaborCommandError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start VLAbor container: {exc}") from exc
 
@@ -273,119 +279,42 @@ def _call_recorder(path: str, payload: Optional[dict] = None) -> dict:
         return {"raw": body}
 
 
-def _row_to_profile_instance(row: dict) -> ProfileInstance:
-    return ProfileInstance(
-        id=row.get("id"),
-        class_id=row.get("class_id"),
-        class_version=row.get("class_version") or 1,
-        name=row.get("name") or "active",
-        variables=row.get("variables") or {},
-        metadata=row.get("metadata") or {},
-        thumbnail_key=row.get("thumbnail_key"),
-        created_at=row.get("created_at"),
-        updated_at=row.get("updated_at"),
-    )
-
-
-def _resolve_profile_settings(profile_class, instance: ProfileInstance) -> dict:
-    settings: dict = {}
-    if profile_class.defaults:
-        settings.update(profile_class.defaults)
-    if instance.variables:
-        settings.update(instance.variables)
-    return settings
-
-
-def _render_value(value, settings: dict):
-    if isinstance(value, str) and "${" in value:
-        rendered = value
-        for key, val in settings.items():
-            rendered = rendered.replace(f"${{{key}}}", str(val))
-        return rendered
-    return value
-
-
-def _extract_camera_specs(profile_class, settings: dict) -> list[dict]:
-    cameras = []
-    profile = profile_class.profile or {}
-    actions = profile.get("actions") or []
-    for action in actions:
-        if not isinstance(action, dict):
+def _build_recorder_cameras(profile_snapshot: dict) -> list[dict]:
+    cameras: list[dict] = []
+    for spec in extract_camera_specs(profile_snapshot):
+        if not bool(spec.get("enabled", True)):
             continue
-        if action.get("type") != "include":
+        name = str(spec.get("name") or "").strip()
+        topic = str(spec.get("topic") or "").strip()
+        if not name or not topic:
             continue
-        package = action.get("package")
-        if package not in ("fv_camera", "fv_realsense"):
-            continue
-        args = action.get("args") or {}
-        node_name = _render_value(args.get("node_name"), settings) or ""
-        enabled_raw = action.get("enabled", True)
-        enabled = bool(_render_value(enabled_raw, settings))
-        if not node_name:
-            continue
-        cameras.append({
-            "name": node_name,
-            "package": package,
-            "enabled": enabled,
-        })
+        cameras.append({"name": name, "topic": topic})
     return cameras
 
 
-def _build_recorder_cameras(profile_class, instance: ProfileInstance) -> tuple[list[dict], dict]:
-    settings = _resolve_profile_settings(profile_class, instance)
-    specs = _extract_camera_specs(profile_class, settings)
-    cameras: list[dict] = []
-    for spec in specs:
-        if not spec.get("enabled", True):
-            continue
-        name = spec.get("name")
-        if not name:
-            continue
-        if spec.get("package") == "fv_realsense":
-            topic = f"/{name}/color/image_raw/compressed"
-        else:
-            topic = f"/{name}/image_raw/compressed"
-        cameras.append({"name": name, "topic": topic})
-    return cameras, settings
+def _build_arm_namespaces(profile_snapshot: dict) -> list[str]:
+    return extract_arm_namespaces(profile_snapshot)
 
 
-def _build_arm_namespaces(settings: dict) -> list[str]:
-    namespaces: list[str] = []
-    if bool(settings.get("left_arm_enabled", True)):
-        namespaces.append("left_arm")
-    if bool(settings.get("right_arm_enabled", True)):
-        namespaces.append("right_arm")
-    return namespaces
-
-
-async def _resolve_profile_instance(profile_instance_id: Optional[str]) -> ProfileInstance:
-    client = await get_supabase_async_client()
-    if profile_instance_id:
-        rows = (
-            await client.table("profile_instances")
-            .select("*")
-            .eq("id", profile_instance_id)
-            .limit(1)
-            .execute()
-        ).data or []
-    else:
-        rows = (
-            await client.table("profile_instances")
-            .select("*")
-            .eq("is_active", True)
-            .limit(1)
-            .execute()
-        ).data or []
-    if not rows:
-        raise HTTPException(status_code=404, detail="Profile instance not found")
-    return _row_to_profile_instance(rows[0])
+def _extract_profile_name(profile_snapshot: Optional[dict]) -> Optional[str]:
+    if not isinstance(profile_snapshot, dict):
+        return None
+    name = profile_snapshot.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    profile = profile_snapshot.get("profile")
+    if isinstance(profile, dict):
+        name = profile.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return None
 
 
 async def _upsert_dataset_record(
     dataset_id: str,
     dataset_name: str,
     task: str,
-    profile_instance: ProfileInstance,
+    profile_snapshot: Optional[dict],
     status: str,
 ) -> None:
     payload = {
@@ -395,8 +324,8 @@ async def _upsert_dataset_record(
         "source": "local",
         "status": status,
         "task_detail": task,
-        "profile_instance_id": profile_instance.id,
-        "profile_snapshot": profile_instance.snapshot(),
+        "profile_instance_id": None,
+        "profile_snapshot": profile_snapshot,
     }
     await upsert_with_owner("datasets", "id", payload)
 
@@ -439,16 +368,11 @@ async def create_session(request: RecordingSessionCreateRequest):
         raise HTTPException(status_code=400, detail=f"Invalid dataset name: {'; '.join(errors)}")
 
     dataset_id = generate_dataset_id()
-    profile_instance = await _resolve_profile_instance(None)
-    try:
-        profile_class = await ProfileRegistry().get_class(profile_instance.class_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Profile class not found") from exc
-
-    cameras, settings = _build_recorder_cameras(profile_class, profile_instance)
+    profile = resolve_profile_spec(request.profile) if request.profile else await get_active_profile_spec()
+    cameras = _build_recorder_cameras(profile.snapshot)
     if not cameras:
         raise HTTPException(status_code=400, detail="No enabled cameras in active profile")
-    _start_vlabor_for_session()
+    _start_vlabor_for_session(profile.name)
 
     payload = {
         "dataset_id": dataset_id,
@@ -462,17 +386,24 @@ async def create_session(request: RecordingSessionCreateRequest):
             "num_episodes": request.num_episodes,
             "episode_time_s": request.episode_time_s,
             "reset_time_s": request.reset_time_s,
-            "profile_instance_id": profile_instance.id,
-            "profile_class_id": profile_instance.class_id,
+            "profile_name": profile.name,
+            "profile_snapshot": profile.snapshot,
         },
     }
-    arm_namespaces = _build_arm_namespaces(settings)
+    arm_namespaces = _build_arm_namespaces(profile.snapshot)
     if arm_namespaces:
         payload["arm_namespaces"] = arm_namespaces
 
     _save_pending_session(dataset_id, payload)
 
-    await _upsert_dataset_record(dataset_id, request.dataset_name, request.task, profile_instance, "ready")
+    await _upsert_dataset_record(
+        dataset_id,
+        request.dataset_name,
+        request.task,
+        profile.snapshot,
+        "ready",
+    )
+    await save_session_profile_binding(session_kind="recording", session_id=dataset_id, profile=profile)
 
     return RecordingSessionActionResponse(
         success=True,
@@ -493,13 +424,12 @@ async def start_session(request: RecordingSessionStartRequest):
         raise HTTPException(status_code=500, detail=result.get("error") or "Recorder start failed")
 
     metadata = payload.get("metadata") or {}
-    profile_instance_id = metadata.get("profile_instance_id")
-    profile_instance = await _resolve_profile_instance(profile_instance_id)
+    profile_snapshot = metadata.get("profile_snapshot")
     await _upsert_dataset_record(
         payload.get("dataset_id") or request.dataset_id,
         payload.get("dataset_name") or request.dataset_id,
         payload.get("task") or "",
-        profile_instance,
+        profile_snapshot if isinstance(profile_snapshot, dict) else None,
         "recording",
     )
     _delete_pending_session(request.dataset_id)
@@ -669,7 +599,7 @@ async def _list_recordings() -> List[dict]:
     client = await get_supabase_async_client()
     rows = (
         await client.table("datasets")
-        .select("id,name,profile_instance_id,episode_count,size_bytes,created_at,dataset_type,status")
+        .select("id,name,profile_snapshot,episode_count,size_bytes,created_at,dataset_type,status")
         .eq("dataset_type", "recorded")
         .execute()
     ).data or []
@@ -683,7 +613,7 @@ async def list_recordings():
         RecordingInfo(
             recording_id=r.get("id"),
             dataset_name=r.get("name"),
-            profile_instance_id=r.get("profile_instance_id"),
+            profile_name=_extract_profile_name(r.get("profile_snapshot")),
             created_at=r.get("created_at"),
             episode_count=r.get("episode_count") or 0,
             size_bytes=r.get("size_bytes") or 0,
@@ -699,7 +629,7 @@ async def get_recording(recording_id: str):
     client = await get_supabase_async_client()
     rows = (
         await client.table("datasets")
-        .select("id,name,profile_instance_id,episode_count,size_bytes,created_at")
+        .select("id,name,profile_snapshot,episode_count,size_bytes,created_at")
         .eq("id", recording_id)
         .limit(1)
         .execute()
@@ -710,7 +640,7 @@ async def get_recording(recording_id: str):
     return RecordingInfo(
         recording_id=row.get("id"),
         dataset_name=row.get("name"),
-        profile_instance_id=row.get("profile_instance_id"),
+        profile_name=_extract_profile_name(row.get("profile_snapshot")),
         created_at=row.get("created_at"),
         episode_count=row.get("episode_count") or 0,
         size_bytes=row.get("size_bytes") or 0,

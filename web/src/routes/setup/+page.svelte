@@ -7,29 +7,25 @@
   import { connectStream } from '$lib/realtime/stream';
   import { queryClient } from '$lib/queryClient';
 
-  type ProfileInstanceResponse = {
-    instance?: {
-      id: string;
-      class_id?: string;
-      class_key?: string;
-      variables?: Record<string, unknown>;
-      updated_at?: string;
-    };
+  type VlaborProfile = {
+    name: string;
+    description?: string;
+    updated_at?: string;
   };
 
-  type ProfileClassDetailResponse = {
-    profile_class?: {
-      id?: string;
-      class_key?: string;
-      description?: string;
-      defaults?: Record<string, unknown>;
-      profile?: Record<string, unknown>;
-    };
+  type ProfilesResponse = {
+    profiles?: VlaborProfile[];
+    active_profile_name?: string;
+  };
+
+  type ActiveProfileResponse = {
+    profile_name?: string;
+    profile_snapshot?: Record<string, unknown>;
   };
 
   type ProfileStatusResponse = {
-    profile_id?: string;
-    profile_class_key?: string;
+    profile_name?: string;
+    profile_snapshot?: Record<string, unknown>;
     cameras?: Array<{ name: string; enabled: boolean; connected: boolean; topics?: string[] }>;
     arms?: Array<{ name: string; enabled: boolean; connected: boolean }>;
     topics?: string[];
@@ -52,33 +48,25 @@
     status?: VlaborStatusResponse;
   };
 
-  const activeInstanceQuery = createQuery<ProfileInstanceResponse>({
-    queryKey: ['profiles', 'instances', 'active'],
-    queryFn: api.profiles.activeInstance
+  const profilesQuery = createQuery<ProfilesResponse>({
+    queryKey: ['profiles', 'list'],
+    queryFn: api.profiles.list
   });
 
-  const activeClassId = $derived($activeInstanceQuery.data?.instance?.class_id ?? '');
-  const activeProfileId = $derived($activeInstanceQuery.data?.instance?.id ?? '');
+  const activeProfileQuery = createQuery<ActiveProfileResponse>({
+    queryKey: ['profiles', 'active'],
+    queryFn: api.profiles.active
+  });
 
-  const activeClassQuery = createQuery<ProfileClassDetailResponse>(
-    toStore(() => ({
-      queryKey: ['profiles', 'classes', activeClassId],
-      queryFn: async () => {
-        if (!activeClassId) return { profile_class: undefined };
-        return api.profiles.class(activeClassId);
-      },
-      enabled: Boolean(activeClassId)
-    }))
+  const activeProfileName = $derived(
+    $activeProfileQuery.data?.profile_name ?? $profilesQuery.data?.active_profile_name ?? ''
   );
 
   const activeStatusQuery = createQuery<ProfileStatusResponse>(
     toStore(() => ({
-      queryKey: ['profiles', 'instances', 'active', 'status'],
-      queryFn: async () => {
-        if (!activeProfileId) return { cameras: [], arms: [] };
-        return api.profiles.activeStatus();
-      },
-      enabled: Boolean(activeProfileId)
+      queryKey: ['profiles', 'active', 'status'],
+      queryFn: api.profiles.activeStatus,
+      enabled: Boolean(activeProfileName)
     }))
   );
 
@@ -92,92 +80,20 @@
     $vlaborStatusQuery.data?.status_detail ?? $vlaborStatusQuery.data?.running_for ?? ''
   );
 
-  let restartPending = $state(false);
+  const activeProfileDescription = $derived.by(() => {
+    const name = activeProfileName;
+    if (!name) return 'プロファイルが選択されていません。';
+    const profile = ($profilesQuery.data?.profiles ?? []).find((item) => item.name === name);
+    return profile?.description ?? '説明は未設定です。';
+  });
+
+  let switchingProfile = $state(false);
+  let selectionError = $state('');
   let actionPending = $state(false);
   let actionMessage = $state('');
   let actionIntent: 'start' | 'stop' | '' = $state('');
 
-  type ProfileSettingsState = {
-    flags: Record<string, boolean>;
-    orderedKeys: string[];
-  };
-
-  let profileSettings: ProfileSettingsState = $state({
-    flags: {},
-    orderedKeys: []
-  });
-  let lastInstanceId = '';
-  let savingProfileSettings = $state(false);
-  let saveMessage = $state('');
-
-  const labelMap: Record<string, string> = {
-    overhead_camera_enabled: 'オーバーヘッドカメラ',
-    d405_enabled: 'D405 サイドカメラ',
-    left_arm_enabled: '左アーム',
-    right_arm_enabled: '右アーム'
-  };
-
-  function labelFor(key: string) {
-    if (labelMap[key]) return labelMap[key];
-    return key.replace(/_/g, ' ');
-  }
-
-  function buildOrderedKeys(keys: string[]) {
-    const preferred = ['overhead_camera_enabled', 'd405_enabled', 'left_arm_enabled', 'right_arm_enabled'];
-    const rest = keys.filter((k) => !preferred.includes(k)).sort();
-    return [...preferred.filter((k) => keys.includes(k)), ...rest];
-  }
-
-  $effect(() => {
-    const instance = $activeInstanceQuery.data?.instance;
-    const profileClass = $activeClassQuery.data?.profile_class;
-    const defaults = (profileClass?.defaults ?? {}) as Record<string, unknown>;
-    if (instance?.id && instance.id !== lastInstanceId) {
-      const vars = (instance.variables ?? {}) as Record<string, unknown>;
-      const keys = new Set<string>();
-      Object.keys(defaults).forEach((k) => {
-        if (k.endsWith('_enabled')) keys.add(k);
-      });
-      Object.keys(vars).forEach((k) => {
-        if (k.endsWith('_enabled')) keys.add(k);
-      });
-
-      const flags: Record<string, boolean> = {};
-      for (const key of keys) {
-        const raw = (vars[key] ?? defaults[key]) as unknown;
-        flags[key] = Boolean(raw ?? true);
-      }
-
-      profileSettings = {
-        flags,
-        orderedKeys: buildOrderedKeys(Array.from(keys))
-      };
-      lastInstanceId = instance.id;
-      saveMessage = '';
-    }
-  });
-
-  const activeProfileTitle = $derived.by(() => {
-    const instance = $activeInstanceQuery.data?.instance;
-    const classKey = instance?.class_key ?? $activeClassQuery.data?.profile_class?.class_key ?? '-';
-    const instanceName = instance?.id ? instance?.id.slice(0, 6) : '-';
-    return `${classKey} / ${instanceName}`;
-  });
-
-  $effect(() => {
-    const status = $vlaborStatusQuery.data?.status ?? 'unknown';
-    if (restartPending && status === 'running') {
-      restartPending = false;
-      saveMessage = '再起動が完了しました。';
-    }
-    if (actionPending && (status === 'running' || status === 'stopped')) {
-      actionPending = false;
-      actionIntent = '';
-    }
-  });
-
   const actionStatusLabel = $derived.by(() => {
-    if (restartPending) return '再起動中…';
     if (actionIntent === 'start') return '起動中…';
     if (actionIntent === 'stop') return '停止中…';
     return '';
@@ -186,6 +102,25 @@
   async function refetchQuery(snapshot?: { refetch?: () => Promise<unknown> }) {
     if (snapshot && typeof snapshot.refetch === 'function') {
       await snapshot.refetch();
+    }
+  }
+
+  async function handleProfileChange(event: Event) {
+    const target = event.target as HTMLSelectElement;
+    const profileName = target.value;
+    if (!profileName) return;
+    switchingProfile = true;
+    selectionError = '';
+    try {
+      await api.profiles.setActive({ profile_name: profileName });
+      await refetchQuery($activeProfileQuery);
+      await refetchQuery($profilesQuery);
+      await refetchQuery($activeStatusQuery);
+    } catch (error) {
+      console.error(error);
+      selectionError = error instanceof Error ? error.message : 'プロファイル切り替えに失敗しました。';
+    } finally {
+      switchingProfile = false;
     }
   }
 
@@ -204,39 +139,14 @@
     stopVlaborStream();
   });
 
-  async function saveProfileSettings() {
-    const instance = $activeInstanceQuery.data?.instance;
-    if (!instance?.id) return;
-    savingProfileSettings = true;
-    saveMessage = '';
-    try {
-      const vars = (instance.variables ?? {}) as Record<string, unknown>;
-      const updated = {
-        ...vars,
-        ...profileSettings.flags
-      };
-      await api.profiles.updateInstance(instance.id, {
-        variables: updated,
-        activate: true
-      });
-      restartPending = true;
-      saveMessage = '再起動中…';
-      await refetchQuery($activeInstanceQuery);
-      await refetchQuery($activeStatusQuery);
-    } catch (error) {
-      console.error(error);
-      saveMessage = '更新に失敗しました。';
-    } finally {
-      savingProfileSettings = false;
-    }
-  }
-
   async function startVlabor() {
     actionPending = true;
     actionIntent = 'start';
     actionMessage = '';
     try {
-      const created = (await api.teleop.createSession()) as TeleopSessionActionResponse;
+      const created = (await api.teleop.createSession({
+        profile: activeProfileName || undefined
+      })) as TeleopSessionActionResponse;
       const sessionId = created?.session_id ?? 'teleop';
       await api.teleop.startSession({ session_id: sessionId });
       await refetchQuery($vlaborStatusQuery);
@@ -248,9 +158,7 @@
       actionIntent = '';
     } finally {
       actionPending = false;
-      if (!restartPending) {
-        actionIntent = '';
-      }
+      actionIntent = '';
     }
   }
 
@@ -269,12 +177,9 @@
       actionIntent = '';
     } finally {
       actionPending = false;
-      if (!restartPending) {
-        actionIntent = '';
-      }
+      actionIntent = '';
     }
   }
-
 </script>
 
 <section class="card-strong p-8">
@@ -282,19 +187,15 @@
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1 class="text-3xl font-semibold text-slate-900">デバイス・プロファイル設定</h1>
-      <p class="mt-2 text-sm text-slate-600">プロファイル管理、デバイス検出、キャリブレーションの集中管理。</p>
+      <p class="mt-2 text-sm text-slate-600">VLAborプロファイルの選択と状態確認。</p>
     </div>
     <div class="flex flex-wrap gap-2">
       {#if vlaborState === 'running'}
         <Button.Root class="btn-ghost" onclick={stopVlabor} disabled={actionPending}>
           停止
         </Button.Root>
-      {:else if vlaborState === 'stopped'}
-        <Button.Root class="btn-ghost" onclick={startVlabor} disabled={actionPending}>
-          起動
-        </Button.Root>
       {:else}
-        <Button.Root class="btn-ghost" onclick={startVlabor} disabled={actionPending}>
+        <Button.Root class="btn-ghost" onclick={startVlabor} disabled={actionPending || !activeProfileName}>
           起動
         </Button.Root>
       {/if}
@@ -309,12 +210,21 @@
   <div class="flex flex-wrap items-center justify-between gap-4">
     <div>
       <p class="text-xs uppercase tracking-widest text-slate-400">Active Profile</p>
-      <h2 class="mt-1 text-2xl font-semibold text-slate-900">{activeProfileTitle}</h2>
-      <p class="mt-2 text-sm text-slate-600">
-        {$activeClassQuery.data?.profile_class?.description ?? 'プロファイルの説明がありません。'}
-      </p>
+      <h2 class="mt-1 text-2xl font-semibold text-slate-900">{activeProfileName || '-'}</h2>
+      <p class="mt-2 text-sm text-slate-600">{activeProfileDescription}</p>
     </div>
     <div class="flex flex-wrap items-center gap-2">
+      <select
+        class="input min-w-[260px]"
+        disabled={switchingProfile || !($profilesQuery.data?.profiles ?? []).length}
+        value={activeProfileName}
+        onchange={handleProfileChange}
+      >
+        <option value="" disabled>プロファイルを選択</option>
+        {#each $profilesQuery.data?.profiles ?? [] as profile}
+          <option value={profile.name}>{profile.name}</option>
+        {/each}
+      </select>
       {#if actionStatusLabel}
         <span class="rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-700">{actionStatusLabel}</span>
       {:else if vlaborState === 'restarting'}
@@ -341,47 +251,22 @@
       {/if}
     </div>
   </div>
+  {#if selectionError}
+    <p class="mt-3 text-xs text-rose-500">{selectionError}</p>
+  {/if}
 </section>
 
 <section class="grid gap-6 lg:grid-cols-2">
   <div class="card p-6">
-    <div class="flex items-center justify-between">
-      <h2 class="text-lg font-semibold text-slate-900">プロファイル簡易設定</h2>
-      <Button.Root class="btn-ghost" onclick={saveProfileSettings} disabled={savingProfileSettings}>
-        {savingProfileSettings ? '保存中…' : '保存'}
-      </Button.Root>
-    </div>
-    <div class="mt-4 space-y-4 text-sm text-slate-600">
-      {#if $activeInstanceQuery.isLoading}
-        <p>読み込み中...</p>
-      {:else if $activeInstanceQuery.data?.instance}
-        {#if profileSettings.orderedKeys.length === 0}
-          <p>編集可能なフラグがありません。</p>
-        {:else}
-          {#each profileSettings.orderedKeys as flagKey}
-            <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-2">
-              <div>
-                <p class="font-medium text-slate-800">{labelFor(flagKey)}</p>
-                <p class="text-xs text-slate-500">{flagKey}</p>
-              </div>
-              <input
-                type="checkbox"
-                bind:checked={profileSettings.flags[flagKey]}
-                class="h-5 w-5 accent-slate-900"
-              />
-            </div>
-          {/each}
-        {/if}
-        {#if saveMessage}
-          <p class="text-xs text-slate-500">{saveMessage}</p>
-        {/if}
-      {:else}
-        <p>アクティブなプロファイルがありません。</p>
-      {/if}
+    <h2 class="text-lg font-semibold text-slate-900">プロファイルの生データ</h2>
+    <div class="mt-4 text-sm text-slate-600">
+      <pre class="max-h-[360px] overflow-auto rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-700">
+{JSON.stringify($activeProfileQuery.data?.profile_snapshot ?? {}, null, 2)}
+      </pre>
     </div>
   </div>
   <div class="card p-6">
-    <h2 class="text-lg font-semibold text-slate-900">プロファイル参照の状態</h2>
+    <h2 class="text-lg font-semibold text-slate-900">デバイス状態</h2>
     <div class="mt-4 space-y-4 text-sm text-slate-600">
       {#if $activeStatusQuery.isLoading}
         <p>読み込み中...</p>
@@ -406,7 +291,7 @@
               <div class="flex items-center justify-between">
                 <span>{arm.name}</span>
                 <span class="text-xs text-slate-500">
-                  {arm.enabled ? (arm.connected ? '✅ 接続' : '⚠️ 未接続') : '⏸️ 無効'}
+                  {arm.connected ? '✅ 接続' : '⚠️ 未接続'}
                 </span>
               </div>
             {/each}

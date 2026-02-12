@@ -38,7 +38,7 @@
 
   const modelsQuery = createQuery<ModelListResponse>({
     queryKey: ['storage', 'models'],
-    queryFn: api.storage.models
+    queryFn: () => api.storage.models()
   });
 </script>
 
