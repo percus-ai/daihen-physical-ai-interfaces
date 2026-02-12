@@ -60,7 +60,8 @@
     return baseProps;
   };
 
-  const ViewComponent = $derived(renderComponent(node.viewType));
+  const viewType = $derived(node.type === 'view' ? node.viewType : 'placeholder');
+  const ViewComponent = $derived(renderComponent(viewType));
 </script>
 
 <div
@@ -131,7 +132,7 @@
     </TabsView>
   {:else}
     <div class="h-full rounded-2xl border border-slate-200/60 bg-white/80 p-3 shadow-sm">
-      <ViewComponent {...buildProps(node.viewType)} />
+      <ViewComponent {...buildProps(viewType)} />
     </div>
   {/if}
 </div>

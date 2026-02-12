@@ -101,9 +101,6 @@ class RecordMenu(BaseMenu):
         show_section_header("Recording: Start")
 
         profile_name = self._select_profile_name()
-        if profile_name is None:
-            # None means auto; proceed
-            pass
 
         dataset_name = inquirer.text(
             message="Dataset name:",
@@ -119,23 +116,18 @@ class RecordMenu(BaseMenu):
         if not task:
             return MenuResult.CONTINUE
 
-        tags_raw = inquirer.text(
-            message="Tags (comma separated, optional):",
-            default="",
-            style=hacker_style,
-        ).execute()
-        tags = [t.strip() for t in (tags_raw or "").split(",") if t.strip()]
-
-        payload = {
+        create_payload = {
             "profile": profile_name,
             "dataset_name": dataset_name,
             "task": task,
-            "tags": tags,
         }
 
         try:
-            result = self.api.start_recording_session(payload)
-            dataset_id = result.get("dataset_id")
+            created = self.api.create_recording_session(create_payload)
+            dataset_id = created.get("dataset_id")
+            if not dataset_id:
+                raise ValueError("dataset_id missing in create response")
+            result = self.api.start_recording_session({"dataset_id": dataset_id})
             print(f"\n{Colors.success('Recording started')}:")
             print(f"  Dataset ID: {dataset_id}")
             print(f"  Message: {result.get('message', '')}")

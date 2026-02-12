@@ -75,7 +75,6 @@
     <div
       class={`handle ${editable ? 'active' : 'hidden'}`}
       role="separator"
-      tabindex={editable ? 0 : -1}
       onpointerdown={handlePointerDown}
     >
       <div class="handle-bar"></div>

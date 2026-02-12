@@ -914,10 +914,9 @@ class TrainingWizard(BaseMenu):
             name = s.get("name") or dataset_id
             size = format_size(s.get("size_bytes", 0))
             episode_count = s.get("episode_count", 0)
-            profile_id = s.get("profile_instance_id")
-            profile_short = profile_id[:8] if profile_id else "-"
+            profile_name = s.get("profile_name") or "-"
 
-            display = f"  {name} ({episode_count} eps, {size}) [profile:{profile_short}]"
+            display = f"  {name} ({episode_count} eps, {size}) [profile:{profile_name}]"
             choices.append(Choice(value=dataset_id, name=display))
 
         choices.append(Choice(value="__back__", name="← 戻る"))

@@ -1,4 +1,4 @@
-import type { SvelteComponent } from 'svelte';
+import type { Component } from 'svelte';
 import CameraView from '$lib/components/recording/views/CameraView.svelte';
 import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
 import StatusView from '$lib/components/recording/views/StatusView.svelte';
@@ -19,7 +19,7 @@ export type ViewTypeDefinition = {
   type: string;
   label: string;
   description?: string;
-  component: typeof SvelteComponent;
+  component: Component<any>;
   fields?: ConfigField[];
   defaultConfig?: (topics: string[]) => Record<string, unknown>;
 };

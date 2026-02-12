@@ -70,7 +70,10 @@
   const statusState = $derived(
     (status as Record<string, unknown>)?.state ?? (status as Record<string, unknown>)?.status ?? ''
   );
-  const datasetId = $derived((status as Record<string, unknown>)?.dataset_id ?? sessionId);
+  const datasetId = $derived.by(() => {
+    const value = (status as Record<string, unknown>)?.dataset_id;
+    return typeof value === 'string' ? value : sessionId;
+  });
 
   const canPause = $derived(statusState === 'recording');
   const canResume = $derived(statusState === 'paused');

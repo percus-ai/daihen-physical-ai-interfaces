@@ -10,6 +10,72 @@ class ApiError extends Error {
   }
 }
 
+export type ExperimentDetail = {
+  id: string;
+  model_id: string;
+  profile_instance_id?: string | null;
+  name?: string | null;
+  purpose?: string | null;
+  evaluation_count?: number;
+  metric?: string;
+  metric_options?: string[] | null;
+  result_image_files?: string[] | null;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ExperimentListResponse = {
+  experiments?: ExperimentDetail[];
+  total?: number;
+};
+
+export type ExperimentEvaluation = {
+  id?: string;
+  experiment_id?: string;
+  trial_index: number;
+  value?: string;
+  image_files?: string[] | null;
+  notes?: string | null;
+  created_at?: string;
+};
+
+export type ExperimentEvaluationListResponse = {
+  evaluations?: ExperimentEvaluation[];
+  total?: number;
+};
+
+export type ExperimentAnalysis = {
+  id?: string;
+  experiment_id?: string;
+  block_index?: number;
+  name?: string | null;
+  purpose?: string | null;
+  notes?: string | null;
+  image_files?: string[] | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ExperimentAnalysisListResponse = {
+  analyses?: ExperimentAnalysis[];
+  total?: number;
+};
+
+export type ExperimentEvaluationSummary = {
+  total?: number;
+  counts?: Record<string, number>;
+  rates?: Record<string, number>;
+};
+
+export type ExperimentMediaUrlResponse = {
+  urls?: Record<string, string>;
+};
+
+export type ExperimentUploadResponse = {
+  keys?: string[];
+};
+
 let refreshPromise: Promise<boolean> | null = null;
 
 async function baseFetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -362,39 +428,39 @@ export const api = {
       if (typeof params.limit === 'number') query.set('limit', String(params.limit));
       if (typeof params.offset === 'number') query.set('offset', String(params.offset));
       const queryString = query.toString();
-      return fetchApi(`/api/experiments${queryString ? `?${queryString}` : ''}`);
+      return fetchApi<ExperimentListResponse>(`/api/experiments${queryString ? `?${queryString}` : ''}`);
     },
-    get: (experimentId: string) => fetchApi(`/api/experiments/${experimentId}`),
+    get: (experimentId: string) => fetchApi<ExperimentDetail>(`/api/experiments/${experimentId}`),
     create: (payload: Record<string, unknown>) =>
-      fetchApi('/api/experiments', {
+      fetchApi<ExperimentDetail>('/api/experiments', {
         method: 'POST',
         body: JSON.stringify(payload)
       }),
     update: (experimentId: string, payload: Record<string, unknown>) =>
-      fetchApi(`/api/experiments/${experimentId}`, {
+      fetchApi<ExperimentDetail>(`/api/experiments/${experimentId}`, {
         method: 'PATCH',
         body: JSON.stringify(payload)
       }),
     delete: (experimentId: string) =>
-      fetchApi(`/api/experiments/${experimentId}`, { method: 'DELETE' }),
+      fetchApi<{ deleted: boolean }>(`/api/experiments/${experimentId}`, { method: 'DELETE' }),
     evaluations: (experimentId: string) =>
-      fetchApi(`/api/experiments/${experimentId}/evaluations`),
+      fetchApi<ExperimentEvaluationListResponse>(`/api/experiments/${experimentId}/evaluations`),
     replaceEvaluations: (experimentId: string, payload: Record<string, unknown>) =>
-      fetchApi(`/api/experiments/${experimentId}/evaluations`, {
+      fetchApi<{ updated: boolean; count: number }>(`/api/experiments/${experimentId}/evaluations`, {
         method: 'PUT',
         body: JSON.stringify(payload)
       }),
     evaluationSummary: (experimentId: string) =>
-      fetchApi(`/api/experiments/${experimentId}/evaluation_summary`),
+      fetchApi<ExperimentEvaluationSummary>(`/api/experiments/${experimentId}/evaluation_summary`),
     analyses: (experimentId: string) =>
-      fetchApi(`/api/experiments/${experimentId}/analyses`),
+      fetchApi<ExperimentAnalysisListResponse>(`/api/experiments/${experimentId}/analyses`),
     replaceAnalyses: (experimentId: string, payload: Record<string, unknown>) =>
-      fetchApi(`/api/experiments/${experimentId}/analyses`, {
+      fetchApi<{ updated: boolean; count: number }>(`/api/experiments/${experimentId}/analyses`, {
         method: 'PUT',
         body: JSON.stringify(payload)
       }),
     mediaUrls: (keys: string[]) =>
-      fetchApi('/api/experiments/media-urls', {
+      fetchApi<ExperimentMediaUrlResponse>('/api/experiments/media-urls', {
         method: 'POST',
         body: JSON.stringify({ keys })
       }),
@@ -406,7 +472,10 @@ export const api = {
       const query = new URLSearchParams({ scope: params.scope });
       if (params.trial_index) query.set('trial_index', String(params.trial_index));
       if (params.block_index) query.set('block_index', String(params.block_index));
-      return fetchForm(`/api/experiments/${experimentId}/uploads?${query.toString()}`, formData);
+      return fetchForm<ExperimentUploadResponse>(
+        `/api/experiments/${experimentId}/uploads?${query.toString()}`,
+        formData
+      );
     }
   },
   training: {

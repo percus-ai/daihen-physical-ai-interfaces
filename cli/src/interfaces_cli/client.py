@@ -246,8 +246,14 @@ class PhiClient:
     # Recording
     # =========================================================================
 
+    def create_recording_session(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/recording/session/create - Create recording session."""
+        response = self._client.post("/api/recording/session/create", json=data)
+        response.raise_for_status()
+        return response.json()
+
     def start_recording_session(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/recording/session/start - Start recorder."""
+        """POST /api/recording/session/start - Start recorder by dataset_id."""
         response = self._client.post("/api/recording/session/start", json=data)
         response.raise_for_status()
         return response.json()
