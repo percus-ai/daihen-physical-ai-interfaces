@@ -19,6 +19,7 @@ from fastapi import (
     BackgroundTasks,
     HTTPException,
     Query,
+    Response,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -1046,6 +1047,73 @@ async def _upsert_model_for_job(job_data: dict) -> None:
     await upsert_with_owner("models", "id", payload)
 
 
+async def _archive_job_metrics(job_id: str) -> bool:
+    """Archive job metrics from DB to R2, then delete DB records.
+
+    Returns True if archive succeeded or no metrics to archive.
+    """
+    client = await get_supabase_async_client()
+    try:
+        response = (
+            await client.table("training_job_metrics")
+            .select("job_id,split,step,ts,loss,metrics")
+            .eq("job_id", job_id)
+            .order("split", desc=False)
+            .order("step", desc=False)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("Failed to fetch metrics for archival (%s): %s", job_id, exc)
+        return False
+    metrics = response.data or []
+    if not metrics:
+        return True
+
+    r2 = _get_logs_r2_sync_service()
+    if not r2:
+        logger.warning("R2 service unavailable; skipping metrics archival for %s", job_id)
+        return False
+
+    payload = json.dumps(metrics, ensure_ascii=False, default=str)
+    prefix = f"{r2.version}/" if r2.version else ""
+    key = f"{prefix}training_metrics/{job_id}/metrics.json"
+    try:
+        r2.s3.client.put_object(
+            Bucket=r2.bucket,
+            Key=key,
+            Body=payload.encode("utf-8"),
+            ContentType="application/json",
+        )
+        logger.info("Archived %d metrics records to R2 for %s", len(metrics), job_id)
+    except Exception as exc:
+        logger.warning("Failed to upload metrics to R2 for %s: %s", job_id, exc)
+        return False
+
+    try:
+        await client.table("training_job_metrics").delete().eq("job_id", job_id).execute()
+        logger.info("Deleted archived metrics from DB for %s", job_id)
+    except Exception as exc:
+        logger.warning("Failed to delete archived metrics from DB for %s: %s", job_id, exc)
+
+    return True
+
+
+def _get_metrics_from_r2(job_id: str) -> Optional[list[dict]]:
+    """Fetch archived metrics JSON from R2."""
+    r2 = _get_logs_r2_sync_service()
+    if not r2:
+        return None
+    prefix = f"{r2.version}/" if r2.version else ""
+    key = f"{prefix}training_metrics/{job_id}/metrics.json"
+    try:
+        obj = r2.s3.client.get_object(Bucket=r2.bucket, Key=key)
+        body = obj["Body"].read().decode("utf-8")
+        data = json.loads(body)
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
 async def _mark_job_completed(
     job_id: str, termination_reason: str = "REMOTE_EXIT"
 ) -> None:
@@ -1061,6 +1129,7 @@ async def _mark_job_completed(
         job_data["model_id"] = job_data.get("job_id")
     await _save_job(job_data)
     await _upsert_model_for_job(job_data)
+    await _archive_job_metrics(job_id)
 
 
 async def _list_jobs(days: int = 365) -> list[dict]:
@@ -2387,7 +2456,11 @@ async def get_job_progress(job_id: str):
 
 
 @router.get("/jobs/{job_id}/metrics", response_model=JobMetricsResponse)
-async def get_job_metrics(job_id: str, limit: int = Query(1000, ge=1, le=10000)):
+async def get_job_metrics(
+    job_id: str,
+    response: Response,
+    limit: int = Query(1000, ge=1, le=10000),
+):
     """Get training/validation loss series for a job."""
     job_data = await _load_job(job_id, include_deleted=True)
     if not job_data:
@@ -2395,6 +2468,21 @@ async def get_job_metrics(job_id: str, limit: int = Query(1000, ge=1, le=10000))
 
     train = await _get_metrics_series(job_id, "train", limit)
     val = await _get_metrics_series(job_id, "val", limit)
+
+    # Fallback to R2 archive if DB has no metrics for a terminal job
+    from_archive = False
+    if not train and not val and job_data.get("status") in (
+        "completed", "stopped", "terminated", "failed",
+    ):
+        archived = _get_metrics_from_r2(job_id)
+        if archived:
+            train = [m for m in archived if m.get("split") == "train"][:limit]
+            val = [m for m in archived if m.get("split") == "val"][:limit]
+            from_archive = True
+
+    if from_archive:
+        response.headers["Cache-Control"] = "public, max-age=86400, immutable"
+
     return JobMetricsResponse(job_id=job_id, train=train, val=val)
 
 
@@ -2688,6 +2776,7 @@ async def stop_job(job_id: str):
         job_data["termination_reason"] = "USER_STOP"
         job_data["completed_at"] = datetime.now().isoformat()
         await _save_job(job_data)
+        await _archive_job_metrics(job_id)
 
     return JobActionResponse(
         job_id=job_id,
@@ -2795,6 +2884,7 @@ async def delete_job(job_id: str, terminate_instance: bool = True):
         instance_deleted = _delete_verda_instance(instance_id)
         job_data["cleanup_status"] = "done" if instance_deleted else "failed"
     await _save_job(job_data)
+    await _archive_job_metrics(job_id)
 
     if instance_id and terminate_instance:
         if instance_deleted:
@@ -2839,6 +2929,7 @@ async def check_all_jobs_status():
             job_data["termination_reason"] = "INSTANCE_NOT_FOUND"
             job_data["completed_at"] = datetime.now().isoformat()
             await _save_job(job_data)
+            await _archive_job_metrics(job_id)
             updates.append(
                 JobStatusUpdate(
                     job_id=job_id,
@@ -2856,6 +2947,7 @@ async def check_all_jobs_status():
             job_data["termination_reason"] = "INSTANCE_TERMINATED"
             job_data["completed_at"] = datetime.now().isoformat()
             await _save_job(job_data)
+            await _archive_job_metrics(job_id)
             updates.append(
                 JobStatusUpdate(
                     job_id=job_id,
