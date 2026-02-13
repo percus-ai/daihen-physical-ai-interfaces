@@ -21,11 +21,6 @@ from interfaces_backend.services.lerobot_runtime import (
     start_lerobot,
     stop_lerobot,
 )
-from interfaces_backend.services.vlabor_runtime import (
-    VlaborCommandError,
-    start_vlabor as run_vlabor_start,
-    stop_vlabor as run_vlabor_stop,
-)
 from interfaces_backend.services.vlabor_profiles import (
     get_active_profile_spec,
     resolve_profile_spec,
@@ -65,10 +60,6 @@ async def create_session(request: Optional[TeleopSessionCreateRequest] = None):
     _require_user_id()
     payload = request or TeleopSessionCreateRequest()
     profile = resolve_profile_spec(payload.profile) if payload.profile else await get_active_profile_spec()
-    try:
-        run_vlabor_start(profile=profile.name, domain_id=payload.domain_id, dev_mode=payload.dev_mode)
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to create teleop session: {exc}") from exc
     try:
         start_lerobot(strict=True)
     except LerobotCommandError as exc:
@@ -115,14 +106,6 @@ async def start_session(request: TeleopSessionStartRequest):
         raise HTTPException(status_code=404, detail="Teleop session not found. Create session first.")
 
     try:
-        run_vlabor_start(
-            profile=session.get("profile"),
-            domain_id=session.get("domain_id"),
-            dev_mode=bool(session.get("dev_mode")),
-        )
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to start teleop session: {exc}") from exc
-    try:
         start_lerobot(strict=True)
     except LerobotCommandError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start lerobot stack: {exc}") from exc
@@ -148,10 +131,6 @@ async def stop_session(request: Optional[TeleopSessionStopRequest] = None):
     if session_id != _SESSION_ID:
         raise HTTPException(status_code=404, detail=f"Teleop session not found: {session_id}")
 
-    try:
-        run_vlabor_stop()
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to stop teleop session: {exc}") from exc
     stop_lerobot(strict=False)
 
     with _SESSION_LOCK:

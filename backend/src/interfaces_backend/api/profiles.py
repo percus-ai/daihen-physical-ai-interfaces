@@ -25,6 +25,7 @@ from interfaces_backend.services.vlabor_profiles import (
     list_vlabor_profiles,
     set_active_profile_spec,
 )
+from interfaces_backend.services.vlabor_runtime import restart_vlabor
 from interfaces_backend.utils.docker_compose import (
     build_compose_command,
     get_vlabor_compose_file,
@@ -148,6 +149,7 @@ async def get_active_profile():
 async def set_active_profile(request: VlaborProfileSelectRequest):
     _require_user_id()
     active = await set_active_profile_spec(request.profile_name)
+    restart_vlabor(profile=active.name, strict=False)
     return VlaborActiveProfileResponse(
         profile_name=active.name,
         profile_snapshot=active.snapshot,

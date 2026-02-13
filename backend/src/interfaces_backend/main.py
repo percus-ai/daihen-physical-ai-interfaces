@@ -78,7 +78,8 @@ from interfaces_backend.api import (
     webui_blueprints_router,
 )
 from interfaces_backend.core.request_auth import build_session_from_request, is_session_expired
-from interfaces_backend.services.vlabor_runtime import stop_vlabor_on_backend_startup
+from interfaces_backend.services.vlabor_runtime import start_vlabor_on_backend_startup
+from interfaces_backend.services.vlabor_profiles import get_active_profile_spec
 from percus_ai.observability import (
     ArmId,
     CommOverheadReporter,
@@ -100,8 +101,15 @@ _COMM_REPORTER = CommOverheadReporter("backend")
 
 
 @app.on_event("startup")
-async def stop_stale_vlabor_container() -> None:
-    stop_vlabor_on_backend_startup(logging.getLogger("interfaces_backend.startup"))
+async def start_vlabor_container() -> None:
+    startup_logger = logging.getLogger("interfaces_backend.startup")
+    try:
+        active_profile = await get_active_profile_spec()
+        profile_name = active_profile.name
+    except Exception:
+        startup_logger.warning("Could not resolve active profile; starting VLAbor without profile")
+        profile_name = None
+    start_vlabor_on_backend_startup(profile=profile_name, logger=startup_logger)
 
 
 def _extract_request_session_id(request: Request) -> Optional[str]:

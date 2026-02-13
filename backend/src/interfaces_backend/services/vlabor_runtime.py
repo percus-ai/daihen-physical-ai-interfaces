@@ -115,15 +115,20 @@ def restart_vlabor(
     return _run_vlabor_script("restart", args, strict=strict)
 
 
-def stop_vlabor_on_backend_startup(logger: logging.Logger | None = None) -> None:
-    """Best-effort shutdown of stale VLAbor containers on backend startup."""
+def start_vlabor_on_backend_startup(
+    profile: str | None = None,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Start VLAbor container on backend startup with the given profile."""
     active_logger = logger or logging.getLogger(__name__)
     if shutil.which("docker") is None:
-        active_logger.warning("docker command not found; skip VLAbor startup cleanup")
+        active_logger.warning("docker command not found; skip VLAbor startup")
         return
 
-    result = stop_vlabor(strict=False)
+    result = start_vlabor(profile=profile, strict=False)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or f"exit code={result.returncode}"
-        active_logger.warning("VLAbor startup cleanup failed: %s", detail)
+        active_logger.warning("VLAbor startup failed: %s", detail)
+    else:
+        active_logger.info("VLAbor started with profile=%s", profile or "(default)")
 

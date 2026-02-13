@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { Button } from 'bits-ui';
   import { toStore } from 'svelte/store';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
@@ -39,13 +38,6 @@
     running_for?: string;
     created_at?: string;
     container_id?: string;
-  };
-
-  type TeleopSessionActionResponse = {
-    success?: boolean;
-    session_id?: string;
-    message?: string;
-    status?: VlaborStatusResponse;
   };
 
   const profilesQuery = createQuery<ProfilesResponse>({
@@ -89,15 +81,6 @@
 
   let switchingProfile = $state(false);
   let selectionError = $state('');
-  let actionPending = $state(false);
-  let actionMessage = $state('');
-  let actionIntent: 'start' | 'stop' | '' = $state('');
-
-  const actionStatusLabel = $derived.by(() => {
-    if (actionIntent === 'start') return '起動中…';
-    if (actionIntent === 'stop') return '停止中…';
-    return '';
-  });
 
   async function refetchQuery(snapshot?: { refetch?: () => Promise<unknown> }) {
     if (snapshot && typeof snapshot.refetch === 'function') {
@@ -138,48 +121,6 @@
   onDestroy(() => {
     stopVlaborStream();
   });
-
-  async function startVlabor() {
-    actionPending = true;
-    actionIntent = 'start';
-    actionMessage = '';
-    try {
-      const created = (await api.teleop.createSession({
-        profile: activeProfileName || undefined
-      })) as TeleopSessionActionResponse;
-      const sessionId = created?.session_id ?? 'teleop';
-      await api.teleop.startSession({ session_id: sessionId });
-      await refetchQuery($vlaborStatusQuery);
-      await refetchQuery($activeStatusQuery);
-    } catch (error) {
-      console.error(error);
-      const detail = error instanceof Error ? error.message : '起動に失敗しました。';
-      actionMessage = `${detail} Docker権限やバックエンドログを確認してください。`;
-      actionIntent = '';
-    } finally {
-      actionPending = false;
-      actionIntent = '';
-    }
-  }
-
-  async function stopVlabor() {
-    actionPending = true;
-    actionIntent = 'stop';
-    actionMessage = '';
-    try {
-      await api.teleop.stopSession({ session_id: 'teleop' });
-      await refetchQuery($vlaborStatusQuery);
-      await refetchQuery($activeStatusQuery);
-    } catch (error) {
-      console.error(error);
-      const detail = error instanceof Error ? error.message : '停止に失敗しました。';
-      actionMessage = `${detail} Docker権限やバックエンドログを確認してください。`;
-      actionIntent = '';
-    } finally {
-      actionPending = false;
-      actionIntent = '';
-    }
-  }
 </script>
 
 <section class="card-strong p-8">
@@ -189,20 +130,6 @@
       <h1 class="text-3xl font-semibold text-slate-900">デバイス・プロファイル設定</h1>
       <p class="mt-2 text-sm text-slate-600">VLAborプロファイルの選択と状態確認。</p>
     </div>
-    <div class="flex flex-wrap gap-2">
-      {#if vlaborState === 'running'}
-        <Button.Root class="btn-ghost" onclick={stopVlabor} disabled={actionPending}>
-          停止
-        </Button.Root>
-      {:else}
-        <Button.Root class="btn-ghost" onclick={startVlabor} disabled={actionPending || !activeProfileName}>
-          起動
-        </Button.Root>
-      {/if}
-    </div>
-    {#if actionMessage}
-      <p class="mt-2 text-xs text-rose-500">{actionMessage}</p>
-    {/if}
   </div>
 </section>
 
@@ -225,8 +152,8 @@
           <option value={profile.name}>{profile.name}</option>
         {/each}
       </select>
-      {#if actionStatusLabel}
-        <span class="rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-700">{actionStatusLabel}</span>
+      {#if switchingProfile}
+        <span class="rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-700">切り替え中…</span>
       {:else if vlaborState === 'restarting'}
         <span class="rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-700">再起動中</span>
       {:else if vlaborState === 'running'}
@@ -239,16 +166,14 @@
       {#if vlaborDetail}
         <span class="text-xs text-slate-400">{vlaborDetail}</span>
       {/if}
-      {#if vlaborState === 'running'}
-        <a
-          class="inline-flex h-9 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 px-4 text-xs font-semibold text-emerald-700"
-          href="http://vlabor.local:8888"
-          target="_blank"
-          rel="noreferrer"
-        >
-          VLabor UI を開く
-        </a>
-      {/if}
+      <a
+        class="inline-flex h-9 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 px-4 text-xs font-semibold text-emerald-700"
+        href="http://vlabor.local:8888"
+        target="_blank"
+        rel="noreferrer"
+      >
+        VLabor UI を開く
+      </a>
     </div>
   </div>
   {#if selectionError}

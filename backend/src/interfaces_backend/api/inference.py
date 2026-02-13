@@ -36,11 +36,6 @@ from interfaces_backend.services.lerobot_runtime import (
     start_lerobot,
     stop_lerobot,
 )
-from interfaces_backend.services.vlabor_runtime import (
-    VlaborCommandError,
-    start_vlabor as run_vlabor_start,
-    stop_vlabor as run_vlabor_stop,
-)
 from percus_ai.storage.r2_db_sync import R2DBSyncService
 from percus_ai.storage.naming import generate_dataset_id
 from percus_ai.storage.paths import get_user_config_path
@@ -64,20 +59,6 @@ def _get_sync_service() -> R2DBSyncService:
     if _sync_service is None:
         _sync_service = R2DBSyncService()
     return _sync_service
-
-
-def _start_vlabor_for_session(profile_name: str | None = None) -> None:
-    try:
-        run_vlabor_start(profile=profile_name)
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to start VLAbor container: {exc}") from exc
-
-
-def _stop_vlabor_for_session() -> None:
-    try:
-        run_vlabor_stop()
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to stop VLAbor container: {exc}") from exc
 
 
 def _start_lerobot_for_session() -> None:
@@ -182,7 +163,6 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
     if not joint_names:
         raise HTTPException(status_code=400, detail="No inference joints configured in active profile")
     camera_key_aliases = build_inference_camera_aliases(active_profile.snapshot)
-    _start_vlabor_for_session(active_profile.name)
     _start_lerobot_for_session()
 
     # Ensure model is downloaded from R2 and cached locally
@@ -252,7 +232,6 @@ async def stop_inference_runner(request: InferenceRunnerStopRequest):
 
     try:
         stopped = _manager().stop(session_id=request.session_id)
-        _stop_vlabor_for_session()
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

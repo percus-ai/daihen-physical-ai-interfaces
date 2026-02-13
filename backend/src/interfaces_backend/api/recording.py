@@ -17,11 +17,6 @@ import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from interfaces_backend.services.vlabor_runtime import (
-    VlaborCommandError,
-    start_vlabor as run_vlabor_start,
-    stop_vlabor as run_vlabor_stop,
-)
 from interfaces_backend.services.vlabor_profiles import (
     extract_arm_namespaces,
     extract_camera_specs,
@@ -158,20 +153,6 @@ def _load_user_config() -> dict:
     return {
         "auto_upload_after_recording": sync.get("auto_upload_after_recording", True),
     }
-
-
-def _start_vlabor_for_session(profile_name: Optional[str] = None) -> None:
-    try:
-        run_vlabor_start(profile=profile_name)
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to start VLAbor container: {exc}") from exc
-
-
-def _stop_vlabor_for_session() -> None:
-    try:
-        run_vlabor_stop()
-    except VlaborCommandError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to stop VLAbor container: {exc}") from exc
 
 
 def _start_recorder() -> None:
@@ -354,7 +335,6 @@ async def create_session(request: RecordingSessionCreateRequest):
     cameras = _build_recorder_cameras(profile.snapshot)
     if not cameras:
         raise HTTPException(status_code=400, detail="No enabled cameras in active profile")
-    _start_vlabor_for_session(profile.name)
 
     payload = {
         "dataset_id": dataset_id,
@@ -443,7 +423,6 @@ async def stop_session(request: RecordingSessionStopRequest):
             except Exception as exc:
                 logger.error("Auto-upload failed for %s: %s", dataset_id, exc)
 
-    _stop_vlabor_for_session()
     _stop_recorder()
 
     return RecordingSessionActionResponse(
@@ -557,7 +536,6 @@ async def cancel_session(dataset_id: Optional[str] = None):
         if not result.get("success", False):
             raise HTTPException(status_code=500, detail=result.get("error") or "Recorder cancel failed")
 
-    _stop_vlabor_for_session()
     _stop_recorder()
 
     return RecordingSessionActionResponse(success=True, message="Recording cancelled", dataset_id=dataset_id, status=result)
