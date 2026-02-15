@@ -70,6 +70,13 @@
       description: 'セッションを終了'
     }
   };
+  const rosTopicsItem = {
+    id: 'topics',
+    label: 'ROSトピック',
+    href: '/topics',
+    icon: '📡',
+    description: 'rosbridge の topic 一覧'
+  };
 
   const closeMobile = () => {
     mobileOpen = false;
@@ -275,6 +282,24 @@
 
         <div class="flex-1"></div>
         <div class="mb-4 h-px w-full bg-slate-200/70"></div>
+        <nav class="space-y-2">
+          <a
+            href={rosTopicsItem.href}
+            class={`group flex items-start gap-3 rounded-2xl border border-transparent px-3 py-2 transition hover:border-slate-200 hover:bg-white ${
+              page.url.pathname === rosTopicsItem.href
+                ? 'border-slate-200 bg-white shadow-sm'
+                : 'text-slate-600'
+            }`}
+            onclick={closeMobile}
+          >
+            <span class="text-lg">{rosTopicsItem.icon}</span>
+            <span>
+              <span class="block text-sm font-semibold text-slate-900">{rosTopicsItem.label}</span>
+              <span class="block text-xs text-slate-500">{rosTopicsItem.description}</span>
+            </span>
+          </a>
+        </nav>
+        <div class="my-4 h-px w-full bg-slate-200/70"></div>
         <nav class="space-y-2">
           {#each authenticated ? [authItems.logout] : [authItems.login] as item}
             <a
