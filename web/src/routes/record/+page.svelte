@@ -372,7 +372,7 @@
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">
         <tr>
           <th class="pb-3">データセット</th>
-          <th class="pb-3">プロフィール</th>
+          <th class="pb-3">プロファイル</th>
           <th class="pb-3">エピソード</th>
           <th class="pb-3">アップロード</th>
           <th class="pb-3">サイズ</th>

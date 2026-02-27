@@ -614,7 +614,7 @@
               </p>
             </div>
             <div>
-              <p class="text-xs text-slate-500">プロフィール</p>
+              <p class="text-xs text-slate-500">プロファイル</p>
               <p class="font-semibold text-slate-800 break-words">
                 {profileId || '-'}
               </p>

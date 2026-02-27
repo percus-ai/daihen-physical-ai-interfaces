@@ -226,7 +226,7 @@
       <input class="input mt-2" type="number" min="0" step="0.5" bind:value={resetWaitSec} required />
       <p class="mt-2 text-xs text-slate-500">エピソード間の待機時間（秒）</p>
     </label>
-    <p class="text-xs text-slate-500">プロフィールは現在の設定が使用されます。</p>
+    <p class="text-xs text-slate-500">プロファイルは現在の設定が使用されます。</p>
     {#if error}
       <p class="text-sm text-rose-600">{error}</p>
     {/if}

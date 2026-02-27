@@ -232,7 +232,7 @@
         <tr>
           <th class="pb-3">実験名</th>
           <th class="pb-3">モデル</th>
-          <th class="pb-3">プロフィール</th>
+          <th class="pb-3">プロファイル</th>
           <th class="pb-3">評価回数</th>
           <th class="pb-3">評価件数</th>
           <th class="pb-3">カテゴリ比率</th>

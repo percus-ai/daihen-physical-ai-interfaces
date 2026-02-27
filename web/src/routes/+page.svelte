@@ -77,7 +77,7 @@
   <div class="card p-6">
     <p class="section-title">Record</p>
     <h2 class="mt-2 text-xl font-semibold text-slate-900">データ録画</h2>
-    <p class="mt-3 text-sm text-slate-600">プロフィール選択、録画セッションの状態を可視化。</p>
+    <p class="mt-3 text-sm text-slate-600">プロファイル選択、録画セッションの状態を可視化。</p>
     <div class="mt-6 flex gap-3">
       <Tooltip.Root>
         <Tooltip.Trigger class="btn-ghost" type={null}>
@@ -151,7 +151,7 @@
     {:else if $overviewQuery.data}
       <div class="mt-4 space-y-3 text-sm text-slate-600">
         <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
-          <span>プロフィール数</span>
+          <span>プロファイル数</span>
           <span class="chip">{$overviewQuery.data.stats?.total_profiles ?? 0}</span>
         </div>
         <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">

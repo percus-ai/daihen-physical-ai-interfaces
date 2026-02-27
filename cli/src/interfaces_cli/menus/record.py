@@ -62,7 +62,7 @@ class RecordMenu(BaseMenu):
 
         if not profiles and not active_profile_name:
             print(f"{Colors.warning('No VLAbor profiles found.')}")
-            print(f"{Colors.muted('VLabor側でプロフィールを作成してから録画を開始してください。')}")
+            print(f"{Colors.muted('VLabor側でプロファイルを作成してから録画を開始してください。')}")
             input(f"\n{Colors.muted('Press Enter to continue...')}")
             return None
 
