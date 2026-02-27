@@ -1,7 +1,7 @@
 [project]
 name = "interfaces-backend"
 version = "0.1.0"
-description = "Backend API for Percus Physical AI Framework"
+description = "Backend API for DAIHEN Physical AI Framework"
 requires-python = ">=3.10,<3.13"
 license = { text = "Proprietary" }
 
