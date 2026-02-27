@@ -136,6 +136,11 @@
       ? `ssh -i ${jobInfo?.ssh_private_key ?? '~/.ssh/id_rsa'} ${jobInfo?.ssh_user ?? 'root'}@${jobInfo.ip}`
       : ''
   );
+  const displayedLogs = $derived(
+    streamLines.length
+      ? `${logs}${logs ? '\n' : ''}${streamLines.join('\n')}`
+      : logs
+  );
   const reviveSshCommand = $derived(
     reviveResult?.ip
       ? `ssh -i ${reviveResult?.ssh_private_key ?? '~/.ssh/id_rsa'} ${reviveResult?.ssh_user ?? 'root'}@${reviveResult.ip}`
@@ -341,9 +346,23 @@
     }
   };
 
-  const startLogStream = () => {
+  const startLogStream = async () => {
     if (!jobId || streamWs) return;
     streamError = '';
+    logsError = '';
+
+    // Load full logs first so the user can see the full history before tailing.
+    try {
+      logsLoading = true;
+      const content = await api.training.downloadLogs(jobId, logsType);
+      logs = content ?? '';
+      logsSource = 'remote';
+    } catch (error) {
+      logsError = error instanceof Error ? error.message : 'ログ取得に失敗しました。';
+    } finally {
+      logsLoading = false;
+    }
+
     streamLines = [];
     streamStatus = 'connecting';
     const ws = new WebSocket(wsUrl(`/api/training/ws/jobs/${jobId}/logs?log_type=${logsType}`));
@@ -567,7 +586,9 @@
     <section class="card p-6">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-xl font-semibold text-slate-900">ログ内容</h2>
-        <span class="text-xs text-slate-500">表示: {logsType === 'training' ? '学習ログ' : 'セットアップログ'}</span>
+        <span class="text-xs text-slate-500">
+          表示: {logsType === 'training' ? '学習ログ' : 'セットアップログ'}{#if logsSource === 'r2'} (R2){/if}
+        </span>
       </div>
       <div class="mt-4 space-y-4 text-sm text-slate-600">
         {#if logsError}
@@ -577,22 +598,13 @@
           <p class="text-sm text-rose-600">{streamError}</p>
         {/if}
         {#if isRunning}
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
-            <p class="label">ログ {logsSource === 'r2' ? '(R2)' : ''}</p>
-            {#if logs}
-              <pre class="mt-2 whitespace-pre-wrap text-xs text-slate-700">{logs}</pre>
-            {:else}
-              <p class="mt-2 text-xs text-slate-500">ログは未取得です。</p>
-            {/if}
-          </div>
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
-            <p class="label">ストリーミングログ</p>
-            {#if streamLines.length}
-              <pre class="mt-2 whitespace-pre-wrap text-xs text-slate-700">{streamLines.join('\n')}</pre>
-            {:else}
-              <p class="mt-2 text-xs text-slate-500">ストリーミングは停止中です。</p>
-            {/if}
-          </div>
+          {#if displayedLogs}
+            <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
+              <pre class="min-w-0 max-h-80 overflow-auto whitespace-pre-wrap break-all text-xs text-slate-700">{displayedLogs}</pre>
+            </div>
+          {:else}
+            <p class="text-sm text-slate-500">ログは未取得です。</p>
+          {/if}
         {:else}
           <p class="text-sm text-slate-500">実行中ではないため、ログはダウンロードのみ対応しています。</p>
         {/if}
@@ -753,13 +765,17 @@
           {#if reviveEvents.length}
             <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
               <p class="label">進捗ログ</p>
-              <pre class="mt-2 whitespace-pre-wrap text-xs text-slate-700">{reviveEvents.join('\n')}</pre>
+              <div class="mt-2 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
+                <pre class="min-w-0 whitespace-pre-wrap break-all text-xs text-slate-700">{reviveEvents.join('\n')}</pre>
+              </div>
             </div>
           {/if}
           {#if checkpointUploadEvents.length}
             <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
               <p class="label">checkpoint登録ログ</p>
-              <pre class="mt-2 whitespace-pre-wrap text-xs text-slate-700">{checkpointUploadEvents.join('\n')}</pre>
+              <div class="mt-2 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
+                <pre class="min-w-0 whitespace-pre-wrap break-all text-xs text-slate-700">{checkpointUploadEvents.join('\n')}</pre>
+              </div>
             </div>
           {/if}
           {#if checkpointUploadResult}

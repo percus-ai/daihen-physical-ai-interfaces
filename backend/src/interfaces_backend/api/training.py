@@ -121,6 +121,27 @@ def _default_author_user_id() -> str:
         return "unknown"
 
 
+def _resolve_websocket_supabase_session(websocket: WebSocket) -> Optional[dict]:
+    """Resolve and refresh Supabase session for WebSocket requests."""
+    access_token = websocket.query_params.get("access_token")
+    auth_header = websocket.headers.get("authorization")
+    if auth_header:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            access_token = parts[1]
+    if not access_token:
+        access_token = websocket.cookies.get(ACCESS_COOKIE_NAME)
+    refresh_token = websocket.cookies.get(REFRESH_COOKIE_NAME)
+    supabase_session = build_session_from_tokens(access_token, refresh_token)
+    if not supabase_session or is_session_expired(supabase_session):
+        refreshed_session = refresh_session_from_refresh_token(refresh_token)
+        if refreshed_session:
+            supabase_session = refreshed_session
+    if not supabase_session or not supabase_session.get("user_id"):
+        return None
+    return supabase_session
+
+
 router = APIRouter(prefix="/api/training", tags=["training"])
 
 # Thread pool for WebSocket operations
@@ -5797,18 +5818,14 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
         return
     logger.info(f"WebSocket log stream client connected for job {job_id}")
 
-    job_data = await _load_job(job_id)
-    if not job_data:
+    supabase_session = _resolve_websocket_supabase_session(websocket)
+    if not supabase_session:
         await websocket.send_json(
-            {"type": "error", "error": f"Job not found: {job_id}"}
+            {
+                "type": "error",
+                "error": "認証情報がありません。ログインし直してください。",
+            }
         )
-        await websocket.close()
-        return
-
-    # Check job has IP
-    ip = job_data.get("ip")
-    if not ip:
-        await websocket.send_json({"type": "error", "error": "Job has no IP address"})
         await websocket.close()
         return
 
@@ -5816,111 +5833,130 @@ async def websocket_stream_logs(websocket: WebSocket, job_id: str):
     status_queue = None
     realtime_manager = None
     ssh_conn: Optional[SSHConnection] = None
+    session_token = set_request_session(supabase_session)
     try:
+        job_data = await _load_job(job_id)
+        if not job_data:
+            await websocket.send_json(
+                {"type": "error", "error": f"Job not found: {job_id}"}
+            )
+            await websocket.close()
+            return
+
+        # Check job has IP
+        ip = job_data.get("ip")
+        if not ip:
+            await websocket.send_json({"type": "error", "error": "Job has no IP address"})
+            await websocket.close()
+            return
+
         try:
-            realtime_manager = _get_training_job_realtime_manager()
-            status_subscription_id, status_queue = await realtime_manager.subscribe(
-                job_id,
-                asyncio.get_running_loop(),
-            )
-        except Exception as e:
-            await websocket.send_json(
-                {"type": "error", "error": f"Realtime購読に失敗しました: {e}"}
-            )
-            await websocket.close()
-            return
-
-        # Connect SSH in thread pool
-        loop = asyncio.get_event_loop()
-        ssh_conn = await loop.run_in_executor(
-            _executor, lambda: _get_ssh_connection_for_job(job_data, timeout=30)
-        )
-
-        if not ssh_conn:
-            await websocket.send_json(
-                {"type": "error", "error": "SSH接続に失敗しました"}
-            )
-            await websocket.close()
-            return
-
-        await websocket.send_json({"type": "connected", "message": "SSH接続完了"})
-
-        # Determine log file path
-        if log_type == "setup":
-            log_file = _get_setup_log_file_path(job_data)
-        else:
-            log_file = _get_training_log_file_path(job_data)
-
-        # Start tail -f in a channel
-        transport = ssh_conn.client.get_transport()
-        channel = transport.open_session()
-        channel.exec_command(f"tail -f {log_file} 2>/dev/null")
-        channel.setblocking(0)
-
-        last_heartbeat = asyncio.get_event_loop().time()
-
-        while True:
-            # Check for incoming data from SSH
             try:
-                if channel.recv_ready():
-                    data = channel.recv(4096)
-                    if data:
-                        lines = data.decode("utf-8", errors="replace").split("\n")
-                        for line in lines:
-                            if line.strip():
-                                await websocket.send_json({"type": "log", "line": line})
+                realtime_manager = _get_training_job_realtime_manager()
+                status_subscription_id, status_queue = await realtime_manager.subscribe(
+                    job_id,
+                    asyncio.get_running_loop(),
+                )
+            except Exception as e:
+                await websocket.send_json(
+                    {"type": "error", "error": f"Realtime購読に失敗しました: {e}"}
+                )
+                await websocket.close()
+                return
 
-                # Check if channel closed (process ended)
-                if channel.exit_status_ready():
+            # Connect SSH in thread pool
+            loop = asyncio.get_event_loop()
+            ssh_conn = await loop.run_in_executor(
+                _executor, lambda: _get_ssh_connection_for_job(job_data, timeout=30)
+            )
+
+            if not ssh_conn:
+                await websocket.send_json(
+                    {"type": "error", "error": "SSH接続に失敗しました"}
+                )
+                await websocket.close()
+                return
+
+            await websocket.send_json({"type": "connected", "message": "SSH接続完了"})
+
+            # Determine log file path
+            if log_type == "setup":
+                log_file = _get_setup_log_file_path(job_data)
+            else:
+                log_file = _get_training_log_file_path(job_data)
+
+            # Start tail -f in a channel
+            transport = ssh_conn.client.get_transport()
+            channel = transport.open_session()
+            channel.exec_command(f"tail -f {log_file} 2>/dev/null")
+            channel.setblocking(0)
+
+            last_heartbeat = asyncio.get_event_loop().time()
+
+            while True:
+                # Check for incoming data from SSH
+                try:
+                    if channel.recv_ready():
+                        data = channel.recv(4096)
+                        if data:
+                            lines = data.decode("utf-8", errors="replace").split("\n")
+                            for line in lines:
+                                if line.strip():
+                                    await websocket.send_json({"type": "log", "line": line})
+
+                    # Check if channel closed (process ended)
+                    if channel.exit_status_ready():
+                        await websocket.send_json(
+                            {
+                                "type": "status",
+                                "status": "stream_ended",
+                                "message": "ログストリーム終了",
+                            }
+                        )
+                        await _mark_job_completed(job_id)
+                        break
+
+                except Exception as e:
+                    logger.debug(f"SSH recv error: {e}")
+
+                # Send heartbeat every 5 seconds
+                now = asyncio.get_event_loop().time()
+                if now - last_heartbeat > 5:
+                    await websocket.send_json({"type": "heartbeat"})
+                    last_heartbeat = now
+
+                status = _drain_latest_status(status_queue) if status_queue else None
+                if status and status not in RUNNING_STATUSES:
                     await websocket.send_json(
                         {
                             "type": "status",
-                            "status": "stream_ended",
-                            "message": "ログストリーム終了",
+                            "status": status,
+                            "message": f"ジョブ状態: {status}",
                         }
                     )
-                    await _mark_job_completed(job_id)
                     break
 
-            except Exception as e:
-                logger.debug(f"SSH recv error: {e}")
+                # Small delay to avoid busy loop
+                await asyncio.sleep(0.1)
 
-            # Send heartbeat every 5 seconds
-            now = asyncio.get_event_loop().time()
-            if now - last_heartbeat > 5:
-                await websocket.send_json({"type": "heartbeat"})
-                last_heartbeat = now
-
-            status = _drain_latest_status(status_queue) if status_queue else None
-            if status and status not in RUNNING_STATUSES:
-                await websocket.send_json(
-                    {
-                        "type": "status",
-                        "status": status,
-                        "message": f"ジョブ状態: {status}",
-                    }
-                )
-                break
-
-            # Small delay to avoid busy loop
-            await asyncio.sleep(0.1)
-
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket log stream client disconnected for job {job_id}")
-    except Exception as e:
-        logger.error(f"WebSocket log stream error for job {job_id}: {e}")
-        try:
-            await websocket.send_json({"type": "error", "error": str(e)})
-        except Exception:
-            pass
-    finally:
-        if ssh_conn:
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket log stream client disconnected for job {job_id}")
+        except Exception as e:
+            logger.error(f"WebSocket log stream error for job {job_id}: {e}")
             try:
-                ssh_conn.disconnect()
+                await websocket.send_json({"type": "error", "error": str(e)})
             except Exception:
                 pass
-        if status_subscription_id and realtime_manager:
-            realtime_manager.unsubscribe(status_subscription_id)
+        finally:
+            if ssh_conn:
+                try:
+                    ssh_conn.disconnect()
+                except Exception:
+                    pass
+            if status_subscription_id and realtime_manager:
+                realtime_manager.unsubscribe(status_subscription_id)
+    finally:
+        reset_request_session(session_token)
 
 
 @router.websocket("/ws/jobs/{job_id}/session")
@@ -5950,11 +5986,13 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
     await websocket.accept()
     logger.info(f"WebSocket job session connected for job {job_id}")
 
-    # Load job data immediately
-    job_data = await _load_job(job_id)
-    if not job_data:
+    supabase_session = _resolve_websocket_supabase_session(websocket)
+    if not supabase_session:
         await websocket.send_json(
-            {"type": "error", "error": f"Job not found: {job_id}"}
+            {
+                "type": "error",
+                "error": "認証情報がありません。ログインし直してください。",
+            }
         )
         await websocket.close()
         return
@@ -5962,188 +6000,204 @@ async def websocket_job_session(websocket: WebSocket, job_id: str):
     status_subscription_id = None
     status_queue = None
     realtime_manager = None
+    session_token = set_request_session(supabase_session)
     try:
-        realtime_manager = _get_training_job_realtime_manager()
-        status_subscription_id, status_queue = await realtime_manager.subscribe(
-            job_id,
-            asyncio.get_running_loop(),
-        )
-    except Exception as e:
-        await websocket.send_json(
-            {"type": "error", "error": f"Realtime購読に失敗しました: {e}"}
-        )
-        await websocket.close()
-        return
-
-    # Send job info immediately (no SSH needed)
-    await websocket.send_json(
-        {
-            "type": "job_info",
-            "data": {
-                "job_id": job_data.get("job_id"),
-                "job_name": job_data.get("job_name"),
-                "status": job_data.get("status"),
-                "mode": job_data.get("mode"),
-                "gpu_model": job_data.get("gpu_model"),
-                "gpus_per_instance": job_data.get("gpus_per_instance"),
-                "ip": job_data.get("ip"),
-                "instance_id": job_data.get("instance_id"),
-                "created_at": job_data.get("created_at"),
-                "started_at": job_data.get("started_at"),
-                "failure_reason": job_data.get("failure_reason"),
-                "termination_reason": job_data.get("termination_reason"),
-                "cleanup_status": job_data.get("cleanup_status"),
-                "deleted_at": job_data.get("deleted_at"),
-            },
-        }
-    )
-
-    ssh_conn: Optional[SSHConnection] = None
-    log_channel = None
-    is_streaming_logs = False
-
-    try:
-        # Check if job has IP (needed for SSH)
-        ip = job_data.get("ip")
-        if not ip:
+        # Load job data immediately
+        job_data = await _load_job(job_id)
+        if not job_data:
             await websocket.send_json(
                 {
-                    "type": "ssh_error",
-                    "error": "Job has no IP address (instance may not be ready)",
+                    "type": "error",
+                    "error": f"Job not found: {job_id}",
                 }
             )
-            # Continue without SSH - user can still see local info
-            await _run_session_loop_no_ssh(websocket, status_queue, job_id)
+            await websocket.close()
             return
 
-        # Start SSH connection
-        await websocket.send_json({"type": "ssh_connecting"})
+        try:
+            realtime_manager = _get_training_job_realtime_manager()
+            status_subscription_id, status_queue = await realtime_manager.subscribe(
+                job_id,
+                asyncio.get_running_loop(),
+            )
+        except Exception as e:
+            await websocket.send_json(
+                {"type": "error", "error": f"Realtime購読に失敗しました: {e}"}
+            )
+            await websocket.close()
+            return
 
-        # Connect SSH in thread pool
-        loop = asyncio.get_event_loop()
-        ssh_conn = await loop.run_in_executor(
-            _executor, lambda: _get_ssh_connection_for_job(job_data, timeout=30)
+        # Send job info immediately (no SSH needed)
+        await websocket.send_json(
+            {
+                "type": "job_info",
+                "data": {
+                    "job_id": job_data.get("job_id"),
+                    "job_name": job_data.get("job_name"),
+                    "status": job_data.get("status"),
+                    "mode": job_data.get("mode"),
+                    "gpu_model": job_data.get("gpu_model"),
+                    "gpus_per_instance": job_data.get("gpus_per_instance"),
+                    "ip": job_data.get("ip"),
+                    "instance_id": job_data.get("instance_id"),
+                    "created_at": job_data.get("created_at"),
+                    "started_at": job_data.get("started_at"),
+                    "failure_reason": job_data.get("failure_reason"),
+                    "termination_reason": job_data.get("termination_reason"),
+                    "cleanup_status": job_data.get("cleanup_status"),
+                    "deleted_at": job_data.get("deleted_at"),
+                },
+            }
         )
 
-        if not ssh_conn:
-            await websocket.send_json(
-                {"type": "ssh_error", "error": "SSH接続に失敗しました"}
+        ssh_conn: Optional[SSHConnection] = None
+        log_channel = None
+        is_streaming_logs = False
+
+        try:
+            # Check if job has IP (needed for SSH)
+            ip = job_data.get("ip")
+            if not ip:
+                await websocket.send_json(
+                    {
+                        "type": "ssh_error",
+                        "error": "Job has no IP address (instance may not be ready)",
+                    }
+                )
+                # Continue without SSH - user can still see local info
+                await _run_session_loop_no_ssh(websocket, status_queue, job_id)
+                return
+
+            # Start SSH connection
+            await websocket.send_json({"type": "ssh_connecting"})
+
+            # Connect SSH in thread pool
+            loop = asyncio.get_event_loop()
+            ssh_conn = await loop.run_in_executor(
+                _executor, lambda: _get_ssh_connection_for_job(job_data, timeout=30)
             )
-            await _run_session_loop_no_ssh(websocket, status_queue, job_id)
-            return
 
-        await websocket.send_json({"type": "ssh_connected"})
+            if not ssh_conn:
+                await websocket.send_json(
+                    {"type": "ssh_error", "error": "SSH接続に失敗しました"}
+                )
+                await _run_session_loop_no_ssh(websocket, status_queue, job_id)
+                return
 
-        # Get initial remote status and progress (pass raw paramiko client to helper functions)
-        await _send_remote_status(websocket, ssh_conn.client)
-        await _send_progress(websocket, job_id)
+            await websocket.send_json({"type": "ssh_connected"})
 
-        # Determine log file path for later use
-        log_file = _get_training_log_file_path(job_data)
+            # Get initial remote status and progress (pass raw paramiko client to helper functions)
+            await _send_remote_status(websocket, ssh_conn.client)
+            await _send_progress(websocket, job_id)
 
-        last_heartbeat = asyncio.get_event_loop().time()
-        last_progress_update = asyncio.get_event_loop().time()
+            # Determine log file path for later use
+            log_file = _get_training_log_file_path(job_data)
 
-        while True:
-            now = asyncio.get_event_loop().time()
+            last_heartbeat = asyncio.get_event_loop().time()
+            last_progress_update = asyncio.get_event_loop().time()
 
-            # Handle incoming client messages (non-blocking)
-            try:
-                # Use wait_for with short timeout to check for messages
-                message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
-                action = message.get("action")
+            while True:
+                now = asyncio.get_event_loop().time()
 
-                if action == "start_logs" and not is_streaming_logs:
-                    # Start log streaming using same SSH connection
-                    transport = ssh_conn.client.get_transport()
-                    if transport and transport.is_active():
-                        log_channel = transport.open_session()
-                        log_channel.exec_command(f"tail -f {log_file} 2>/dev/null")
-                        log_channel.setblocking(0)
-                        is_streaming_logs = True
-                        await websocket.send_json({"type": "log_stream_started"})
-
-                elif action == "stop_logs" and is_streaming_logs:
-                    # Stop log streaming
-                    if log_channel:
-                        try:
-                            log_channel.close()
-                        except Exception:
-                            pass
-                        log_channel = None
-                    is_streaming_logs = False
-                    await websocket.send_json({"type": "log_stream_stopped"})
-
-                elif action == "refresh":
-                    # Refresh status and progress
-                    await _send_remote_status(websocket, ssh_conn.client)
-                    await _send_progress(websocket, job_id)
-
-            except asyncio.TimeoutError:
-                pass  # No message received, continue
-
-            # If streaming logs, read from channel
-            if is_streaming_logs and log_channel:
+                # Handle incoming client messages (non-blocking)
                 try:
-                    if log_channel.recv_ready():
-                        data = log_channel.recv(4096)
-                        if data:
-                            lines = data.decode("utf-8", errors="replace").split("\n")
-                            for line in lines:
-                                if line.strip():
-                                    await websocket.send_json(
-                                        {"type": "log", "line": line}
-                                    )
+                    # Use wait_for with short timeout to check for messages
+                    message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
+                    action = message.get("action")
 
-                    # Check if log process ended
-                    if log_channel.exit_status_ready():
+                    if action == "start_logs" and not is_streaming_logs:
+                        # Start log streaming using same SSH connection
+                        transport = ssh_conn.client.get_transport()
+                        if transport and transport.is_active():
+                            log_channel = transport.open_session()
+                            log_channel.exec_command(f"tail -f {log_file} 2>/dev/null")
+                            log_channel.setblocking(0)
+                            is_streaming_logs = True
+                            await websocket.send_json({"type": "log_stream_started"})
+
+                    elif action == "stop_logs" and is_streaming_logs:
+                        # Stop log streaming
+                        if log_channel:
+                            try:
+                                log_channel.close()
+                            except Exception:
+                                pass
+                            log_channel = None
                         is_streaming_logs = False
                         await websocket.send_json({"type": "log_stream_stopped"})
-                        log_channel = None
 
-                except Exception as e:
-                    logger.debug(f"Log channel read error: {e}")
+                    elif action == "refresh":
+                        # Refresh status and progress
+                        await _send_remote_status(websocket, ssh_conn.client)
+                        await _send_progress(websocket, job_id)
 
-            # Send heartbeat every 5 seconds
-            if now - last_heartbeat > 5:
-                await websocket.send_json({"type": "heartbeat"})
-                last_heartbeat = now
+                except asyncio.TimeoutError:
+                    pass  # No message received, continue
 
-            # Update progress every 10 seconds (if not streaming logs)
-            if not is_streaming_logs and now - last_progress_update > 10:
-                await _send_progress(websocket, job_id)
-                last_progress_update = now
+                # If streaming logs, read from channel
+                if is_streaming_logs and log_channel:
+                    try:
+                        if log_channel.recv_ready():
+                            data = log_channel.recv(4096)
+                            if data:
+                                lines = data.decode("utf-8", errors="replace").split("\n")
+                                for line in lines:
+                                    if line.strip():
+                                        await websocket.send_json(
+                                            {"type": "log", "line": line}
+                                        )
 
-            status = _drain_latest_status(status_queue) if status_queue else None
-            if status and status not in RUNNING_STATUSES:
-                await websocket.send_json(
-                    {"type": "job_status_changed", "status": status}
-                )
-                break
+                        # Check if log process ended
+                        if log_channel.exit_status_ready():
+                            is_streaming_logs = False
+                            await websocket.send_json({"type": "log_stream_stopped"})
+                            log_channel = None
 
-            await asyncio.sleep(0.05)
+                    except Exception as e:
+                        logger.debug(f"Log channel read error: {e}")
 
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket job session disconnected for job {job_id}")
-    except Exception as e:
-        logger.error(f"WebSocket job session error for job {job_id}: {e}")
-        try:
-            await websocket.send_json({"type": "error", "error": str(e)})
-        except Exception:
-            pass
+                # Send heartbeat every 5 seconds
+                if now - last_heartbeat > 5:
+                    await websocket.send_json({"type": "heartbeat"})
+                    last_heartbeat = now
+
+                # Update progress every 10 seconds (if not streaming logs)
+                if not is_streaming_logs and now - last_progress_update > 10:
+                    await _send_progress(websocket, job_id)
+                    last_progress_update = now
+
+                status = _drain_latest_status(status_queue) if status_queue else None
+                if status and status not in RUNNING_STATUSES:
+                    await websocket.send_json(
+                        {"type": "job_status_changed", "status": status}
+                    )
+                    break
+
+                await asyncio.sleep(0.05)
+
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket job session disconnected for job {job_id}")
+        except Exception as e:
+            logger.error(f"WebSocket job session error for job {job_id}: {e}")
+            try:
+                await websocket.send_json({"type": "error", "error": str(e)})
+            except Exception:
+                pass
+        finally:
+            if log_channel:
+                try:
+                    log_channel.close()
+                except Exception:
+                    pass
+            if ssh_conn:
+                try:
+                    ssh_conn.disconnect()
+                except Exception:
+                    pass
+            if status_subscription_id and realtime_manager:
+                realtime_manager.unsubscribe(status_subscription_id)
     finally:
-        if log_channel:
-            try:
-                log_channel.close()
-            except Exception:
-                pass
-        if ssh_conn:
-            try:
-                ssh_conn.disconnect()
-            except Exception:
-                pass
-        if status_subscription_id and realtime_manager:
-            realtime_manager.unsubscribe(status_subscription_id)
+        reset_request_session(session_token)
 
 
 async def _run_session_loop_no_ssh(
