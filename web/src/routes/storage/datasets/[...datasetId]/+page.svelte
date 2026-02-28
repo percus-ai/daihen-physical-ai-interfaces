@@ -4,12 +4,15 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import { connectStream } from '$lib/realtime/stream';
   import {
     api,
-    type DatasetPlaybackResponse,
-    type DatasetPlaybackSignalField,
-    type DatasetPlaybackSignalFieldsResponse,
-    type DatasetPlaybackSignalSeriesResponse
+    type DatasetSyncJobStatus,
+    type DatasetViewerEpisodeListResponse,
+    type DatasetViewerResponse,
+    type DatasetViewerSignalField,
+    type DatasetViewerSignalFieldsResponse,
+    type DatasetViewerSignalSeriesResponse
   } from '$lib/api/client';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
@@ -79,22 +82,43 @@
   );
   const canMerge = $derived(!isArchived && mergeSelection.length > 0 && !actionLoading);
 
-  const playbackQuery = createQuery<DatasetPlaybackResponse>(
+  const viewerQuery = createQuery<DatasetViewerResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId, 'playback'],
-      queryFn: () => api.storage.datasetPlayback(datasetId),
+      queryKey: ['storage', 'dataset', datasetId, 'viewer'],
+      queryFn: () => api.storage.datasetViewer(datasetId),
+      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
+    }))
+  );
+
+  const episodesQuery = createQuery<DatasetViewerEpisodeListResponse>(
+    toStore(() => ({
+      queryKey: ['storage', 'dataset', datasetId, 'viewer', 'episodes'],
+      queryFn: () => api.storage.datasetViewerEpisodes(datasetId),
       enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
     }))
   );
 
   let selectedEpisode = $state(0);
-  const playbackEpisodes = $derived($playbackQuery.data?.total_episodes ?? 0);
+  const playbackEpisodes = $derived($episodesQuery.data?.total ?? $viewerQuery.data?.total_episodes ?? 0);
   let selectedSignalField = $state('');
+  let datasetSyncJobId = $state('');
+  let datasetSyncAutoTriggered = $state(false);
+  let datasetSyncStarting = $state(false);
+  let lastDatasetIdForSync = $state('');
+  let datasetSyncHandledTerminalState = $state('');
 
-  const signalFieldsQuery = createQuery<DatasetPlaybackSignalFieldsResponse>(
+  const datasetSyncJobQuery = createQuery<DatasetSyncJobStatus>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId, 'playback', 'signals'],
-      queryFn: () => api.storage.datasetPlaybackSignalFields(datasetId),
+      queryKey: ['storage', 'dataset-sync', datasetSyncJobId],
+      queryFn: () => api.storage.datasetSyncJob(datasetSyncJobId),
+      enabled: Boolean(datasetSyncJobId)
+    }))
+  );
+
+  const signalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
+    toStore(() => ({
+      queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals'],
+      queryFn: () => api.storage.datasetViewerSignalFields(datasetId),
       enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
     }))
   );
@@ -112,13 +136,13 @@
   });
 
   const selectedSignalMeta = $derived(
-    signalFields.find((field) => field.key === selectedSignalField) as DatasetPlaybackSignalField | undefined
+    signalFields.find((field) => field.key === selectedSignalField) as DatasetViewerSignalField | undefined
   );
 
-  const signalSeriesQuery = createQuery<DatasetPlaybackSignalSeriesResponse>(
+  const signalSeriesQuery = createQuery<DatasetViewerSignalSeriesResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId, 'playback', 'signals', selectedEpisode, selectedSignalField],
-      queryFn: () => api.storage.datasetPlaybackSignalSeries(datasetId, selectedEpisode, selectedSignalField),
+      queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals', selectedEpisode, selectedSignalField],
+      queryFn: () => api.storage.datasetViewerSignalSeries(datasetId, selectedEpisode, selectedSignalField),
       enabled:
         Boolean(datasetId) &&
         Boolean(dataset?.is_local) &&
@@ -149,9 +173,100 @@
   const refetchDataset = async () => {
     if (!datasetId) return;
     await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId] });
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'playback'] });
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'playback', 'signals'] });
+    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer'] });
+    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer', 'episodes'] });
+    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals'] });
   };
+
+  const startDatasetSyncJob = async () => {
+    if (!datasetId || datasetSyncStarting) return;
+    datasetSyncStarting = true;
+    actionError = '';
+    try {
+      const accepted = await api.storage.syncDataset(datasetId);
+      datasetSyncJobId = accepted.job_id;
+      actionMessage = 'データセット同期を開始しました。';
+    } catch (err) {
+      const status =
+        typeof err === 'object' && err !== null && 'status' in err
+          ? Number((err as { status?: unknown }).status)
+          : 0;
+      if (status === 409) {
+        try {
+          const active = await api.storage.datasetSyncJobs(false);
+          const existing = (active.jobs ?? []).find(
+            (job) => job.dataset_id === datasetId && (job.state === 'queued' || job.state === 'running')
+          );
+          if (existing) {
+            datasetSyncJobId = existing.job_id;
+            actionMessage = '進行中の同期ジョブに接続しました。';
+            return;
+          }
+        } catch {
+          // fall through and show the original error
+        }
+      }
+      actionError = err instanceof Error ? err.message : 'データセット同期の開始に失敗しました。';
+    } finally {
+      datasetSyncStarting = false;
+    }
+  };
+
+  const cancelDatasetSyncJob = async () => {
+    if (!datasetSyncJobId) return;
+    actionError = '';
+    try {
+      await api.storage.cancelDatasetSyncJob(datasetSyncJobId);
+      await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset-sync', datasetSyncJobId] });
+    } catch (err) {
+      actionError = err instanceof Error ? err.message : '同期中断に失敗しました。';
+    }
+  };
+
+  $effect(() => {
+    if (datasetId !== lastDatasetIdForSync) {
+      lastDatasetIdForSync = datasetId;
+      datasetSyncJobId = '';
+      datasetSyncAutoTriggered = false;
+      datasetSyncHandledTerminalState = '';
+    }
+  });
+
+  $effect(() => {
+    if (!datasetId) return;
+    if (dataset?.is_local) {
+      datasetSyncAutoTriggered = false;
+      return;
+    }
+    if (datasetSyncJobId || datasetSyncAutoTriggered) return;
+    datasetSyncAutoTriggered = true;
+    void startDatasetSyncJob();
+  });
+
+  $effect(() => {
+    const state = $datasetSyncJobQuery.data?.state ?? '';
+    if (!state) return;
+    if (state === datasetSyncHandledTerminalState) return;
+    if (state === 'completed') {
+      datasetSyncHandledTerminalState = state;
+      void refetchDataset();
+    }
+  });
+
+  $effect(() => {
+    if (!datasetSyncJobId) return;
+    const currentJobId = datasetSyncJobId;
+    const streamPath = `/api/stream/storage/dataset-sync/jobs/${encodeURIComponent(currentJobId)}`;
+    const stop = connectStream<DatasetSyncJobStatus>({
+      path: streamPath,
+      onMessage: (payload) => {
+        queryClient.setQueryData(['storage', 'dataset-sync', currentJobId], payload);
+      }
+    });
+    return () => {
+      stop();
+    };
+  });
 
   const refetchCandidates = async () => {
     if (!profileName) return;
@@ -363,12 +478,59 @@
   </div>
   <p class="mt-2 text-sm text-slate-600">収録済みエピソードをブラウザで確認できます。</p>
   {#if !dataset?.is_local}
-    <p class="mt-4 text-sm text-slate-600">ローカル未配置のため再生できません。</p>
-  {:else if $playbackQuery.isLoading}
+    <div class="mt-4 rounded-xl border border-slate-200/70 bg-white/70 p-4">
+      <p class="text-sm text-slate-700">ローカル未配置のため、データセット同期を実行中です。</p>
+      {#if $datasetSyncJobQuery.isLoading}
+        <p class="mt-2 text-xs text-slate-500">同期ジョブ情報を読み込み中...</p>
+      {:else if $datasetSyncJobQuery.error}
+        <p class="mt-2 text-xs text-rose-600">
+          {$datasetSyncJobQuery.error instanceof Error
+            ? $datasetSyncJobQuery.error.message
+            : '同期ジョブ情報の取得に失敗しました。'}
+        </p>
+      {:else if $datasetSyncJobQuery.data}
+        <p class="mt-2 text-xs text-slate-500">
+          状態: {$datasetSyncJobQuery.data.state}
+          {#if typeof $datasetSyncJobQuery.data.progress_percent === 'number'}
+            / {Math.round($datasetSyncJobQuery.data.progress_percent)}%
+          {/if}
+        </p>
+        {#if $datasetSyncJobQuery.data.message}
+          <p class="mt-1 text-xs text-slate-500">{$datasetSyncJobQuery.data.message}</p>
+        {/if}
+        {#if $datasetSyncJobQuery.data.error}
+          <p class="mt-1 text-xs text-rose-600">{$datasetSyncJobQuery.data.error}</p>
+        {/if}
+      {/if}
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button
+          class={`btn-ghost ${datasetSyncStarting ? 'opacity-50 cursor-not-allowed' : ''}`}
+          type="button"
+          disabled={datasetSyncStarting}
+          onclick={startDatasetSyncJob}
+        >
+          同期を再実行
+        </button>
+        {#if datasetSyncJobId}
+          <button
+            class="btn-ghost"
+            type="button"
+            onclick={cancelDatasetSyncJob}
+          >
+            同期を中断
+          </button>
+        {/if}
+      </div>
+    </div>
+  {:else if $viewerQuery.isLoading || $episodesQuery.isLoading}
     <p class="mt-4 text-sm text-slate-600">再生情報を読み込み中...</p>
-  {:else if $playbackQuery.error}
+  {:else if $viewerQuery.error || $episodesQuery.error}
     <p class="mt-4 text-sm text-rose-600">
-      {$playbackQuery.error instanceof Error ? $playbackQuery.error.message : '再生情報の取得に失敗しました。'}
+      {$viewerQuery.error instanceof Error
+        ? $viewerQuery.error.message
+        : $episodesQuery.error instanceof Error
+          ? $episodesQuery.error.message
+          : '再生情報の取得に失敗しました。'}
     </p>
   {:else if playbackEpisodes > 0}
     <div class="mt-4 flex flex-wrap items-end gap-3">
@@ -404,9 +566,9 @@
       </p>
     </div>
 
-    {#if $playbackQuery.data?.use_videos && ($playbackQuery.data?.cameras?.length ?? 0) > 0}
+    {#if $viewerQuery.data?.use_videos && ($viewerQuery.data?.cameras?.length ?? 0) > 0}
       <div class="mt-4 grid gap-4 lg:grid-cols-2">
-        {#each $playbackQuery.data.cameras as camera}
+        {#each $viewerQuery.data.cameras as camera}
           <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-3">
             <div class="mb-2 flex items-center justify-between">
               <p class="text-sm font-semibold text-slate-800">{camera.label}</p>
@@ -421,7 +583,7 @@
                 controls
                 preload="metadata"
                 crossorigin="use-credentials"
-                src={api.storage.datasetPlaybackVideoUrl(datasetId, camera.key, selectedEpisode)}
+                src={api.storage.datasetViewerVideoUrl(datasetId, camera.key, selectedEpisode)}
               ></video>
             {/key}
           </div>
@@ -446,7 +608,7 @@
           type="button"
           onclick={() =>
             queryClient.invalidateQueries({
-              queryKey: ['storage', 'dataset', datasetId, 'playback', 'signals', selectedEpisode, selectedSignalField]
+              queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals', selectedEpisode, selectedSignalField]
             })}
         >
           系列更新

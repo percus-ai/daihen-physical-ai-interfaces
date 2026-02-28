@@ -20,11 +20,18 @@ from interfaces_backend.models.storage import (
     ArchiveBulkRequest,
     ArchiveBulkResponse,
     ArchiveResponse,
-    DatasetPlaybackCameraInfo,
-    DatasetPlaybackResponse,
-    DatasetPlaybackSignalField,
-    DatasetPlaybackSignalFieldsResponse,
-    DatasetPlaybackSignalSeriesResponse,
+    DatasetViewerCameraInfo,
+    DatasetViewerEpisode,
+    DatasetViewerEpisodeListResponse,
+    DatasetViewerResponse,
+    DatasetSyncJobAcceptedResponse,
+    DatasetSyncJobCancelResponse,
+    DatasetSyncJobCreateRequest,
+    DatasetSyncJobListResponse,
+    DatasetSyncJobStatus,
+    DatasetViewerSignalField,
+    DatasetViewerSignalFieldsResponse,
+    DatasetViewerSignalSeriesResponse,
     DatasetReuploadResponse,
     DatasetMergeRequest,
     DatasetMergeResponse,
@@ -43,6 +50,7 @@ from interfaces_backend.models.storage import (
     StorageUsageResponse,
 )
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
+from interfaces_backend.services.dataset_sync_jobs import get_dataset_sync_jobs_service
 from interfaces_backend.services.model_sync_jobs import get_model_sync_jobs_service
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.vlabor_profiles import resolve_profile_spec
@@ -89,13 +97,17 @@ def _camera_label_from_key(video_key: str) -> str:
     return video_key.split(".")[-1]
 
 
-def _build_playback_response(dataset_id: str, metadata: LeRobotDatasetMetadata) -> DatasetPlaybackResponse:
-    cameras: list[DatasetPlaybackCameraInfo] = []
+def _build_dataset_viewer_response(
+    dataset_id: str,
+    metadata: LeRobotDatasetMetadata,
+    dataset_meta: Optional[dict] = None,
+) -> DatasetViewerResponse:
+    cameras: list[DatasetViewerCameraInfo] = []
     for video_key in metadata.video_keys:
         feature = metadata.features.get(video_key) if isinstance(metadata.features, dict) else None
         info = feature.get("info") if isinstance(feature, dict) else {}
         cameras.append(
-            DatasetPlaybackCameraInfo(
+            DatasetViewerCameraInfo(
                 key=video_key,
                 label=_camera_label_from_key(video_key),
                 width=info.get("video.width"),
@@ -106,13 +118,15 @@ def _build_playback_response(dataset_id: str, metadata: LeRobotDatasetMetadata) 
             )
         )
 
-    return DatasetPlaybackResponse(
+    return DatasetViewerResponse(
         dataset_id=dataset_id,
         is_local=True,
+        download_required=False,
         total_episodes=metadata.total_episodes,
         fps=metadata.fps,
         use_videos=bool(metadata.video_path) and len(metadata.video_keys) > 0,
         cameras=cameras,
+        dataset_meta=dataset_meta,
     )
 
 
@@ -232,6 +246,10 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
+
+
+def _dataset_row_to_meta(row: dict) -> dict:
+    return _dataset_row_to_info(row).model_dump()
 
 
 def _model_row_to_info(row: dict) -> ModelInfo:
@@ -470,9 +488,42 @@ async def get_dataset(dataset_id: str):
     return _dataset_row_to_info(rows[0])
 
 
-@router.get("/datasets/{dataset_id:path}/playback", response_model=DatasetPlaybackResponse)
-async def get_dataset_playback(dataset_id: str):
-    """Get local playback metadata for a dataset."""
+@router.get("/dataset-viewer/datasets/{dataset_id:path}", response_model=DatasetViewerResponse)
+async def get_dataset_viewer(dataset_id: str):
+    """Get dataset viewer metadata."""
+    client = await get_supabase_async_client()
+    rows = (await client.table("datasets").select("*").eq("id", dataset_id).execute()).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+    row = rows[0]
+    dataset_meta = _dataset_row_to_meta(row)
+
+    dataset_path = get_datasets_dir() / dataset_id
+    if not dataset_path.exists():
+        return DatasetViewerResponse(
+            dataset_id=dataset_id,
+            is_local=False,
+            download_required=True,
+            total_episodes=int(row.get("episode_count") or 0),
+            fps=0,
+            use_videos=False,
+            cameras=[],
+            dataset_meta=dataset_meta,
+        )
+
+    try:
+        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
+        return _build_dataset_viewer_response(dataset_id, metadata, dataset_meta=dataset_meta)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+
+@router.get(
+    "/dataset-viewer/datasets/{dataset_id:path}/episodes",
+    response_model=DatasetViewerEpisodeListResponse,
+)
+async def get_dataset_viewer_episodes(dataset_id: str):
+    """List dataset episodes for viewer."""
     client = await get_supabase_async_client()
     rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
     if not rows:
@@ -484,13 +535,19 @@ async def get_dataset_playback(dataset_id: str):
 
     try:
         metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
-        return _build_playback_response(dataset_id, metadata)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to load dataset playback metadata: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+    episodes = [DatasetViewerEpisode(episode_index=idx) for idx in range(metadata.total_episodes)]
+    return DatasetViewerEpisodeListResponse(
+        dataset_id=dataset_id,
+        episodes=episodes,
+        total=len(episodes),
+    )
 
 
-@router.get("/datasets/{dataset_id:path}/playback/signals", response_model=DatasetPlaybackSignalFieldsResponse)
-async def get_dataset_playback_signal_fields(dataset_id: str):
+@router.get("/dataset-viewer/datasets/{dataset_id:path}/signals", response_model=DatasetViewerSignalFieldsResponse)
+async def get_dataset_viewer_signal_fields(dataset_id: str):
     """List numeric vector fields that can be visualized as joint-state style charts."""
     client = await get_supabase_async_client()
     rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
@@ -507,7 +564,7 @@ async def get_dataset_playback_signal_fields(dataset_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
 
     feature_map = metadata.features if isinstance(metadata.features, dict) else {}
-    fields: list[DatasetPlaybackSignalField] = []
+    fields: list[DatasetViewerSignalField] = []
     for key in sorted(feature_map.keys()):
         feature = feature_map.get(key)
         if not _is_vector_feature(feature):
@@ -515,7 +572,7 @@ async def get_dataset_playback_signal_fields(dataset_id: str):
         shape = feature.get("shape") if isinstance(feature, dict) else []
         axis_dim = int(shape[0]) if isinstance(shape, list) and shape else 0
         fields.append(
-            DatasetPlaybackSignalField(
+            DatasetViewerSignalField(
                 key=key,
                 label=key,
                 shape=[axis_dim] if axis_dim > 0 else [],
@@ -524,14 +581,14 @@ async def get_dataset_playback_signal_fields(dataset_id: str):
             )
         )
 
-    return DatasetPlaybackSignalFieldsResponse(dataset_id=dataset_id, fields=fields)
+    return DatasetViewerSignalFieldsResponse(dataset_id=dataset_id, fields=fields)
 
 
 @router.get(
-    "/datasets/{dataset_id:path}/playback/signals/{episode_index}",
-    response_model=DatasetPlaybackSignalSeriesResponse,
+    "/dataset-viewer/datasets/{dataset_id:path}/episodes/{episode_index}/signals",
+    response_model=DatasetViewerSignalSeriesResponse,
 )
-async def get_dataset_playback_signal_series(
+async def get_dataset_viewer_signal_series(
     dataset_id: str,
     episode_index: int,
     field: str = Query(..., min_length=1),
@@ -605,7 +662,7 @@ async def get_dataset_playback_signal_series(
         raise HTTPException(status_code=500, detail=f"Failed to load episode series: {exc}") from exc
 
     if table.num_rows == 0:
-        return DatasetPlaybackSignalSeriesResponse(
+        return DatasetViewerSignalSeriesResponse(
             dataset_id=dataset_id,
             episode_index=episode_index,
             field=field,
@@ -631,7 +688,7 @@ async def get_dataset_playback_signal_series(
         positions = [positions[idx] for idx in order]
         timestamps = [timestamps[idx] for idx in order]
 
-    return DatasetPlaybackSignalSeriesResponse(
+    return DatasetViewerSignalSeriesResponse(
         dataset_id=dataset_id,
         episode_index=episode_index,
         field=field,
@@ -642,8 +699,8 @@ async def get_dataset_playback_signal_series(
     )
 
 
-@router.get("/datasets/{dataset_id:path}/playback/{video_key:path}/{episode_index}")
-async def get_dataset_playback_video(dataset_id: str, video_key: str, episode_index: int):
+@router.get("/dataset-viewer/datasets/{dataset_id:path}/episodes/{episode_index}/videos/{video_key:path}")
+async def get_dataset_viewer_video(dataset_id: str, video_key: str, episode_index: int):
     """Stream a dataset episode video for playback."""
     if episode_index < 0:
         raise HTTPException(status_code=400, detail="episode_index must be >= 0")
@@ -730,6 +787,87 @@ async def reupload_dataset(dataset_id: str):
         id=dataset_id,
         success=True,
         message="Dataset re-upload completed",
+    )
+
+
+async def _run_dataset_sync_job(*, job_id: str, dataset_id: str) -> None:
+    jobs = get_dataset_sync_jobs_service()
+    sync_service = R2DBSyncService()
+    try:
+        jobs.set_running(
+            job_id=job_id,
+            progress_percent=5.0,
+            message="データセット同期を開始しました。",
+        )
+        result = await sync_service.ensure_dataset_local(dataset_id, auto_download=True)
+    except Exception as exc:
+        logger.exception("Dataset sync job failed unexpectedly: %s", job_id)
+        jobs.fail(
+            job_id=job_id,
+            message="データセット同期に失敗しました。",
+            error=str(exc),
+        )
+    else:
+        if result.success:
+            jobs.complete(
+                job_id=job_id,
+                message="ローカルキャッシュを利用しました。" if result.skipped else "データセット同期が完了しました。",
+            )
+            return
+        jobs.fail(
+            job_id=job_id,
+            message="データセット同期に失敗しました。",
+            error=result.message,
+        )
+    finally:
+        jobs.release_runtime_handles(job_id=job_id)
+
+
+@router.post("/dataset-sync/jobs", response_model=DatasetSyncJobAcceptedResponse, status_code=202)
+async def sync_dataset(request: DatasetSyncJobCreateRequest):
+    """Start a background dataset sync job."""
+    dataset_id = request.dataset_id.strip()
+    if not dataset_id:
+        raise HTTPException(status_code=400, detail="Dataset ID is required")
+    user_id = require_user_id()
+
+    client = await get_supabase_async_client()
+    rows = (
+        await client.table("datasets").select("id,status").eq("id", dataset_id).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+    if rows[0].get("status") != "active":
+        raise HTTPException(status_code=400, detail="Dataset is not active")
+
+    jobs = get_dataset_sync_jobs_service()
+    accepted = jobs.create(user_id=user_id, dataset_id=dataset_id)
+    task = asyncio.create_task(_run_dataset_sync_job(job_id=accepted.job_id, dataset_id=dataset_id))
+    jobs.attach_task(user_id=user_id, job_id=accepted.job_id, task=task)
+    return accepted
+
+
+@router.get("/dataset-sync/jobs", response_model=DatasetSyncJobListResponse)
+async def list_dataset_sync_jobs(include_terminal: bool = Query(False, description="Include completed jobs")):
+    user_id = require_user_id()
+    jobs = get_dataset_sync_jobs_service()
+    return jobs.list(user_id=user_id, include_terminal=include_terminal)
+
+
+@router.get("/dataset-sync/jobs/{job_id}", response_model=DatasetSyncJobStatus)
+async def get_dataset_sync_job(job_id: str):
+    user_id = require_user_id()
+    jobs = get_dataset_sync_jobs_service()
+    return jobs.get(user_id=user_id, job_id=job_id)
+
+
+@router.post("/dataset-sync/jobs/{job_id}/cancel", response_model=DatasetSyncJobCancelResponse)
+async def cancel_dataset_sync_job(job_id: str):
+    user_id = require_user_id()
+    jobs = get_dataset_sync_jobs_service()
+    return jobs.cancel(
+        user_id=user_id,
+        job_id=job_id,
     )
 
 
