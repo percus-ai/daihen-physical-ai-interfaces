@@ -1,7 +1,7 @@
 <script lang="ts">
   import { toStore } from 'svelte/store';
   import { page } from '$app/state';
-  import { Button, Tabs, Tooltip } from 'bits-ui';
+  import { Button, Dialog, Tabs, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api, type ExperimentEpisodeLink } from '$lib/api/client';
   import BlueprintCombobox from '$lib/components/blueprints/BlueprintCombobox.svelte';
@@ -634,9 +634,12 @@
   </div>
 </section>
 
-{#if linkModalOpen}
-  <div class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-[1px]">
-    <div class="h-full w-[min(1600px,100%)] rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl">
+<Dialog.Root bind:open={linkModalOpen}>
+  <Dialog.Portal>
+    <Dialog.Overlay class="fixed inset-0 z-[60] bg-slate-900/50 backdrop-blur-[1px]" />
+    <Dialog.Content
+      class="fixed left-1/2 top-1/2 z-[61] h-[calc(100vh-2rem)] w-[min(1600px,98vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl outline-none"
+    >
       <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4" bind:this={linkModalShellEl}>
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3" bind:this={linkModalToolbarEl}>
           <div class="flex flex-wrap items-start justify-between gap-3">
@@ -892,9 +895,9 @@
           </aside>
         </div>
       </div>
-    </div>
-  </div>
-{/if}
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>
 
 <section class="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
   <div class="card p-6">
