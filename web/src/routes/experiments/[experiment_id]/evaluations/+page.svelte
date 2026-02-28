@@ -635,8 +635,8 @@
 </section>
 
 {#if linkModalOpen}
-  <div class="fixed inset-0 z-40 bg-slate-900/50 backdrop-blur-[1px]">
-    <div class="mx-auto my-4 h-[calc(100vh-2rem)] w-[min(1600px,98vw)] rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl">
+  <div class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-[1px]">
+    <div class="h-full w-[min(1600px,100%)] rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl">
       <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4" bind:this={linkModalShellEl}>
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3" bind:this={linkModalToolbarEl}>
           <div class="flex flex-wrap items-start justify-between gap-3">
