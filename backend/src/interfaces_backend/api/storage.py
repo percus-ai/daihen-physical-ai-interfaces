@@ -204,9 +204,19 @@ async def _detach_training_jobs_from_dataset(client, dataset_id: str) -> None:
         raise
 
 
+async def _detach_episode_links_from_dataset(client, dataset_id: str) -> None:
+    await (
+        client.table("experiment_evaluation_episode_links")
+        .delete()
+        .eq("dataset_id", dataset_id)
+        .execute()
+    )
+
+
 async def _detach_dataset_references(client, dataset_id: str) -> None:
     await _detach_models_from_dataset(client, dataset_id)
     await _detach_training_jobs_from_dataset(client, dataset_id)
+    await _detach_episode_links_from_dataset(client, dataset_id)
 
 
 def _is_missing_column_error(exc: APIError, *, table_name: str, column_name: str) -> bool:

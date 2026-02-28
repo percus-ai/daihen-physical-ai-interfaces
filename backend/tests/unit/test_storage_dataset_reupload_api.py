@@ -221,13 +221,20 @@ def test_delete_archived_items_detaches_training_job_dataset_refs(monkeypatch):
             "payload": {"new_dataset_id": None},
             "filters": [("new_dataset_id", "dataset-1")],
         },
+        {
+            "table": "experiment_evaluation_episode_links",
+            "op": "delete",
+            "payload": None,
+            "filters": [("dataset_id", "dataset-1")],
+        },
         {"table": "datasets", "op": "delete", "payload": None, "filters": [("id", "dataset-1")]},
     ]
 
     mutation_calls = [
         call
         for call in fake_client.calls
-        if call["table"] in {"models", "training_jobs", "datasets"} and call["op"] in {"update", "delete"}
+        if call["table"] in {"models", "training_jobs", "experiment_evaluation_episode_links", "datasets"}
+        and call["op"] in {"update", "delete"}
     ]
     assert mutation_calls == expected_calls
 
