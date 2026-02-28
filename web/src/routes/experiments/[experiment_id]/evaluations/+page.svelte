@@ -1,9 +1,10 @@
 <script lang="ts">
   import { toStore } from 'svelte/store';
   import { page } from '$app/state';
-  import { Button, Tooltip } from 'bits-ui';
+  import { Button, Tabs, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api, type ExperimentEpisodeLink } from '$lib/api/client';
+  import BlueprintCombobox from '$lib/components/blueprints/BlueprintCombobox.svelte';
   import DatasetViewerPanel from '$lib/components/storage/DatasetViewerPanel.svelte';
   import { formatPercent } from '$lib/format';
 
@@ -57,6 +58,17 @@
 
   type MediaUrlResponse = {
     urls?: Record<string, string>;
+  };
+
+  type WebuiBlueprintSummary = {
+    id: string;
+    name: string;
+    created_at?: string;
+    updated_at?: string;
+  };
+
+  type WebuiBlueprintListResponse = {
+    blueprints?: WebuiBlueprintSummary[];
   };
 
   type EvaluationDraft = {
@@ -114,6 +126,13 @@
     }))
   );
 
+  const blueprintsQuery = createQuery<WebuiBlueprintListResponse>(
+    toStore(() => ({
+      queryKey: ['webui', 'blueprints', 'all'],
+      queryFn: () => api.webuiBlueprints.list() as Promise<WebuiBlueprintListResponse>
+    }))
+  );
+
   let evaluationItems: EvaluationDraft[] = $state([]);
   let initializedId = $state('');
   let submitting = $state(false);
@@ -124,14 +143,19 @@
   let imageUrlsError = $state('');
   let imageUrlMap: Record<string, string> = $state({});
   let imageKeySignature = $state('');
-  let linkEditorOpen = $state(false);
-  let linkViewerOpen = $state(false);
+  let linkModalOpen = $state(false);
+  let linkModalEditMode = $state(false);
+  let linkInspectorTab = $state<'blueprint' | 'view' | 'search'>('view');
   let activeTrialIndex = $state(1);
   let viewerSelectedLinkKey = $state('');
   let editorLinksDraft: ExperimentEpisodeLink[] = $state([]);
   let editorDatasetSearch = $state('');
   let editorSelectedDatasetId = $state('');
   let editorEpisodeSelections: number[] = $state([]);
+  let linkModalRightPaneWidth = $state(420);
+  let linkModalShellEl: HTMLDivElement | null = $state(null);
+  let linkModalToolbarEl: HTMLDivElement | null = $state(null);
+  let linkModalContentEl: HTMLDivElement | null = $state(null);
 
   const experiment = $derived($experimentQuery.data as Experiment | undefined);
   const evaluationCount = $derived(experiment?.evaluation_count ?? 0);
@@ -141,6 +165,7 @@
       : DEFAULT_METRIC_OPTIONS
   );
   const recommendedDatasetId = $derived($modelQuery.data?.dataset_id ?? '');
+  const savedBlueprints = $derived(($blueprintsQuery.data?.blueprints ?? []) as WebuiBlueprintSummary[]);
   const allDatasets = $derived(
     (($datasetsQuery.data?.datasets ?? []).filter((item) => item.status === 'active') as DatasetInfo[])
   );
@@ -157,9 +182,38 @@
   const viewerLinks = $derived(
     [...(activeEvaluationDraft?.episode_links ?? [])].sort((a, b) => a.sort_order - b.sort_order)
   );
-  const viewerSelectedLink = $derived(
-    viewerLinks.find((link) => `${link.dataset_id}:${link.episode_index}` === viewerSelectedLinkKey) ??
-      viewerLinks[0]
+  const linkModalLinks = $derived(
+    linkModalEditMode
+      ? normalizeEpisodeLinks(editorLinksDraft)
+      : viewerLinks
+  );
+  const linkModalSelectedLink = $derived(
+    linkModalLinks.find((link) => `${link.dataset_id}:${link.episode_index}` === viewerSelectedLinkKey) ??
+      linkModalLinks[0]
+  );
+  const linkModalViewerDatasetId = $derived.by(() => {
+    if (linkModalSelectedLink) return linkModalSelectedLink.dataset_id;
+    if (linkModalEditMode) return editorSelectedDatasetId;
+    return '';
+  });
+  const linkModalViewerEpisode = $derived.by(() => {
+    if (linkModalSelectedLink) return linkModalSelectedLink.episode_index;
+    if (linkModalEditMode) {
+      if (editorEpisodeSelections.length > 0) {
+        return editorEpisodeSelections[0];
+      }
+      const existing = editorLinksDraft.find((link) => link.dataset_id === editorSelectedDatasetId);
+      return existing?.episode_index ?? 0;
+    }
+    return 0;
+  });
+  const activeEvaluationBlueprintName = $derived.by(() => {
+    const blueprintId = activeEvaluationDraft?.blueprint_id ?? '';
+    if (!blueprintId) return '';
+    return savedBlueprints.find((item) => item.id === blueprintId)?.name ?? '';
+  });
+  const blueprintComboboxItems = $derived(
+    savedBlueprints.map((item) => ({ id: item.id, name: item.name }))
   );
 
   const editorDatasetViewerQuery = createQuery(
@@ -365,8 +419,8 @@
     }
   };
 
-  const normalizeEpisodeLinks = (links: ExperimentEpisodeLink[]) =>
-    links
+  function normalizeEpisodeLinks(links: ExperimentEpisodeLink[]) {
+    return links
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order)
       .map((link, idx) => ({
@@ -374,11 +428,18 @@
         episode_index: link.episode_index,
         sort_order: idx
       }));
+  }
 
   const replaceTrialEpisodeLinks = (trialIndex: number, links: ExperimentEpisodeLink[]) => {
     const rowIndex = evaluationItems.findIndex((item) => item.trial_index === trialIndex);
     if (rowIndex < 0) return;
     updateItem(rowIndex, { episode_links: normalizeEpisodeLinks(links) });
+  };
+
+  const setTrialBlueprintId = (trialIndex: number, blueprintId: string | null) => {
+    const rowIndex = evaluationItems.findIndex((item) => item.trial_index === trialIndex);
+    if (rowIndex < 0) return;
+    updateItem(rowIndex, { blueprint_id: blueprintId });
   };
 
   const openLinkEditor = (trialIndex: number) => {
@@ -393,7 +454,10 @@
     editorEpisodeSelections = existingLinks
       .filter((link) => link.dataset_id === editorSelectedDatasetId)
       .map((link) => link.episode_index);
-    linkEditorOpen = true;
+    viewerSelectedLinkKey = existingLinks.length ? `${existingLinks[0].dataset_id}:${existingLinks[0].episode_index}` : '';
+    linkModalEditMode = true;
+    linkInspectorTab = 'search';
+    linkModalOpen = true;
   };
 
   const openLinkViewer = (trialIndex: number) => {
@@ -401,24 +465,43 @@
     const row = evaluationItems.find((item) => item.trial_index === trialIndex);
     const links = normalizeEpisodeLinks(row?.episode_links ?? []);
     viewerSelectedLinkKey = links.length ? `${links[0].dataset_id}:${links[0].episode_index}` : '';
-    linkViewerOpen = true;
+    linkModalEditMode = false;
+    linkInspectorTab = 'view';
+    linkModalOpen = true;
   };
 
-  const closeLinkEditor = () => {
-    linkEditorOpen = false;
+  const closeLinkModal = () => {
+    linkModalOpen = false;
   };
 
   const applyLinkEditor = () => {
     replaceTrialEpisodeLinks(activeTrialIndex, editorLinksDraft);
-    linkEditorOpen = false;
+    linkModalEditMode = false;
+    linkInspectorTab = 'view';
+    const first = editorLinksDraft[0];
+    viewerSelectedLinkKey = first ? `${first.dataset_id}:${first.episode_index}` : '';
   };
 
-  const openEditorFromViewer = () => {
-    linkViewerOpen = false;
-    openLinkEditor(activeTrialIndex);
+  const switchModalToEdit = () => {
+    const row = evaluationItems.find((item) => item.trial_index === activeTrialIndex);
+    const existingLinks = normalizeEpisodeLinks(row?.episode_links ?? []);
+    editorLinksDraft = existingLinks;
+    if (!editorSelectedDatasetId) {
+      const fallbackDatasetId = allDatasets[0]?.id ?? '';
+      editorSelectedDatasetId =
+        existingLinks[0]?.dataset_id || recommendedDatasetId || fallbackDatasetId;
+    }
+    editorEpisodeSelections = existingLinks
+      .filter((link) => link.dataset_id === editorSelectedDatasetId)
+      .map((link) => link.episode_index);
+    linkModalEditMode = true;
+    linkInspectorTab = 'search';
   };
 
   const removeEditorLink = (datasetId: string, episodeIndex: number) => {
+    if (viewerSelectedLinkKey === `${datasetId}:${episodeIndex}`) {
+      viewerSelectedLinkKey = '';
+    }
     editorLinksDraft = normalizeEpisodeLinks(
       editorLinksDraft.filter(
         (link) => !(link.dataset_id === datasetId && link.episode_index === episodeIndex)
@@ -440,6 +523,9 @@
       });
     }
     editorLinksDraft = normalizeEpisodeLinks(merged);
+    if (!viewerSelectedLinkKey && editorLinksDraft.length) {
+      viewerSelectedLinkKey = `${editorLinksDraft[0].dataset_id}:${editorLinksDraft[0].episode_index}`;
+    }
   };
 
   const refreshEditorDataset = async () => {
@@ -454,30 +540,67 @@
     }
   };
 
-  const editorPreviewEpisode = $derived.by(() => {
-    if (editorEpisodeSelections.length > 0) {
-      return editorEpisodeSelections[0];
+  const recomputeLinkModalPaneWidth = () => {
+    if (typeof window === 'undefined') return;
+    if (!linkModalShellEl || !linkModalToolbarEl || !linkModalContentEl) return;
+    if (!window.matchMedia('(min-width: 1024px)').matches) {
+      linkModalRightPaneWidth = 380;
+      return;
     }
-    const existing = editorLinksDraft.find((link) => link.dataset_id === editorSelectedDatasetId);
-    return existing?.episode_index ?? 0;
-  });
+    const shellHeight = linkModalShellEl.clientHeight;
+    const toolbarHeight = linkModalToolbarEl.getBoundingClientRect().height;
+    const rowGap = Number.parseFloat(window.getComputedStyle(linkModalShellEl).rowGap || '0') || 0;
+    const columnGap = Number.parseFloat(window.getComputedStyle(linkModalContentEl).columnGap || '0') || 0;
+    const contentWidth = linkModalContentEl.clientWidth;
+    if (shellHeight <= 0 || contentWidth <= 0) return;
+
+    const availableHeight = Math.max(shellHeight - toolbarHeight - rowGap, 1);
+    const targetViewerWidth = (16 / 9) * availableHeight;
+    const computedRightWidth = contentWidth - columnGap - targetViewerWidth;
+    linkModalRightPaneWidth = Math.max(340, Math.min(560, computedRightWidth));
+  };
 
   $effect(() => {
-    if (!linkEditorOpen) return;
+    if (!linkModalOpen || !linkModalEditMode) return;
     if (!editorSelectedDatasetId && recommendedDatasetId) {
       editorSelectedDatasetId = recommendedDatasetId;
     }
   });
 
   $effect(() => {
-    if (!linkViewerOpen) return;
-    if (!viewerLinks.length) {
+    if (!linkModalOpen) return;
+    if (!linkModalLinks.length) {
       viewerSelectedLinkKey = '';
       return;
     }
-    if (!viewerSelectedLinkKey) {
-      viewerSelectedLinkKey = `${viewerLinks[0].dataset_id}:${viewerLinks[0].episode_index}`;
+    if (
+      !viewerSelectedLinkKey ||
+      !linkModalLinks.some((link) => `${link.dataset_id}:${link.episode_index}` === viewerSelectedLinkKey)
+    ) {
+      viewerSelectedLinkKey = `${linkModalLinks[0].dataset_id}:${linkModalLinks[0].episode_index}`;
     }
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined' || !linkModalOpen) return;
+    if (!linkModalShellEl || !linkModalToolbarEl || !linkModalContentEl) return;
+
+    const observer = new ResizeObserver(() => {
+      recomputeLinkModalPaneWidth();
+    });
+    observer.observe(linkModalShellEl);
+    observer.observe(linkModalToolbarEl);
+    observer.observe(linkModalContentEl);
+    const onResize = () => {
+      recomputeLinkModalPaneWidth();
+    };
+    window.addEventListener('resize', onResize);
+    recomputeLinkModalPaneWidth();
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', onResize);
+    };
   });
 </script>
 
@@ -511,204 +634,262 @@
   </div>
 </section>
 
-{#if linkViewerOpen}
-  <div class="fixed inset-0 z-40 bg-slate-900/45 backdrop-blur-[1px]">
-    <div class="mx-auto mt-8 w-[min(1200px,96vw)] rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <p class="text-sm font-semibold text-slate-900">紐付けエピソード閲覧</p>
-          <p class="text-xs text-slate-500">試行 {activeTrialIndex}</p>
-        </div>
-        <div class="flex gap-2">
-          <Button.Root class="btn-ghost" type="button" onclick={openEditorFromViewer}>編集へ</Button.Root>
-          <Button.Root class="btn-ghost" type="button" onclick={() => (linkViewerOpen = false)}>閉じる</Button.Root>
-        </div>
-      </div>
-      <div class="mt-4 grid h-[74vh] min-h-0 gap-4 lg:grid-cols-[340px_minmax(0,1fr)]">
-        <div class="min-h-0 overflow-y-auto rounded-xl border border-slate-200/70 bg-white/70 p-3">
-          {#if viewerLinks.length}
-            <div class="space-y-2">
-              {#each viewerLinks as link}
-                <button
-                  class={`w-full rounded-xl border px-3 py-2 text-left text-sm transition ${
-                    viewerSelectedLinkKey === `${link.dataset_id}:${link.episode_index}`
-                      ? 'border-brand/40 bg-brand/10 text-slate-900'
-                      : 'border-slate-200/70 bg-white/80 text-slate-700 hover:border-slate-300'
-                  }`}
-                  type="button"
-                  onclick={() => (viewerSelectedLinkKey = `${link.dataset_id}:${link.episode_index}`)}
-                >
-                  <p class="font-semibold">{link.dataset_id}</p>
-                  <p class="text-xs text-slate-500">episode {link.episode_index}</p>
-                </button>
-              {/each}
-            </div>
-          {:else}
-            <p class="text-sm text-slate-500">紐付けがありません。</p>
-          {/if}
-        </div>
-        <div class="min-h-0">
-          {#if viewerSelectedLink}
-            <DatasetViewerPanel
-              datasetId={viewerSelectedLink.dataset_id}
-              episodeIndex={viewerSelectedLink.episode_index}
-            />
-          {:else}
-            <div class="flex h-full items-center justify-center rounded-xl border border-slate-200/70 bg-white/70 text-sm text-slate-500">
-              表示するエピソードがありません。
-            </div>
-          {/if}
-        </div>
-      </div>
-    </div>
-  </div>
-{/if}
-
-{#if linkEditorOpen}
-  <div class="fixed inset-0 z-40 bg-slate-900/45 backdrop-blur-[1px]">
-    <div class="mx-auto mt-6 w-[min(1320px,98vw)] rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <p class="text-sm font-semibold text-slate-900">紐付けエピソード編集</p>
-          <p class="text-xs text-slate-500">試行 {activeTrialIndex}</p>
-        </div>
-        <div class="flex gap-2">
-          <Button.Root class="btn-ghost" type="button" onclick={closeLinkEditor}>キャンセル</Button.Root>
-          <Button.Root class="btn-primary" type="button" onclick={applyLinkEditor}>反映</Button.Root>
-        </div>
-      </div>
-      <div class="mt-4 grid h-[78vh] min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_390px]">
-        <div class="min-h-0">
-          <DatasetViewerPanel
-            datasetId={editorSelectedDatasetId}
-            episodeIndex={editorPreviewEpisode}
-            onEpisodeChange={(nextEpisode) => {
-              editorEpisodeSelections = [nextEpisode];
-            }}
-          />
-        </div>
-        <div class="min-h-0 overflow-y-auto rounded-xl border border-slate-200/70 bg-white/70 p-3">
-          <div class="space-y-4">
+{#if linkModalOpen}
+  <div class="fixed inset-0 z-40 bg-slate-900/50 backdrop-blur-[1px]">
+    <div class="mx-auto my-4 h-[calc(100vh-2rem)] w-[min(1600px,98vw)] rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl">
+      <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4" bind:this={linkModalShellEl}>
+        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3" bind:this={linkModalToolbarEl}>
+          <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p class="label">推奨データセット</p>
-              {#if recommendedDatasetId}
+              <p class="text-sm font-semibold text-slate-900">
+                {linkModalEditMode ? '紐付けエピソード編集' : '紐付けエピソード閲覧'}
+              </p>
+              <p class="text-xs text-slate-500">試行 {activeTrialIndex} / 紐付け {linkModalLinks.length} 件</p>
+              {#if activeEvaluationDraft?.blueprint_id}
+                <p class="mt-1 text-[11px] text-slate-500">
+                  Blueprint: {activeEvaluationBlueprintName || activeEvaluationDraft.blueprint_id}
+                </p>
+              {/if}
+            </div>
+            <div class="flex flex-wrap gap-2">
+              {#if linkModalEditMode}
                 <Button.Root
-                  class="btn-ghost mt-2 w-full justify-start"
+                  class="btn-ghost"
                   type="button"
                   onclick={() => {
-                    editorSelectedDatasetId = recommendedDatasetId;
-                    editorEpisodeSelections = [];
+                    linkModalEditMode = false;
+                    linkInspectorTab = 'view';
                   }}
                 >
-                  {recommendedDatasetId}
+                  閲覧モード
                 </Button.Root>
+                <Button.Root class="btn-primary" type="button" onclick={applyLinkEditor}>反映</Button.Root>
               {:else}
-                <p class="mt-2 text-xs text-slate-500">推奨データセットはありません。</p>
+                <Button.Root class="btn-ghost" type="button" onclick={switchModalToEdit}>編集モード</Button.Root>
               {/if}
-            </div>
-
-            <div>
-              <p class="label">全データセット検索</p>
-              <input
-                class="input mt-2"
-                type="text"
-                placeholder="dataset id で検索"
-                bind:value={editorDatasetSearch}
-              />
-              <div class="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-200/70 p-2">
-                {#if filteredDatasets.length}
-                  {#each filteredDatasets as ds}
-                    <button
-                      class={`w-full rounded-lg px-2 py-1 text-left text-xs transition ${
-                        editorSelectedDatasetId === ds.id
-                          ? 'bg-brand/10 text-slate-900'
-                          : 'text-slate-600 hover:bg-slate-100/70'
-                      }`}
-                      type="button"
-                      onclick={() => {
-                        editorSelectedDatasetId = ds.id;
-                        editorEpisodeSelections = [];
-                      }}
-                    >
-                      {ds.id}
-                    </button>
-                  {/each}
-                {:else}
-                  <p class="text-xs text-slate-500">該当データセットがありません。</p>
-                {/if}
-              </div>
-            </div>
-
-            <div>
-              <p class="label">エピソード選択</p>
-              {#if !editorSelectedDatasetId}
-                <p class="mt-2 text-xs text-slate-500">データセットを選択してください。</p>
-              {:else if $editorDatasetViewerQuery.isLoading}
-                <p class="mt-2 text-xs text-slate-500">データセット情報を取得中...</p>
-              {:else if $editorDatasetViewerQuery.error}
-                <p class="mt-2 text-xs text-rose-600">
-                  {$editorDatasetViewerQuery.error instanceof Error
-                    ? $editorDatasetViewerQuery.error.message
-                    : 'データセット情報の取得に失敗しました。'}
-                </p>
-              {:else if !$editorDatasetViewerQuery.data?.is_local}
-                <p class="mt-2 text-xs text-slate-500">
-                  ローカル未配置です。左ペインの同期完了後に再読み込みしてください。
-                </p>
-                <Button.Root class="btn-ghost mt-2" type="button" onclick={refreshEditorDataset}>
-                  再読み込み
-                </Button.Root>
-              {:else if $editorEpisodesQuery.isLoading}
-                <p class="mt-2 text-xs text-slate-500">エピソード一覧を取得中...</p>
-              {:else}
-                <div class="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-200/70 p-2">
-                  {#if ($editorEpisodesQuery.data?.episodes ?? []).length}
-                    {#each $editorEpisodesQuery.data?.episodes ?? [] as episode}
-                      <label class="flex items-center gap-2 text-xs text-slate-700">
-                        <input
-                          type="checkbox"
-                          class="h-4 w-4 rounded border-slate-300"
-                          bind:group={editorEpisodeSelections}
-                          value={episode.episode_index}
-                        />
-                        episode {episode.episode_index}
-                      </label>
-                    {/each}
-                  {:else}
-                    <p class="text-xs text-slate-500">エピソードがありません。</p>
-                  {/if}
-                </div>
-                <Button.Root class="btn-ghost mt-2 w-full" type="button" onclick={addSelectedEpisodesToEditor}>
-                  選択エピソードを追加
-                </Button.Root>
-              {/if}
-            </div>
-
-            <div>
-              <p class="label">現在の紐付け</p>
-              <div class="mt-2 max-h-48 space-y-2 overflow-y-auto rounded-lg border border-slate-200/70 p-2">
-                {#if editorLinksDraft.length}
-                  {#each editorLinksDraft as link}
-                    <div class="flex items-center justify-between gap-2 rounded-lg bg-slate-50/70 px-2 py-1 text-xs text-slate-700">
-                      <div>
-                        <p class="font-semibold">{link.dataset_id}</p>
-                        <p class="text-slate-500">episode {link.episode_index}</p>
-                      </div>
-                      <Button.Root
-                        class="btn-ghost px-2 py-1 text-[11px]"
-                        type="button"
-                        onclick={() => removeEditorLink(link.dataset_id, link.episode_index)}
-                      >
-                        削除
-                      </Button.Root>
-                    </div>
-                  {/each}
-                {:else}
-                  <p class="text-xs text-slate-500">紐付けはありません。</p>
-                {/if}
-              </div>
+              <Button.Root class="btn-ghost" type="button" onclick={closeLinkModal}>閉じる</Button.Root>
             </div>
           </div>
+        </div>
+
+        <div
+          class="min-h-0 grid gap-4 lg:grid-cols-[minmax(0,1fr)_var(--link-modal-right-pane-width)]"
+          style={`--link-modal-right-pane-width:${Math.round(linkModalRightPaneWidth)}px;`}
+          bind:this={linkModalContentEl}
+        >
+          <div class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-2">
+            {#if linkModalViewerDatasetId}
+              <DatasetViewerPanel
+                datasetId={linkModalViewerDatasetId}
+                episodeIndex={linkModalViewerEpisode}
+                onEpisodeChange={(nextEpisode) => {
+                  if (linkModalViewerDatasetId) {
+                    viewerSelectedLinkKey = `${linkModalViewerDatasetId}:${nextEpisode}`;
+                  }
+                  if (linkModalEditMode && editorSelectedDatasetId === linkModalViewerDatasetId) {
+                    editorEpisodeSelections = [nextEpisode];
+                  }
+                }}
+              />
+            {:else}
+              <div class="flex h-full items-center justify-center rounded-xl border border-slate-200/70 bg-white/80 text-sm text-slate-500">
+                表示するエピソードがありません。
+              </div>
+            {/if}
+          </div>
+
+          <aside class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-3 lg:overflow-y-auto">
+            <Tabs.Root bind:value={linkInspectorTab}>
+              <Tabs.List class="inline-grid grid-cols-3 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+                <Tabs.Trigger
+                  value="blueprint"
+                  class="rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+                >
+                  Blueprint
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                  value="view"
+                  class="rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+                >
+                  View
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                  value="search"
+                  class="rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+                >
+                  Search
+                </Tabs.Trigger>
+              </Tabs.List>
+
+              <Tabs.Content value="blueprint" class="mt-3 space-y-3">
+                <p class="label">評価行のブループリント</p>
+                {#if $blueprintsQuery.isLoading}
+                  <p class="text-xs text-slate-500">ブループリント一覧を読み込み中...</p>
+                {:else if blueprintComboboxItems.length}
+                  <BlueprintCombobox
+                    items={blueprintComboboxItems}
+                    value={activeEvaluationDraft?.blueprint_id ?? ''}
+                    onSelect={(blueprintId) => setTrialBlueprintId(activeTrialIndex, blueprintId)}
+                  />
+                  <div class="flex gap-2">
+                    <Button.Root
+                      class="btn-ghost"
+                      type="button"
+                      disabled={!activeEvaluationDraft?.blueprint_id}
+                      onclick={() => setTrialBlueprintId(activeTrialIndex, null)}
+                    >
+                      解除
+                    </Button.Root>
+                  </div>
+                {:else}
+                  <p class="text-xs text-slate-500">利用可能なブループリントがありません。</p>
+                {/if}
+              </Tabs.Content>
+
+              <Tabs.Content value="view" class="mt-3 space-y-3">
+                <p class="label">紐付け済みエピソード</p>
+                <div class="max-h-[56vh] space-y-2 overflow-y-auto rounded-lg border border-slate-200/70 p-2">
+                  {#if linkModalLinks.length}
+                    {#each linkModalLinks as link}
+                      <div
+                        class={`rounded-lg border px-2 py-2 text-xs ${
+                          viewerSelectedLinkKey === `${link.dataset_id}:${link.episode_index}`
+                            ? 'border-brand/40 bg-brand/10'
+                            : 'border-slate-200/70 bg-white/80'
+                        }`}
+                      >
+                        <button
+                          class="w-full text-left"
+                          type="button"
+                          onclick={() => (viewerSelectedLinkKey = `${link.dataset_id}:${link.episode_index}`)}
+                        >
+                          <p class="font-semibold text-slate-800">{link.dataset_id}</p>
+                          <p class="text-slate-500">episode {link.episode_index}</p>
+                        </button>
+                        {#if linkModalEditMode}
+                          <Button.Root
+                            class="btn-ghost mt-2 w-full px-2 py-1 text-[11px]"
+                            type="button"
+                            onclick={() => removeEditorLink(link.dataset_id, link.episode_index)}
+                          >
+                            削除
+                          </Button.Root>
+                        {/if}
+                      </div>
+                    {/each}
+                  {:else}
+                    <p class="text-xs text-slate-500">紐付けはありません。</p>
+                  {/if}
+                </div>
+              </Tabs.Content>
+
+              <Tabs.Content value="search" class="mt-3 space-y-4">
+                {#if !linkModalEditMode}
+                  <div class="rounded-lg border border-slate-200/70 bg-slate-50/70 p-3">
+                    <p class="text-xs text-slate-600">検索と追加は編集モードで操作できます。</p>
+                    <Button.Root class="btn-ghost mt-2" type="button" onclick={switchModalToEdit}>
+                      編集モードへ
+                    </Button.Root>
+                  </div>
+                {:else}
+                  <div>
+                    <p class="label">推奨データセット</p>
+                    {#if recommendedDatasetId}
+                      <Button.Root
+                        class="btn-ghost mt-2 w-full justify-start"
+                        type="button"
+                        onclick={() => {
+                          editorSelectedDatasetId = recommendedDatasetId;
+                          editorEpisodeSelections = [];
+                        }}
+                      >
+                        {recommendedDatasetId}
+                      </Button.Root>
+                    {:else}
+                      <p class="mt-2 text-xs text-slate-500">推奨データセットはありません。</p>
+                    {/if}
+                  </div>
+
+                  <div>
+                    <p class="label">全データセット検索</p>
+                    <input
+                      class="input mt-2"
+                      type="text"
+                      placeholder="dataset id で検索"
+                      bind:value={editorDatasetSearch}
+                    />
+                    <div class="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-200/70 p-2">
+                      {#if filteredDatasets.length}
+                        {#each filteredDatasets as ds}
+                          <button
+                            class={`w-full rounded-lg px-2 py-1 text-left text-xs transition ${
+                              editorSelectedDatasetId === ds.id
+                                ? 'bg-brand/10 text-slate-900'
+                                : 'text-slate-600 hover:bg-slate-100/70'
+                            }`}
+                            type="button"
+                            onclick={() => {
+                              editorSelectedDatasetId = ds.id;
+                              editorEpisodeSelections = [];
+                            }}
+                          >
+                            {ds.id}
+                          </button>
+                        {/each}
+                      {:else}
+                        <p class="text-xs text-slate-500">該当データセットがありません。</p>
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p class="label">エピソード選択</p>
+                    {#if !editorSelectedDatasetId}
+                      <p class="mt-2 text-xs text-slate-500">データセットを選択してください。</p>
+                    {:else if $editorDatasetViewerQuery.isLoading}
+                      <p class="mt-2 text-xs text-slate-500">データセット情報を取得中...</p>
+                    {:else if $editorDatasetViewerQuery.error}
+                      <p class="mt-2 text-xs text-rose-600">
+                        {$editorDatasetViewerQuery.error instanceof Error
+                          ? $editorDatasetViewerQuery.error.message
+                          : 'データセット情報の取得に失敗しました。'}
+                      </p>
+                    {:else if !$editorDatasetViewerQuery.data?.is_local}
+                      <p class="mt-2 text-xs text-slate-500">
+                        ローカル未配置です。左ペインの同期完了後に再読み込みしてください。
+                      </p>
+                      <Button.Root class="btn-ghost mt-2" type="button" onclick={refreshEditorDataset}>
+                        再読み込み
+                      </Button.Root>
+                    {:else if $editorEpisodesQuery.isLoading}
+                      <p class="mt-2 text-xs text-slate-500">エピソード一覧を取得中...</p>
+                    {:else}
+                      <div class="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-200/70 p-2">
+                        {#if ($editorEpisodesQuery.data?.episodes ?? []).length}
+                          {#each $editorEpisodesQuery.data?.episodes ?? [] as episode}
+                            <label class="flex items-center gap-2 text-xs text-slate-700">
+                              <input
+                                type="checkbox"
+                                class="h-4 w-4 rounded border-slate-300"
+                                bind:group={editorEpisodeSelections}
+                                value={episode.episode_index}
+                              />
+                              episode {episode.episode_index}
+                            </label>
+                          {/each}
+                        {:else}
+                          <p class="text-xs text-slate-500">エピソードがありません。</p>
+                        {/if}
+                      </div>
+                      <Button.Root class="btn-ghost mt-2 w-full" type="button" onclick={addSelectedEpisodesToEditor}>
+                        選択エピソードを追加
+                      </Button.Root>
+                    {/if}
+                  </div>
+                {/if}
+              </Tabs.Content>
+            </Tabs.Root>
+          </aside>
         </div>
       </div>
     </div>
