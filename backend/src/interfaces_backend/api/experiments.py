@@ -27,7 +27,6 @@ from interfaces_backend.models.experiment import (
     ExperimentUpdateRequest,
 )
 from percus_ai.db import get_current_user_id, get_supabase_async_client
-from percus_ai.storage.s3 import S3Manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
@@ -106,21 +105,41 @@ async def _fetch_episode_links_map(client, experiment_id: str) -> dict[int, list
 
 
 async def _validate_episode_links(client, items: list) -> None:
-    dataset_ids = {
-        link.dataset_id.strip()
+    all_links = [
+        link
         for item in items
         for link in (item.episode_links or [])
         if link.dataset_id.strip()
-    }
+    ]
+    dataset_ids = {link.dataset_id.strip() for link in all_links}
     if not dataset_ids:
         return
     dataset_rows = (
-        await client.table("datasets").select("id").in_("id", list(dataset_ids)).execute()
+        await client.table("datasets").select("id,episode_count").in_("id", list(dataset_ids)).execute()
     ).data or []
-    existing_ids = {str(row.get("id")) for row in dataset_rows if row.get("id")}
+    rows_by_dataset_id = {str(row.get("id")): row for row in dataset_rows if row.get("id")}
+    existing_ids = set(rows_by_dataset_id)
     missing = sorted(dataset_ids - existing_ids)
     if missing:
         raise HTTPException(status_code=400, detail=f"Invalid dataset_id in episode_links: {', '.join(missing)}")
+
+    invalid_episode_indexes: list[str] = []
+    for link in all_links:
+        dataset_id = link.dataset_id.strip()
+        row = rows_by_dataset_id.get(dataset_id) or {}
+        raw_count = row.get("episode_count")
+        try:
+            total_episodes = int(raw_count)
+        except (TypeError, ValueError):
+            total_episodes = 0
+        if total_episodes <= 0 or link.episode_index >= total_episodes:
+            invalid_episode_indexes.append(f"{dataset_id}:{link.episode_index} (total={total_episodes})")
+
+    if invalid_episode_indexes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid episode_index in episode_links: {', '.join(invalid_episode_indexes)}",
+        )
 
 
 def _row_to_analysis(row: dict) -> ExperimentAnalysisModel:
@@ -358,6 +377,8 @@ async def experiment_evaluation_summary(experiment_id: str):
 async def get_experiment_media_urls(request: ExperimentMediaUrlRequest):
     """Generate signed URLs for experiment-related images."""
     _require_user_id()
+    from percus_ai.storage.s3 import S3Manager
+
     keys = [key for key in (request.keys or []) if key]
     if not keys:
         return ExperimentMediaUrlResponse(urls={})
