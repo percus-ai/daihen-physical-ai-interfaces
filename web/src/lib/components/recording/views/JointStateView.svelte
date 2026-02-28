@@ -2,14 +2,27 @@
   import { AxisX, AxisY, GridY, Line, Plot } from 'svelteplot';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
 
+  type JointStateSource = 'ros' | 'dataset';
+  type DatasetSeries = {
+    names?: string[];
+    positions?: number[][];
+    timestamps?: number[];
+  };
+
   let {
+    source = 'ros',
     topic = '',
+    sourceLabel = '',
+    datasetSeries = null,
     title = 'Joint State',
     maxPoints = 160,
     showVelocity = false,
     renderFps = 60
   }: {
+    source?: JointStateSource;
     topic?: string;
+    sourceLabel?: string;
+    datasetSeries?: DatasetSeries | null;
     title?: string;
     maxPoints?: number;
     showVelocity?: boolean;
@@ -61,6 +74,7 @@
     Math.min(Math.max(Number(renderFps) || 24, 1), 60)
   );
   const renderIntervalMs = $derived(1000 / normalizedRenderFps);
+  const sourceText = $derived(source === 'dataset' ? sourceLabel || 'dataset series' : topic || 'no topic');
 
   const buildRing = (names: string[]): RingSeries[] =>
     names.map((name, idx) => ({
@@ -132,7 +146,61 @@
     });
   };
 
+  const resetViewState = () => {
+    posSeries = [];
+    velSeries = [];
+    posRing = [];
+    velRing = [];
+    jointNames = [];
+    index = 0;
+    lastRawPositions = [];
+    pendingSample = null;
+  };
+
+  const buildDatasetSeries = (series: DatasetSeries | null) => {
+    const positions = Array.isArray(series?.positions) ? series.positions : [];
+    if (!positions.length) {
+      resetViewState();
+      status = 'empty';
+      return;
+    }
+
+    const axisDim = positions[0]?.length ?? 0;
+    if (axisDim <= 0) {
+      resetViewState();
+      status = 'empty';
+      return;
+    }
+
+    const names =
+      Array.isArray(series?.names) && series.names.length === axisDim
+        ? series.names
+        : positions[0].map((_, idx) => `joint_${idx + 1}`);
+    jointNames = [...names];
+
+    posSeries = names.map((name, axisIdx) => ({
+      name,
+      color: palette[axisIdx % palette.length],
+      data: positions.map((values, frameIdx) => ({ i: frameIdx + 1, value: values[axisIdx] ?? 0 }))
+    }));
+
+    velSeries = names.map((name, axisIdx) => ({
+      name,
+      color: palette[axisIdx % palette.length],
+      data: positions.map((values, frameIdx) => ({
+        i: frameIdx + 1,
+        value:
+          frameIdx === 0
+            ? 0
+            : (values[axisIdx] ?? 0) - (positions[frameIdx - 1]?.[axisIdx] ?? 0)
+      }))
+    }));
+
+    status = 'dataset';
+  };
+
   const handleMessage = (msg: Record<string, unknown>) => {
+    if (source !== 'ros') return;
     const positions = (msg.position as number[] | undefined) ?? [];
     const velocities = (msg.velocity as number[] | undefined) ?? [];
     if (!positions.length) return;
@@ -169,23 +237,25 @@
   };
 
   $effect(() => {
-    if (!topic) {
-      unsubscribe?.();
-      unsubscribe = null;
-      posSeries = [];
-      velSeries = [];
-      posRing = [];
-      velRing = [];
-      jointNames = [];
-      index = 0;
-      lastRawPositions = [];
-      pendingSample = null;
-      if (animationFrameId != null && typeof window !== 'undefined') {
-        window.cancelAnimationFrame(animationFrameId);
-        animationFrameId = null;
-      }
+    unsubscribe?.();
+    unsubscribe = null;
+    if (animationFrameId != null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
+    }
+
+    if (source === 'dataset') {
+      buildDatasetSeries(datasetSeries);
       return;
     }
+
+    if (!topic) {
+      resetViewState();
+      status = 'idle';
+      return;
+    }
+
+    resetViewState();
     subscribe();
     return () => {
       unsubscribe?.();
@@ -202,7 +272,7 @@
 <div class="flex h-full min-w-0 flex-col gap-3">
   <div class="flex items-center justify-between">
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
-    <span class="text-[10px] text-slate-400">{topic || 'no topic'}</span>
+    <span class="text-[10px] text-slate-400">{sourceText}</span>
   </div>
   <div class="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200/60 bg-white/70 p-3">
     {#if posSeries.length}
@@ -257,7 +327,7 @@
       </div>
     {:else}
       <div class="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-400">
-        joint_states を待機中… ({status})
+        {source === 'dataset' ? 'データを読み込み中…' : 'joint_states を待機中…'} ({status})
       </div>
     {/if}
   </div>

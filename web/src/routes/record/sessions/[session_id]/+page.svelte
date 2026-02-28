@@ -28,7 +28,12 @@
     wrapInTabs,
     type BlueprintNode
   } from '$lib/recording/blueprint';
-  import { getViewDefinition, getViewOptions } from '$lib/recording/viewRegistry';
+  import {
+    getTopicFieldOptions,
+    getViewDefinition,
+    getViewOptionsBySource,
+    isFieldSupported
+  } from '$lib/recording/viewRegistry';
   import {
     loadBlueprintDraft,
     saveBlueprintDraft,
@@ -45,6 +50,8 @@
   };
 
   const BLUEPRINT_KIND = 'recording' as const;
+  const VIEW_SOURCE = 'ros' as const;
+  const viewOptions = $derived(getViewOptionsBySource(VIEW_SOURCE));
 
   const sessionId = $derived(page.params.session_id ?? '');
 
@@ -92,7 +99,7 @@
     if (node.type === 'view') {
       const definition = getViewDefinition(node.viewType);
       if (!definition?.defaultConfig) return node;
-      const defaults = definition.defaultConfig(topics);
+      const defaults = definition.defaultConfig(topics, VIEW_SOURCE);
       return {
         ...node,
         config: {
@@ -234,7 +241,7 @@
   const handleViewTypeChange = (nextType: string) => {
     if (!selectedViewNode) return;
     const definition = getViewDefinition(nextType);
-    const defaults = definition?.defaultConfig?.($topicsQuery.data?.topics ?? []) ?? {};
+    const defaults = definition?.defaultConfig?.($topicsQuery.data?.topics ?? [], VIEW_SOURCE) ?? {};
     blueprint = updateViewType(blueprint, selectedViewNode.id, nextType);
     blueprint = updateViewConfig(blueprint, selectedViewNode.id, defaults);
   };
@@ -476,7 +483,7 @@
                   onchange={(event) => handleViewTypeChange((event.target as HTMLSelectElement).value)}
                 >
                   <option value="placeholder">Empty</option>
-                  {#each getViewOptions() as option}
+                  {#each viewOptions as option}
                     <option value={option.type}>{option.label}</option>
                   {/each}
                 </select>
@@ -484,41 +491,43 @@
 
               {#if selectedViewNode}
                 {#each getViewDefinition(selectedViewNode.viewType)?.fields ?? [] as field}
-                  {#if field.type === 'topic'}
-                    <div>
-                      <p class="label">{field.label}</p>
-                      <select
-                        class="input mt-2"
-                        value={(selectedViewNode.config?.[field.key] as string) ?? ''}
-                        onchange={(event) => handleConfigChange(field.key, (event.target as HTMLSelectElement).value)}
-                      >
-                        <option value="">未選択</option>
-                        {#each ($topicsQuery.data?.topics ?? []).filter((topic) => field.filter?.(topic) ?? true) as topic}
-                          <option value={topic}>{topic}</option>
-                        {/each}
-                      </select>
-                    </div>
-                  {:else if field.type === 'boolean'}
-                    <label class="flex items-center gap-2 text-xs text-slate-600">
-                      <input
-                        type="checkbox"
-                        class="h-4 w-4 rounded border-slate-300"
-                        checked={Boolean(selectedViewNode.config?.[field.key])}
-                        onchange={(event) => handleConfigChange(field.key, (event.target as HTMLInputElement).checked)}
-                      />
-                      {field.label}
-                    </label>
-                  {:else if field.type === 'number'}
-                    <div>
-                      <p class="label">{field.label}</p>
-                      <input
-                        class="input mt-2"
-                        type="number"
-                        min="10"
-                        value={Number(selectedViewNode.config?.[field.key] ?? 160)}
-                        onchange={(event) => handleConfigChange(field.key, Number((event.target as HTMLInputElement).value))}
-                      />
-                    </div>
+                  {#if isFieldSupported(field, VIEW_SOURCE)}
+                    {#if field.type === 'topic'}
+                      <div>
+                        <p class="label">{field.label}</p>
+                        <select
+                          class="input mt-2"
+                          value={(selectedViewNode.config?.[field.key] as string) ?? ''}
+                          onchange={(event) => handleConfigChange(field.key, (event.target as HTMLSelectElement).value)}
+                        >
+                          <option value="">未選択</option>
+                          {#each getTopicFieldOptions(field, $topicsQuery.data?.topics ?? [], VIEW_SOURCE) as topic}
+                            <option value={topic}>{topic}</option>
+                          {/each}
+                        </select>
+                      </div>
+                    {:else if field.type === 'boolean'}
+                      <label class="flex items-center gap-2 text-xs text-slate-600">
+                        <input
+                          type="checkbox"
+                          class="h-4 w-4 rounded border-slate-300"
+                          checked={Boolean(selectedViewNode.config?.[field.key])}
+                          onchange={(event) => handleConfigChange(field.key, (event.target as HTMLInputElement).checked)}
+                        />
+                        {field.label}
+                      </label>
+                    {:else if field.type === 'number'}
+                      <div>
+                        <p class="label">{field.label}</p>
+                        <input
+                          class="input mt-2"
+                          type="number"
+                          min="10"
+                          value={Number(selectedViewNode.config?.[field.key] ?? 160)}
+                          onchange={(event) => handleConfigChange(field.key, Number((event.target as HTMLInputElement).value))}
+                        />
+                      </div>
+                    {/if}
                   {/if}
                 {/each}
               {/if}

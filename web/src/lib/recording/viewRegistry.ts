@@ -14,16 +14,20 @@ export type ConfigField = {
   key: string;
   label: string;
   type: 'topic' | 'boolean' | 'number';
+  sources?: ViewConfigSource[];
   filter?: (topic: string) => boolean;
 };
+
+export type ViewConfigSource = 'ros' | 'dataset';
 
 export type ViewTypeDefinition = {
   type: string;
   label: string;
   description?: string;
   component: Component<any>;
+  sources?: ViewConfigSource[];
   fields?: ConfigField[];
-  defaultConfig?: (topics: string[]) => Record<string, unknown>;
+  defaultConfig?: (topics: string[], source?: ViewConfigSource) => Record<string, unknown>;
 };
 
 const firstMatch = (topics: string[], filter: (topic: string) => boolean) =>
@@ -44,16 +48,18 @@ export const viewRegistry: ViewTypeDefinition[] = [
     label: 'Camera',
     description: 'Compressed image preview',
     component: CameraView,
+    sources: ['ros'],
     fields: [
       {
         key: 'topic',
         label: 'Topic',
         type: 'topic',
+        sources: ['ros'],
         filter: cameraFilter
       }
     ],
-    defaultConfig: (topics) => ({
-      topic: firstMatch(topics, cameraFilter)
+    defaultConfig: (topics, source = 'ros') => ({
+      topic: source === 'ros' ? firstMatch(topics, cameraFilter) : ''
     })
   },
   {
@@ -66,6 +72,7 @@ export const viewRegistry: ViewTypeDefinition[] = [
         key: 'topic',
         label: 'Topic',
         type: 'topic',
+        sources: ['ros'],
         filter: jointFilter
       },
       {
@@ -79,8 +86,8 @@ export const viewRegistry: ViewTypeDefinition[] = [
         type: 'number'
       }
     ],
-    defaultConfig: (topics) => ({
-      topic: firstMatch(topics, jointFilter),
+    defaultConfig: (topics, source = 'ros') => ({
+      topic: source === 'ros' ? firstMatch(topics, jointFilter) : '',
       showVelocity: false,
       maxPoints: 160
     })
@@ -90,23 +97,29 @@ export const viewRegistry: ViewTypeDefinition[] = [
     label: 'Status',
     description: 'Key-value status',
     component: StatusView,
+    sources: ['ros'],
     fields: [
       {
         key: 'topic',
         label: 'Topic',
         type: 'topic',
+        sources: ['ros'],
         filter: statusFilter
       }
     ],
-    defaultConfig: (topics) => ({
-      topic: firstMatch(topics, (t) => t.includes('lerobot_recorder/status')) || firstMatch(topics, statusFilter)
+    defaultConfig: (topics, source = 'ros') => ({
+      topic:
+        source === 'ros'
+          ? firstMatch(topics, (t) => t.includes('lerobot_recorder/status')) || firstMatch(topics, statusFilter)
+          : ''
     })
   },
   {
     type: 'topics',
     label: 'Topics',
     description: 'Topic list',
-    component: TopicsView
+    component: TopicsView,
+    sources: ['ros']
   },
   {
     type: 'controls',
@@ -143,3 +156,19 @@ export const viewRegistry: ViewTypeDefinition[] = [
 export const getViewDefinition = (type: string) => viewRegistry.find((view) => view.type === type);
 
 export const getViewOptions = () => viewRegistry.filter((view) => view.type !== 'placeholder');
+
+export const getViewOptionsBySource = (source: ViewConfigSource) =>
+  getViewOptions().filter((view) => !view.sources || view.sources.includes(source));
+
+export const isFieldSupported = (field: ConfigField, source: ViewConfigSource): boolean =>
+  !field.sources || field.sources.includes(source);
+
+export const getTopicFieldOptions = (
+  field: ConfigField,
+  topics: string[],
+  source: ViewConfigSource
+): string[] => {
+  if (field.type !== 'topic') return [];
+  if (!isFieldSupported(field, source)) return [];
+  return topics.filter((topic) => field.filter?.(topic) ?? true);
+};

@@ -168,6 +168,29 @@ export type DatasetPlaybackResponse = {
   cameras: DatasetPlaybackCameraInfo[];
 };
 
+export type DatasetPlaybackSignalField = {
+  key: string;
+  label: string;
+  shape: number[];
+  names?: string[] | null;
+  dtype: string;
+};
+
+export type DatasetPlaybackSignalFieldsResponse = {
+  dataset_id: string;
+  fields: DatasetPlaybackSignalField[];
+};
+
+export type DatasetPlaybackSignalSeriesResponse = {
+  dataset_id: string;
+  episode_index: number;
+  field: string;
+  fps: number;
+  names: string[];
+  positions: number[][];
+  timestamps: number[];
+};
+
 export type ModelSyncJobState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export type ModelSyncJobDetail = {
@@ -589,6 +612,14 @@ export const api = {
     dataset: (datasetId: string) => fetchApi(`/api/storage/datasets/${datasetId}`),
     datasetPlayback: (datasetId: string) =>
       fetchApi<DatasetPlaybackResponse>(`/api/storage/datasets/${datasetId}/playback`),
+    datasetPlaybackSignalFields: (datasetId: string) =>
+      fetchApi<DatasetPlaybackSignalFieldsResponse>(
+        `/api/storage/datasets/${datasetId}/playback/signals`
+      ),
+    datasetPlaybackSignalSeries: (datasetId: string, episodeIndex: number, field: string) =>
+      fetchApi<DatasetPlaybackSignalSeriesResponse>(
+        `/api/storage/datasets/${datasetId}/playback/signals/${episodeIndex}?field=${encodeURIComponent(field)}`
+      ),
     datasetPlaybackVideoUrl: (datasetId: string, videoKey: string, episodeIndex: number) =>
       `${getBackendUrl()}/api/storage/datasets/${encodeURIComponent(datasetId)}/playback/${encodeURIComponent(videoKey)}/${episodeIndex}`,
     model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),

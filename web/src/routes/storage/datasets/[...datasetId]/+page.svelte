@@ -4,7 +4,14 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-  import { api, type DatasetPlaybackResponse } from '$lib/api/client';
+  import {
+    api,
+    type DatasetPlaybackResponse,
+    type DatasetPlaybackSignalField,
+    type DatasetPlaybackSignalFieldsResponse,
+    type DatasetPlaybackSignalSeriesResponse
+  } from '$lib/api/client';
+  import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
   type DatasetInfo = {
@@ -82,6 +89,53 @@
 
   let selectedEpisode = $state(0);
   const playbackEpisodes = $derived($playbackQuery.data?.total_episodes ?? 0);
+  let selectedSignalField = $state('');
+
+  const signalFieldsQuery = createQuery<DatasetPlaybackSignalFieldsResponse>(
+    toStore(() => ({
+      queryKey: ['storage', 'dataset', datasetId, 'playback', 'signals'],
+      queryFn: () => api.storage.datasetPlaybackSignalFields(datasetId),
+      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
+    }))
+  );
+
+  const signalFields = $derived($signalFieldsQuery.data?.fields ?? []);
+
+  $effect(() => {
+    if (!signalFields.length) {
+      selectedSignalField = '';
+      return;
+    }
+    if (!selectedSignalField || !signalFields.some((field) => field.key === selectedSignalField)) {
+      selectedSignalField = signalFields[0].key;
+    }
+  });
+
+  const selectedSignalMeta = $derived(
+    signalFields.find((field) => field.key === selectedSignalField) as DatasetPlaybackSignalField | undefined
+  );
+
+  const signalSeriesQuery = createQuery<DatasetPlaybackSignalSeriesResponse>(
+    toStore(() => ({
+      queryKey: ['storage', 'dataset', datasetId, 'playback', 'signals', selectedEpisode, selectedSignalField],
+      queryFn: () => api.storage.datasetPlaybackSignalSeries(datasetId, selectedEpisode, selectedSignalField),
+      enabled:
+        Boolean(datasetId) &&
+        Boolean(dataset?.is_local) &&
+        playbackEpisodes > 0 &&
+        Boolean(selectedSignalField)
+    }))
+  );
+
+  const datasetJointSeries = $derived(
+    $signalSeriesQuery.data
+      ? {
+          names: $signalSeriesQuery.data.names,
+          positions: $signalSeriesQuery.data.positions,
+          timestamps: $signalSeriesQuery.data.timestamps
+        }
+      : null
+  );
 
   $effect(() => {
     if (playbackEpisodes <= 0) {
@@ -96,6 +150,7 @@
     if (!datasetId) return;
     await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId] });
     await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'playback'] });
+    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'playback', 'signals'] });
   };
 
   const refetchCandidates = async () => {
@@ -302,7 +357,7 @@
 <section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">再生</h2>
-    <button class="btn-ghost" type="button" onclick={() => queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'playback'] })}>
+    <button class="btn-ghost" type="button" onclick={refetchDataset}>
       再読み込み
     </button>
   </div>
@@ -315,7 +370,7 @@
     <p class="mt-4 text-sm text-rose-600">
       {$playbackQuery.error instanceof Error ? $playbackQuery.error.message : '再生情報の取得に失敗しました。'}
     </p>
-  {:else if $playbackQuery.data?.use_videos && ($playbackQuery.data?.cameras?.length ?? 0) > 0 && playbackEpisodes > 0}
+  {:else if playbackEpisodes > 0}
     <div class="mt-4 flex flex-wrap items-end gap-3">
       <div>
         <label class="label" for="episode-index">エピソード</label>
@@ -348,30 +403,87 @@
         {selectedEpisode + 1} / {playbackEpisodes} episodes
       </p>
     </div>
-    <div class="mt-4 grid gap-4 lg:grid-cols-2">
-      {#each $playbackQuery.data.cameras as camera}
-        <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-3">
-          <div class="mb-2 flex items-center justify-between">
-            <p class="text-sm font-semibold text-slate-800">{camera.label}</p>
-            <p class="text-xs text-slate-500">
-              {camera.width ?? '-'}x{camera.height ?? '-'} / {camera.codec ?? '-'} / {camera.fps ?? '-'}fps
-            </p>
+
+    {#if $playbackQuery.data?.use_videos && ($playbackQuery.data?.cameras?.length ?? 0) > 0}
+      <div class="mt-4 grid gap-4 lg:grid-cols-2">
+        {#each $playbackQuery.data.cameras as camera}
+          <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-3">
+            <div class="mb-2 flex items-center justify-between">
+              <p class="text-sm font-semibold text-slate-800">{camera.label}</p>
+              <p class="text-xs text-slate-500">
+                {camera.width ?? '-'}x{camera.height ?? '-'} / {camera.codec ?? '-'} / {camera.fps ?? '-'}fps
+              </p>
+            </div>
+            {#key `${camera.key}:${selectedEpisode}`}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video
+                class="w-full rounded-xl bg-slate-900"
+                controls
+                preload="metadata"
+                crossorigin="use-credentials"
+                src={api.storage.datasetPlaybackVideoUrl(datasetId, camera.key, selectedEpisode)}
+              ></video>
+            {/key}
           </div>
-          {#key `${camera.key}:${selectedEpisode}`}
-            <!-- svelte-ignore a11y_media_has_caption -->
-            <video
-              class="w-full rounded-xl bg-slate-900"
-              controls
-              preload="metadata"
-              crossorigin="use-credentials"
-              src={api.storage.datasetPlaybackVideoUrl(datasetId, camera.key, selectedEpisode)}
-            ></video>
-          {/key}
+        {/each}
+      </div>
+    {:else}
+      <p class="mt-4 text-sm text-slate-600">動画再生可能なカメラはありません。</p>
+    {/if}
+
+    <div class="mt-6 rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+      <div class="flex flex-wrap items-end gap-3">
+        <div class="min-w-64 flex-1">
+          <label class="label" for="signal-field">トピック（保存フィールド）</label>
+          <select id="signal-field" class="input mt-2" bind:value={selectedSignalField}>
+            {#each signalFields as field}
+              <option value={field.key}>{field.key}</option>
+            {/each}
+          </select>
         </div>
-      {/each}
+        <button
+          class="btn-ghost"
+          type="button"
+          onclick={() =>
+            queryClient.invalidateQueries({
+              queryKey: ['storage', 'dataset', datasetId, 'playback', 'signals', selectedEpisode, selectedSignalField]
+            })}
+        >
+          系列更新
+        </button>
+      </div>
+      {#if $signalFieldsQuery.isLoading}
+        <p class="mt-3 text-sm text-slate-600">表示可能フィールドを読み込み中...</p>
+      {:else if $signalFieldsQuery.error}
+        <p class="mt-3 text-sm text-rose-600">
+          {$signalFieldsQuery.error instanceof Error
+            ? $signalFieldsQuery.error.message
+            : '表示可能フィールドの取得に失敗しました。'}
+        </p>
+      {:else if !signalFields.length}
+        <p class="mt-3 text-sm text-slate-600">可視化できる数値ベクトルフィールドがありません。</p>
+      {:else if $signalSeriesQuery.isLoading}
+        <p class="mt-3 text-sm text-slate-600">系列データを読み込み中...</p>
+      {:else if $signalSeriesQuery.error}
+        <p class="mt-3 text-sm text-rose-600">
+          {$signalSeriesQuery.error instanceof Error
+            ? $signalSeriesQuery.error.message
+            : '系列データの取得に失敗しました。'}
+        </p>
+      {:else}
+        <div class="mt-4 h-[420px]">
+          <JointStateView
+            source="dataset"
+            sourceLabel={selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField}
+            datasetSeries={datasetJointSeries}
+            title="Joint State / Dataset"
+            showVelocity={true}
+          />
+        </div>
+      {/if}
     </div>
   {:else}
-    <p class="mt-4 text-sm text-slate-600">動画再生可能なエピソードが見つかりません。</p>
+    <p class="mt-4 text-sm text-slate-600">再生可能なエピソードがありません。</p>
   {/if}
 </section>
 

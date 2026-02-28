@@ -156,6 +156,35 @@ class DatasetPlaybackResponse(BaseModel):
     cameras: List[DatasetPlaybackCameraInfo] = Field(default_factory=list)
 
 
+class DatasetPlaybackSignalField(BaseModel):
+    """Vector field metadata available for dataset playback charts."""
+
+    key: str = Field(..., description="Feature key, e.g. action")
+    label: str = Field(..., description="Display label")
+    shape: List[int] = Field(default_factory=list, description="Feature shape")
+    names: Optional[List[str]] = Field(None, description="Axis names")
+    dtype: str = Field(..., description="Feature dtype")
+
+
+class DatasetPlaybackSignalFieldsResponse(BaseModel):
+    """Signal field list for dataset playback."""
+
+    dataset_id: str = Field(..., description="Dataset ID")
+    fields: List[DatasetPlaybackSignalField] = Field(default_factory=list)
+
+
+class DatasetPlaybackSignalSeriesResponse(BaseModel):
+    """Episode signal series for chart rendering."""
+
+    dataset_id: str = Field(..., description="Dataset ID")
+    episode_index: int = Field(..., description="Episode index (0-based)")
+    field: str = Field(..., description="Feature key")
+    fps: int = Field(0, description="Dataset FPS")
+    names: List[str] = Field(default_factory=list, description="Axis names")
+    positions: List[List[float]] = Field(default_factory=list, description="Frame-wise vectors")
+    timestamps: List[float] = Field(default_factory=list, description="Frame timestamps in seconds")
+
+
 class StorageUsageResponse(BaseModel):
     """Response for storage usage endpoint."""
 

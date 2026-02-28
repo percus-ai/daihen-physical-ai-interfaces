@@ -6,12 +6,13 @@ from pathlib import Path
 import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from huggingface_hub import HfApi, snapshot_download, upload_folder
 from postgrest.exceptions import APIError
+import pyarrow.parquet as pq
 from pydantic import ValidationError
 
 from interfaces_backend.models.storage import (
@@ -21,6 +22,9 @@ from interfaces_backend.models.storage import (
     ArchiveResponse,
     DatasetPlaybackCameraInfo,
     DatasetPlaybackResponse,
+    DatasetPlaybackSignalField,
+    DatasetPlaybackSignalFieldsResponse,
+    DatasetPlaybackSignalSeriesResponse,
     DatasetReuploadResponse,
     DatasetMergeRequest,
     DatasetMergeResponse,
@@ -110,6 +114,60 @@ def _build_playback_response(dataset_id: str, metadata: LeRobotDatasetMetadata) 
         use_videos=bool(metadata.video_path) and len(metadata.video_keys) > 0,
         cameras=cameras,
     )
+
+
+_NUMERIC_DTYPES = {
+    "float16",
+    "float32",
+    "float64",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+}
+
+
+def _is_vector_feature(feature: object) -> bool:
+    if not isinstance(feature, dict):
+        return False
+    dtype = str(feature.get("dtype") or "").lower().strip()
+    if dtype not in _NUMERIC_DTYPES:
+        return False
+    shape = feature.get("shape")
+    if not isinstance(shape, list) or len(shape) != 1:
+        return False
+    try:
+        return int(shape[0]) >= 1
+    except Exception:
+        return False
+
+
+def _resolve_axis_names(feature: dict, axis_dim: int) -> list[str]:
+    names = feature.get("names")
+    if isinstance(names, list) and len(names) == axis_dim:
+        resolved = [str(name) for name in names]
+        if all(name.strip() for name in resolved):
+            return resolved
+    return [f"joint_{idx + 1}" for idx in range(axis_dim)]
+
+
+def _to_float_vector(raw: Any, axis_dim: int) -> list[float]:
+    if isinstance(raw, (list, tuple)):
+        src = list(raw)
+    else:
+        src = [raw]
+    values: list[float] = []
+    for idx in range(axis_dim):
+        item = src[idx] if idx < len(src) else 0.0
+        try:
+            values.append(float(item))
+        except Exception:
+            values.append(0.0)
+    return values
 
 
 async def _detach_models_from_dataset(client, dataset_id: str) -> None:
@@ -429,6 +487,159 @@ async def get_dataset_playback(dataset_id: str):
         return _build_playback_response(dataset_id, metadata)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load dataset playback metadata: {exc}") from exc
+
+
+@router.get("/datasets/{dataset_id:path}/playback/signals", response_model=DatasetPlaybackSignalFieldsResponse)
+async def get_dataset_playback_signal_fields(dataset_id: str):
+    """List numeric vector fields that can be visualized as joint-state style charts."""
+    client = await get_supabase_async_client()
+    rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+
+    dataset_path = get_datasets_dir() / dataset_id
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
+
+    try:
+        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+    feature_map = metadata.features if isinstance(metadata.features, dict) else {}
+    fields: list[DatasetPlaybackSignalField] = []
+    for key in sorted(feature_map.keys()):
+        feature = feature_map.get(key)
+        if not _is_vector_feature(feature):
+            continue
+        shape = feature.get("shape") if isinstance(feature, dict) else []
+        axis_dim = int(shape[0]) if isinstance(shape, list) and shape else 0
+        fields.append(
+            DatasetPlaybackSignalField(
+                key=key,
+                label=key,
+                shape=[axis_dim] if axis_dim > 0 else [],
+                names=_resolve_axis_names(feature, axis_dim) if axis_dim > 0 else [],
+                dtype=str(feature.get("dtype") or ""),
+            )
+        )
+
+    return DatasetPlaybackSignalFieldsResponse(dataset_id=dataset_id, fields=fields)
+
+
+@router.get(
+    "/datasets/{dataset_id:path}/playback/signals/{episode_index}",
+    response_model=DatasetPlaybackSignalSeriesResponse,
+)
+async def get_dataset_playback_signal_series(
+    dataset_id: str,
+    episode_index: int,
+    field: str = Query(..., min_length=1),
+):
+    """Load one episode series for a specific vector field from dataset parquet."""
+    if episode_index < 0:
+        raise HTTPException(status_code=400, detail="episode_index must be >= 0")
+
+    client = await get_supabase_async_client()
+    rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+
+    dataset_path = get_datasets_dir() / dataset_id
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
+
+    try:
+        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+    if episode_index >= metadata.total_episodes:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Episode index out of range: {episode_index} (total={metadata.total_episodes})",
+        )
+
+    feature_map = metadata.features if isinstance(metadata.features, dict) else {}
+    feature = feature_map.get(field)
+    if not _is_vector_feature(feature):
+        raise HTTPException(status_code=404, detail=f"Signal field not found or not supported: {field}")
+
+    shape = feature.get("shape") if isinstance(feature, dict) else []
+    axis_dim = int(shape[0]) if isinstance(shape, list) and shape else 0
+    if axis_dim <= 0:
+        raise HTTPException(status_code=400, detail=f"Signal field has invalid shape: {field}")
+    names = _resolve_axis_names(feature, axis_dim)
+
+    try:
+        relative_data_path = metadata.get_data_file_path(episode_index)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve data file path: {exc}") from exc
+    data_path = dataset_path / relative_data_path
+    if not data_path.exists():
+        raise HTTPException(status_code=404, detail=f"Data file not found: {relative_data_path}")
+
+    try:
+        parquet = pq.ParquetFile(data_path)
+        schema_names = set(parquet.schema.names)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read parquet schema: {exc}") from exc
+
+    required_columns = {field, "episode_index"}
+    if not required_columns.issubset(schema_names):
+        raise HTTPException(status_code=404, detail=f"Required columns missing in parquet: {sorted(required_columns)}")
+
+    columns = [field, "episode_index"]
+    if "frame_index" in schema_names:
+        columns.append("frame_index")
+    if "timestamp" in schema_names:
+        columns.append("timestamp")
+
+    try:
+        table = pq.read_table(
+            data_path,
+            columns=columns,
+            filters=[("episode_index", "=", episode_index)],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load episode series: {exc}") from exc
+
+    if table.num_rows == 0:
+        return DatasetPlaybackSignalSeriesResponse(
+            dataset_id=dataset_id,
+            episode_index=episode_index,
+            field=field,
+            fps=metadata.fps,
+            names=names,
+            positions=[],
+            timestamps=[],
+        )
+
+    raw_vectors = table.column(field).to_pylist()
+    positions = [_to_float_vector(raw, axis_dim) for raw in raw_vectors]
+
+    if "timestamp" in columns:
+        timestamps_raw = table.column("timestamp").to_pylist()
+        timestamps = [float(v) for v in timestamps_raw]
+    else:
+        fps = metadata.fps if metadata.fps > 0 else 30
+        timestamps = [float(i) / float(fps) for i in range(len(positions))]
+
+    if "frame_index" in columns:
+        frame_indices = [int(v) for v in table.column("frame_index").to_pylist()]
+        order = sorted(range(len(frame_indices)), key=lambda idx: frame_indices[idx])
+        positions = [positions[idx] for idx in order]
+        timestamps = [timestamps[idx] for idx in order]
+
+    return DatasetPlaybackSignalSeriesResponse(
+        dataset_id=dataset_id,
+        episode_index=episode_index,
+        field=field,
+        fps=metadata.fps,
+        names=names,
+        positions=positions,
+        timestamps=timestamps,
+    )
 
 
 @router.get("/datasets/{dataset_id:path}/playback/{video_key:path}/{episode_index}")
