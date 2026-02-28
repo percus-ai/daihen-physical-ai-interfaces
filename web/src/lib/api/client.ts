@@ -12,7 +12,7 @@ class ApiError extends Error {
 
 export type ExperimentDetail = {
   id: string;
-  model_id: string;
+  model_id?: string | null;
   profile_instance_id?: string | null;
   name?: string | null;
   purpose?: string | null;

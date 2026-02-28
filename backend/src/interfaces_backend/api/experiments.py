@@ -173,6 +173,9 @@ async def create_experiment(request: ExperimentCreateRequest):
     """Create a new experiment."""
     user_id = _require_user_id()
     client = await get_supabase_async_client()
+    model_id = request.model_id.strip() if request.model_id else None
+    if model_id == "":
+        model_id = None
     metric_options = (
         request.metric_options
         if request.metric_options is not None
@@ -180,7 +183,7 @@ async def create_experiment(request: ExperimentCreateRequest):
     )
     record = {
         "id": str(uuid4()),
-        "model_id": request.model_id,
+        "model_id": model_id,
         "profile_instance_id": request.profile_instance_id,
         "name": request.name,
         "purpose": request.purpose,

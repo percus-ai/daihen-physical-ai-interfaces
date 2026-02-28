@@ -34,12 +34,6 @@
   let submitting = $state(false);
   let error = $state('');
 
-  $effect(() => {
-    if (!modelId && $modelsQuery.data?.models?.length) {
-      modelId = $modelsQuery.data.models[0].id;
-    }
-  });
-
   const parseMetricOptions = (text: string) => {
     const items = text
       .split(',')
@@ -50,15 +44,11 @@
 
   const handleSubmit = async (event?: Event) => {
     event?.preventDefault();
-    if (!modelId) {
-      error = 'モデルを選択してください。';
-      return;
-    }
     submitting = true;
     error = '';
     try {
       const payload = {
-        model_id: modelId,
+        model_id: modelId || null,
         profile_instance_id: null,
         name: name || defaultName(),
         purpose: purpose || null,
@@ -82,7 +72,7 @@
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1 class="text-3xl font-semibold text-slate-900">実験を作成</h1>
-      <p class="mt-2 text-sm text-slate-600">モデルを選択して新しい実験を登録します。</p>
+      <p class="mt-2 text-sm text-slate-600">必要な情報を入力して新しい実験を登録します。</p>
     </div>
     <Button.Root class="btn-ghost" href="/experiments">一覧に戻る</Button.Root>
   </div>
@@ -93,9 +83,8 @@
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">モデル</span>
       <select class="input mt-2" bind:value={modelId}>
-        {#if !$modelsQuery.data?.models?.length}
-          <option value="">モデルがありません</option>
-        {:else}
+        <option value="">未設定</option>
+        {#if $modelsQuery.data?.models?.length}
           {#each $modelsQuery.data?.models ?? [] as model}
             <option value={model.id}>{model.name ?? model.id}</option>
           {/each}

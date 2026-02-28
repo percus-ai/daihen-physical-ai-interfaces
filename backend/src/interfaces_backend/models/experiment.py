@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class ExperimentCreateRequest(BaseModel):
     """Create experiment request."""
 
-    model_id: str = Field(..., description="Model ID")
+    model_id: Optional[str] = Field(None, description="Model ID")
     profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
     name: str = Field(..., description="Experiment name")
     purpose: Optional[str] = Field(None, description="Experiment purpose")
@@ -43,7 +43,7 @@ class ExperimentModel(BaseModel):
     """Experiment response."""
 
     id: str = Field(..., description="Experiment ID")
-    model_id: str = Field(..., description="Model ID")
+    model_id: Optional[str] = Field(None, description="Model ID")
     profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
     name: str = Field(..., description="Experiment name")
     purpose: Optional[str] = Field(None, description="Experiment purpose")
