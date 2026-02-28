@@ -35,6 +35,7 @@ export type ExperimentEvaluation = {
   experiment_id?: string;
   trial_index: number;
   value?: string;
+  blueprint_id?: string | null;
   image_files?: string[] | null;
   notes?: string | null;
   episode_links?: ExperimentEpisodeLink[];
@@ -55,6 +56,7 @@ export type ExperimentEpisodeLinkInput = {
 
 export type ExperimentEvaluationReplaceItem = {
   value?: string | null;
+  blueprint_id?: string | null;
   image_files?: string[] | null;
   notes?: string | null;
   episode_links?: ExperimentEpisodeLinkInput[] | null;

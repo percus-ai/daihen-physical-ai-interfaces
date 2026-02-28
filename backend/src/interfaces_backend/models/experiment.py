@@ -83,6 +83,7 @@ class ExperimentEvaluationInput(BaseModel):
     """Experiment evaluation input (index assigned by server)."""
 
     value: Optional[str] = Field(None, description="Evaluation value")
+    blueprint_id: Optional[str] = Field(None, description="Blueprint ID")
     image_files: Optional[List[str]] = Field(
         None, description="R2 keys for evaluation images",
     )
@@ -105,6 +106,7 @@ class ExperimentEvaluationModel(BaseModel):
     experiment_id: str = Field(..., description="Experiment ID")
     trial_index: int = Field(..., description="Trial index (1-based)")
     value: str = Field(..., description="Evaluation value")
+    blueprint_id: Optional[str] = Field(None, description="Blueprint ID")
     image_files: Optional[List[str]] = Field(
         None, description="R2 keys for evaluation images",
     )

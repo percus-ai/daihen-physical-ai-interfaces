@@ -79,6 +79,7 @@ def _row_to_evaluation(
         experiment_id=row.get("experiment_id"),
         trial_index=row.get("trial_index") or 0,
         value=row.get("value") or "",
+        blueprint_id=row.get("blueprint_id"),
         image_files=row.get("image_files"),
         notes=row.get("notes"),
         episode_links=episode_links or [],
@@ -140,6 +141,23 @@ async def _validate_episode_links(client, items: list) -> None:
             status_code=400,
             detail=f"Invalid episode_index in episode_links: {', '.join(invalid_episode_indexes)}",
         )
+
+
+async def _validate_evaluation_blueprint_ids(client, items: list) -> None:
+    blueprint_ids = {
+        str(item.blueprint_id).strip()
+        for item in items
+        if getattr(item, "blueprint_id", None) and str(item.blueprint_id).strip()
+    }
+    if not blueprint_ids:
+        return
+    rows = (
+        await client.table("webui_blueprints").select("id").in_("id", list(blueprint_ids)).execute()
+    ).data or []
+    existing_ids = {str(row.get("id")) for row in rows if row.get("id")}
+    missing = sorted(blueprint_ids - existing_ids)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Invalid blueprint_id in evaluations: {', '.join(missing)}")
 
 
 def _row_to_analysis(row: dict) -> ExperimentAnalysisModel:
@@ -306,6 +324,7 @@ async def replace_experiment_evaluations(
         raise HTTPException(status_code=404, detail="Experiment not found")
     items = request.items or []
     await _validate_episode_links(client, items)
+    await _validate_evaluation_blueprint_ids(client, items)
 
     await (
         client.table("experiment_evaluation_episode_links")
@@ -325,6 +344,7 @@ async def replace_experiment_evaluations(
                     "experiment_id": experiment_id,
                     "trial_index": idx,
                     "value": item.value or "",
+                    "blueprint_id": str(item.blueprint_id).strip() if item.blueprint_id else None,
                     "image_files": item.image_files,
                     "notes": item.notes,
                     "owner_user_id": user_id,

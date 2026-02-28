@@ -38,6 +38,7 @@
   type Evaluation = {
     trial_index: number;
     value?: string;
+    blueprint_id?: string | null;
     notes?: string | null;
     image_files?: string[] | null;
     episode_links?: ExperimentEpisodeLink[] | null;
@@ -61,6 +62,7 @@
   type EvaluationDraft = {
     trial_index: number;
     value: string;
+    blueprint_id: string | null;
     selection: string;
     custom: string;
     notes: string;
@@ -186,6 +188,7 @@
       drafts.push({
         trial_index: index,
         value: currentValue,
+        blueprint_id: row?.blueprint_id ?? null,
         selection: isCustom ? 'その他' : currentValue,
         custom: isCustom ? currentValue : '',
         notes: row?.notes ?? '',
@@ -326,6 +329,7 @@
     try {
       const items = evaluationItems.map((item) => ({
         value: item.value ?? '',
+        blueprint_id: item.blueprint_id || null,
         notes: item.notes || null,
         image_files: item.image_files,
         episode_links: item.episode_links
