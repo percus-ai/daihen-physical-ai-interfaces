@@ -18,6 +18,11 @@
     value?: string;
     notes?: string | null;
     image_files?: string[] | null;
+    episode_links?: {
+      dataset_id: string;
+      episode_index: number;
+      sort_order: number;
+    }[] | null;
   };
 
   type EvaluationListResponse = {
@@ -42,6 +47,11 @@
     custom: string;
     notes: string;
     image_files: string[];
+    episode_links: {
+      dataset_id: string;
+      episode_index: number;
+      sort_order: number;
+    }[];
   };
 
   const DEFAULT_METRIC_OPTIONS = ['成功', '失敗', '部分成功'];
@@ -104,7 +114,8 @@
         selection: isCustom ? 'その他' : currentValue,
         custom: isCustom ? currentValue : '',
         notes: row?.notes ?? '',
-        image_files: row?.image_files ?? []
+        image_files: row?.image_files ?? [],
+        episode_links: row?.episode_links ?? []
       });
     }
     return drafts;
@@ -241,7 +252,8 @@
       const items = evaluationItems.map((item) => ({
         value: item.value ?? '',
         notes: item.notes || null,
-        image_files: item.image_files
+        image_files: item.image_files,
+        episode_links: item.episode_links
       }));
       await api.experiments.replaceEvaluations(experiment.id, { items });
       await refetchSummary();

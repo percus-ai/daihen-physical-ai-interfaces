@@ -14,6 +14,8 @@ from interfaces_backend.models.experiment import (
     ExperimentAnalysisReplaceRequest,
     ExperimentAnalysisUpdateRequest,
     ExperimentCreateRequest,
+    ExperimentEvaluationEpisodeLinkInput,
+    ExperimentEvaluationEpisodeLinkModel,
     ExperimentEvaluationListResponse,
     ExperimentEvaluationModel,
     ExperimentEvaluationReplaceRequest,
@@ -61,7 +63,18 @@ def _row_to_experiment(row: dict) -> ExperimentModel:
     )
 
 
-def _row_to_evaluation(row: dict) -> ExperimentEvaluationModel:
+def _row_to_episode_link(row: dict) -> ExperimentEvaluationEpisodeLinkModel:
+    return ExperimentEvaluationEpisodeLinkModel(
+        dataset_id=row.get("dataset_id") or "",
+        episode_index=int(row.get("episode_index") or 0),
+        sort_order=int(row.get("sort_order") or 0),
+    )
+
+
+def _row_to_evaluation(
+    row: dict,
+    episode_links: list[ExperimentEvaluationEpisodeLinkModel] | None = None,
+) -> ExperimentEvaluationModel:
     return ExperimentEvaluationModel(
         id=row.get("id"),
         experiment_id=row.get("experiment_id"),
@@ -69,8 +82,45 @@ def _row_to_evaluation(row: dict) -> ExperimentEvaluationModel:
         value=row.get("value") or "",
         image_files=row.get("image_files"),
         notes=row.get("notes"),
+        episode_links=episode_links or [],
         created_at=row.get("created_at"),
     )
+
+
+async def _fetch_episode_links_map(client, experiment_id: str) -> dict[int, list[ExperimentEvaluationEpisodeLinkModel]]:
+    link_rows = (
+        await client.table("experiment_evaluation_episode_links")
+        .select("trial_index,dataset_id,episode_index,sort_order")
+        .eq("experiment_id", experiment_id)
+        .order("trial_index")
+        .order("sort_order")
+        .execute()
+    ).data or []
+    links_by_trial: dict[int, list[ExperimentEvaluationEpisodeLinkModel]] = {}
+    for link_row in link_rows:
+        trial_index = int(link_row.get("trial_index") or 0)
+        if trial_index <= 0:
+            continue
+        links_by_trial.setdefault(trial_index, []).append(_row_to_episode_link(link_row))
+    return links_by_trial
+
+
+async def _validate_episode_links(client, items: list) -> None:
+    dataset_ids = {
+        link.dataset_id.strip()
+        for item in items
+        for link in (item.episode_links or [])
+        if link.dataset_id.strip()
+    }
+    if not dataset_ids:
+        return
+    dataset_rows = (
+        await client.table("datasets").select("id").in_("id", list(dataset_ids)).execute()
+    ).data or []
+    existing_ids = {str(row.get("id")) for row in dataset_rows if row.get("id")}
+    missing = sorted(dataset_ids - existing_ids)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Invalid dataset_id in episode_links: {', '.join(missing)}")
 
 
 def _row_to_analysis(row: dict) -> ExperimentAnalysisModel:
@@ -212,7 +262,11 @@ async def list_experiment_evaluations(experiment_id: str):
         .order("trial_index")
         .execute()
     ).data or []
-    evaluations = [_row_to_evaluation(row) for row in rows]
+    links_by_trial = await _fetch_episode_links_map(client, experiment_id)
+    evaluations = [
+        _row_to_evaluation(row, links_by_trial.get(int(row.get("trial_index") or 0), []))
+        for row in rows
+    ]
     return ExperimentEvaluationListResponse(evaluations=evaluations, total=len(evaluations))
 
 
@@ -228,13 +282,22 @@ async def replace_experiment_evaluations(
     ).data or []
     if not existing:
         raise HTTPException(status_code=404, detail="Experiment not found")
+    items = request.items or []
+    await _validate_episode_links(client, items)
+
+    await (
+        client.table("experiment_evaluation_episode_links")
+        .delete()
+        .eq("experiment_id", experiment_id)
+        .execute()
+    )
     await client.table("experiment_evaluations").delete().eq("experiment_id", experiment_id).execute()
 
-    items = request.items or []
     if items:
-        records = []
+        evaluation_records = []
+        link_records = []
         for idx, item in enumerate(items, start=1):
-            records.append(
+            evaluation_records.append(
                 {
                     "id": str(uuid4()),
                     "experiment_id": experiment_id,
@@ -245,7 +308,30 @@ async def replace_experiment_evaluations(
                     "owner_user_id": user_id,
                 }
             )
-        await client.table("experiment_evaluations").insert(records).execute()
+            normalized_links: list[ExperimentEvaluationEpisodeLinkInput] = item.episode_links or []
+            seen_link_keys: set[tuple[str, int]] = set()
+            for link_idx, link in enumerate(normalized_links):
+                dataset_id = link.dataset_id.strip()
+                if not dataset_id:
+                    continue
+                dedupe_key = (dataset_id, int(link.episode_index))
+                if dedupe_key in seen_link_keys:
+                    continue
+                seen_link_keys.add(dedupe_key)
+                link_records.append(
+                    {
+                        "id": str(uuid4()),
+                        "experiment_id": experiment_id,
+                        "trial_index": idx,
+                        "dataset_id": dataset_id,
+                        "episode_index": int(link.episode_index),
+                        "sort_order": int(link.sort_order if link.sort_order is not None else link_idx),
+                        "owner_user_id": user_id,
+                    }
+                )
+        await client.table("experiment_evaluations").insert(evaluation_records).execute()
+        if link_records:
+            await client.table("experiment_evaluation_episode_links").insert(link_records).execute()
     return {"updated": True, "count": len(items)}
 
 

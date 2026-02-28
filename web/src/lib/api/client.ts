@@ -37,7 +37,31 @@ export type ExperimentEvaluation = {
   value?: string;
   image_files?: string[] | null;
   notes?: string | null;
+  episode_links?: ExperimentEpisodeLink[];
   created_at?: string;
+};
+
+export type ExperimentEpisodeLink = {
+  dataset_id: string;
+  episode_index: number;
+  sort_order: number;
+};
+
+export type ExperimentEpisodeLinkInput = {
+  dataset_id: string;
+  episode_index: number;
+  sort_order?: number | null;
+};
+
+export type ExperimentEvaluationReplaceItem = {
+  value?: string | null;
+  image_files?: string[] | null;
+  notes?: string | null;
+  episode_links?: ExperimentEpisodeLinkInput[] | null;
+};
+
+export type ExperimentEvaluationReplaceRequest = {
+  items: ExperimentEvaluationReplaceItem[];
 };
 
 export type ExperimentEvaluationListResponse = {
@@ -766,7 +790,7 @@ export const api = {
       fetchApi<{ deleted: boolean }>(`/api/experiments/${experimentId}`, { method: 'DELETE' }),
     evaluations: (experimentId: string) =>
       fetchApi<ExperimentEvaluationListResponse>(`/api/experiments/${experimentId}/evaluations`),
-    replaceEvaluations: (experimentId: string, payload: Record<string, unknown>) =>
+    replaceEvaluations: (experimentId: string, payload: ExperimentEvaluationReplaceRequest) =>
       fetchApi<{ updated: boolean; count: number }>(`/api/experiments/${experimentId}/evaluations`, {
         method: 'PUT',
         body: JSON.stringify(payload)
