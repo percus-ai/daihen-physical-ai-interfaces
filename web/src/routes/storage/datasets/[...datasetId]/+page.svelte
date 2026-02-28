@@ -14,6 +14,7 @@
     type DatasetViewerSignalFieldsResponse,
     type DatasetViewerSignalSeriesResponse
   } from '$lib/api/client';
+  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
@@ -74,6 +75,7 @@
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
+  let viewerModalOpen = $state(false);
 
   const mergeDefaultName = $derived(
     datasetId
@@ -81,6 +83,11 @@
       : ''
   );
   const canMerge = $derived(!isArchived && mergeSelection.length > 0 && !actionLoading);
+
+  const openViewerModal = () => {
+    if (!datasetId) return;
+    viewerModalOpen = true;
+  };
 
   const viewerQuery = createQuery<DatasetViewerResponse>(
     toStore(() => ({
@@ -472,9 +479,14 @@
 <section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">再生</h2>
-    <button class="btn-ghost" type="button" onclick={refetchDataset}>
-      再読み込み
-    </button>
+    <div class="flex gap-2">
+      <button class="btn-ghost" type="button" onclick={openViewerModal}>
+        ビューアで開く
+      </button>
+      <button class="btn-ghost" type="button" onclick={refetchDataset}>
+        再読み込み
+      </button>
+    </div>
   </div>
   <p class="mt-2 text-sm text-slate-600">収録済みエピソードをブラウザで確認できます。</p>
   {#if !dataset?.is_local}
@@ -648,6 +660,8 @@
     <p class="mt-4 text-sm text-slate-600">再生可能なエピソードがありません。</p>
   {/if}
 </section>
+
+<DatasetViewerModal bind:open={viewerModalOpen} datasetId={datasetId} title="Dataset Viewer" />
 
 <section class="card p-6">
   <div class="flex items-center justify-between">
