@@ -44,14 +44,27 @@ def _find_repo_root() -> Path:
     return Path.cwd()
 
 
-# Load .env from repository root data directory
-_repo_root = _find_repo_root()
-_env_file = _repo_root / "data" / ".env"
-if _env_file.exists():
-    load_dotenv(_env_file)
-else:
+def _load_backend_env() -> None:
+    profile = str(os.environ.get("PHI_ENV") or "").strip()
+    repo_root = _find_repo_root()
+    data_dir = repo_root / "data"
+
+    if profile:
+        profile_env = data_dir / f".env.{profile}"
+        if profile_env.exists():
+            load_dotenv(profile_env)
+
+    base_env = data_dir / ".env"
+    if base_env.exists():
+        load_dotenv(base_env)
+        return
+
     # Fallback: try current directory
     load_dotenv()
+
+
+# Load .env from repository root data directory (supports PHI_ENV profile)
+_load_backend_env()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request
