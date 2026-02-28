@@ -68,7 +68,11 @@ class DatasetSyncJobsService:
         with self._lock:
             self._cleanup_locked()
             for job in self._jobs.values():
-                if job.user_id == user_id and job.state in _ACTIVE_STATES:
+                if (
+                    job.user_id == user_id
+                    and job.dataset_id == dataset_id
+                    and job.state in _ACTIVE_STATES
+                ):
                     raise HTTPException(status_code=409, detail="A dataset sync job is already in progress")
 
             job_id = uuid4().hex
