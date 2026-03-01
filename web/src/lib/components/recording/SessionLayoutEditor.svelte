@@ -190,6 +190,50 @@
     mounted = true;
   });
 
+  const ensureDatasetCameraTopics = (node: BlueprintNode, keys: string[]): BlueprintNode => {
+    if (!keys.length) return node;
+    if (node.type === 'view' && node.viewType === 'camera') {
+      const topic = typeof node.config?.topic === 'string' ? node.config.topic : '';
+      if (topic && keys.includes(topic)) return node;
+      return {
+        ...node,
+        config: {
+          ...node.config,
+          topic: keys[0] ?? ''
+        }
+      };
+    }
+    if (node.type === 'split') {
+      const left = ensureDatasetCameraTopics(node.children[0], keys);
+      const right = ensureDatasetCameraTopics(node.children[1], keys);
+      if (left === node.children[0] && right === node.children[1]) return node;
+      return { ...node, children: [left, right] };
+    }
+    if (node.type !== 'tabs') return node;
+    const nextTabs = node.tabs.map((tab) => {
+      const child = ensureDatasetCameraTopics(tab.child, keys);
+      return child === tab.child ? tab : { ...tab, child };
+    });
+    const changed = nextTabs.some((tab, idx) => tab !== node.tabs[idx]);
+    return changed ? { ...node, tabs: nextTabs } : node;
+  };
+
+  let lastDatasetCameraFixSignature = $state('');
+  $effect(() => {
+    if (!mounted) return;
+    if (viewSource !== 'dataset') return;
+    if (!datasetId) return;
+    if (!datasetCameraKeys.length) return;
+    const signature = `${datasetId}:${datasetCameraKeys.join('|')}`;
+    if (signature === lastDatasetCameraFixSignature) return;
+    lastDatasetCameraFixSignature = signature;
+    const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
+    if (next !== blueprint) {
+      blueprint = next;
+      selectedId = ensureValidSelection(next, selectedId);
+    }
+  });
+
   $effect(() => {
     if (!mounted) return;
     if (inspectorInitialized) return;

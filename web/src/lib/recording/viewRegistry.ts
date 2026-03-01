@@ -52,9 +52,16 @@ export const viewRegistry: ViewTypeDefinition[] = [
     fields: [
       {
         key: 'topic',
-        label: 'Source',
+        label: 'Topic',
         type: 'topic',
+        sources: ['ros'],
         filter: cameraFilter
+      },
+      {
+        key: 'topic',
+        label: 'Camera',
+        type: 'topic',
+        sources: ['dataset']
       }
     ],
     defaultConfig: (topics, source = 'ros') => ({

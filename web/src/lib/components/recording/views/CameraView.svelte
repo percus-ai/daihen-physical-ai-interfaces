@@ -60,6 +60,14 @@
     return api.storage.datasetViewerVideoUrl(datasetId, topic, Math.max(0, Math.floor(Number(episodeIndex) || 0)));
   });
 
+  let lastDatasetVideoUrl = '';
+  $effect(() => {
+    if (source !== 'dataset') return;
+    if (datasetVideoUrl === lastDatasetVideoUrl) return;
+    lastDatasetVideoUrl = datasetVideoUrl;
+    videoError = false;
+  });
+
   $effect(() => {
     if (source === 'dataset') {
       unsubscribe?.();
@@ -122,16 +130,18 @@
           </div>
         {:else}
           <!-- svelte-ignore a11y_media_has_caption -->
-          <video
-            class="block h-full w-full bg-black/5 object-contain"
-            bind:this={videoEl}
-            src={datasetVideoUrl}
-            playsinline
-            preload="metadata"
-            onerror={() => {
-              videoError = true;
-            }}
-          ></video>
+          {#key datasetVideoUrl}
+            <video
+              class="block h-full w-full bg-black/5 object-contain"
+              bind:this={videoEl}
+              src={datasetVideoUrl}
+              playsinline
+              preload="metadata"
+              onerror={() => {
+                videoError = true;
+              }}
+            ></video>
+          {/key}
         {/if}
       {:else}
         <div class="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-400">
