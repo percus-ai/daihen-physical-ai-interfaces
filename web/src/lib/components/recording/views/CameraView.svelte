@@ -1,13 +1,27 @@
 <script lang="ts">
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
+  import { api } from '$lib/api/client';
 
-  let { topic = '', title = 'Camera' }: { topic?: string; title?: string } = $props();
+  let {
+    topic = '',
+    title = 'Camera',
+    source = 'ros',
+    datasetId = '',
+    episodeIndex = 0
+  }: {
+    topic?: string;
+    title?: string;
+    source?: 'ros' | 'dataset';
+    datasetId?: string;
+    episodeIndex?: number;
+  } = $props();
 
   let imageSrc = $state('');
   let error = $state('');
   let status = $state('idle');
   let lastFrameAt = 0;
   let unsubscribe: (() => void) | null = null;
+  let videoError = $state(false);
 
   const handleMessage = (msg: Record<string, unknown>) => {
     const data = msg.data as string | undefined;
@@ -35,8 +49,22 @@
   };
 
   const requiresCompressed = $derived(Boolean(topic) && !topic.endsWith('/compressed'));
+  const datasetVideoUrl = $derived.by(() => {
+    if (source !== 'dataset') return '';
+    if (!datasetId || !topic) return '';
+    return api.storage.datasetViewerVideoUrl(datasetId, topic, Math.max(0, Math.floor(Number(episodeIndex) || 0)));
+  });
 
   $effect(() => {
+    if (source === 'dataset') {
+      unsubscribe?.();
+      unsubscribe = null;
+      imageSrc = '';
+      error = '';
+      status = 'idle';
+      videoError = false;
+      return;
+    }
     if (!topic) {
       unsubscribe?.();
       unsubscribe = null;
@@ -64,13 +92,37 @@
 <div class="flex h-full flex-col gap-3">
   <div class="flex items-center justify-between">
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
-    <span class="text-[10px] text-slate-400">{topic || 'no topic'}</span>
+    <span class="text-[10px] text-slate-400">{source === 'dataset' ? topic || 'no camera' : topic || 'no topic'}</span>
   </div>
   {#if error}
     <p class="text-xs text-rose-500">{error}</p>
   {/if}
   <div class="flex-1 overflow-hidden rounded-2xl border border-slate-200 bg-slate-950/5">
-    {#if imageSrc}
+    {#if source === 'dataset'}
+      {#if datasetVideoUrl}
+        {#if videoError}
+          <div class="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-400">
+            動画の読み込みに失敗しました。
+          </div>
+        {:else}
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video
+            class="block h-full w-full bg-black/5 object-contain"
+            src={datasetVideoUrl}
+            controls
+            playsinline
+            preload="metadata"
+            onerror={() => {
+              videoError = true;
+            }}
+          ></video>
+        {/if}
+      {:else}
+        <div class="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-400">
+          カメラが未選択です。
+        </div>
+      {/if}
+    {:else if imageSrc}
       <img src={imageSrc} alt="camera" class="block h-full w-full object-contain" />
     {:else}
       <div class="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-400">

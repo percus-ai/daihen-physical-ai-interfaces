@@ -33,7 +33,7 @@ export type ViewTypeDefinition = {
 const firstMatch = (topics: string[], filter: (topic: string) => boolean) =>
   topics.find(filter) ?? '';
 
-const cameraFilter = (topic: string) => topic.endsWith('/compressed');
+const cameraFilter = (topic: string) => topic.endsWith('/compressed') || !topic.includes('/');
 const jointFilter = (topic: string) => topic.includes('joint_states');
 const statusFilter = (topic: string) => topic.includes('status') || topic.includes('client');
 
@@ -48,18 +48,17 @@ export const viewRegistry: ViewTypeDefinition[] = [
     label: 'Camera',
     description: 'Compressed image preview',
     component: CameraView,
-    sources: ['ros'],
+    sources: ['ros', 'dataset'],
     fields: [
       {
         key: 'topic',
-        label: 'Topic',
+        label: 'Source',
         type: 'topic',
-        sources: ['ros'],
         filter: cameraFilter
       }
     ],
     defaultConfig: (topics, source = 'ros') => ({
-      topic: source === 'ros' ? firstMatch(topics, cameraFilter) : ''
+      topic: source === 'dataset' ? topics[0] ?? '' : firstMatch(topics, cameraFilter)
     })
   },
   {
@@ -125,31 +124,36 @@ export const viewRegistry: ViewTypeDefinition[] = [
     type: 'controls',
     label: 'Controls',
     description: 'Recording actions',
-    component: ControlsView
+    component: ControlsView,
+    sources: ['ros']
   },
   {
     type: 'progress',
     label: 'Progress',
     description: 'Episode progress',
-    component: ProgressView
+    component: ProgressView,
+    sources: ['ros']
   },
   {
     type: 'timeline',
     label: 'Timeline',
     description: 'Recording timeline',
-    component: TimelineView
+    component: TimelineView,
+    sources: ['ros']
   },
   {
     type: 'devices',
     label: 'Devices',
     description: 'Camera/arm status',
-    component: DevicesView
+    component: DevicesView,
+    sources: ['ros']
   },
   {
     type: 'settings',
     label: 'Settings',
     description: 'Inference/recording runtime settings',
-    component: SettingsView
+    component: SettingsView,
+    sources: ['ros']
   }
 ];
 

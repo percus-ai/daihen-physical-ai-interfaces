@@ -13,6 +13,8 @@
     sessionKind = '',
     mode = 'recording',
     viewSource = 'ros',
+    datasetId = '',
+    datasetEpisodeIndex = 0,
     datasetJointSeries = null,
     datasetSourceLabel = '',
     editMode = true,
@@ -27,6 +29,8 @@
     sessionKind?: '' | 'recording' | 'inference' | 'teleop';
     mode?: 'recording' | 'operate';
     viewSource?: 'ros' | 'dataset';
+    datasetId?: string;
+    datasetEpisodeIndex?: number;
     datasetJointSeries?: {
       names?: string[];
       positions?: number[][];
@@ -75,6 +79,11 @@
       baseProps.sourceLabel = datasetSourceLabel;
       baseProps.datasetSeries = datasetJointSeries;
     }
+    if (viewType === 'camera' && viewSource === 'dataset') {
+      baseProps.source = 'dataset';
+      baseProps.datasetId = datasetId;
+      baseProps.episodeIndex = datasetEpisodeIndex;
+    }
     if (viewType === 'controls' || viewType === 'progress' || viewType === 'timeline') {
       baseProps.sessionId = sessionId;
     }
@@ -117,6 +126,8 @@
             {sessionKind}
             {mode}
             {viewSource}
+            {datasetId}
+            {datasetEpisodeIndex}
             {datasetJointSeries}
             {datasetSourceLabel}
             {editMode}
@@ -136,6 +147,8 @@
             {sessionKind}
             {mode}
             {viewSource}
+            {datasetId}
+            {datasetEpisodeIndex}
             {datasetJointSeries}
             {datasetSourceLabel}
             {editMode}
@@ -158,6 +171,8 @@
             {sessionKind}
             {mode}
             {viewSource}
+            {datasetId}
+            {datasetEpisodeIndex}
             {datasetJointSeries}
             {datasetSourceLabel}
             {editMode}

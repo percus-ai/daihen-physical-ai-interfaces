@@ -17,12 +17,14 @@
     datasetId = '',
     episodeIndex = 0,
     onEpisodeChange,
-    layoutBlueprint = null
+    layoutBlueprint = null,
+    autoSelectSignalField = true
   }: {
     datasetId?: string;
     episodeIndex?: number;
     onEpisodeChange?: (episodeIndex: number) => void;
     layoutBlueprint?: BlueprintNode | null;
+    autoSelectSignalField?: boolean;
   } = $props();
 
   const queryClient = useQueryClient();
@@ -33,6 +35,8 @@
   let datasetSyncStarting = $state(false);
   let datasetSyncHandledTerminalState = $state('');
   let lastDatasetIdForSync = $state('');
+  let lastNotifiedEpisode: number | null = $state(null);
+  let lastLayoutBlueprintSignature = $state('');
   let resolvedLayoutBlueprint: BlueprintNode | null = $state(null);
   let layoutSelectedId = $state('');
 
@@ -43,16 +47,7 @@
       enabled: Boolean(datasetId)
     }))
   );
-
-  const episodesQuery = createQuery(
-    toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-panel', datasetId, 'episodes'],
-      queryFn: () => api.storage.datasetViewerEpisodes(datasetId),
-      enabled: Boolean(datasetId) && Boolean($viewerQuery.data?.is_local)
-    }))
-  );
-
-  const playbackEpisodes = $derived($episodesQuery.data?.total ?? $viewerQuery.data?.total_episodes ?? 0);
+  const playbackEpisodes = $derived($viewerQuery.data?.total_episodes ?? 0);
 
   const signalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
     toStore(() => ({
@@ -155,31 +150,56 @@
       datasetSyncJobId = '';
       datasetSyncAutoTriggered = false;
       datasetSyncHandledTerminalState = '';
-      selectedEpisode = Math.max(0, Math.floor(episodeIndex || 0));
-      selectedSignalField = '';
+      const nextEpisode = Math.max(0, Math.floor(episodeIndex || 0));
+      if (selectedEpisode !== nextEpisode) {
+        selectedEpisode = nextEpisode;
+      }
+      lastNotifiedEpisode = null;
+      if (selectedSignalField !== '') {
+        selectedSignalField = '';
+      }
     }
   });
 
   $effect(() => {
     if (!signalFields.length) {
-      selectedSignalField = '';
+      if (selectedSignalField !== '') {
+        selectedSignalField = '';
+      }
       return;
     }
+    if (!autoSelectSignalField) return;
     if (!selectedSignalField || !signalFields.some((field) => field.key === selectedSignalField)) {
-      selectedSignalField = signalFields[0].key;
+      const nextField = signalFields[0].key;
+      if (selectedSignalField !== nextField) {
+        selectedSignalField = nextField;
+      }
     }
   });
 
   $effect(() => {
-    if (playbackEpisodes <= 0) {
+    if (!Number.isFinite(selectedEpisode)) {
       selectedEpisode = 0;
       return;
     }
-    if (selectedEpisode < 0) selectedEpisode = 0;
-    if (selectedEpisode >= playbackEpisodes) selectedEpisode = playbackEpisodes - 1;
+    if (playbackEpisodes <= 0) {
+      if (selectedEpisode !== 0) {
+        selectedEpisode = 0;
+      }
+      return;
+    }
+    if (selectedEpisode < 0) {
+      selectedEpisode = 0;
+      return;
+    }
+    if (selectedEpisode >= playbackEpisodes) {
+      selectedEpisode = playbackEpisodes - 1;
+    }
   });
 
   $effect(() => {
+    if (Object.is(lastNotifiedEpisode, selectedEpisode)) return;
+    lastNotifiedEpisode = selectedEpisode;
     onEpisodeChange?.(selectedEpisode);
   });
 
@@ -226,18 +246,35 @@
     JSON.parse(JSON.stringify(node)) as BlueprintNode;
 
   $effect(() => {
+    const signature = layoutBlueprint ? JSON.stringify(layoutBlueprint) : '';
+    if (signature === lastLayoutBlueprintSignature) return;
+    lastLayoutBlueprintSignature = signature;
+
     if (!layoutBlueprint) {
-      resolvedLayoutBlueprint = null;
-      layoutSelectedId = '';
+      if (resolvedLayoutBlueprint !== null) {
+        resolvedLayoutBlueprint = null;
+      }
+      if (layoutSelectedId !== '') {
+        layoutSelectedId = '';
+      }
       return;
     }
-    resolvedLayoutBlueprint = cloneBlueprint(layoutBlueprint);
-    layoutSelectedId = ensureValidSelection(resolvedLayoutBlueprint, layoutSelectedId || null);
+    const nextLayout = cloneBlueprint(layoutBlueprint);
+    const nextSelectedId = ensureValidSelection(nextLayout, null);
+    resolvedLayoutBlueprint = nextLayout;
+    if (layoutSelectedId !== nextSelectedId) {
+      layoutSelectedId = nextSelectedId;
+    }
   });
 
   const handleLayoutTabChange = (id: string, activeId: string) => {
     if (!resolvedLayoutBlueprint) return;
-    resolvedLayoutBlueprint = updateTabsActive(resolvedLayoutBlueprint, id, activeId);
+    const nextLayout = updateTabsActive(resolvedLayoutBlueprint, id, activeId);
+    resolvedLayoutBlueprint = nextLayout;
+    const nextSelectedId = ensureValidSelection(nextLayout, layoutSelectedId || null);
+    if (layoutSelectedId !== nextSelectedId) {
+      layoutSelectedId = nextSelectedId;
+    }
   };
 </script>
 
@@ -345,6 +382,7 @@
         <div class="min-w-56 flex-1">
           <label class="label" for={`signal-field-${datasetId}`}>トピック（保存フィールド）</label>
           <select id={`signal-field-${datasetId}`} class="input mt-2" bind:value={selectedSignalField}>
+            <option value="">選択してください</option>
             {#each signalFields as field}
               <option value={field.key}>{field.key}</option>
             {/each}
@@ -363,6 +401,8 @@
         </p>
       {:else if !signalFields.length}
         <p class="mt-3 text-sm text-slate-500">可視化できる数値ベクトルフィールドがありません。</p>
+      {:else if !selectedSignalField}
+        <p class="mt-3 text-sm text-slate-500">可視化するフィールドを選択してください。</p>
       {:else if layoutBlueprint}
         {#if resolvedLayoutBlueprint}
           <div class="mt-3 min-h-0 flex-1 rounded-xl border border-slate-200/70 bg-white/70 p-2">
