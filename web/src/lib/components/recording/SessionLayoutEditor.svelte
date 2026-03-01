@@ -4,11 +4,12 @@
   import { Button, Tabs } from 'bits-ui';
   import toast from 'svelte-french-toast';
   import { createQuery } from '@tanstack/svelte-query';
-  import { api } from '$lib/api/client';
+  import { api, type ExperimentEpisodeLink } from '$lib/api/client';
 
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import BlueprintTree from '$lib/components/recording/BlueprintTree.svelte';
   import BlueprintCombobox from '$lib/components/blueprints/BlueprintCombobox.svelte';
+  import DatasetEpisodeSearchTab from '$lib/components/recording/DatasetEpisodeSearchTab.svelte';
   import {
     createDatasetPlaybackController,
     type DatasetPlaybackController
@@ -66,7 +67,13 @@
     datasetEpisodeIndex = 0,
     datasetCameraKeys = [],
     datasetJointSeries = null,
-    datasetSourceLabel = ''
+    datasetSourceLabel = '',
+    searchDatasets = [],
+    searchRecommendedDatasetId = '',
+    searchEpisodeLinks = [],
+    onPreviewEpisode = undefined,
+    onAddEpisodeLink = undefined,
+    onRemoveEpisodeLink = undefined
   }: {
     blueprintSessionId?: string;
     blueprintSessionKind?: BlueprintSessionKind | '';
@@ -85,11 +92,20 @@
       timestamps?: number[];
     } | null;
     datasetSourceLabel?: string;
+    searchDatasets?: { id: string; name?: string; status?: string }[];
+    searchRecommendedDatasetId?: string;
+    searchEpisodeLinks?: ExperimentEpisodeLink[];
+    onPreviewEpisode?: (datasetId: string, episodeIndex: number) => void;
+    onAddEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
+    onRemoveEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
   } = $props();
 
   const resolvedLayoutSessionId = $derived(layoutSessionId || blueprintSessionId);
   const resolvedLayoutSessionKind = $derived(layoutSessionKind || blueprintSessionKind);
   const viewOptions = $derived(getViewOptionsBySource(viewSource));
+  const showSearchTab = $derived(
+    viewSource === 'dataset' && Boolean(onPreviewEpisode) && Boolean(onAddEpisodeLink) && Boolean(onRemoveEpisodeLink)
+  );
 
   const topicsQuery = createQuery<ProfileStatusResponse>(
     toStore(() => ({
@@ -110,7 +126,7 @@
   let mounted = $state(false);
   let lastResolveSignature = $state('');
   let filledDefaults = $state(false);
-  let editInspectorTab = $state<'blueprint' | 'selection'>('blueprint');
+  let editInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
   let editorShellEl = $state<HTMLDivElement | null>(null);
   let editorToolbarEl = $state<HTMLDivElement | null>(null);
   let editorContentEl = $state<HTMLDivElement | null>(null);
@@ -480,7 +496,9 @@
 
           <aside class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-3 lg:overflow-y-auto">
             <Tabs.Root bind:value={editInspectorTab}>
-              <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+              <Tabs.List
+                class={`inline-grid ${showSearchTab ? 'grid-cols-3' : 'grid-cols-2'} gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1`}
+              >
                 <Tabs.Trigger
                   value="blueprint"
                   class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
@@ -493,6 +511,14 @@
                 >
                   Selection
                 </Tabs.Trigger>
+                {#if showSearchTab}
+                  <Tabs.Trigger
+                    value="search"
+                    class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+                  >
+                    Search
+                  </Tabs.Trigger>
+                {/if}
               </Tabs.List>
 
               <Tabs.Content value="blueprint" class="mt-3">
@@ -644,6 +670,21 @@
                   </div>
                 {/if}
               </Tabs.Content>
+
+              {#if showSearchTab}
+                <Tabs.Content value="search" class="mt-3">
+                  <DatasetEpisodeSearchTab
+                    datasets={searchDatasets}
+                    recommendedDatasetId={searchRecommendedDatasetId}
+                    previewDatasetId={datasetId}
+                    previewEpisodeIndex={datasetEpisodeIndex}
+                    episodeLinks={searchEpisodeLinks}
+                    onPreview={onPreviewEpisode}
+                    onAdd={onAddEpisodeLink}
+                    onRemove={onRemoveEpisodeLink}
+                  />
+                </Tabs.Content>
+              {/if}
             </Tabs.Root>
           </aside>
         </div>

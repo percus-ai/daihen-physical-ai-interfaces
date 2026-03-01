@@ -540,6 +540,51 @@
     linkModalOpen = true;
   };
 
+  const activeEpisodeLinks = $derived.by(() => {
+    const row = evaluationItems.find((item) => item.trial_index === activeTrialIndex);
+    return normalizeEpisodeLinks(row?.episode_links ?? []);
+  });
+
+  const updateActiveEpisodeLinks = (nextLinks: ExperimentEpisodeLink[]) => {
+    const idx = evaluationItems.findIndex((item) => item.trial_index === activeTrialIndex);
+    if (idx < 0) return;
+    updateItem(idx, { episode_links: normalizeEpisodeLinks(nextLinks) });
+  };
+
+  const handlePreviewEpisode = (datasetId: string, episodeIndex: number) => {
+    if (!datasetId) return;
+    const nextEpisode = Math.max(0, Math.floor(Number(episodeIndex) || 0));
+    if (!Number.isFinite(nextEpisode)) return;
+    modalDatasetId = datasetId;
+    modalEpisodeIndex = nextEpisode;
+  };
+
+  const handleAddEpisodeLink = (datasetId: string, episodeIndex: number) => {
+    if (!datasetId) return;
+    const nextEpisode = Math.max(0, Math.floor(Number(episodeIndex) || 0));
+    if (!Number.isFinite(nextEpisode)) return;
+    if (activeEpisodeLinks.some((link) => link.dataset_id === datasetId && link.episode_index === nextEpisode)) {
+      return;
+    }
+    updateActiveEpisodeLinks([
+      ...activeEpisodeLinks,
+      {
+        dataset_id: datasetId,
+        episode_index: nextEpisode,
+        sort_order: activeEpisodeLinks.length
+      }
+    ]);
+  };
+
+  const handleRemoveEpisodeLink = (datasetId: string, episodeIndex: number) => {
+    if (!datasetId) return;
+    const nextEpisode = Math.max(0, Math.floor(Number(episodeIndex) || 0));
+    if (!Number.isFinite(nextEpisode)) return;
+    updateActiveEpisodeLinks(
+      activeEpisodeLinks.filter((link) => !(link.dataset_id === datasetId && link.episode_index === nextEpisode))
+    );
+  };
+
   const openLinkEditor = (trialIndex: number) => {
     openViewerModal(trialIndex);
   };
@@ -641,6 +686,12 @@
 	              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
 	              datasetJointSeries={viewerDatasetJointSeries}
 	              datasetSourceLabel={viewerDatasetSourceLabel}
+                searchDatasets={allDatasets}
+                searchRecommendedDatasetId={recommendedDatasetId}
+                searchEpisodeLinks={activeEpisodeLinks}
+                onPreviewEpisode={handlePreviewEpisode}
+                onAddEpisodeLink={handleAddEpisodeLink}
+                onRemoveEpisodeLink={handleRemoveEpisodeLink}
 	            />
           </div>
         {:else}
