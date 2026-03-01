@@ -26,7 +26,7 @@
   let unsubscribe: (() => void) | null = null;
   let videoError = $state(false);
   let videoEl = $state<HTMLVideoElement | null>(null);
-  let unregisterPlayback = $state<(() => void) | null>(null);
+  let unregisterPlayback: (() => void) | null = null;
 
   const handleMessage = (msg: Record<string, unknown>) => {
     const data = msg.data as string | undefined;
@@ -94,8 +94,6 @@
   });
 
   $effect(() => {
-    unregisterPlayback?.();
-    unregisterPlayback = null;
     if (source !== 'dataset') return;
     if (!playbackController) return;
     if (!videoEl) return;
