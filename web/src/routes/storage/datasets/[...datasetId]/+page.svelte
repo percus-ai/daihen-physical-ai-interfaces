@@ -5,15 +5,14 @@
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { connectStream } from '$lib/realtime/stream';
-  import {
-    api,
-    type DatasetSyncJobStatus,
-    type DatasetViewerEpisodeListResponse,
-    type DatasetViewerResponse,
-    type DatasetViewerSignalField,
-    type DatasetViewerSignalFieldsResponse,
-    type DatasetViewerSignalSeriesResponse
-  } from '$lib/api/client';
+	  import {
+	    api,
+	    type DatasetSyncJobStatus,
+	    type DatasetViewerEpisodeListResponse,
+	    type DatasetViewerResponse,
+	    type DatasetViewerSignalField,
+	    type DatasetViewerSignalFieldsResponse
+	  } from '$lib/api/client';
   import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
@@ -146,27 +145,7 @@
     signalFields.find((field) => field.key === selectedSignalField) as DatasetViewerSignalField | undefined
   );
 
-  const signalSeriesQuery = createQuery<DatasetViewerSignalSeriesResponse>(
-    toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals', selectedEpisode, selectedSignalField],
-      queryFn: () => api.storage.datasetViewerSignalSeries(datasetId, selectedEpisode, selectedSignalField),
-      enabled:
-        Boolean(datasetId) &&
-        Boolean(dataset?.is_local) &&
-        playbackEpisodes > 0 &&
-        Boolean(selectedSignalField)
-    }))
-  );
-
-  const datasetJointSeries = $derived(
-    $signalSeriesQuery.data
-      ? {
-          names: $signalSeriesQuery.data.names,
-          positions: $signalSeriesQuery.data.positions,
-          timestamps: $signalSeriesQuery.data.timestamps
-        }
-      : null
-  );
+	  // JointStateView fetches signal series on demand.
 
   $effect(() => {
     if (playbackEpisodes <= 0) {
@@ -605,57 +584,41 @@
       <p class="mt-4 text-sm text-slate-600">動画再生可能なカメラはありません。</p>
     {/if}
 
-    <div class="mt-6 rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-      <div class="flex flex-wrap items-end gap-3">
-        <div class="min-w-64 flex-1">
-          <label class="label" for="signal-field">トピック（保存フィールド）</label>
-          <select id="signal-field" class="input mt-2" bind:value={selectedSignalField}>
-            {#each signalFields as field}
-              <option value={field.key}>{field.key}</option>
-            {/each}
-          </select>
-        </div>
-        <button
-          class="btn-ghost"
-          type="button"
-          onclick={() =>
-            queryClient.invalidateQueries({
-              queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals', selectedEpisode, selectedSignalField]
-            })}
-        >
-          系列更新
-        </button>
-      </div>
-      {#if $signalFieldsQuery.isLoading}
-        <p class="mt-3 text-sm text-slate-600">表示可能フィールドを読み込み中...</p>
-      {:else if $signalFieldsQuery.error}
+	    <div class="mt-6 rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+	      <div class="flex flex-wrap items-end gap-3">
+	        <div class="min-w-64 flex-1">
+	          <label class="label" for="signal-field">トピック（保存フィールド）</label>
+	          <select id="signal-field" class="input mt-2" bind:value={selectedSignalField}>
+	            {#each signalFields as field}
+	              <option value={field.key}>{field.key}</option>
+	            {/each}
+	          </select>
+	        </div>
+	      </div>
+	      {#if $signalFieldsQuery.isLoading}
+	        <p class="mt-3 text-sm text-slate-600">表示可能フィールドを読み込み中...</p>
+	      {:else if $signalFieldsQuery.error}
         <p class="mt-3 text-sm text-rose-600">
           {$signalFieldsQuery.error instanceof Error
             ? $signalFieldsQuery.error.message
             : '表示可能フィールドの取得に失敗しました。'}
         </p>
-      {:else if !signalFields.length}
-        <p class="mt-3 text-sm text-slate-600">可視化できる数値ベクトルフィールドがありません。</p>
-      {:else if $signalSeriesQuery.isLoading}
-        <p class="mt-3 text-sm text-slate-600">系列データを読み込み中...</p>
-      {:else if $signalSeriesQuery.error}
-        <p class="mt-3 text-sm text-rose-600">
-          {$signalSeriesQuery.error instanceof Error
-            ? $signalSeriesQuery.error.message
-            : '系列データの取得に失敗しました。'}
-        </p>
-      {:else}
-        <div class="mt-4 h-[420px]">
-          <JointStateView
-            source="dataset"
-            sourceLabel={selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField}
-            datasetSeries={datasetJointSeries}
-            title="Joint State / Dataset"
-            showVelocity={true}
-          />
-        </div>
-      {/if}
-    </div>
+	      {:else if !signalFields.length}
+	        <p class="mt-3 text-sm text-slate-600">可視化できる数値ベクトルフィールドがありません。</p>
+	      {:else}
+	        <div class="mt-4 h-[420px]">
+	          <JointStateView
+	            source="dataset"
+	            sourceLabel={selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField}
+	            datasetId={datasetId}
+	            episodeIndex={selectedEpisode}
+	            topic={selectedSignalField}
+	            title="Joint State / Dataset"
+	            showVelocity={true}
+	          />
+	        </div>
+	      {/if}
+	    </div>
   {:else}
     <p class="mt-4 text-sm text-slate-600">再生可能なエピソードがありません。</p>
   {/if}

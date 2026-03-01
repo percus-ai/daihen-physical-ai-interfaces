@@ -82,6 +82,12 @@ export const viewRegistry: ViewTypeDefinition[] = [
         filter: jointFilter
       },
       {
+        key: 'topic',
+        label: 'Signal',
+        type: 'topic',
+        sources: ['dataset']
+      },
+      {
         key: 'showVelocity',
         label: 'Show velocity',
         type: 'boolean'

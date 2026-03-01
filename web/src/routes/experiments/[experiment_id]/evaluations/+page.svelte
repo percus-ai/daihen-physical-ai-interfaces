@@ -3,14 +3,12 @@
   import { page } from '$app/state';
   import { Button, Dialog, Tooltip } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-  import {
-    api,
-    type DatasetSyncJobStatus,
-    type DatasetViewerSignalField,
-    type DatasetViewerSignalFieldsResponse,
-    type DatasetViewerSignalSeriesResponse,
-    type ExperimentEpisodeLink
-  } from '$lib/api/client';
+	  import {
+	    api,
+	    type DatasetSyncJobStatus,
+	    type DatasetViewerSignalFieldsResponse,
+	    type ExperimentEpisodeLink
+	  } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import { formatPercent } from '$lib/format';
@@ -133,7 +131,6 @@
   const queryClient = useQueryClient();
   let viewerLayoutEditMode = $state(false);
   let viewerInitialInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
-  let viewerSignalField = $state('');
   let viewerSyncJobId = $state('');
   let viewerSyncAutoTriggered = $state(false);
   let viewerSyncStarting = $state(false);
@@ -191,34 +188,13 @@
     }))
   );
 
-  const viewerSignalFields = $derived($viewerSignalFieldsQuery.data?.fields ?? []);
-  const viewerSelectedSignalMeta = $derived(
-    viewerSignalFields.find((field) => field.key === viewerSignalField) as DatasetViewerSignalField | undefined
-  );
-
-  const viewerSignalSeriesQuery = createQuery<DatasetViewerSignalSeriesResponse>(
-    toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-modal', viewerDatasetId, 'signals', viewerEpisodeIndex, viewerSignalField],
-      queryFn: () => api.storage.datasetViewerSignalSeries(viewerDatasetId, viewerEpisodeIndex, viewerSignalField),
-      enabled: Boolean(viewerDatasetId) && viewerIsLocal && viewerTotalEpisodes > 0 && Boolean(viewerSignalField)
-    }))
-  );
-
-  const viewerDatasetJointSeries = $derived(
-    $viewerSignalSeriesQuery.data
-      ? {
-          names: $viewerSignalSeriesQuery.data.names,
-          positions: $viewerSignalSeriesQuery.data.positions,
-          timestamps: $viewerSignalSeriesQuery.data.timestamps
-        }
-      : null
-  );
-
-  const viewerDatasetSourceLabel = $derived(
-    viewerSelectedSignalMeta
-      ? `${viewerSelectedSignalMeta.key} (${viewerSelectedSignalMeta.dtype})`
-      : viewerSignalField
-  );
+	  const viewerSignalFields = $derived($viewerSignalFieldsQuery.data?.fields ?? []);
+	  const viewerSignalFieldsLoaded = $derived(!$viewerSignalFieldsQuery.isLoading && !$viewerSignalFieldsQuery.isFetching);
+	  const viewerDatasetSignalKeys = $derived.by(() => {
+	    const keys = viewerSignalFields.map((field) => field.key);
+	    const useFallback = viewerIsLocal && viewerSignalFieldsLoaded && keys.length === 0;
+	    return useFallback ? ['observation.state', 'action'] : keys;
+	  });
 
   const viewerSyncJobQuery = createQuery<DatasetSyncJobStatus>(
     toStore(() => ({
@@ -271,21 +247,6 @@
       viewerSyncJobId = '';
       viewerSyncAutoTriggered = false;
       viewerSyncHandledTerminalState = '';
-      if (viewerSignalField !== '') {
-        viewerSignalField = '';
-      }
-    }
-  });
-
-  $effect(() => {
-    if (!viewerSignalFields.length) {
-      if (viewerSignalField !== '') {
-        viewerSignalField = '';
-      }
-      return;
-    }
-    if (!viewerSignalField || !viewerSignalFields.some((field) => field.key === viewerSignalField)) {
-      viewerSignalField = viewerSignalFields[0].key;
     }
   });
 
@@ -678,27 +639,26 @@
 
         {#if viewerDatasetId}
           <div class="min-h-0">
-	            <SessionLayoutEditor
-	              blueprintSessionId={viewerDatasetId}
-	              blueprintSessionKind="recording"
-	              layoutSessionId={viewerDatasetId}
-	              layoutSessionKind="recording"
-	              layoutMode="recording"
-	              viewSource="dataset"
-	              editMode={viewerLayoutEditMode}
-                initialInspectorTab={viewerInitialInspectorTab}
-	              embedded={true}
-	              datasetId={viewerDatasetId}
-	              datasetEpisodeIndex={viewerEpisodeIndex}
-	              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
-	              datasetJointSeries={viewerDatasetJointSeries}
-	              datasetSourceLabel={viewerDatasetSourceLabel}
-                searchDatasets={allDatasets}
-                searchRecommendedDatasetId={recommendedDatasetId}
-                searchEpisodeLinks={activeEpisodeLinks}
-                onPreviewEpisode={handlePreviewEpisode}
-                onAddEpisodeLink={handleAddEpisodeLink}
-                onRemoveEpisodeLink={handleRemoveEpisodeLink}
+		            <SessionLayoutEditor
+		              blueprintSessionId={viewerDatasetId}
+		              blueprintSessionKind="recording"
+		              layoutSessionId={viewerDatasetId}
+		              layoutSessionKind="recording"
+		              layoutMode="recording"
+		              viewSource="dataset"
+		              editMode={viewerLayoutEditMode}
+	                initialInspectorTab={viewerInitialInspectorTab}
+		              embedded={true}
+		              datasetId={viewerDatasetId}
+			              datasetEpisodeIndex={viewerEpisodeIndex}
+			              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
+			              datasetSignalKeys={viewerDatasetSignalKeys}
+		                searchDatasets={allDatasets}
+		                searchRecommendedDatasetId={recommendedDatasetId}
+		                searchEpisodeLinks={activeEpisodeLinks}
+	                onPreviewEpisode={handlePreviewEpisode}
+	                onAddEpisodeLink={handleAddEpisodeLink}
+	                onRemoveEpisodeLink={handleRemoveEpisodeLink}
 	            />
           </div>
         {:else}

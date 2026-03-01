@@ -2,13 +2,12 @@
   import { toStore } from 'svelte/store';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { connectStream } from '$lib/realtime/stream';
-  import {
-    api,
-    type DatasetSyncJobStatus,
-    type DatasetViewerSignalField,
-    type DatasetViewerSignalFieldsResponse,
-    type DatasetViewerSignalSeriesResponse
-  } from '$lib/api/client';
+	  import {
+	    api,
+	    type DatasetSyncJobStatus,
+	    type DatasetViewerSignalField,
+	    type DatasetViewerSignalFieldsResponse
+	  } from '$lib/api/client';
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { ensureValidSelection, updateTabsActive, type BlueprintNode } from '$lib/recording/blueprint';
@@ -59,34 +58,39 @@
 
   const signalFields = $derived($signalFieldsQuery.data?.fields ?? []);
 
-  const selectedSignalMeta = $derived(
-    signalFields.find((field) => field.key === selectedSignalField) as DatasetViewerSignalField | undefined
-  );
+	  const selectedSignalMeta = $derived(
+	    signalFields.find((field) => field.key === selectedSignalField) as DatasetViewerSignalField | undefined
+	  );
+	  const datasetSignalLabel = $derived(
+	    selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField
+	  );
 
-  const signalSeriesQuery = createQuery<DatasetViewerSignalSeriesResponse>(
-    toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-panel', datasetId, 'signals', selectedEpisode, selectedSignalField],
-      queryFn: () => api.storage.datasetViewerSignalSeries(datasetId, selectedEpisode, selectedSignalField),
-      enabled:
-        Boolean(datasetId) &&
-        Boolean($viewerQuery.data?.is_local) &&
-        playbackEpisodes > 0 &&
-        Boolean(selectedSignalField)
-    }))
-  );
-
-  const datasetJointSeries = $derived(
-    $signalSeriesQuery.data
-      ? {
-          names: $signalSeriesQuery.data.names,
-          positions: $signalSeriesQuery.data.positions,
-          timestamps: $signalSeriesQuery.data.timestamps
-        }
-      : null
-  );
-  const datasetSignalLabel = $derived(
-    selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField
-  );
+	  const applySignalToJointStateViews = (node: BlueprintNode, signalKey: string): BlueprintNode => {
+	    if (node.type === 'view') {
+	      if (node.viewType !== 'joint_state') return node;
+	      const current = typeof node.config?.topic === 'string' ? node.config.topic : '';
+	      if (current === signalKey) return node;
+	      return {
+	        ...node,
+	        config: {
+	          ...node.config,
+	          topic: signalKey
+	        }
+	      };
+	    }
+	    if (node.type === 'split') {
+	      const left = applySignalToJointStateViews(node.children[0], signalKey);
+	      const right = applySignalToJointStateViews(node.children[1], signalKey);
+	      if (left === node.children[0] && right === node.children[1]) return node;
+	      return { ...node, children: [left, right] };
+	    }
+	    const nextTabs = node.tabs.map((tab) => {
+	      const child = applySignalToJointStateViews(tab.child, signalKey);
+	      return child === tab.child ? tab : { ...tab, child };
+	    });
+	    const changed = nextTabs.some((tab, idx) => tab !== node.tabs[idx]);
+	    return changed ? { ...node, tabs: nextTabs } : node;
+	  };
 
   const datasetSyncJobQuery = createQuery<DatasetSyncJobStatus>(
     toStore(() => ({
@@ -161,21 +165,34 @@
     }
   });
 
-  $effect(() => {
-    if (!signalFields.length) {
-      if (selectedSignalField !== '') {
-        selectedSignalField = '';
-      }
-      return;
-    }
-    if (!autoSelectSignalField) return;
-    if (!selectedSignalField || !signalFields.some((field) => field.key === selectedSignalField)) {
-      const nextField = signalFields[0].key;
-      if (selectedSignalField !== nextField) {
-        selectedSignalField = nextField;
-      }
-    }
-  });
+		  $effect(() => {
+		    if (!signalFields.length) {
+	      if (selectedSignalField !== '') {
+	        selectedSignalField = '';
+	      }
+	      return;
+	    }
+	    if (!autoSelectSignalField) return;
+	    if (!selectedSignalField || !signalFields.some((field) => field.key === selectedSignalField)) {
+	      const preferred =
+	        signalFields.find((field) => /joint|state|position/i.test(field.key)) ?? signalFields[0];
+	      const nextField = preferred.key;
+	      if (selectedSignalField !== nextField) {
+	        selectedSignalField = nextField;
+	      }
+	    }
+		  });
+
+	  $effect(() => {
+	    if (!layoutBlueprint) return;
+	    if (!resolvedLayoutBlueprint) return;
+	    if (!selectedSignalField) return;
+	    const nextLayout = applySignalToJointStateViews(resolvedLayoutBlueprint, selectedSignalField);
+	    if (nextLayout !== resolvedLayoutBlueprint) {
+	      resolvedLayoutBlueprint = nextLayout;
+	      layoutSelectedId = ensureValidSelection(nextLayout, layoutSelectedId || null);
+	    }
+	  });
 
   $effect(() => {
     if (!Number.isFinite(selectedEpisode)) {
@@ -391,37 +408,29 @@
       </div>
       {#if $signalFieldsQuery.isLoading}
         <p class="mt-3 text-sm text-slate-500">表示可能フィールドを読み込み中...</p>
-      {:else if $signalSeriesQuery.isLoading}
-        <p class="mt-3 text-sm text-slate-500">系列データを読み込み中...</p>
-      {:else if $signalSeriesQuery.error}
-        <p class="mt-3 text-sm text-rose-600">
-          {$signalSeriesQuery.error instanceof Error
-            ? $signalSeriesQuery.error.message
-            : '系列データの取得に失敗しました。'}
-        </p>
       {:else if !signalFields.length}
         <p class="mt-3 text-sm text-slate-500">可視化できる数値ベクトルフィールドがありません。</p>
       {:else if !selectedSignalField}
         <p class="mt-3 text-sm text-slate-500">可視化するフィールドを選択してください。</p>
       {:else if layoutBlueprint}
         {#if resolvedLayoutBlueprint}
-          <div class="mt-3 min-h-0 flex-1 rounded-xl border border-slate-200/70 bg-white/70 p-2">
-            <LayoutNode
-              node={resolvedLayoutBlueprint}
-              selectedId={layoutSelectedId}
-              sessionId=""
-              sessionKind=""
-              mode="recording"
-              viewSource="dataset"
-              datasetJointSeries={datasetJointSeries}
-              datasetSourceLabel={datasetSignalLabel}
-              editMode={false}
-              viewScale={1}
-              onSelect={() => {}}
-              onResize={() => {}}
-              onTabChange={handleLayoutTabChange}
-            />
-          </div>
+		          <div class="mt-3 min-h-0 flex-1 rounded-xl border border-slate-200/70 bg-white/70 p-2">
+		            <LayoutNode
+		              node={resolvedLayoutBlueprint}
+		              selectedId={layoutSelectedId}
+		              sessionId=""
+		              sessionKind=""
+		              mode="recording"
+		              viewSource="dataset"
+		              datasetId={datasetId}
+		              datasetEpisodeIndex={selectedEpisode}
+		              editMode={false}
+		              viewScale={1}
+		              onSelect={() => {}}
+		              onResize={() => {}}
+	              onTabChange={handleLayoutTabChange}
+	            />
+	          </div>
         {:else}
           <p class="mt-3 text-sm text-slate-500">レイアウトを初期化中...</p>
         {/if}
@@ -430,7 +439,9 @@
           <JointStateView
             source="dataset"
             sourceLabel={datasetSignalLabel}
-            datasetSeries={datasetJointSeries}
+            datasetId={datasetId}
+            episodeIndex={selectedEpisode}
+            topic={selectedSignalField}
             title="Joint State / Dataset"
             showVelocity={true}
           />

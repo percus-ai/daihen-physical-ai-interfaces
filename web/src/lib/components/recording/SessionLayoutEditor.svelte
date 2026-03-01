@@ -54,28 +54,27 @@
     topics?: string[];
   };
 
-  let {
-    blueprintSessionId = '',
-    blueprintSessionKind = '' as BlueprintSessionKind | '',
-    layoutSessionId = '',
-    layoutSessionKind = '' as BlueprintSessionKind | '',
-    layoutMode = 'recording',
-    viewSource = 'ros',
-    editMode = true,
-    initialInspectorTab = 'blueprint',
-    embedded = false,
-    datasetId = '',
-    datasetEpisodeIndex = 0,
-    datasetCameraKeys = [],
-    datasetJointSeries = null,
-    datasetSourceLabel = '',
-    searchDatasets = [],
-    searchRecommendedDatasetId = '',
-    searchEpisodeLinks = [],
-    onPreviewEpisode = undefined,
-    onAddEpisodeLink = undefined,
-    onRemoveEpisodeLink = undefined
-  }: {
+		  let {
+		    blueprintSessionId = '',
+		    blueprintSessionKind = '' as BlueprintSessionKind | '',
+		    layoutSessionId = '',
+		    layoutSessionKind = '' as BlueprintSessionKind | '',
+		    layoutMode = 'recording',
+		    viewSource = 'ros',
+		    editMode = true,
+		    initialInspectorTab = 'blueprint',
+		    embedded = false,
+		    datasetId = '',
+		    datasetEpisodeIndex = 0,
+		    datasetCameraKeys = [],
+		    datasetSignalKeys = [],
+		    searchDatasets = [],
+		    searchRecommendedDatasetId = '',
+		    searchEpisodeLinks = [],
+		    onPreviewEpisode = undefined,
+	    onAddEpisodeLink = undefined,
+	    onRemoveEpisodeLink = undefined
+	  }: {
     blueprintSessionId?: string;
     blueprintSessionKind?: BlueprintSessionKind | '';
     layoutSessionId?: string;
@@ -85,20 +84,15 @@
     editMode?: boolean;
     initialInspectorTab?: 'blueprint' | 'selection' | 'search';
     embedded?: boolean;
-    datasetId?: string;
-    datasetEpisodeIndex?: number;
-    datasetCameraKeys?: string[];
-    datasetJointSeries?: {
-      names?: string[];
-      positions?: number[][];
-      timestamps?: number[];
-    } | null;
-    datasetSourceLabel?: string;
-    searchDatasets?: { id: string; name?: string; status?: string }[];
-    searchRecommendedDatasetId?: string;
-    searchEpisodeLinks?: ExperimentEpisodeLink[];
-    onPreviewEpisode?: (datasetId: string, episodeIndex: number) => void;
-    onAddEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
+		    datasetId?: string;
+		    datasetEpisodeIndex?: number;
+		    datasetCameraKeys?: string[];
+		    datasetSignalKeys?: string[];
+		    searchDatasets?: { id: string; name?: string; status?: string }[];
+		    searchRecommendedDatasetId?: string;
+		    searchEpisodeLinks?: ExperimentEpisodeLink[];
+		    onPreviewEpisode?: (datasetId: string, episodeIndex: number) => void;
+		    onAddEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
     onRemoveEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
   } = $props();
 
@@ -109,16 +103,26 @@
     viewSource === 'dataset' && Boolean(onPreviewEpisode) && Boolean(onAddEpisodeLink) && Boolean(onRemoveEpisodeLink)
   );
 
-  const topicsQuery = createQuery<ProfileStatusResponse>(
-    toStore(() => ({
-      queryKey: ['profiles', 'active', 'status'],
-      queryFn: api.profiles.activeStatus,
-      enabled: viewSource === 'ros'
-    }))
-  );
-  const topics = $derived(
-    (viewSource === 'dataset' ? datasetCameraKeys : viewSource === 'ros' ? ($topicsQuery.data?.topics ?? []) : []) as string[]
-  );
+	  const topicsQuery = createQuery<ProfileStatusResponse>(
+	    toStore(() => ({
+	      queryKey: ['profiles', 'active', 'status'],
+	      queryFn: api.profiles.activeStatus,
+	      enabled: viewSource === 'ros'
+	    }))
+	  );
+	  const topics = $derived(
+	    (viewSource === 'dataset' ? datasetCameraKeys : viewSource === 'ros' ? ($topicsQuery.data?.topics ?? []) : []) as string[]
+	  );
+	  const inspectorTopics = $derived.by(() => {
+	    if (viewSource === 'dataset') {
+	      if (selectedViewNode?.viewType === 'joint_state') {
+	        return datasetSignalKeys;
+	      }
+	      return datasetCameraKeys;
+	    }
+	    if (viewSource === 'ros') return $topicsQuery.data?.topics ?? [];
+	    return [];
+	  });
 
   const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
   let lastDatasetPlaybackSignature = $state('');
@@ -190,11 +194,11 @@
     mounted = true;
   });
 
-  const ensureDatasetCameraTopics = (node: BlueprintNode, keys: string[]): BlueprintNode => {
-    if (!keys.length) return node;
-    if (node.type === 'view' && node.viewType === 'camera') {
-      const topic = typeof node.config?.topic === 'string' ? node.config.topic : '';
-      if (topic && keys.includes(topic)) return node;
+	  const ensureDatasetCameraTopics = (node: BlueprintNode, keys: string[]): BlueprintNode => {
+	    if (!keys.length) return node;
+	    if (node.type === 'view' && node.viewType === 'camera') {
+	      const topic = typeof node.config?.topic === 'string' ? node.config.topic : '';
+	      if (topic && keys.includes(topic)) return node;
       return {
         ...node,
         config: {
@@ -215,24 +219,62 @@
       return child === tab.child ? tab : { ...tab, child };
     });
     const changed = nextTabs.some((tab, idx) => tab !== node.tabs[idx]);
-    return changed ? { ...node, tabs: nextTabs } : node;
-  };
+	    return changed ? { ...node, tabs: nextTabs } : node;
+	  };
 
-  let lastDatasetCameraFixSignature = $state('');
-  $effect(() => {
-    if (!mounted) return;
-    if (viewSource !== 'dataset') return;
-    if (!datasetId) return;
-    if (!datasetCameraKeys.length) return;
-    const signature = `${datasetId}:${datasetCameraKeys.join('|')}`;
-    if (signature === lastDatasetCameraFixSignature) return;
-    lastDatasetCameraFixSignature = signature;
-    const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
-    if (next !== blueprint) {
-      blueprint = next;
-      selectedId = ensureValidSelection(next, selectedId);
-    }
-  });
+		  const ensureDatasetJointTopics = (node: BlueprintNode, keys: string[]): BlueprintNode => {
+		    if (!keys.length) return node;
+		    const resolvedFallback = keys.includes('observation.state') ? 'observation.state' : keys[0] ?? '';
+		    if (!resolvedFallback) return node;
+		    if (node.type === 'view' && node.viewType === 'joint_state') {
+		      const topic = typeof node.config?.topic === 'string' ? node.config.topic.trim() : '';
+		      if (topic && keys.includes(topic)) return node;
+	      return {
+	        ...node,
+	        config: {
+	          ...node.config,
+	          topic: resolvedFallback
+	        }
+	      };
+		    }
+		    if (node.type === 'split') {
+		      const left = ensureDatasetJointTopics(node.children[0], keys);
+		      const right = ensureDatasetJointTopics(node.children[1], keys);
+		      if (left === node.children[0] && right === node.children[1]) return node;
+		      return { ...node, children: [left, right] };
+		    }
+		    if (node.type !== 'tabs') return node;
+		    const nextTabs = node.tabs.map((tab) => {
+		      const child = ensureDatasetJointTopics(tab.child, keys);
+		      return child === tab.child ? tab : { ...tab, child };
+		    });
+	    const changed = nextTabs.some((tab, idx) => tab !== node.tabs[idx]);
+	    return changed ? { ...node, tabs: nextTabs } : node;
+	  };
+
+	  $effect(() => {
+	    if (!mounted) return;
+	    if (viewSource !== 'dataset') return;
+	    if (!datasetId) return;
+	    if (!datasetCameraKeys.length) return;
+	    const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
+	    if (next !== blueprint) {
+	      blueprint = next;
+	      selectedId = ensureValidSelection(next, selectedId);
+	    }
+	  });
+
+		  $effect(() => {
+		    if (!mounted) return;
+		    if (viewSource !== 'dataset') return;
+		    if (!datasetId) return;
+		    if (!datasetSignalKeys.length) return;
+		    const next = ensureDatasetJointTopics(blueprint, datasetSignalKeys);
+		    if (next !== blueprint) {
+		      blueprint = next;
+		      selectedId = ensureValidSelection(next, selectedId);
+		    }
+		  });
 
   $effect(() => {
     if (!mounted) return;
@@ -537,24 +579,22 @@
           style={`--editor-right-pane-width:${Math.round(editorRightPaneWidth)}px;`}
           bind:this={editorContentEl}
         >
-          <div class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-2">
-            <LayoutNode
-              node={blueprint}
-              selectedId={selectedId}
-              sessionId={resolvedLayoutSessionId}
-              sessionKind={resolvedLayoutSessionKind}
-              mode={layoutMode}
-              viewSource={viewSource}
-              datasetId={datasetId}
-              datasetEpisodeIndex={datasetEpisodeIndex}
-              datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
-              {datasetJointSeries}
-              {datasetSourceLabel}
-              editMode={editMode}
-              viewScale={editorViewScale}
-              onSelect={updateSelection}
-              onResize={handleResize}
-              onTabChange={handleTabChange}
+		          <div class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-2">
+		            <LayoutNode
+		              node={blueprint}
+		              selectedId={selectedId}
+	              sessionId={resolvedLayoutSessionId}
+	              sessionKind={resolvedLayoutSessionKind}
+	              mode={layoutMode}
+		              viewSource={viewSource}
+		              datasetId={datasetId}
+		              datasetEpisodeIndex={datasetEpisodeIndex}
+		              datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
+		              editMode={editMode}
+		              viewScale={editorViewScale}
+		              onSelect={updateSelection}
+		              onResize={handleResize}
+	              onTabChange={handleTabChange}
             />
           </div>
 
@@ -611,21 +651,31 @@
                     {#if selectedViewNode}
                       {#each getViewDefinition(selectedViewNode.viewType)?.fields ?? [] as field}
                         {#if isFieldSupported(field, viewSource)}
-                          {#if field.type === 'topic'}
-                            <div>
-                              <p class="label">{field.label}</p>
-                              <select
-                                class="input mt-2"
-                                value={(selectedViewNode.config?.[field.key] as string) ?? ''}
-                                onchange={(event) =>
-                                  handleConfigChange(field.key, (event.target as HTMLSelectElement).value)}
-                              >
-                                <option value="">未選択</option>
-                                {#each getTopicFieldOptions(field, topics, viewSource) as topic}
-                                  <option value={topic}>{topic}</option>
-                                {/each}
-                              </select>
-                            </div>
+	                          {#if field.type === 'topic'}
+	                            <div>
+	                              <p class="label">{field.label}</p>
+	                              <select
+	                                class="input mt-2"
+	                                value={(selectedViewNode.config?.[field.key] as string) ?? ''}
+	                                onchange={(event) =>
+	                                  handleConfigChange(field.key, (event.target as HTMLSelectElement).value)}
+	                                disabled={viewSource === 'dataset' && selectedViewNode.viewType === 'joint_state' && !inspectorTopics.length}
+	                              >
+	                                {#if viewSource === 'dataset' && selectedViewNode.viewType === 'joint_state' && !inspectorTopics.length}
+	                                  <option value="">signals loading...</option>
+	                                {:else}
+	                                  <option value="">未選択</option>
+	                                  {#each getTopicFieldOptions(field, inspectorTopics, viewSource) as topic}
+	                                    <option value={topic}>{topic}</option>
+	                                  {/each}
+	                                {/if}
+	                              </select>
+	                              {#if viewSource === 'dataset' && selectedViewNode.viewType === 'joint_state' && !inspectorTopics.length}
+	                                <p class="mt-2 text-xs text-slate-500">
+	                                  Signal一覧を取得中です。少し待ってから再度開いてください。
+	                                </p>
+	                              {/if}
+	                            </div>
                           {:else if field.type === 'boolean'}
                             <label class="flex items-center gap-2 text-xs text-slate-600">
                               <input
@@ -755,25 +805,23 @@
       </div>
     </div>
   {:else}
-    <div class={embedded ? 'card p-4 h-full min-h-0' : 'card p-4 min-h-[640px] lg:h-[var(--app-shell-height)]'}>
-      <LayoutNode
-        node={blueprint}
-        selectedId={selectedId}
-        sessionId={resolvedLayoutSessionId}
-        sessionKind={resolvedLayoutSessionKind}
-        mode={layoutMode}
-        viewSource={viewSource}
-        datasetId={datasetId}
-        datasetEpisodeIndex={datasetEpisodeIndex}
-        datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
-        {datasetJointSeries}
-        {datasetSourceLabel}
-        editMode={editMode}
-        viewScale={1}
-        onSelect={updateSelection}
-        onResize={handleResize}
-        onTabChange={handleTabChange}
-      />
-    </div>
+		    <div class={embedded ? 'card p-4 h-full min-h-0' : 'card p-4 min-h-[640px] lg:h-[var(--app-shell-height)]'}>
+		      <LayoutNode
+		        node={blueprint}
+		        selectedId={selectedId}
+	        sessionId={resolvedLayoutSessionId}
+	        sessionKind={resolvedLayoutSessionKind}
+	        mode={layoutMode}
+		        viewSource={viewSource}
+		        datasetId={datasetId}
+		        datasetEpisodeIndex={datasetEpisodeIndex}
+		        datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
+		        editMode={editMode}
+		        viewScale={1}
+		        onSelect={updateSelection}
+		        onResize={handleResize}
+	        onTabChange={handleTabChange}
+	      />
+	    </div>
   {/if}
 </section>
