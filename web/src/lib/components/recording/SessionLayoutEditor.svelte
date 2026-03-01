@@ -130,7 +130,7 @@
   let editorShellEl = $state<HTMLDivElement | null>(null);
   let editorToolbarEl = $state<HTMLDivElement | null>(null);
   let editorContentEl = $state<HTMLDivElement | null>(null);
-  let editorRightPaneWidth = $state(360);
+  let editorRightPaneWidth = $state(420);
   let editorViewScale = $state(1);
 
   let activeBlueprintId = $state('');
@@ -358,7 +358,7 @@
     if (typeof window === 'undefined') return;
     if (!editorShellEl || !editorToolbarEl || !editorContentEl) return;
     if (!window.matchMedia('(min-width: 1024px)').matches) {
-      editorRightPaneWidth = 360;
+      editorRightPaneWidth = 420;
       editorViewScale = 1;
       return;
     }
@@ -376,7 +376,8 @@
     const editableViewHeight = Math.max(shellHeight - toolbarHeight - rowGap, 1);
     const targetViewWidth = viewAspectRatio * editableViewHeight;
     const computedRightWidth = contentWidth - columnGap - targetViewWidth;
-    const nextRightWidth = Math.max(220, computedRightWidth);
+    // Search tab needs extra width; keep the right pane usable in the modal.
+    const nextRightWidth = Math.max(420, computedRightWidth);
     const actualLeftWidth = Math.max(contentWidth - columnGap - nextRightWidth, 1);
     editorRightPaneWidth = nextRightWidth;
     editorViewScale = Math.min(actualLeftWidth / shellWidth, editableViewHeight / shellHeight);
