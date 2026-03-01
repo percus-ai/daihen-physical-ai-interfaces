@@ -274,30 +274,30 @@
       <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
         <p class="text-xs font-semibold text-slate-700">選択済</p>
         <div class="mt-2 max-h-80 overflow-y-auto pr-1">
-          {#if activeEpisodeLinks.length}
+        {#if activeEpisodeLinks.length}
             <div class="space-y-2">
               {#each activeEpisodeLinks as link (link.dataset_id + ':' + link.episode_index)}
                 <div
-                  class={`flex items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 ${
+                  class={`flex items-center gap-2 rounded-lg border bg-white px-3 py-2 ${
                     `${link.dataset_id}:${link.episode_index}` === previewKey
                       ? 'border-brand/50 shadow-sm'
                       : 'border-slate-200/60'
                   }`}
                 >
-                  <div class="min-w-0">
+                  <div class="min-w-0 flex-1">
                     <p class="truncate text-xs font-semibold text-slate-900">{link.dataset_id}</p>
                     <p class="truncate text-[10px] text-slate-500">ep {Number(link.episode_index ?? 0) + 1}</p>
                   </div>
-                  <div class="flex gap-1">
+                  <div class="flex shrink-0 gap-1">
                     <button
-                      class="btn-ghost"
+                      class="btn-ghost whitespace-nowrap"
                       type="button"
                       onclick={() => handlePreview(String(link.dataset_id ?? ''), Number(link.episode_index ?? 0))}
                     >
                       プレビュー
                     </button>
                     <button
-                      class="btn-ghost border-rose-200/70 text-rose-600 hover:border-rose-300/80"
+                      class="btn-ghost whitespace-nowrap border-rose-200/70 text-rose-600 hover:border-rose-300/80"
                       type="button"
                       onclick={() => handleRemove(String(link.dataset_id ?? ''), Number(link.episode_index ?? 0))}
                     >
@@ -329,20 +329,20 @@
               <div style={`position:absolute; top:${unselectedStartIndex * rowHeight}px; left:0; right:0;`}>
                 {#each unselectedVisibleEpisodes as episodeIndex (episodeIndex)}
                   <div class="flex h-[44px] items-center justify-between gap-2 rounded-lg border border-slate-200/60 bg-white px-3 py-2">
-                    <div class="min-w-0">
+                    <div class="min-w-0 flex-1">
                       <p class="truncate text-xs font-semibold text-slate-900">{selectedDatasetId}</p>
                       <p class="truncate text-[10px] text-slate-500">ep {episodeIndex + 1}</p>
                     </div>
-                    <div class="flex gap-1">
+                    <div class="flex shrink-0 gap-1">
                       <button
-                        class="btn-ghost"
+                        class="btn-ghost whitespace-nowrap"
                         type="button"
                         onclick={() => handlePreview(selectedDatasetId, episodeIndex)}
                       >
                         プレビュー
                       </button>
                       <button
-                        class="btn-ghost"
+                        class="btn-ghost whitespace-nowrap"
                         type="button"
                         onclick={() => handleAdd(selectedDatasetId, episodeIndex)}
                       >
