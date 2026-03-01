@@ -139,7 +139,7 @@ export const viewRegistry: ViewTypeDefinition[] = [
     label: 'Timeline',
     description: 'Recording timeline',
     component: TimelineView,
-    sources: ['ros']
+    sources: ['ros', 'dataset']
   },
   {
     type: 'devices',

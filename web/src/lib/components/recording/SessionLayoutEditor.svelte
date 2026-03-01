@@ -9,6 +9,10 @@
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import BlueprintTree from '$lib/components/recording/BlueprintTree.svelte';
   import BlueprintCombobox from '$lib/components/blueprints/BlueprintCombobox.svelte';
+  import {
+    createDatasetPlaybackController,
+    type DatasetPlaybackController
+  } from '$lib/recording/datasetPlayback';
 
   import {
     addTab,
@@ -97,6 +101,9 @@
   const topics = $derived(
     (viewSource === 'dataset' ? datasetCameraKeys : viewSource === 'ros' ? ($topicsQuery.data?.topics ?? []) : []) as string[]
   );
+
+  const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
+  let lastDatasetPlaybackSignature = $state('');
 
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
   let selectedId = $state('');
@@ -248,6 +255,15 @@
     blueprint = fillDefaultConfig(blueprint, topics);
     filledDefaults = true;
     selectedId = ensureValidSelection(blueprint, selectedId);
+  });
+
+  $effect(() => {
+    if (!mounted) return;
+    if (viewSource !== 'dataset') return;
+    const signature = `${datasetId}:${datasetEpisodeIndex}`;
+    if (signature === lastDatasetPlaybackSignature) return;
+    lastDatasetPlaybackSignature = signature;
+    datasetPlayback.reset();
   });
 
   const selectedNode = $derived(selectedId ? findNode(blueprint, selectedId) : null);
@@ -451,6 +467,7 @@
               viewSource={viewSource}
               datasetId={datasetId}
               datasetEpisodeIndex={datasetEpisodeIndex}
+              datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
               {datasetJointSeries}
               {datasetSourceLabel}
               editMode={editMode}
@@ -643,6 +660,7 @@
         viewSource={viewSource}
         datasetId={datasetId}
         datasetEpisodeIndex={datasetEpisodeIndex}
+        datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
         {datasetJointSeries}
         {datasetSourceLabel}
         editMode={editMode}

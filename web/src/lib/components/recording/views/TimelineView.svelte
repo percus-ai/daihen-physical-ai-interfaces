@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { DatasetPlaybackController, DatasetPlaybackState } from '$lib/recording/datasetPlayback';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -8,15 +9,30 @@
   let {
     sessionId = '',
     title = 'Timeline',
-    mode = 'recording'
+    mode = 'recording',
+    viewSource = 'ros',
+    datasetId = '',
+    datasetEpisodeIndex = 0,
+    playbackController = null
   }: {
     sessionId?: string;
     title?: string;
     mode?: 'recording' | 'operate';
+    viewSource?: 'ros' | 'dataset';
+    datasetId?: string;
+    datasetEpisodeIndex?: number;
+    playbackController?: DatasetPlaybackController | null;
   } = $props();
 
   let recorderStatus = $state<RecorderStatus | null>(null);
   let rosbridgeStatus = $state<RosbridgeStatus>('idle');
+  let playbackState = $state<DatasetPlaybackState>({
+    playing: false,
+    currentTime: 0,
+    duration: 0,
+    rate: 1,
+    ready: false
+  });
 
   const asNumber = (value: unknown, fallback = 0) => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -26,6 +42,7 @@
 
   $effect(() => {
     if (typeof window === 'undefined') return;
+    if (viewSource === 'dataset') return;
     return subscribeRecorderStatus({
       onStatus: (next) => {
         recorderStatus = next;
@@ -33,6 +50,14 @@
       onConnectionChange: (next) => {
         rosbridgeStatus = next;
       }
+    });
+  });
+
+  $effect(() => {
+    if (viewSource !== 'dataset') return;
+    if (!playbackController) return;
+    return playbackController.subscribe((next) => {
+      playbackState = next;
     });
   });
 
@@ -98,15 +123,103 @@
   );
 
   const formatSeconds = (value: number) => `${value.toFixed(1)}s`;
+
+  const datasetCanSeek = $derived(
+    viewSource === 'dataset' &&
+      Boolean(playbackController) &&
+      playbackState.ready &&
+      Number.isFinite(playbackState.duration) &&
+      playbackState.duration > 0
+  );
+
+  const handleTogglePlay = () => {
+    if (!playbackController) return;
+    if (playbackState.playing) {
+      playbackController.pause();
+    } else {
+      playbackController.play();
+    }
+  };
+
+  const handleStop = () => {
+    playbackController?.stop();
+  };
+
+  const handleSeek = (event: Event) => {
+    if (!playbackController) return;
+    const value = Number((event.target as HTMLInputElement | null)?.value ?? 0);
+    playbackController.seek(value);
+  };
 </script>
 
 <div class="flex h-full flex-col gap-3">
   <div class="flex items-center justify-between">
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
-    <span class="text-[10px] text-slate-400">{timelineLabel}</span>
+    <span class="text-[10px] text-slate-400">
+      {#if viewSource === 'dataset'}
+        {datasetId ? `${datasetId} / ep ${Number(datasetEpisodeIndex) + 1}` : 'dataset未選択'}
+      {:else}
+        {timelineLabel}
+      {/if}
+    </span>
   </div>
 
-  {#if mode !== 'recording'}
+  {#if viewSource === 'dataset'}
+    {#if !playbackController}
+      <div class="rounded-xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
+        再生コントローラが見つかりません。
+      </div>
+    {:else}
+      <div class="rounded-2xl border border-slate-200/60 bg-white/70 p-3">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+          <span>データセット再生</span>
+          <span class="tabular-nums">
+            {formatSeconds(playbackState.currentTime)} / {formatSeconds(playbackState.duration || 0)}
+          </span>
+        </div>
+
+        <div class="mt-3 flex items-center gap-2">
+          <button
+            class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+            onclick={handleTogglePlay}
+            disabled={!datasetCanSeek}
+          >
+            {playbackState.playing ? '一時停止' : '再生'}
+          </button>
+          <button
+            class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+            onclick={handleStop}
+            disabled={!datasetCanSeek}
+          >
+            停止
+          </button>
+          <div class="flex-1"></div>
+          <span class="text-[10px] text-slate-400">
+            {#if !playbackState.ready}
+              動画メタデータ読込中…
+            {:else if !datasetCanSeek}
+              再生不可
+            {:else}
+              シーク可能
+            {/if}
+          </span>
+        </div>
+
+        <div class="mt-3">
+          <input
+            class="h-2 w-full accent-[rgb(91,124,250)] disabled:opacity-50"
+            type="range"
+            min="0"
+            max={Math.max(0, playbackState.duration || 0)}
+            step="0.05"
+            value={Math.min(Math.max(playbackState.currentTime || 0, 0), Math.max(0, playbackState.duration || 0))}
+            oninput={handleSeek}
+            disabled={!datasetCanSeek}
+          />
+        </div>
+      </div>
+    {/if}
+  {:else if mode !== 'recording'}
     <div class="rounded-xl border border-amber-200/70 bg-amber-50/60 p-3 text-xs text-amber-700">
       このビューはデータセット収録のみ対応しています。
     </div>

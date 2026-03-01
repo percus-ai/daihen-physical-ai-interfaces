@@ -1,19 +1,22 @@
 <script lang="ts">
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import { api } from '$lib/api/client';
+  import type { DatasetPlaybackController } from '$lib/recording/datasetPlayback';
 
   let {
     topic = '',
     title = 'Camera',
     source = 'ros',
     datasetId = '',
-    episodeIndex = 0
+    episodeIndex = 0,
+    playbackController = null
   }: {
     topic?: string;
     title?: string;
     source?: 'ros' | 'dataset';
     datasetId?: string;
     episodeIndex?: number;
+    playbackController?: DatasetPlaybackController | null;
   } = $props();
 
   let imageSrc = $state('');
@@ -22,6 +25,8 @@
   let lastFrameAt = 0;
   let unsubscribe: (() => void) | null = null;
   let videoError = $state(false);
+  let videoEl = $state<HTMLVideoElement | null>(null);
+  let unregisterPlayback = $state<(() => void) | null>(null);
 
   const handleMessage = (msg: Record<string, unknown>) => {
     const data = msg.data as string | undefined;
@@ -87,6 +92,19 @@
       unsubscribe = null;
     };
   });
+
+  $effect(() => {
+    unregisterPlayback?.();
+    unregisterPlayback = null;
+    if (source !== 'dataset') return;
+    if (!playbackController) return;
+    if (!videoEl) return;
+    unregisterPlayback = playbackController.register(videoEl);
+    return () => {
+      unregisterPlayback?.();
+      unregisterPlayback = null;
+    };
+  });
 </script>
 
 <div class="flex h-full flex-col gap-3">
@@ -108,8 +126,8 @@
           <!-- svelte-ignore a11y_media_has_caption -->
           <video
             class="block h-full w-full bg-black/5 object-contain"
+            bind:this={videoEl}
             src={datasetVideoUrl}
-            controls
             playsinline
             preload="metadata"
             onerror={() => {

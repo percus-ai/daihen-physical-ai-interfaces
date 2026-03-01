@@ -5,6 +5,7 @@
   import type { BlueprintNode } from '$lib/recording/blueprint';
   import { getViewDefinition } from '$lib/recording/viewRegistry';
   import PlaceholderView from '$lib/components/recording/views/PlaceholderView.svelte';
+  import type { DatasetPlaybackController } from '$lib/recording/datasetPlayback';
 
   let {
     node,
@@ -15,6 +16,7 @@
     viewSource = 'ros',
     datasetId = '',
     datasetEpisodeIndex = 0,
+    datasetPlayback = null,
     datasetJointSeries = null,
     datasetSourceLabel = '',
     editMode = true,
@@ -31,6 +33,7 @@
     viewSource?: 'ros' | 'dataset';
     datasetId?: string;
     datasetEpisodeIndex?: number;
+    datasetPlayback?: DatasetPlaybackController | null;
     datasetJointSeries?: {
       names?: string[];
       positions?: number[][];
@@ -83,9 +86,16 @@
       baseProps.source = 'dataset';
       baseProps.datasetId = datasetId;
       baseProps.episodeIndex = datasetEpisodeIndex;
+      baseProps.playbackController = datasetPlayback;
     }
     if (viewType === 'controls' || viewType === 'progress' || viewType === 'timeline') {
       baseProps.sessionId = sessionId;
+    }
+    if (viewType === 'timeline' && viewSource === 'dataset') {
+      baseProps.viewSource = 'dataset';
+      baseProps.datasetId = datasetId;
+      baseProps.datasetEpisodeIndex = datasetEpisodeIndex;
+      baseProps.playbackController = datasetPlayback;
     }
     if (viewType === 'controls') {
       baseProps.sessionKind = sessionKind;
@@ -128,6 +138,7 @@
             {viewSource}
             {datasetId}
             {datasetEpisodeIndex}
+            {datasetPlayback}
             {datasetJointSeries}
             {datasetSourceLabel}
             {editMode}
@@ -149,6 +160,7 @@
             {viewSource}
             {datasetId}
             {datasetEpisodeIndex}
+            {datasetPlayback}
             {datasetJointSeries}
             {datasetSourceLabel}
             {editMode}
@@ -173,6 +185,7 @@
             {viewSource}
             {datasetId}
             {datasetEpisodeIndex}
+            {datasetPlayback}
             {datasetJointSeries}
             {datasetSourceLabel}
             {editMode}
