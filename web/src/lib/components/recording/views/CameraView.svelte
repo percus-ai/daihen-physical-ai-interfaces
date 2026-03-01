@@ -135,6 +135,7 @@
               class="block h-full w-full bg-black/5 object-contain"
               bind:this={videoEl}
               src={datasetVideoUrl}
+              crossorigin="use-credentials"
               playsinline
               preload="metadata"
               onerror={() => {

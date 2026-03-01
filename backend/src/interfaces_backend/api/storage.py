@@ -535,7 +535,15 @@ async def get_dataset_viewer(dataset_id: str):
 async def get_dataset_viewer_episodes(dataset_id: str):
     """List dataset episodes for viewer."""
     client = await get_supabase_async_client()
-    rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    try:
+        rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    except APIError as exc:
+        message = str(exc).lower()
+        if "invalid input syntax for type uuid" in message:
+            raise HTTPException(status_code=400, detail=f"Invalid dataset id: {dataset_id}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
     if not rows:
         raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
 
@@ -560,7 +568,15 @@ async def get_dataset_viewer_episodes(dataset_id: str):
 async def get_dataset_viewer_signal_fields(dataset_id: str):
     """List numeric vector fields that can be visualized as joint-state style charts."""
     client = await get_supabase_async_client()
-    rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    try:
+        rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    except APIError as exc:
+        message = str(exc).lower()
+        if "invalid input syntax for type uuid" in message:
+            raise HTTPException(status_code=400, detail=f"Invalid dataset id: {dataset_id}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
     if not rows:
         raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
 
@@ -579,17 +595,23 @@ async def get_dataset_viewer_signal_fields(dataset_id: str):
         feature = feature_map.get(key)
         if not _is_vector_feature(feature):
             continue
-        shape = feature.get("shape") if isinstance(feature, dict) else []
-        axis_dim = int(shape[0]) if isinstance(shape, list) and shape else 0
-        fields.append(
-            DatasetViewerSignalField(
-                key=key,
-                label=key,
-                shape=[axis_dim] if axis_dim > 0 else [],
-                names=_resolve_axis_names(feature, axis_dim) if axis_dim > 0 else [],
-                dtype=str(feature.get("dtype") or ""),
+        try:
+            shape = feature.get("shape") if isinstance(feature, dict) else []
+            axis_dim = int(shape[0]) if isinstance(shape, list) and shape else 0
+            if axis_dim <= 0:
+                continue
+            fields.append(
+                DatasetViewerSignalField(
+                    key=key,
+                    label=key,
+                    shape=[axis_dim],
+                    names=_resolve_axis_names(feature, axis_dim) if isinstance(feature, dict) else [],
+                    dtype=str(feature.get("dtype") or "") if isinstance(feature, dict) else "",
+                )
             )
-        )
+        except Exception as exc:
+            logger.warning("Skip invalid signal feature %s: %s", key, exc)
+            continue
 
     return DatasetViewerSignalFieldsResponse(dataset_id=dataset_id, fields=fields)
 
@@ -608,7 +630,15 @@ async def get_dataset_viewer_signal_series(
         raise HTTPException(status_code=400, detail="episode_index must be >= 0")
 
     client = await get_supabase_async_client()
-    rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    try:
+        rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    except APIError as exc:
+        message = str(exc).lower()
+        if "invalid input syntax for type uuid" in message:
+            raise HTTPException(status_code=400, detail=f"Invalid dataset id: {dataset_id}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
     if not rows:
         raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
 
@@ -716,7 +746,15 @@ async def get_dataset_viewer_video(dataset_id: str, video_key: str, episode_inde
         raise HTTPException(status_code=400, detail="episode_index must be >= 0")
 
     client = await get_supabase_async_client()
-    rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    try:
+        rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
+    except APIError as exc:
+        message = str(exc).lower()
+        if "invalid input syntax for type uuid" in message:
+            raise HTTPException(status_code=400, detail=f"Invalid dataset id: {dataset_id}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
     if not rows:
         raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
 
@@ -737,14 +775,19 @@ async def get_dataset_viewer_video(dataset_id: str, video_key: str, episode_inde
             detail=f"Episode index out of range: {episode_index} (total={metadata.total_episodes})",
         )
 
-    relative_path = metadata.get_video_file_path(episode_index, video_key)
+    try:
+        relative_path = metadata.get_video_file_path(episode_index, video_key)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve video file path: {exc}") from exc
     video_path = Path(dataset_path) / relative_path
     if not video_path.exists():
         raise HTTPException(status_code=404, detail=f"Video file not found: {relative_path}")
 
+    suffix = video_path.suffix.lower()
+    media_type = "video/mp4" if suffix == ".mp4" else "video/webm" if suffix == ".webm" else "application/octet-stream"
     return FileResponse(
         path=video_path,
-        media_type="video/mp4",
+        media_type=media_type,
         filename=video_path.name,
         headers={"Cache-Control": "no-store"},
     )
