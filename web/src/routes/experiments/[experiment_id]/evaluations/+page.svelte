@@ -132,6 +132,7 @@
   let modalEpisodeIndex = $state(0);
   const queryClient = useQueryClient();
   let viewerLayoutEditMode = $state(false);
+  let viewerInitialInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
   let viewerSignalField = $state('');
   let viewerSyncJobId = $state('');
   let viewerSyncAutoTriggered = $state(false);
@@ -525,9 +526,13 @@
       }));
   }
 
-  const openViewerModal = (trialIndex: number) => {
+  const openViewerModal = (
+    trialIndex: number,
+    options: { editMode?: boolean; inspectorTab?: 'blueprint' | 'selection' | 'search' } = {}
+  ) => {
     activeTrialIndex = trialIndex;
-    viewerLayoutEditMode = false;
+    viewerLayoutEditMode = Boolean(options.editMode);
+    viewerInitialInspectorTab = options.inspectorTab ?? 'blueprint';
 
     const row = evaluationItems.find((item) => item.trial_index === trialIndex);
     const links = normalizeEpisodeLinks(row?.episode_links ?? []);
@@ -586,16 +591,17 @@
   };
 
   const openLinkEditor = (trialIndex: number) => {
-    openViewerModal(trialIndex);
+    openViewerModal(trialIndex, { editMode: true, inspectorTab: 'search' });
   };
 
   const openLinkViewer = (trialIndex: number) => {
-    openViewerModal(trialIndex);
+    openViewerModal(trialIndex, { editMode: false, inspectorTab: 'blueprint' });
   };
 
   const closeLinkModal = () => {
     linkModalOpen = false;
     viewerLayoutEditMode = false;
+    viewerInitialInspectorTab = 'blueprint';
     modalDatasetId = '';
     modalEpisodeIndex = 0;
   };
@@ -680,6 +686,7 @@
 	              layoutMode="recording"
 	              viewSource="dataset"
 	              editMode={viewerLayoutEditMode}
+                initialInspectorTab={viewerInitialInspectorTab}
 	              embedded={true}
 	              datasetId={viewerDatasetId}
 	              datasetEpisodeIndex={viewerEpisodeIndex}

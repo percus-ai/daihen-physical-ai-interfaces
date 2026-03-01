@@ -62,6 +62,7 @@
     layoutMode = 'recording',
     viewSource = 'ros',
     editMode = true,
+    initialInspectorTab = 'blueprint',
     embedded = false,
     datasetId = '',
     datasetEpisodeIndex = 0,
@@ -82,6 +83,7 @@
     layoutMode?: 'recording' | 'operate';
     viewSource?: ViewConfigSource;
     editMode?: boolean;
+    initialInspectorTab?: 'blueprint' | 'selection' | 'search';
     embedded?: boolean;
     datasetId?: string;
     datasetEpisodeIndex?: number;
@@ -127,6 +129,7 @@
   let lastResolveSignature = $state('');
   let filledDefaults = $state(false);
   let editInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
+  let inspectorInitialized = $state(false);
   let editorShellEl = $state<HTMLDivElement | null>(null);
   let editorToolbarEl = $state<HTMLDivElement | null>(null);
   let editorContentEl = $state<HTMLDivElement | null>(null);
@@ -185,6 +188,22 @@
 
   onMount(() => {
     mounted = true;
+  });
+
+  $effect(() => {
+    if (!mounted) return;
+    if (inspectorInitialized) return;
+    if (!editMode) return;
+
+    const desired =
+      showSearchTab && initialInspectorTab === 'search'
+        ? 'search'
+        : initialInspectorTab === 'search'
+          ? 'selection'
+          : initialInspectorTab;
+
+    editInspectorTab = desired;
+    inspectorInitialized = true;
   });
 
   const applyBlueprintDetail = (
