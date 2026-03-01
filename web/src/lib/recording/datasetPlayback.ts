@@ -57,7 +57,12 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
       }
       if (video.readyState >= 1) hasMetadata = true;
     }
-    setState({ duration: maxDuration, ready: hasMetadata || state.ready });
+    const nextDuration = maxDuration;
+    const nextCurrentTime =
+      nextDuration > 0 && Number.isFinite(nextDuration)
+        ? clamp(state.currentTime, 0, nextDuration)
+        : Math.max(0, state.currentTime);
+    setState({ duration: nextDuration, currentTime: nextCurrentTime, ready: hasMetadata || state.ready });
   };
 
   const seekInternal = (time: number) => {
@@ -70,7 +75,11 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
     setState({ currentTime: nextTime });
     for (const video of videos) {
       try {
-        video.currentTime = nextTime;
+        const boundedTime =
+          Number.isFinite(video.duration) && video.duration > 0
+            ? clamp(nextTime, 0, video.duration)
+            : nextTime;
+        video.currentTime = boundedTime;
       } catch {
         // ignored
       }
@@ -220,4 +229,3 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
     }
   };
 };
-
