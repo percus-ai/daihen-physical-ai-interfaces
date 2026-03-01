@@ -568,6 +568,20 @@
   });
 
   $effect(() => {
+    if (!linkModalOpen || !linkModalEditMode || !editorSelectedDatasetId) return;
+    const episodes = $editorEpisodesQuery.data?.episodes ?? [];
+    if (!episodes.length) return;
+    const available = new Set(episodes.map((item) => item.episode_index));
+    const hasSelected = editorEpisodeSelections.some((idx) => available.has(idx));
+    const hasExisting = editorLinksDraft.some(
+      (link) => link.dataset_id === editorSelectedDatasetId && available.has(link.episode_index)
+    );
+    if (!hasSelected && !hasExisting) {
+      editorEpisodeSelections = [episodes[0].episode_index];
+    }
+  });
+
+  $effect(() => {
     if (!linkModalOpen) return;
     if (!linkModalLinks.length) {
       viewerSelectedLinkKey = '';
@@ -695,8 +709,25 @@
                 }}
               />
             {:else}
-              <div class="flex h-full items-center justify-center rounded-xl border border-slate-200/70 bg-white/80 text-sm text-slate-500">
-                表示するエピソードがありません。
+              <div class="flex h-full flex-col items-center justify-center gap-3 rounded-xl border border-slate-200/70 bg-white/80 px-6 text-center">
+                <p class="text-sm text-slate-500">表示するエピソードがありません。</p>
+                <p class="text-xs text-slate-500">右の「検索」タブからデータセットとエピソードを追加してください。</p>
+                <div class="flex flex-wrap items-center justify-center gap-2">
+                  {#if !linkModalEditMode}
+                    <Button.Root class="btn-ghost" type="button" onclick={switchModalToEdit}>
+                      編集モードへ
+                    </Button.Root>
+                  {/if}
+                  <Button.Root
+                    class="btn-ghost"
+                    type="button"
+                    onclick={() => {
+                      linkInspectorTab = 'search';
+                    }}
+                  >
+                    検索タブを開く
+                  </Button.Root>
+                </div>
               </div>
             {/if}
           </div>
@@ -714,13 +745,13 @@
                   value="view"
                   class="rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
                 >
-                  View
+                  表示
                 </Tabs.Trigger>
                 <Tabs.Trigger
                   value="search"
                   class="rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
                 >
-                  Search
+                  検索
                 </Tabs.Trigger>
               </Tabs.List>
 
