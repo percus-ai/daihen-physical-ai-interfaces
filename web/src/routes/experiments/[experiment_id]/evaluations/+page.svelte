@@ -7,6 +7,8 @@
   import BlueprintCombobox from '$lib/components/blueprints/BlueprintCombobox.svelte';
   import DatasetViewerPanel from '$lib/components/storage/DatasetViewerPanel.svelte';
   import { formatPercent } from '$lib/format';
+  import { createViewNode, type BlueprintNode } from '$lib/recording/blueprint';
+  import { getViewDefinition } from '$lib/recording/viewRegistry';
 
   type Experiment = {
     id: string;
@@ -71,6 +73,10 @@
     blueprints?: WebuiBlueprintSummary[];
   };
 
+  type WebuiBlueprintDetail = WebuiBlueprintSummary & {
+    blueprint: BlueprintNode;
+  };
+
   type EvaluationDraft = {
     trial_index: number;
     value: string;
@@ -83,6 +89,7 @@
   };
 
   const DEFAULT_METRIC_OPTIONS = ['成功', '失敗', '部分成功'];
+  const fallbackDatasetBlueprint = createViewNode('joint_state', { showVelocity: true, maxPoints: 160 });
 
   const experimentId = $derived(page.params.experiment_id ?? '');
 
@@ -215,6 +222,57 @@
   const blueprintComboboxItems = $derived(
     savedBlueprints.map((item) => ({ id: item.id, name: item.name }))
   );
+  const activeBlueprintDetailQuery = createQuery<WebuiBlueprintDetail>(
+    toStore(() => ({
+      queryKey: ['webui', 'blueprints', 'detail', activeEvaluationDraft?.blueprint_id ?? ''],
+      queryFn: () => api.webuiBlueprints.get(activeEvaluationDraft?.blueprint_id ?? '') as Promise<WebuiBlueprintDetail>,
+      enabled: Boolean(activeEvaluationDraft?.blueprint_id)
+    }))
+  );
+
+  const convertBlueprintToDataset = (node: BlueprintNode): BlueprintNode => {
+    if (node.type === 'view') {
+      const definition = getViewDefinition(node.viewType);
+      const supported = !definition?.sources || definition.sources.includes('dataset');
+      if (supported) return node;
+      return { ...node, viewType: 'placeholder', config: {} };
+    }
+    if (node.type === 'split') {
+      return {
+        ...node,
+        children: [
+          convertBlueprintToDataset(node.children[0]),
+          convertBlueprintToDataset(node.children[1])
+        ]
+      };
+    }
+    const nextTabs = node.tabs.map((tab) => ({
+      ...tab,
+      child: convertBlueprintToDataset(tab.child)
+    }));
+    const activeExists = nextTabs.some((tab) => tab.id === node.activeId);
+    return {
+      ...node,
+      tabs: nextTabs,
+      activeId: activeExists ? node.activeId : nextTabs[0]?.id ?? ''
+    };
+  };
+
+  const hasDatasetJointStateNode = (node: BlueprintNode): boolean => {
+    if (node.type === 'view') return node.viewType === 'joint_state';
+    if (node.type === 'split') {
+      return hasDatasetJointStateNode(node.children[0]) || hasDatasetJointStateNode(node.children[1]);
+    }
+    return node.tabs.some((tab) => hasDatasetJointStateNode(tab.child));
+  };
+
+  const activeDatasetLayoutBlueprint = $derived.by(() => {
+    const source = ($activeBlueprintDetailQuery.data as WebuiBlueprintDetail | undefined)?.blueprint;
+    if (!source) return fallbackDatasetBlueprint;
+    const converted = convertBlueprintToDataset(source);
+    if (hasDatasetJointStateNode(converted)) return converted;
+    return fallbackDatasetBlueprint;
+  });
 
   const editorDatasetViewerQuery = createQuery(
     toStore(() => ({
@@ -699,6 +757,7 @@
               <DatasetViewerPanel
                 datasetId={linkModalViewerDatasetId}
                 episodeIndex={linkModalViewerEpisode}
+                layoutBlueprint={activeDatasetLayoutBlueprint}
                 onEpisodeChange={(nextEpisode) => {
                   if (linkModalViewerDatasetId) {
                     viewerSelectedLinkKey = `${linkModalViewerDatasetId}:${nextEpisode}`;

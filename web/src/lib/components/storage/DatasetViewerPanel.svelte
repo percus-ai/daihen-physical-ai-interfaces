@@ -9,16 +9,20 @@
     type DatasetViewerSignalFieldsResponse,
     type DatasetViewerSignalSeriesResponse
   } from '$lib/api/client';
+  import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
+  import { ensureValidSelection, updateTabsActive, type BlueprintNode } from '$lib/recording/blueprint';
 
   let {
     datasetId = '',
     episodeIndex = 0,
-    onEpisodeChange
+    onEpisodeChange,
+    layoutBlueprint = null
   }: {
     datasetId?: string;
     episodeIndex?: number;
     onEpisodeChange?: (episodeIndex: number) => void;
+    layoutBlueprint?: BlueprintNode | null;
   } = $props();
 
   const queryClient = useQueryClient();
@@ -29,6 +33,8 @@
   let datasetSyncStarting = $state(false);
   let datasetSyncHandledTerminalState = $state('');
   let lastDatasetIdForSync = $state('');
+  let resolvedLayoutBlueprint: BlueprintNode | null = $state(null);
+  let layoutSelectedId = $state('');
 
   const viewerQuery = createQuery(
     toStore(() => ({
@@ -82,6 +88,9 @@
           timestamps: $signalSeriesQuery.data.timestamps
         }
       : null
+  );
+  const datasetSignalLabel = $derived(
+    selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField
   );
 
   const datasetSyncJobQuery = createQuery<DatasetSyncJobStatus>(
@@ -212,9 +221,27 @@
       stop();
     };
   });
+
+  const cloneBlueprint = (node: BlueprintNode): BlueprintNode =>
+    JSON.parse(JSON.stringify(node)) as BlueprintNode;
+
+  $effect(() => {
+    if (!layoutBlueprint) {
+      resolvedLayoutBlueprint = null;
+      layoutSelectedId = '';
+      return;
+    }
+    resolvedLayoutBlueprint = cloneBlueprint(layoutBlueprint);
+    layoutSelectedId = ensureValidSelection(resolvedLayoutBlueprint, layoutSelectedId || null);
+  });
+
+  const handleLayoutTabChange = (id: string, activeId: string) => {
+    if (!resolvedLayoutBlueprint) return;
+    resolvedLayoutBlueprint = updateTabsActive(resolvedLayoutBlueprint, id, activeId);
+  };
 </script>
 
-<div class="h-full min-h-0 rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+<div class="flex h-full min-h-0 flex-col rounded-2xl border border-slate-200/70 bg-white/70 p-4">
   {#if !datasetId}
     <p class="text-sm text-slate-500">データセットを選択してください。</p>
   {:else if $viewerQuery.isLoading}
@@ -288,7 +315,7 @@
       </p>
     </div>
 
-    {#if $viewerQuery.data?.use_videos && ($viewerQuery.data?.cameras?.length ?? 0) > 0}
+    {#if !layoutBlueprint && $viewerQuery.data?.use_videos && ($viewerQuery.data?.cameras?.length ?? 0) > 0}
       <div class="mt-4 grid gap-3 xl:grid-cols-2">
         {#each $viewerQuery.data.cameras as camera}
           <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
@@ -313,7 +340,7 @@
       </div>
     {/if}
 
-    <div class="mt-4 rounded-xl border border-slate-200/70 bg-white/80 p-3">
+    <div class="mt-4 flex min-h-0 flex-1 flex-col rounded-xl border border-slate-200/70 bg-white/80 p-3">
       <div class="flex flex-wrap items-end gap-3">
         <div class="min-w-56 flex-1">
           <label class="label" for={`signal-field-${datasetId}`}>トピック（保存フィールド）</label>
@@ -336,11 +363,33 @@
         </p>
       {:else if !signalFields.length}
         <p class="mt-3 text-sm text-slate-500">可視化できる数値ベクトルフィールドがありません。</p>
+      {:else if layoutBlueprint}
+        {#if resolvedLayoutBlueprint}
+          <div class="mt-3 min-h-0 flex-1 rounded-xl border border-slate-200/70 bg-white/70 p-2">
+            <LayoutNode
+              node={resolvedLayoutBlueprint}
+              selectedId={layoutSelectedId}
+              sessionId=""
+              sessionKind=""
+              mode="recording"
+              viewSource="dataset"
+              datasetJointSeries={datasetJointSeries}
+              datasetSourceLabel={datasetSignalLabel}
+              editMode={false}
+              viewScale={1}
+              onSelect={() => {}}
+              onResize={() => {}}
+              onTabChange={handleLayoutTabChange}
+            />
+          </div>
+        {:else}
+          <p class="mt-3 text-sm text-slate-500">レイアウトを初期化中...</p>
+        {/if}
       {:else}
         <div class="mt-3 h-[360px]">
           <JointStateView
             source="dataset"
-            sourceLabel={selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField}
+            sourceLabel={datasetSignalLabel}
             datasetSeries={datasetJointSeries}
             title="Joint State / Dataset"
             showVelocity={true}

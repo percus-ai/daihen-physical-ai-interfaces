@@ -12,6 +12,9 @@
     sessionId = '',
     sessionKind = '',
     mode = 'recording',
+    viewSource = 'ros',
+    datasetJointSeries = null,
+    datasetSourceLabel = '',
     editMode = true,
     viewScale = 1,
     onSelect,
@@ -23,6 +26,13 @@
     sessionId?: string;
     sessionKind?: '' | 'recording' | 'inference' | 'teleop';
     mode?: 'recording' | 'operate';
+    viewSource?: 'ros' | 'dataset';
+    datasetJointSeries?: {
+      names?: string[];
+      positions?: number[][];
+      timestamps?: number[];
+    } | null;
+    datasetSourceLabel?: string;
     editMode?: boolean;
     viewScale?: number;
     onSelect: (id: string) => void;
@@ -43,15 +53,28 @@
     handleSelect(event);
   };
 
-  const renderComponent = (viewType: string) => getViewDefinition(viewType)?.component ?? PlaceholderView;
+  const renderComponent = (viewType: string) => {
+    const definition = getViewDefinition(viewType);
+    if (viewSource === 'dataset' && definition?.sources && !definition.sources.includes('dataset')) {
+      return PlaceholderView;
+    }
+    return definition?.component ?? PlaceholderView;
+  };
 
   const buildProps = (viewType: string) => {
     const definition = getViewDefinition(viewType);
+    const datasetUnsupported =
+      viewSource === 'dataset' && definition?.sources && !definition.sources.includes('dataset');
     const baseProps = {
       ...(node.type === 'view' ? node.config : {}),
-      title: definition?.label ?? viewType,
+      title: datasetUnsupported ? `${definition?.label ?? viewType} (dataset未対応)` : definition?.label ?? viewType,
       mode
     } as Record<string, unknown>;
+    if (viewType === 'joint_state' && viewSource === 'dataset') {
+      baseProps.source = 'dataset';
+      baseProps.sourceLabel = datasetSourceLabel;
+      baseProps.datasetSeries = datasetJointSeries;
+    }
     if (viewType === 'controls' || viewType === 'progress' || viewType === 'timeline') {
       baseProps.sessionId = sessionId;
     }
@@ -93,6 +116,9 @@
             {sessionId}
             {sessionKind}
             {mode}
+            {viewSource}
+            {datasetJointSeries}
+            {datasetSourceLabel}
             {editMode}
             {viewScale}
             {onSelect}
@@ -109,6 +135,9 @@
             {sessionId}
             {sessionKind}
             {mode}
+            {viewSource}
+            {datasetJointSeries}
+            {datasetSourceLabel}
             {editMode}
             {viewScale}
             {onSelect}
@@ -128,6 +157,9 @@
             {sessionId}
             {sessionKind}
             {mode}
+            {viewSource}
+            {datasetJointSeries}
+            {datasetSourceLabel}
             {editMode}
             {viewScale}
             {onSelect}
