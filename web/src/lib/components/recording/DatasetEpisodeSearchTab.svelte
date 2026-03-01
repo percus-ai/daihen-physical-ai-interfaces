@@ -270,7 +270,7 @@
       </div>
     </div>
 
-    <div class="grid gap-3 lg:grid-cols-2">
+    <div class="space-y-3">
       <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
         <p class="text-xs font-semibold text-slate-700">選択済</p>
         <div class="mt-2 max-h-80 overflow-y-auto pr-1">
