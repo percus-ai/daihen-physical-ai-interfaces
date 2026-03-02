@@ -904,7 +904,7 @@
 	                  </div>
 
                   {#if secondary}
-                    <div class="overflow-hidden rounded-xl border border-slate-200/60 bg-white">
+                    <div class="hidden overflow-hidden rounded-xl border border-slate-200/60 bg-white sm:block">
                       <div class="aspect-video bg-slate-950/5">
                         <DatasetEpisodeThumbnail
                           src={secondaryDatasetId ? getThumbUrl(secondaryDatasetId, secondaryEpisodeIndex) : ''}
@@ -917,14 +917,14 @@
                           }
                         />
                       </div>
-	                      <div class="min-w-0 p-2">
-	                        <p class="truncate text-xs font-semibold text-slate-900">{secondaryDatasetId}</p>
-	                        <p class="truncate text-[10px] text-slate-500">
-	                          ep {secondaryEpisodeIndex + 1} / {totalLinks}
-	                        </p>
-	                      </div>
-	                    </div>
-	                  {/if}
+                      <div class="min-w-0 p-2">
+                        <p class="truncate text-xs font-semibold text-slate-900">{secondaryDatasetId}</p>
+                        <p class="truncate text-[10px] text-slate-500">
+                          ep {secondaryEpisodeIndex + 1} / {totalLinks}
+                        </p>
+                      </div>
+                    </div>
+                  {/if}
 
                   <div class="flex items-center gap-2 rounded-xl border border-slate-200/70 bg-white/80 p-2 sm:col-span-1">
                     <button
