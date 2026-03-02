@@ -54,27 +54,28 @@
     topics?: string[];
   };
 
-		  let {
-		    blueprintSessionId = '',
-		    blueprintSessionKind = '' as BlueprintSessionKind | '',
-		    layoutSessionId = '',
-		    layoutSessionKind = '' as BlueprintSessionKind | '',
-		    layoutMode = 'recording',
-		    viewSource = 'ros',
-		    editMode = true,
-		    initialInspectorTab = 'blueprint',
-		    embedded = false,
-		    datasetId = '',
-		    datasetEpisodeIndex = 0,
-		    datasetCameraKeys = [],
-		    datasetSignalKeys = [],
-		    searchDatasets = [],
-		    searchRecommendedDatasetId = '',
-		    searchEpisodeLinks = [],
-		    onPreviewEpisode = undefined,
-	    onAddEpisodeLink = undefined,
-	    onRemoveEpisodeLink = undefined
-	  }: {
+			  let {
+			    blueprintSessionId = '',
+			    blueprintSessionKind = '' as BlueprintSessionKind | '',
+			    layoutSessionId = '',
+			    layoutSessionKind = '' as BlueprintSessionKind | '',
+			    layoutMode = 'recording',
+			    viewSource = 'ros',
+			    editMode = true,
+			    initialInspectorTab = 'blueprint',
+			    embedded = false,
+			    datasetId = '',
+			    datasetEpisodeIndex = 0,
+			    datasetCameraKeys = [],
+			    datasetSignalKeys = [],
+			    datasetAutoplayNonce = 0,
+			    searchDatasets = [],
+			    searchRecommendedDatasetId = '',
+			    searchEpisodeLinks = [],
+			    onPreviewEpisode = undefined,
+		    onAddEpisodeLink = undefined,
+		    onRemoveEpisodeLink = undefined
+		  }: {
     blueprintSessionId?: string;
     blueprintSessionKind?: BlueprintSessionKind | '';
     layoutSessionId?: string;
@@ -83,16 +84,17 @@
     viewSource?: ViewConfigSource;
     editMode?: boolean;
     initialInspectorTab?: 'blueprint' | 'selection' | 'search';
-    embedded?: boolean;
-		    datasetId?: string;
-		    datasetEpisodeIndex?: number;
-		    datasetCameraKeys?: string[];
-		    datasetSignalKeys?: string[];
-		    searchDatasets?: { id: string; name?: string; status?: string }[];
-		    searchRecommendedDatasetId?: string;
-		    searchEpisodeLinks?: ExperimentEpisodeLink[];
-		    onPreviewEpisode?: (datasetId: string, episodeIndex: number) => void;
-		    onAddEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
+			    embedded?: boolean;
+			    datasetId?: string;
+			    datasetEpisodeIndex?: number;
+			    datasetCameraKeys?: string[];
+			    datasetSignalKeys?: string[];
+			    datasetAutoplayNonce?: number;
+			    searchDatasets?: { id: string; name?: string; status?: string }[];
+			    searchRecommendedDatasetId?: string;
+			    searchEpisodeLinks?: ExperimentEpisodeLink[];
+			    onPreviewEpisode?: (datasetId: string, episodeIndex: number) => void;
+			    onAddEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
     onRemoveEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
   } = $props();
 
@@ -124,8 +126,9 @@
 	    return [];
 	  });
 
-  const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
-  let lastDatasetPlaybackSignature = $state('');
+	  const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
+	  let lastDatasetPlaybackSignature = $state('');
+	  let lastDatasetAutoplayNonce = $state(0);
 
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
   let selectedId = $state('');
@@ -378,14 +381,23 @@
     selectedId = ensureValidSelection(blueprint, selectedId);
   });
 
-  $effect(() => {
-    if (!mounted) return;
-    if (viewSource !== 'dataset') return;
-    const signature = `${datasetId}:${datasetEpisodeIndex}`;
-    if (signature === lastDatasetPlaybackSignature) return;
-    lastDatasetPlaybackSignature = signature;
-    datasetPlayback.reset();
-  });
+	  $effect(() => {
+	    if (!mounted) return;
+	    if (viewSource !== 'dataset') return;
+	    const signature = `${datasetId}:${datasetEpisodeIndex}`;
+	    if (signature === lastDatasetPlaybackSignature) return;
+	    lastDatasetPlaybackSignature = signature;
+	    datasetPlayback.reset();
+	  });
+
+	  $effect(() => {
+	    if (!mounted) return;
+	    if (viewSource !== 'dataset') return;
+	    if (!datasetAutoplayNonce) return;
+	    if (datasetAutoplayNonce === lastDatasetAutoplayNonce) return;
+	    lastDatasetAutoplayNonce = datasetAutoplayNonce;
+	    datasetPlayback.play();
+	  });
 
   const selectedNode = $derived(selectedId ? findNode(blueprint, selectedId) : null);
   const selectedViewNode = $derived(selectedNode?.type === 'view' ? selectedNode : null);

@@ -11,6 +11,7 @@
 	  } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
+  import DatasetEpisodeThumbnail from '$lib/components/recording/DatasetEpisodeThumbnail.svelte';
   import { formatPercent } from '$lib/format';
 
   type Experiment = {
@@ -136,6 +137,11 @@
   let viewerSyncStarting = $state(false);
   let viewerSyncHandledTerminalState = $state('');
   let lastViewerDatasetId = $state('');
+  let viewerDatasetAutoplayNonce = $state(0);
+
+  let viewerMetaByDatasetId = $state<Record<string, { cameraKey: string }>>({});
+  let viewerMetaLoadingByDatasetId = $state<Record<string, boolean>>({});
+  let episodeCarouselIndexByTrialIndex = $state<Record<number, number>>({});
 
   const experiment = $derived($experimentQuery.data as Experiment | undefined);
   const evaluationCount = $derived(experiment?.evaluation_count ?? 0);
@@ -343,6 +349,19 @@
     );
   };
 
+  const clampIndex = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+  const getEpisodeCarouselIndex = (trialIndex: number, total: number) => {
+    const raw = Number(episodeCarouselIndexByTrialIndex[trialIndex] ?? 0);
+    const next = Number.isFinite(raw) ? Math.floor(raw) : 0;
+    return total > 0 ? clampIndex(next, 0, Math.max(0, total - 1)) : 0;
+  };
+
+  const setEpisodeCarouselIndex = (trialIndex: number, next: number, total: number) => {
+    const bounded = total > 0 ? clampIndex(Math.floor(next), 0, Math.max(0, total - 1)) : 0;
+    episodeCarouselIndexByTrialIndex = { ...episodeCarouselIndexByTrialIndex, [trialIndex]: bounded };
+  };
+
   const handleSelect = (index: number, value: string) => {
     if (value === 'その他') {
       const custom = evaluationItems[index]?.custom ?? '';
@@ -494,6 +513,7 @@
     activeTrialIndex = trialIndex;
     viewerLayoutEditMode = Boolean(options.editMode);
     viewerInitialInspectorTab = options.inspectorTab ?? 'blueprint';
+    viewerDatasetAutoplayNonce = 0;
 
     const row = evaluationItems.find((item) => item.trial_index === trialIndex);
     const links = normalizeEpisodeLinks(row?.episode_links ?? []);
@@ -503,6 +523,21 @@
     modalDatasetId = first?.dataset_id || recommendedDatasetId || fallbackDatasetId;
     modalEpisodeIndex = first?.episode_index ?? 0;
 
+    linkModalOpen = true;
+  };
+
+  const openViewerModalAt = (
+    trialIndex: number,
+    datasetId: string,
+    episodeIndex: number,
+    options: { editMode?: boolean; inspectorTab?: 'blueprint' | 'selection' | 'search'; autoplay?: boolean } = {}
+  ) => {
+    activeTrialIndex = trialIndex;
+    viewerLayoutEditMode = Boolean(options.editMode);
+    viewerInitialInspectorTab = options.inspectorTab ?? 'blueprint';
+    if (options.autoplay) viewerDatasetAutoplayNonce += 1;
+    modalDatasetId = datasetId;
+    modalEpisodeIndex = Math.max(0, Math.floor(Number(episodeIndex) || 0));
     linkModalOpen = true;
   };
 
@@ -563,10 +598,54 @@
     linkModalOpen = false;
     viewerLayoutEditMode = false;
     viewerInitialInspectorTab = 'blueprint';
+    viewerDatasetAutoplayNonce = 0;
     modalDatasetId = '';
     modalEpisodeIndex = 0;
   };
 
+  const thumbDatasetIds = $derived.by(() => {
+    const ids = new Set<string>();
+    for (const item of evaluationItems) {
+      const links = normalizeEpisodeLinks(item.episode_links ?? []);
+      const idx = getEpisodeCarouselIndex(item.trial_index, links.length);
+      const primary = links[idx];
+      const secondary = links[idx + 1];
+      if (primary?.dataset_id) ids.add(primary.dataset_id);
+      if (secondary?.dataset_id) ids.add(secondary.dataset_id);
+    }
+    return Array.from(ids);
+  });
+
+  $effect(() => {
+    // Cache dataset viewer meta for thumbnails (first camera key).
+    for (const datasetId of thumbDatasetIds) {
+      if (!datasetId) continue;
+      if (viewerMetaByDatasetId[datasetId]) continue;
+      if (viewerMetaLoadingByDatasetId[datasetId]) continue;
+      viewerMetaLoadingByDatasetId = { ...viewerMetaLoadingByDatasetId, [datasetId]: true };
+      void api.storage
+        .datasetViewer(datasetId)
+        .then((payload) => {
+          const cameraKey = String(payload.cameras?.[0]?.key ?? '');
+          if (!cameraKey) return;
+          viewerMetaByDatasetId = { ...viewerMetaByDatasetId, [datasetId]: { cameraKey } };
+        })
+        .catch(() => {
+          // ignore; thumbnails are best-effort
+        })
+        .finally(() => {
+          const next = { ...viewerMetaLoadingByDatasetId };
+          delete next[datasetId];
+          viewerMetaLoadingByDatasetId = next;
+        });
+    }
+  });
+
+  const getThumbUrl = (datasetId: string, episodeIndex: number) => {
+    const meta = viewerMetaByDatasetId[datasetId];
+    if (!meta?.cameraKey) return '';
+    return api.storage.datasetViewerVideoUrl(datasetId, meta.cameraKey, episodeIndex);
+  };
 </script>
 
 <section class="card-strong p-8">
@@ -653,6 +732,7 @@
 			              datasetEpisodeIndex={viewerEpisodeIndex}
 			              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
 			              datasetSignalKeys={viewerDatasetSignalKeys}
+		              datasetAutoplayNonce={viewerDatasetAutoplayNonce}
 		                searchDatasets={allDatasets}
 		                searchRecommendedDatasetId={recommendedDatasetId}
 		                searchEpisodeLinks={activeEpisodeLinks}
@@ -682,7 +762,26 @@
   </Dialog.Portal>
 </Dialog.Root>
 
-<section class="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
+<section class="space-y-6">
+  <div class="card p-6">
+    <h2 class="text-xl font-semibold text-slate-900">集計</h2>
+    <div class="mt-4 grid gap-4 text-sm text-slate-600 sm:grid-cols-3">
+      <div class="rounded-xl border border-slate-200/70 bg-white/70 p-4">
+        <p class="label">入力済み</p>
+        <p class="text-base font-semibold text-slate-800">{filledCount} / {evaluationCount}</p>
+        <p class="text-xs text-slate-500">未入力: {remainingCount}</p>
+      </div>
+      <div class="rounded-xl border border-slate-200/70 bg-white/70 p-4">
+        <p class="label">保存済み評価件数</p>
+        <p class="text-base font-semibold text-slate-800">{$summaryQuery.data?.total ?? 0}</p>
+      </div>
+      <div class="rounded-xl border border-slate-200/70 bg-white/70 p-4">
+        <p class="label">カテゴリ比率</p>
+        <p class="text-sm font-semibold text-slate-800">{formatRates($summaryQuery.data?.rates)}</p>
+      </div>
+    </div>
+  </div>
+
   <div class="card p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <h2 class="text-xl font-semibold text-slate-900">評価一覧</h2>
@@ -708,13 +807,24 @@
     <div class="mt-4 space-y-4">
       {#if $evaluationsQuery.isLoading}
         <p class="text-sm text-slate-500">読み込み中...</p>
-      {:else if evaluationItems.length}
-        {#each evaluationItems as item, index}
-          <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4 shadow-sm">
-            <div class="flex items-center justify-between">
-              <p class="font-semibold text-slate-800">試行 {item.trial_index}</p>
-              <span class="chip">#{item.trial_index}</span>
-            </div>
+	      {:else if evaluationItems.length}
+	        {#each evaluationItems as item, index}
+	          {@const links = normalizeEpisodeLinks(item.episode_links ?? [])}
+	          {@const totalLinks = links.length}
+	          {@const carouselIndex = getEpisodeCarouselIndex(item.trial_index, totalLinks)}
+	          {@const primary = links[carouselIndex]}
+	          {@const secondary = links[carouselIndex + 1]}
+	          {@const primaryDatasetId = String(primary?.dataset_id ?? '')}
+	          {@const primaryEpisodeIndex = Math.max(0, Math.floor(Number(primary?.episode_index) || 0))}
+	          {@const secondaryDatasetId = String(secondary?.dataset_id ?? '')}
+	          {@const secondaryEpisodeIndex = Math.max(0, Math.floor(Number(secondary?.episode_index) || 0))}
+	          {@const canPrev = carouselIndex > 0}
+	          {@const canNext = carouselIndex + 1 < totalLinks}
+	          <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4 shadow-sm">
+	            <div class="flex items-center justify-between">
+	              <p class="font-semibold text-slate-800">試行 {item.trial_index}</p>
+	              <span class="chip">#{item.trial_index}</span>
+	            </div>
             <div class="mt-3 grid gap-3 md:grid-cols-2">
               <label class="text-sm font-semibold text-slate-700">
                 <span class="label">評価値</span>
@@ -758,16 +868,111 @@
                   <p class="text-sm font-semibold text-slate-800">紐付けエピソード</p>
                   <p class="text-xs text-slate-500">{item.episode_links.length} 件</p>
                 </div>
-                {#if item.episode_links.length > 0}
-                  <Button.Root class="btn-ghost" type="button" onclick={() => openLinkViewer(item.trial_index)}>
-                    閲覧
-                  </Button.Root>
-                {:else}
+                <div class="flex flex-wrap gap-2">
                   <Button.Root class="btn-ghost" type="button" onclick={() => openLinkEditor(item.trial_index)}>
                     新規紐付け
                   </Button.Root>
-                {/if}
-              </div>
+	              {#if item.episode_links.length > 0}
+	                    <Button.Root class="btn-ghost" type="button" onclick={() => openLinkViewer(item.trial_index)}>
+	                      閲覧
+	                    </Button.Root>
+	                  {/if}
+	                </div>
+	              </div>
+
+	              {#if totalLinks > 0}
+	                <div class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div class="overflow-hidden rounded-xl border border-slate-200/60 bg-white">
+                    <div class="aspect-video bg-slate-950/5">
+                      <DatasetEpisodeThumbnail
+                        src={primaryDatasetId ? getThumbUrl(primaryDatasetId, primaryEpisodeIndex) : ''}
+                        label={
+                          viewerMetaLoadingByDatasetId[primaryDatasetId]
+                            ? 'loading...'
+                            : primaryDatasetId
+                              ? `ep ${primaryEpisodeIndex + 1}`
+                              : ''
+                        }
+                      />
+                    </div>
+	                    <div class="min-w-0 p-2">
+	                      <p class="truncate text-xs font-semibold text-slate-900">{primaryDatasetId}</p>
+	                      <p class="truncate text-[10px] text-slate-500">
+	                        ep {primaryEpisodeIndex + 1} / {totalLinks}
+	                      </p>
+	                    </div>
+	                  </div>
+
+                  {#if secondary}
+                    <div class="overflow-hidden rounded-xl border border-slate-200/60 bg-white">
+                      <div class="aspect-video bg-slate-950/5">
+                        <DatasetEpisodeThumbnail
+                          src={secondaryDatasetId ? getThumbUrl(secondaryDatasetId, secondaryEpisodeIndex) : ''}
+                          label={
+                            viewerMetaLoadingByDatasetId[secondaryDatasetId]
+                              ? 'loading...'
+                              : secondaryDatasetId
+                                ? `ep ${secondaryEpisodeIndex + 1}`
+                                : ''
+                          }
+                        />
+                      </div>
+	                      <div class="min-w-0 p-2">
+	                        <p class="truncate text-xs font-semibold text-slate-900">{secondaryDatasetId}</p>
+	                        <p class="truncate text-[10px] text-slate-500">
+	                          ep {secondaryEpisodeIndex + 1} / {totalLinks}
+	                        </p>
+	                      </div>
+	                    </div>
+	                  {/if}
+
+                  <div class="flex items-center gap-2 rounded-xl border border-slate-200/70 bg-white/80 p-2 sm:col-span-1">
+                    <button
+                      class="btn-ghost px-3 py-2"
+	                      type="button"
+	                      disabled={!canPrev}
+	                      onclick={() => setEpisodeCarouselIndex(item.trial_index, carouselIndex - 1, totalLinks)}
+	                    >
+	                      ←
+	                    </button>
+                    <button
+                      class="btn-primary px-4 py-2"
+                      type="button"
+                      disabled={!primaryDatasetId}
+	                      onclick={() => {
+	                        if (!primaryDatasetId) return;
+	                        openViewerModalAt(item.trial_index, primaryDatasetId, primaryEpisodeIndex, {
+	                          editMode: false,
+                          inspectorTab: 'blueprint',
+                          autoplay: true
+                        });
+                      }}
+                    >
+                      再生
+                    </button>
+                    <button
+                      class="btn-ghost px-3 py-2"
+	                      type="button"
+	                      disabled={!canNext}
+	                      onclick={() => setEpisodeCarouselIndex(item.trial_index, carouselIndex + 1, totalLinks)}
+	                    >
+	                      →
+	                    </button>
+	                    <div class="flex-1"></div>
+	                    <span class="text-[10px] font-semibold text-slate-500 tabular-nums">{carouselIndex + 1} / {totalLinks}</span>
+	                  </div>
+
+                  {#if secondary}
+                    <div class="hidden sm:block"></div>
+                  {/if}
+                </div>
+              {:else}
+                <div class="mt-3 rounded-xl border border-dashed border-slate-200/70 bg-white/70 p-3">
+                  <p class="text-xs text-slate-500">
+                    紐付けずにプレビューだけしたい場合も、まずは「新規紐付け」からエピソードを選択してプレビューしてください。
+                  </p>
+                </div>
+              {/if}
             </div>
             <div class="mt-3 text-sm text-slate-600">
               <p class="label">画像プレビュー</p>
@@ -822,25 +1027,6 @@
       <Button.Root class="btn-primary" type="button" onclick={handleSave} disabled={submitting}>
         保存
       </Button.Root>
-    </div>
-  </div>
-
-  <div class="card p-6">
-    <h2 class="text-xl font-semibold text-slate-900">集計</h2>
-    <div class="mt-4 space-y-4 text-sm text-slate-600">
-      <div>
-        <p class="label">入力済み</p>
-        <p class="text-base font-semibold text-slate-800">{filledCount} / {evaluationCount}</p>
-        <p class="text-xs text-slate-500">未入力: {remainingCount}</p>
-      </div>
-      <div>
-        <p class="label">保存済み評価件数</p>
-        <p class="text-base font-semibold text-slate-800">{$summaryQuery.data?.total ?? 0}</p>
-      </div>
-      <div>
-        <p class="label">カテゴリ比率</p>
-        <p class="text-sm font-semibold text-slate-800">{formatRates($summaryQuery.data?.rates)}</p>
-      </div>
     </div>
   </div>
 </section>
