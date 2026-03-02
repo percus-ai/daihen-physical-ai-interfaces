@@ -383,6 +383,14 @@
         status = 'idle';
         return;
       }
+      if (signalKey.startsWith('/')) {
+        // Guard: dataset viewer expects dataset signal keys (e.g. `observation.state`),
+        // not ROS topic names like `/follower_arm/joint_states`.
+        datasetError = 'データセットのシグナルキーが未選択です。';
+        status = 'error';
+        resetViewState();
+        return;
+      }
       const signature = `${datasetIdValue}:${episode}:${signalKey}`;
       if (signature === lastDatasetSignature) return;
       lastDatasetSignature = signature;

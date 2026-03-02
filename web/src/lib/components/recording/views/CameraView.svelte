@@ -55,6 +55,9 @@
     if (!isDataset) return '';
     if (runtime.kind !== 'dataset') return '';
     if (!runtime.datasetId || !topic) return '';
+    // Guard: dataset viewer expects dataset camera keys (e.g. `observation.images.cam_top`),
+    // not ROS topic names like `/top_camera/image_raw/compressed`.
+    if (topic.startsWith('/')) return '';
     return api.storage.datasetViewerVideoUrl(runtime.datasetId, topic, runtime.episodeIndex);
   });
 

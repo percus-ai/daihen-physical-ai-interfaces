@@ -154,8 +154,6 @@
   let selectedId = $state('');
   let mounted = $state(false);
   let filledDefaults = $state(false);
-  let lastDatasetCameraKeysSignature = $state('');
-  let lastDatasetSignalKeysSignature = $state('');
   let editInspectorTab = $state<string>('blueprint');
   let inspectorInitialized = $state(false);
   let editorShellEl = $state<HTMLDivElement | null>(null);
@@ -176,38 +174,26 @@
 
   $effect(() => {
     if (!mounted) return;
-    if (viewSource !== 'dataset') {
-      lastDatasetCameraKeysSignature = '';
-      return;
-    }
+    if (viewSource !== 'dataset') return;
     if (!datasetId) return;
-    const signature = `${datasetId}:${datasetCameraKeys.join('|')}`;
-    if (signature === lastDatasetCameraKeysSignature) return;
-    lastDatasetCameraKeysSignature = signature;
     if (!datasetCameraKeys.length) return;
+    // Blueprint can change after the dataset keys are loaded (e.g. workspace load),
+    // so normalize on both key changes and blueprint changes.
     const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
-    if (next !== blueprint) {
-      blueprint = next;
-      selectedId = ensureValidSelection(next, selectedId);
-    }
+    if (next === blueprint) return;
+    blueprint = next;
+    selectedId = ensureValidSelection(next, selectedId);
   });
 
   $effect(() => {
     if (!mounted) return;
-    if (viewSource !== 'dataset') {
-      lastDatasetSignalKeysSignature = '';
-      return;
-    }
+    if (viewSource !== 'dataset') return;
     if (!datasetId) return;
-    const signature = `${datasetId}:${datasetSignalKeys.join('|')}`;
-    if (signature === lastDatasetSignalKeysSignature) return;
-    lastDatasetSignalKeysSignature = signature;
     if (!datasetSignalKeys.length) return;
     const next = ensureDatasetJointTopics(blueprint, datasetSignalKeys);
-    if (next !== blueprint) {
-      blueprint = next;
-      selectedId = ensureValidSelection(next, selectedId);
-    }
+    if (next === blueprint) return;
+    blueprint = next;
+    selectedId = ensureValidSelection(next, selectedId);
   });
 
   $effect(() => {

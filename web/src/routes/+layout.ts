@@ -1,16 +1,34 @@
 import type { LayoutLoad } from './$types';
 import { redirect } from '@sveltejs/kit';
 
-import { api } from '$lib/api/client';
+import { getBackendUrl } from '$lib/config';
 
 export const ssr = false;
 
-export const load: LayoutLoad = async ({ url }) => {
+export const load: LayoutLoad = async ({ url, fetch }) => {
   if (url.pathname.startsWith('/auth')) {
     return {};
   }
   try {
-    const status = await api.auth.status();
+    const baseUrl = getBackendUrl();
+    const fetchJson = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
+      const res = await fetch(`${baseUrl}${path}`, {
+        ...init,
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(init.headers ?? {})
+        }
+      });
+      if (!res.ok) throw new Error(`request failed: ${res.status}`);
+      return res.json();
+    };
+
+    const status = await fetchJson<{
+      authenticated?: boolean;
+      expires_at?: number | null;
+      session_expires_at?: number | null;
+    }>('/api/auth/status');
     const now = Math.floor(Date.now() / 1000);
     let authenticated = Boolean(status.authenticated);
     let expiresAt = status.expires_at;
@@ -19,7 +37,11 @@ export const load: LayoutLoad = async ({ url }) => {
 
     if (!authenticated && sessionExpiresAt && sessionExpiresAt > now) {
       try {
-        const refreshed = await api.auth.refresh();
+        const refreshed = await fetchJson<{
+          authenticated?: boolean;
+          expires_at?: number | null;
+          session_expires_at?: number | null;
+        }>('/api/auth/refresh', { method: 'POST' });
         authenticated = Boolean(refreshed.authenticated);
         expiresAt = refreshed.expires_at;
         sessionExpiresAt = refreshed.session_expires_at;
@@ -30,7 +52,7 @@ export const load: LayoutLoad = async ({ url }) => {
 
     if (authenticated && expiresAt && expiresAt <= now + refreshLeewaySeconds) {
       try {
-        await api.auth.refresh();
+        await fetchJson('/api/auth/refresh', { method: 'POST' });
       } catch {
         authenticated = false;
       }

@@ -688,47 +688,6 @@ async def get_dataset_viewer_signal_series(
     )
 
 
-@router.get("/dataset-viewer/datasets/{dataset_id:path}/episodes/{episode_index}/videos/{video_key:path}")
-async def get_dataset_viewer_video(dataset_id: str, video_key: str, episode_index: int):
-    """Stream a dataset episode video for playback."""
-    if episode_index < 0:
-        raise HTTPException(status_code=400, detail="episode_index must be >= 0")
-
-    _row, dataset_path = await _resolve_dataset_row_and_path(dataset_id)
-    if not dataset_path.exists():
-        raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
-
-    try:
-        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
-
-    if video_key not in metadata.video_keys:
-        raise HTTPException(status_code=404, detail=f"Video stream not found: {video_key}")
-    if episode_index >= metadata.total_episodes:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Episode index out of range: {episode_index} (total={metadata.total_episodes})",
-        )
-
-    try:
-        relative_path = metadata.get_video_file_path(episode_index, video_key)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to resolve video file path: {exc}") from exc
-    video_path = Path(dataset_path) / relative_path
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail=f"Video file not found: {relative_path}")
-
-    suffix = video_path.suffix.lower()
-    media_type = "video/mp4" if suffix == ".mp4" else "video/webm" if suffix == ".webm" else "application/octet-stream"
-    return FileResponse(
-        path=video_path,
-        media_type=media_type,
-        filename=video_path.name,
-        headers={"Cache-Control": "no-store"},
-    )
-
-
 def _coerce_float(value: object, default: float = 0.0) -> float:
     try:
         parsed = float(value)  # type: ignore[arg-type]
@@ -787,6 +746,48 @@ async def get_dataset_viewer_episode_video_window(dataset_id: str, episode_index
         )
 
     return DatasetViewerEpisodeVideoWindowResponse(dataset_id=dataset_id, episode_index=episode_index, videos=videos)
+
+
+# NOTE: This route must appear after `/videos/window` because Starlette matches routes in definition order.
+@router.get("/dataset-viewer/datasets/{dataset_id:path}/episodes/{episode_index}/videos/{video_key:path}")
+async def get_dataset_viewer_video(dataset_id: str, video_key: str, episode_index: int):
+    """Stream a dataset episode video for playback."""
+    if episode_index < 0:
+        raise HTTPException(status_code=400, detail="episode_index must be >= 0")
+
+    _row, dataset_path = await _resolve_dataset_row_and_path(dataset_id)
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
+
+    try:
+        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+    if video_key not in metadata.video_keys:
+        raise HTTPException(status_code=404, detail=f"Video stream not found: {video_key}")
+    if episode_index >= metadata.total_episodes:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Episode index out of range: {episode_index} (total={metadata.total_episodes})",
+        )
+
+    try:
+        relative_path = metadata.get_video_file_path(episode_index, video_key)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve video file path: {exc}") from exc
+    video_path = Path(dataset_path) / relative_path
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail=f"Video file not found: {relative_path}")
+
+    suffix = video_path.suffix.lower()
+    media_type = "video/mp4" if suffix == ".mp4" else "video/webm" if suffix == ".webm" else "application/octet-stream"
+    return FileResponse(
+        path=video_path,
+        media_type=media_type,
+        filename=video_path.name,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/dataset-viewer/datasets/{dataset_id:path}/signals", response_model=DatasetViewerSignalFieldsResponse)
