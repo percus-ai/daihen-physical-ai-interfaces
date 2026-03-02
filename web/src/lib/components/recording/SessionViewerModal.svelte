@@ -6,6 +6,7 @@
 
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import { api, type DatasetSyncJobStatus, type DatasetViewerSignalFieldsResponse } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
 
   let {
     open = $bindable(false),
@@ -45,7 +46,7 @@
 
   const viewerDatasetQuery = createQuery(
     toStore(() => ({
-      queryKey: ['storage', 'session-viewer-modal', datasetId],
+      queryKey: qk.storage.datasetViewer(datasetId),
       queryFn: () => api.storage.datasetViewer(datasetId),
       enabled: Boolean(open) && Boolean(datasetId)
     }))
@@ -63,7 +64,7 @@
 
   const viewerSignalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'session-viewer-modal', datasetId, 'signals'],
+      queryKey: qk.storage.datasetViewerSignalFields(datasetId),
       queryFn: () => api.storage.datasetViewerSignalFields(datasetId),
       enabled: Boolean(open) && Boolean(datasetId) && viewerIsLocal
     }))
@@ -83,7 +84,7 @@
 
   const viewerSyncJobQuery = createQuery<DatasetSyncJobStatus>(
     toStore(() => ({
-      queryKey: ['storage', 'session-viewer-modal', datasetId, 'dataset-sync', viewerSyncJobId],
+      queryKey: qk.storage.datasetSyncJob(viewerSyncJobId),
       queryFn: () => api.storage.datasetSyncJob(viewerSyncJobId),
       enabled: Boolean(open) && Boolean(viewerSyncJobId)
     }))
@@ -92,7 +93,7 @@
   const refetchViewerDataset = async () => {
     if (!datasetId) return;
     await queryClient.invalidateQueries({
-      queryKey: ['storage', 'session-viewer-modal', datasetId]
+      queryKey: qk.storage.datasetViewer(datasetId)
     });
   };
 

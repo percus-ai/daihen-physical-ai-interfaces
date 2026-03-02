@@ -2,6 +2,7 @@
   import { toStore } from 'svelte/store';
   import { createQuery } from '@tanstack/svelte-query';
   import { api, type ExperimentEpisodeLink, type DatasetViewerResponse } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
 
   type DatasetListItem = {
     id: string;
@@ -69,7 +70,7 @@
 
   const selectedDatasetViewerQuery = createQuery<DatasetViewerResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer', 'search-tab', selectedDatasetId],
+      queryKey: qk.storage.datasetViewer(selectedDatasetId),
       queryFn: () => api.storage.datasetViewer(selectedDatasetId),
       enabled: Boolean(selectedDatasetId)
     }))

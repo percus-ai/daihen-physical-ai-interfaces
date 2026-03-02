@@ -13,6 +13,7 @@
 	    type DatasetViewerSignalField,
 	    type DatasetViewerSignalFieldsResponse
 	  } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
@@ -90,7 +91,7 @@
 
   const viewerQuery = createQuery<DatasetViewerResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId, 'viewer'],
+      queryKey: qk.storage.datasetViewer(datasetId),
       queryFn: () => api.storage.datasetViewer(datasetId),
       enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
     }))
@@ -98,7 +99,7 @@
 
   const episodesQuery = createQuery<DatasetViewerEpisodeListResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId, 'viewer', 'episodes'],
+      queryKey: qk.storage.datasetViewerEpisodes(datasetId),
       queryFn: () => api.storage.datasetViewerEpisodes(datasetId),
       enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
     }))
@@ -115,7 +116,7 @@
 
   const datasetSyncJobQuery = createQuery<DatasetSyncJobStatus>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset-sync', datasetSyncJobId],
+      queryKey: qk.storage.datasetSyncJob(datasetSyncJobId),
       queryFn: () => api.storage.datasetSyncJob(datasetSyncJobId),
       enabled: Boolean(datasetSyncJobId)
     }))
@@ -123,7 +124,7 @@
 
   const signalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals'],
+      queryKey: qk.storage.datasetViewerSignalFields(datasetId),
       queryFn: () => api.storage.datasetViewerSignalFields(datasetId),
       enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
     }))
@@ -159,9 +160,9 @@
   const refetchDataset = async () => {
     if (!datasetId) return;
     await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId] });
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer'] });
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer', 'episodes'] });
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals'] });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewer(datasetId) });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerEpisodes(datasetId) });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerSignalFields(datasetId) });
   };
 
   const startDatasetSyncJob = async () => {
@@ -203,7 +204,7 @@
     actionError = '';
     try {
       await api.storage.cancelDatasetSyncJob(datasetSyncJobId);
-      await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset-sync', datasetSyncJobId] });
+      await queryClient.invalidateQueries({ queryKey: qk.storage.datasetSyncJob(datasetSyncJobId) });
     } catch (err) {
       actionError = err instanceof Error ? err.message : '同期中断に失敗しました。';
     }
@@ -246,7 +247,7 @@
     const stop = connectStream<DatasetSyncJobStatus>({
       path: streamPath,
       onMessage: (payload) => {
-        queryClient.setQueryData(['storage', 'dataset-sync', currentJobId], payload);
+        queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), payload);
       }
     });
     return () => {

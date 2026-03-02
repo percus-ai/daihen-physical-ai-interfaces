@@ -10,6 +10,7 @@
 	    type DatasetViewerSignalFieldsResponse,
 	    type ExperimentEpisodeLink
 	  } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { connectStream } from '$lib/realtime/stream';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import DatasetEpisodeThumbnail from '$lib/components/recording/DatasetEpisodeThumbnail.svelte';
@@ -171,7 +172,7 @@
 
   const viewerDatasetQuery = createQuery(
     toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-modal', viewerDatasetId],
+      queryKey: qk.storage.datasetViewer(viewerDatasetId),
       queryFn: () => api.storage.datasetViewer(viewerDatasetId),
       enabled: Boolean(viewerDatasetId)
     }))
@@ -189,7 +190,7 @@
 
   const viewerSignalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-modal', viewerDatasetId, 'signals'],
+      queryKey: qk.storage.datasetViewerSignalFields(viewerDatasetId),
       queryFn: () => api.storage.datasetViewerSignalFields(viewerDatasetId),
       enabled: Boolean(viewerDatasetId) && viewerIsLocal
     }))
@@ -205,7 +206,7 @@
 
   const viewerSyncJobQuery = createQuery<DatasetSyncJobStatus>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-modal', viewerDatasetId, 'dataset-sync', viewerSyncJobId],
+      queryKey: qk.storage.datasetSyncJob(viewerSyncJobId),
       queryFn: () => api.storage.datasetSyncJob(viewerSyncJobId),
       enabled: Boolean(viewerSyncJobId)
     }))
@@ -214,7 +215,7 @@
   const refetchViewerDataset = async () => {
     if (!viewerDatasetId) return;
     await queryClient.invalidateQueries({
-      queryKey: ['storage', 'dataset-viewer-modal', viewerDatasetId]
+      queryKey: qk.storage.datasetViewer(viewerDatasetId)
     });
   };
 
@@ -285,10 +286,7 @@
     const stop = connectStream<DatasetSyncJobStatus>({
       path: streamPath,
       onMessage: (payload) => {
-        queryClient.setQueryData(
-          ['storage', 'dataset-viewer-modal', viewerDatasetId, 'dataset-sync', currentJobId],
-          payload
-        );
+        queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), payload);
       }
     });
     return () => {
