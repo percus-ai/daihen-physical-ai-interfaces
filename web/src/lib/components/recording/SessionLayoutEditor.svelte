@@ -172,6 +172,8 @@
   let selectedId = $state('');
   let mounted = $state(false);
   let filledDefaults = $state(false);
+  let lastDatasetCameraKeysSignature = $state('');
+  let lastDatasetSignalKeysSignature = $state('');
   let editInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
   let inspectorInitialized = $state(false);
   let editorShellEl = $state<HTMLDivElement | null>(null);
@@ -284,22 +286,34 @@
 	    return changed ? { ...node, tabs: nextTabs } : node;
 	  };
 
-	  $effect(() => {
-	    if (!mounted) return;
-	    if (viewSource !== 'dataset') return;
-	    if (!datasetId) return;
-	    if (!datasetCameraKeys.length) return;
-	    const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
-	    if (next !== blueprint) {
-	      blueprint = next;
-	      selectedId = ensureValidSelection(next, selectedId);
-	    }
-	  });
+		  $effect(() => {
+		    if (!mounted) return;
+		    if (viewSource !== 'dataset') {
+		      lastDatasetCameraKeysSignature = '';
+		      return;
+		    }
+		    if (!datasetId) return;
+		    const signature = `${datasetId}:${datasetCameraKeys.join('|')}`;
+		    if (signature === lastDatasetCameraKeysSignature) return;
+		    lastDatasetCameraKeysSignature = signature;
+		    if (!datasetCameraKeys.length) return;
+		    const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
+		    if (next !== blueprint) {
+		      blueprint = next;
+		      selectedId = ensureValidSelection(next, selectedId);
+		    }
+		  });
 
 		  $effect(() => {
 		    if (!mounted) return;
-		    if (viewSource !== 'dataset') return;
+		    if (viewSource !== 'dataset') {
+		      lastDatasetSignalKeysSignature = '';
+		      return;
+		    }
 		    if (!datasetId) return;
+		    const signature = `${datasetId}:${datasetSignalKeys.join('|')}`;
+		    if (signature === lastDatasetSignalKeysSignature) return;
+		    lastDatasetSignalKeysSignature = signature;
 		    if (!datasetSignalKeys.length) return;
 		    const next = ensureDatasetJointTopics(blueprint, datasetSignalKeys);
 		    if (next !== blueprint) {
