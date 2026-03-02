@@ -113,7 +113,7 @@ describe('datasetPlayback', () => {
     controller.pause();
   });
 
-  it('uses the shortest duration across videos and stops at the common end', () => {
+  it('uses the shortest duration across videos and stops at the common end', async () => {
     const controller = createDatasetPlaybackController();
     const v1 = new FakeVideo() as unknown as HTMLVideoElement;
     const v2 = new FakeVideo() as unknown as HTMLVideoElement;
@@ -126,6 +126,9 @@ describe('datasetPlayback', () => {
     (v2 as unknown as FakeVideo).duration = 30;
     (v2 as unknown as FakeVideo).readyState = 1;
     (v2 as unknown as FakeVideo).dispatch('loadedmetadata');
+
+    // Allow internal queueMicrotask() flushes (seek application after metadata).
+    await Promise.resolve();
 
     expect(controller.getState().duration).toBe(10);
 

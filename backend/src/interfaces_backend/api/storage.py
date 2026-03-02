@@ -33,6 +33,8 @@ from interfaces_backend.models.storage import (
     DatasetViewerSignalField,
     DatasetViewerSignalFieldsResponse,
     DatasetViewerSignalSeriesResponse,
+    DatasetViewerEpisodeVideoWindow,
+    DatasetViewerEpisodeVideoWindowResponse,
     DatasetReuploadResponse,
     DatasetMergeRequest,
     DatasetMergeResponse,
@@ -725,6 +727,66 @@ async def get_dataset_viewer_video(dataset_id: str, video_key: str, episode_inde
         filename=video_path.name,
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+        if parsed != parsed:  # NaN
+            return default
+        return parsed
+    except Exception:
+        return default
+
+
+@router.get(
+    "/dataset-viewer/datasets/{dataset_id:path}/episodes/{episode_index}/videos/window",
+    response_model=DatasetViewerEpisodeVideoWindowResponse,
+)
+async def get_dataset_viewer_episode_video_window(dataset_id: str, episode_index: int):
+    """Return per-video episode boundaries within chunked video files.
+
+    LeRobot may concatenate multiple episodes into a single mp4 (chunk/file). The episode
+    boundaries are stored in episode metadata as `videos/{key}/from_timestamp` and `to_timestamp`.
+    """
+    if episode_index < 0:
+        raise HTTPException(status_code=400, detail="episode_index must be >= 0")
+
+    _row, dataset_path = await _resolve_dataset_row_and_path(dataset_id)
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
+
+    try:
+        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+    if episode_index >= metadata.total_episodes:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Episode index out of range: {episode_index} (total={metadata.total_episodes})",
+        )
+
+    ep = metadata.episodes[episode_index]
+    videos: list[DatasetViewerEpisodeVideoWindow] = []
+    for video_key in metadata.video_keys:
+        try:
+            relative_path = metadata.get_video_file_path(episode_index, video_key)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to resolve video file path: {exc}") from exc
+
+        from_s = _coerce_float(ep.get(f"videos/{video_key}/from_timestamp", 0.0), 0.0)
+        to_s = _coerce_float(ep.get(f"videos/{video_key}/to_timestamp", 0.0), 0.0)
+        videos.append(
+            DatasetViewerEpisodeVideoWindow(
+                key=video_key,
+                relative_path=str(relative_path),
+                from_s=max(0.0, from_s),
+                to_s=max(0.0, to_s),
+            )
+        )
+
+    return DatasetViewerEpisodeVideoWindowResponse(dataset_id=dataset_id, episode_index=episode_index, videos=videos)
 
 
 @router.get("/dataset-viewer/datasets/{dataset_id:path}/signals", response_model=DatasetViewerSignalFieldsResponse)

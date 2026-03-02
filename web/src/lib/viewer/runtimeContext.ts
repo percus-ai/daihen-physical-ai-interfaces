@@ -13,6 +13,7 @@ export type ViewerRuntime =
       mode: 'recording' | 'operate';
       datasetId: string;
       episodeIndex: number;
+      videoWindows?: Record<string, { from_s: number; to_s: number }>;
       playback: DatasetPlaybackController | null;
       onPrevEpisode?: () => void;
       onNextEpisode?: () => void;
@@ -21,4 +22,3 @@ export type ViewerRuntime =
 export type ViewerRuntimeStore = Readable<ViewerRuntime>;
 
 export const VIEWER_RUNTIME = Symbol('viewerRuntime');
-

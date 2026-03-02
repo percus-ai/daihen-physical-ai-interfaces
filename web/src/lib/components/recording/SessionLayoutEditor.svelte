@@ -51,7 +51,7 @@
     topics?: string[];
   };
 
-			  let {
+				  let {
 			    blueprintSessionId = '',
 			    blueprintSessionKind = '' as BlueprintSessionKind | '',
 			    layoutSessionId = '',
@@ -64,9 +64,10 @@
 			    embedded = false,
 			    datasetId = '',
 			    datasetEpisodeIndex = 0,
-			    datasetCameraKeys = [],
-			    datasetSignalKeys = [],
-			    datasetAutoplayNonce = 0,
+				    datasetCameraKeys = [],
+				    datasetSignalKeys = [],
+				    datasetVideoWindows = {},
+				    datasetAutoplayNonce = 0,
 			    inspectorExtraTabs = [],
 			    onPrevEpisode = undefined,
 			    onNextEpisode = undefined
@@ -83,9 +84,10 @@
 			    embedded?: boolean;
 			    datasetId?: string;
 			    datasetEpisodeIndex?: number;
-			    datasetCameraKeys?: string[];
-			    datasetSignalKeys?: string[];
-			    datasetAutoplayNonce?: number;
+				    datasetCameraKeys?: string[];
+				    datasetSignalKeys?: string[];
+				    datasetVideoWindows?: Record<string, { from_s: number; to_s: number }>;
+				    datasetAutoplayNonce?: number;
 			    inspectorExtraTabs?: { id: string; label: string; panel?: Snippet }[];
 			    onPrevEpisode?: () => void;
 			    onNextEpisode?: () => void;
@@ -102,17 +104,18 @@
 
   const runtimeStore: ViewerRuntimeStore = toStore(() => {
     const mode = layoutMode;
-    if (viewSource === 'dataset') {
-      return {
-        kind: 'dataset',
-        mode,
-        datasetId,
-        episodeIndex: Math.max(0, Math.floor(Number(datasetEpisodeIndex) || 0)),
-        playback: datasetPlayback,
-        onPrevEpisode,
-        onNextEpisode
-      } satisfies ViewerRuntime;
-    }
+	    if (viewSource === 'dataset') {
+	      return {
+	        kind: 'dataset',
+	        mode,
+	        datasetId,
+	        episodeIndex: Math.max(0, Math.floor(Number(datasetEpisodeIndex) || 0)),
+	        videoWindows: datasetVideoWindows,
+	        playback: datasetPlayback,
+	        onPrevEpisode,
+	        onNextEpisode
+	      } satisfies ViewerRuntime;
+	    }
     return {
       kind: 'ros',
       mode,

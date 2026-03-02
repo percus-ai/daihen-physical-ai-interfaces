@@ -99,17 +99,18 @@
     };
   });
 
-  $effect(() => {
-    if (!isDataset) return;
-    if (!videoEl) return;
-    if (runtime.kind !== 'dataset') return;
-    if (!runtime.playback) return;
-    unregisterPlayback = runtime.playback.register(videoEl);
-    return () => {
-      unregisterPlayback?.();
-      unregisterPlayback = null;
-    };
-  });
+	  $effect(() => {
+	    if (!isDataset) return;
+	    if (!videoEl) return;
+	    if (runtime.kind !== 'dataset') return;
+	    if (!runtime.playback) return;
+	    const window = runtime.videoWindows?.[topic];
+	    unregisterPlayback = runtime.playback.register(videoEl, { window: window ?? null });
+	    return () => {
+	      unregisterPlayback?.();
+	      unregisterPlayback = null;
+	    };
+	  });
 </script>
 
 <div class="flex h-full flex-col gap-3">

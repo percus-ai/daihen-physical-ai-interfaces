@@ -5,10 +5,11 @@
   import { Button, Tooltip } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
-	  import {
-	    api,
-	    type ExperimentEpisodeLink
-	  } from '$lib/api/client';
+		  import {
+		    api,
+		    type ExperimentEpisodeLink,
+		    type DatasetViewerEpisodeVideoWindowResponse
+		  } from '$lib/api/client';
   import ViewerDialogShell from '$lib/viewer/ViewerDialogShell.svelte';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
@@ -178,9 +179,10 @@
   });
   onDestroy(viewerAvailability.destroy);
 
-  const viewerDatasetQuery = viewerAvailability.datasetQuery;
-  const viewerIsLocal = viewerAvailability.isLocal;
-  const viewerTotalEpisodes = viewerAvailability.totalEpisodes;
+	  const viewerDatasetQuery = viewerAvailability.datasetQuery;
+	  const viewerIsLocal = viewerAvailability.isLocal;
+	  const viewerIsLocalValue = $derived($viewerIsLocal);
+	  const viewerTotalEpisodes = viewerAvailability.totalEpisodes;
   const viewerEpisodeIndex = $derived.by(() => {
     const next = Math.max(0, Math.floor(Number(viewerEpisodeRaw) || 0));
     if (!Number.isFinite(next)) return 0;
@@ -190,12 +192,34 @@
     return next;
   });
 
-  const viewerDatasetSignalKeys = viewerAvailability.signalKeys;
+	  const viewerDatasetSignalKeys = viewerAvailability.signalKeys;
   const viewerSyncJobQuery = viewerAvailability.syncJobQuery;
   const viewerSyncJobId = viewerAvailability.syncJobId;
   const viewerSyncStarting = viewerAvailability.syncStarting;
   const refetchViewerDataset = viewerAvailability.refetch;
-  const startViewerSyncJob = viewerAvailability.startSync;
+	  const startViewerSyncJob = viewerAvailability.startSync;
+
+	  const viewerVideoWindowEnabled = $derived(
+	    Boolean(linkModalOpen) && Boolean(viewerDatasetId) && viewerIsLocalValue
+	  );
+	  const viewerVideoWindowQuery = createQuery<DatasetViewerEpisodeVideoWindowResponse>(
+	    toStore(() => ({
+	      queryKey: qk.storage.datasetViewerEpisodeVideoWindow(viewerDatasetId, viewerEpisodeIndex),
+	      queryFn: () => api.storage.datasetViewerEpisodeVideoWindow(viewerDatasetId, viewerEpisodeIndex),
+	      enabled: viewerVideoWindowEnabled
+	    }))
+	  );
+	  const viewerVideoWindows = $derived.by(() => {
+	    const videos = $viewerVideoWindowQuery.data?.videos ?? [];
+	    const out: Record<string, { from_s: number; to_s: number }> = {};
+	    for (const video of videos) {
+	      out[video.key] = {
+	        from_s: Number(video.from_s) || 0,
+	        to_s: Number(video.to_s) || 0
+	      };
+	    }
+	    return out;
+	  });
 
   const buildEvaluationDrafts = (exp: Experiment, existing: Evaluation[]) => {
     const map = new Map(existing.map((item) => [item.trial_index, item]));
@@ -725,10 +749,11 @@
 			              datasetEpisodeIndex={viewerEpisodeIndex}
 			              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
 			              datasetSignalKeys={$viewerDatasetSignalKeys}
-		              datasetAutoplayNonce={viewerDatasetAutoplayNonce}
-                {onPrevEpisode}
-                {onNextEpisode}
-	            />
+			              datasetVideoWindows={viewerVideoWindows}
+			              datasetAutoplayNonce={viewerDatasetAutoplayNonce}
+	                {onPrevEpisode}
+	                {onNextEpisode}
+		            />
           </div>
         {:else}
           <div class="card p-4 min-h-0 h-full">

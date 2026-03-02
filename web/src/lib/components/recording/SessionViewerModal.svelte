@@ -2,12 +2,15 @@
   import { onDestroy } from 'svelte';
   import { Button } from 'bits-ui';
   import { toStore } from 'svelte/store';
-  import { useQueryClient } from '@tanstack/svelte-query';
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
 
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import ViewerDialogShell from '$lib/viewer/ViewerDialogShell.svelte';
+  import { qk } from '$lib/queryKeys';
+  import type { DatasetViewerEpisodeVideoWindowResponse } from '$lib/api/client';
+  import { api } from '$lib/api/client';
 
   let {
     open = $bindable(false),
@@ -56,6 +59,7 @@
   const viewerDatasetQuery = datasetAvailability.datasetQuery;
   const viewerIsLocal = datasetAvailability.isLocal;
   const viewerTotalEpisodes = datasetAvailability.totalEpisodes;
+  const viewerIsLocalValue = $derived($viewerIsLocal);
   const viewerEpisodeIndex = $derived.by(() => {
     const next = Math.max(0, Math.floor(Number(selectedEpisodeRaw) || 0));
     if (!Number.isFinite(next)) return 0;
@@ -71,6 +75,26 @@
   const viewerSyncStarting = datasetAvailability.syncStarting;
   const refetchViewerDataset = datasetAvailability.refetch;
   const startViewerSyncJob = datasetAvailability.startSync;
+
+  const videoWindowEnabled = $derived(Boolean(open) && Boolean(datasetId) && viewerIsLocalValue);
+  const viewerVideoWindowQuery = createQuery<DatasetViewerEpisodeVideoWindowResponse>(
+    toStore(() => ({
+      queryKey: qk.storage.datasetViewerEpisodeVideoWindow(datasetId, viewerEpisodeIndex),
+      queryFn: () => api.storage.datasetViewerEpisodeVideoWindow(datasetId, viewerEpisodeIndex),
+      enabled: videoWindowEnabled
+    }))
+  );
+  const viewerVideoWindows = $derived.by(() => {
+    const videos = $viewerVideoWindowQuery.data?.videos ?? [];
+    const out: Record<string, { from_s: number; to_s: number }> = {};
+    for (const video of videos) {
+      out[video.key] = {
+        from_s: Number(video.from_s) || 0,
+        to_s: Number(video.to_s) || 0
+      };
+    }
+    return out;
+  });
 
   const clampEpisodeInput = (value: number) => {
     const total = $viewerTotalEpisodes;
@@ -177,6 +201,7 @@
             datasetEpisodeIndex={viewerEpisodeIndex}
             datasetCameraKeys={$viewerCameraKeys}
             datasetSignalKeys={$viewerDatasetSignalKeys}
+            datasetVideoWindows={viewerVideoWindows}
           />
         {:else if datasetId && $viewerDatasetQuery.data && !$viewerIsLocal}
           <div class="flex h-full flex-col items-center justify-center gap-3 rounded-xl border border-slate-200/70 bg-white/80 px-6 text-center">

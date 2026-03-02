@@ -10,7 +10,10 @@ export type DatasetPlaybackController = {
   getState: () => DatasetPlaybackState;
   subscribeState: (fn: (state: DatasetPlaybackState) => void) => () => void;
   subscribeTime: (fn: (time: number) => void, opts?: { maxFps?: number }) => () => void;
-  register: (video: HTMLVideoElement) => () => void;
+  register: (
+    video: HTMLVideoElement,
+    opts?: { window?: { from_s: number; to_s: number } | null }
+  ) => () => void;
   play: () => void;
   pause: () => void;
   stop: () => void;
@@ -33,6 +36,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
   const stateSubscribers = new Set<(value: DatasetPlaybackState) => void>();
   const timeSubscribers = new Set<{ fn: (time: number) => void; maxFps: number; lastAt: number }>();
   const videos = new Set<HTMLVideoElement>();
+  const videoWindows = new Map<HTMLVideoElement, { from_s: number; to_s: number | null }>();
 
   let leader: HTMLVideoElement | null = null;
   let ignoreTimeUpdates = false;
@@ -106,13 +110,44 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
 
   const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
+  const resolveVideoWindow = (video: HTMLVideoElement) => {
+    const raw = videoWindows.get(video);
+    const from_s = Math.max(0, Number(raw?.from_s ?? 0) || 0);
+    const toFromMeta = raw?.to_s;
+    const toFromMetaOk =
+      typeof toFromMeta === 'number' && Number.isFinite(toFromMeta) && toFromMeta > from_s;
+    if (toFromMetaOk) {
+      return { from_s, to_s: toFromMeta as number, duration_s: (toFromMeta as number) - from_s };
+    }
+    const dur = video.duration;
+    if (typeof dur === 'number' && Number.isFinite(dur) && dur > from_s) {
+      return { from_s, to_s: dur, duration_s: dur - from_s };
+    }
+    return { from_s, to_s: null, duration_s: null };
+  };
+
+  const toLocalTime = (video: HTMLVideoElement, absoluteTime: number) => {
+    const win = resolveVideoWindow(video);
+    if (!Number.isFinite(absoluteTime)) return 0;
+    const local = absoluteTime - win.from_s;
+    if (win.duration_s != null && win.duration_s > 0) return clamp(local, 0, win.duration_s);
+    return Math.max(0, local);
+  };
+
+  const toAbsoluteTime = (video: HTMLVideoElement, localTime: number) => {
+    const win = resolveVideoWindow(video);
+    const base = win.from_s + (Number.isFinite(localTime) ? localTime : 0);
+    if (win.to_s != null && win.to_s > win.from_s) return clamp(base, win.from_s, win.to_s);
+    return Math.max(win.from_s, base);
+  };
+
   const syncClockBase = (time?: number) => {
     const now = nowMs();
     const nextTime =
       typeof time === 'number' && Number.isFinite(time)
         ? time
         : leader && Number.isFinite(leader.currentTime)
-          ? leader.currentTime
+          ? toLocalTime(leader, leader.currentTime)
           : state.currentTime;
     clockBaseTime = Math.max(0, nextTime);
     clockBaseAt = now;
@@ -150,7 +185,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
 
       // Periodically resync to avoid drift.
       if (now - lastClockSyncAt > 250 && Number.isFinite(leader.currentTime)) {
-        const actual = leader.currentTime;
+        const actual = toLocalTime(leader, leader.currentTime);
         if (Number.isFinite(actual) && Math.abs(actual - est) > 0.08) {
           syncClockBase(actual);
         } else {
@@ -196,7 +231,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         if (!ignoreTimeUpdates) {
           // Use real video time as a periodic sync point.
           const time = leader.currentTime;
-          if (Number.isFinite(time)) syncClockBase(time);
+          if (Number.isFinite(time)) syncClockBase(toLocalTime(leader, time));
           updateFromClock();
         }
         rvfcId = requestVideoFrame(leader, step);
@@ -213,8 +248,9 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
     let minDuration = Number.POSITIVE_INFINITY;
     let hasMetadata = false;
     for (const video of videos) {
-      if (Number.isFinite(video.duration) && video.duration > 0) {
-        minDuration = Math.min(minDuration, video.duration);
+      const win = resolveVideoWindow(video);
+      if (win.duration_s != null && win.duration_s > 0 && Number.isFinite(win.duration_s)) {
+        minDuration = Math.min(minDuration, win.duration_s);
       }
       if (video.readyState >= 1) hasMetadata = true;
     }
@@ -237,11 +273,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
     syncClockBase(nextTime);
     for (const video of videos) {
       try {
-        const boundedTime =
-          Number.isFinite(video.duration) && video.duration > 0
-            ? clamp(nextTime, 0, video.duration)
-            : nextTime;
-        video.currentTime = boundedTime;
+        video.currentTime = toAbsoluteTime(video, nextTime);
       } catch {
         // ignored
       }
@@ -290,9 +322,21 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         timeSubscribers.delete(entry);
       };
     },
-    register: (video) => {
+    register: (video, opts) => {
       videos.add(video);
       if (!leader) leader = video;
+
+      if (opts?.window) {
+        const from_s = Math.max(0, Number(opts.window.from_s) || 0);
+        const to_s = Number(opts.window.to_s);
+        const next = {
+          from_s,
+          to_s: Number.isFinite(to_s) && to_s > from_s ? to_s : null
+        };
+        videoWindows.set(video, next);
+      } else if (!videoWindows.has(video)) {
+        videoWindows.set(video, { from_s: 0, to_s: null });
+      }
 
       try {
         video.playbackRate = state.rate;
@@ -300,18 +344,18 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         // ignored
       }
 
-      if (state.currentTime > 0) {
-        try {
-          video.currentTime = state.currentTime;
-        } catch {
-          // ignored
-        }
+      try {
+        video.currentTime = toAbsoluteTime(video, state.currentTime);
+      } catch {
+        // ignored
       }
 
       if (state.playing) playAll();
 
       const onLoadedMetadata = () => {
         updateDuration();
+        // Ensure episode offsets apply as soon as media becomes seekable.
+        seekInternal(state.currentTime);
       };
       const onDurationChange = () => {
         updateDuration();
@@ -330,17 +374,14 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
           }
         }
         const duration = state.duration;
-        const nextTime =
-          duration > 0 && Number.isFinite(duration)
-            ? clamp(video.currentTime, 0, duration)
-            : Math.max(0, video.currentTime);
+        const nextTime = toLocalTime(video, video.currentTime);
 
-        if (duration > 0 && Number.isFinite(duration) && video.currentTime >= duration) {
+        if (duration > 0 && Number.isFinite(duration) && nextTime >= duration) {
           // Some videos (or cameras) may contain more frames than others. Always stop at the common end.
           pauseAll();
           stopClock();
           setState({ playing: false });
-          seekInternal(nextTime);
+          seekInternal(duration);
           return;
         }
 
@@ -359,7 +400,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         // Prefer the element that is actually playing as the leader.
         leader = video;
         stopClock();
-        syncClockBase(video.currentTime);
+        syncClockBase(toLocalTime(video, video.currentTime));
         setState({ playing: true });
         startClock();
       };
@@ -393,6 +434,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         video.removeEventListener('ratechange', onRateChange);
 
         videos.delete(video);
+        videoWindows.delete(video);
         if (leader === video) pickLeader();
         updateDuration();
         if (!leader) stopClock();
@@ -435,7 +477,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
       for (const video of videos) {
         try {
           video.playbackRate = 1;
-          video.currentTime = 0;
+          video.currentTime = resolveVideoWindow(video).from_s;
         } catch {
           // ignored
         }

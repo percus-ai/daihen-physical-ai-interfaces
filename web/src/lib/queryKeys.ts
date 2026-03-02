@@ -23,6 +23,8 @@ export const qk = {
     datasetViewer: (datasetId: string) => ['storage', 'datasetViewer', datasetId] as const,
     datasetViewerEpisodes: (datasetId: string) => ['storage', 'datasetViewer', datasetId, 'episodes'] as const,
     datasetViewerSignalFields: (datasetId: string) => ['storage', 'datasetViewer', datasetId, 'signals'] as const,
+    datasetViewerEpisodeVideoWindow: (datasetId: string, episodeIndex: number) =>
+      ['storage', 'datasetViewer', datasetId, 'episodes', episodeIndex, 'videoWindow'] as const,
     datasetSyncJob: (jobId: string) => ['storage', 'datasetSyncJob', jobId] as const
   }
 } as const;

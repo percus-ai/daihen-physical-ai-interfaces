@@ -247,6 +247,23 @@ class DatasetViewerSignalSeriesResponse(BaseModel):
     timestamps: List[float] = Field(default_factory=list, description="Frame timestamps in seconds")
 
 
+class DatasetViewerEpisodeVideoWindow(BaseModel):
+    """Episode-local time window for a video chunk file."""
+
+    key: str = Field(..., description="Video key, e.g. observation.images.cam_top")
+    relative_path: str = Field(..., description="Relative path under dataset root")
+    from_s: float = Field(0.0, description="Episode start time (seconds) in the underlying video file")
+    to_s: float = Field(0.0, description="Episode end time (seconds) in the underlying video file")
+
+
+class DatasetViewerEpisodeVideoWindowResponse(BaseModel):
+    """Per-episode video windows for chunked LeRobot datasets."""
+
+    dataset_id: str = Field(..., description="Dataset ID")
+    episode_index: int = Field(..., description="Episode index (0-based)")
+    videos: List[DatasetViewerEpisodeVideoWindow] = Field(default_factory=list)
+
+
 class StorageUsageResponse(BaseModel):
     """Response for storage usage endpoint."""
 

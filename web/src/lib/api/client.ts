@@ -229,6 +229,19 @@ export type DatasetViewerSignalSeriesResponse = {
   timestamps: number[];
 };
 
+export type DatasetViewerEpisodeVideoWindow = {
+  key: string;
+  relative_path: string;
+  from_s: number;
+  to_s: number;
+};
+
+export type DatasetViewerEpisodeVideoWindowResponse = {
+  dataset_id: string;
+  episode_index: number;
+  videos: DatasetViewerEpisodeVideoWindow[];
+};
+
 export type DatasetSyncJobState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export type DatasetSyncJobDetail = {
@@ -702,6 +715,10 @@ export const api = {
     datasetViewerSignalSeries: (datasetId: string, episodeIndex: number, field: string) =>
       fetchApi<DatasetViewerSignalSeriesResponse>(
         `/api/storage/dataset-viewer/datasets/${datasetId}/episodes/${episodeIndex}/signals?field=${encodeURIComponent(field)}`
+      ),
+    datasetViewerEpisodeVideoWindow: (datasetId: string, episodeIndex: number) =>
+      fetchApi<DatasetViewerEpisodeVideoWindowResponse>(
+        `/api/storage/dataset-viewer/datasets/${datasetId}/episodes/${episodeIndex}/videos/window`
       ),
     datasetViewerVideoUrl: (datasetId: string, videoKey: string, episodeIndex: number) =>
       `${getBackendUrl()}/api/storage/dataset-viewer/datasets/${encodeURIComponent(datasetId)}/episodes/${episodeIndex}/videos/${encodeURIComponent(videoKey)}`,
