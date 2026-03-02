@@ -39,11 +39,30 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
   let lastReportedTime = -1;
   const targetUpdateIntervalMs = 1000 / 30; // keep UI responsive without spamming renders
 
-  const getRvfc = (video: HTMLVideoElement) =>
-    (video as unknown as { requestVideoFrameCallback?: (cb: (now: number) => void) => number })
-      .requestVideoFrameCallback;
-  const getCancelRvfc = (video: HTMLVideoElement) =>
-    (video as unknown as { cancelVideoFrameCallback?: (id: number) => void }).cancelVideoFrameCallback;
+  const requestVideoFrame = (video: HTMLVideoElement, cb: () => void): number | null => {
+    const fn = (
+      video as unknown as {
+        requestVideoFrameCallback?: (cb: () => void) => number;
+      }
+    ).requestVideoFrameCallback;
+    if (typeof fn !== 'function') return null;
+    // Must call as a method; extracting loses `this` and throws "Illegal invocation".
+    return fn.call(video, cb);
+  };
+
+  const cancelVideoFrame = (video: HTMLVideoElement, id: number) => {
+    const fn = (
+      video as unknown as {
+        cancelVideoFrameCallback?: (id: number) => void;
+      }
+    ).cancelVideoFrameCallback;
+    if (typeof fn !== 'function') return;
+    try {
+      fn.call(video, id);
+    } catch {
+      // ignored
+    }
+  };
   let rvfcId: number | null = null;
 
   const notify = () => {
@@ -65,12 +84,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
       rafId = null;
     }
     if (rvfcId != null && leader) {
-      const cancel = getCancelRvfc(leader);
-      try {
-        cancel?.(rvfcId);
-      } catch {
-        // ignored
-      }
+      cancelVideoFrame(leader, rvfcId);
       rvfcId = null;
     }
     lastRafAt = 0;
@@ -108,15 +122,16 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
       rafId = window.requestAnimationFrame(tick);
     };
 
-    const rvfc = getRvfc(leader);
-    if (rvfc) {
+    if (
+      typeof (leader as unknown as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback === 'function'
+    ) {
       const step = () => {
         if (!state.playing) {
           stopClock();
           return;
         }
         if (!leader || ignoreTimeUpdates) {
-          rvfcId = rvfc(step);
+          rvfcId = leader ? requestVideoFrame(leader, step) : null;
           return;
         }
         const time = leader.currentTime;
@@ -124,9 +139,9 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
           lastReportedTime = time;
           setState({ currentTime: time });
         }
-        rvfcId = rvfc(step);
+        rvfcId = requestVideoFrame(leader, step);
       };
-      rvfcId = rvfc(step);
+      rvfcId = requestVideoFrame(leader, step);
       return;
     }
 
