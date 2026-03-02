@@ -2,13 +2,14 @@
   import { onDestroy } from 'svelte';
   import { toStore } from 'svelte/store';
   import { page } from '$app/state';
-  import { Button, Dialog, Tooltip } from 'bits-ui';
+  import { Button, Tooltip } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
 	  import {
 	    api,
 	    type ExperimentEpisodeLink
 	  } from '$lib/api/client';
+  import ViewerDialogShell from '$lib/viewer/ViewerDialogShell.svelte';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import DatasetEpisodeSearchTab from '$lib/components/recording/DatasetEpisodeSearchTab.svelte';
@@ -660,12 +661,8 @@
   </div>
 </section>
 
-<Dialog.Root bind:open={linkModalOpen}>
-  <Dialog.Portal>
-    <Dialog.Overlay class="fixed inset-0 z-[60] bg-slate-900/50 backdrop-blur-[1px]" />
-    <Dialog.Content
-      class="fixed inset-[0.75rem] z-[61] overflow-hidden rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl outline-none"
-    >
+<ViewerDialogShell bind:open={linkModalOpen} zIndexBase={60} inset="0.75rem">
+  {#snippet children()}
       <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4">
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
           <div class="flex flex-wrap items-start justify-between gap-3">
@@ -749,9 +746,8 @@
           </div>
         {/if}
       </div>
-    </Dialog.Content>
-  </Dialog.Portal>
-</Dialog.Root>
+  {/snippet}
+</ViewerDialogShell>
 
 <section class="space-y-6">
   <div class="card p-6">

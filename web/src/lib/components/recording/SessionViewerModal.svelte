@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { Button, Dialog } from 'bits-ui';
+  import { Button } from 'bits-ui';
   import { toStore } from 'svelte/store';
   import { useQueryClient } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
 
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
+  import ViewerDialogShell from '$lib/viewer/ViewerDialogShell.svelte';
 
   let {
     open = $bindable(false),
@@ -89,12 +90,8 @@
   };
 </script>
 
-<Dialog.Root bind:open={open}>
-  <Dialog.Portal>
-    <Dialog.Overlay class="fixed inset-0 z-[80] bg-slate-900/45 backdrop-blur-[1px]" />
-    <Dialog.Content
-      class="fixed inset-[0.75rem] z-[81] overflow-hidden rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl outline-none"
-    >
+<ViewerDialogShell bind:open={open} zIndexBase={80} inset="0.75rem">
+  {#snippet children()}
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p class="text-sm font-semibold text-slate-900">{title}</p>
@@ -227,6 +224,5 @@
           </div>
         {/if}
       </div>
-    </Dialog.Content>
-  </Dialog.Portal>
-</Dialog.Root>
+  {/snippet}
+</ViewerDialogShell>
