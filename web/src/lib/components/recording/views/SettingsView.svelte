@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { toStore } from 'svelte/store';
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
+  import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -11,16 +13,16 @@
   } from '$lib/recording/recorderStatus';
 
   let {
-    sessionId = '',
     title = 'Settings',
-    mode = 'recording',
-    sessionKind = ''
   }: {
-    sessionId?: string;
     title?: string;
-    mode?: 'recording' | 'operate';
-    sessionKind?: '' | 'recording' | 'inference' | 'teleop';
   } = $props();
+
+  const runtimeStore = getContext<ViewerRuntimeStore>(VIEWER_RUNTIME);
+  const runtime = $derived($runtimeStore);
+  const mode = $derived(runtime.mode);
+  const sessionId = $derived(runtime.kind === 'ros' ? runtime.sessionId : '');
+  const sessionKind = $derived(runtime.kind === 'ros' ? runtime.sessionKind : '');
 
   type RunnerStatus = {
     denoising_steps?: number | null;

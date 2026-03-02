@@ -1,24 +1,16 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import SplitPane from '$lib/components/recording/SplitPane.svelte';
   import TabsView from '$lib/components/recording/TabsView.svelte';
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import type { BlueprintNode } from '$lib/recording/blueprint';
   import { getViewDefinition } from '$lib/recording/viewRegistry';
   import PlaceholderView from '$lib/components/recording/views/PlaceholderView.svelte';
-  import type { DatasetPlaybackController } from '$lib/recording/datasetPlayback';
+  import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
 		  let {
 		    node,
 		    selectedId = '',
-		    sessionId = '',
-		    sessionKind = '',
-		    mode = 'recording',
-		    viewSource = 'ros',
-		    datasetId = '',
-		    datasetEpisodeIndex = 0,
-		    datasetPlayback = null,
-		    onPrevEpisode = undefined,
-		    onNextEpisode = undefined,
 		    editMode = true,
 		    viewScale = 1,
 		    onSelect,
@@ -27,21 +19,17 @@
 	  }: {
 	    node: BlueprintNode;
 	    selectedId?: string;
-	    sessionId?: string;
-	    sessionKind?: '' | 'recording' | 'inference' | 'teleop';
-	    mode?: 'recording' | 'operate';
-		    viewSource?: 'ros' | 'dataset';
-		    datasetId?: string;
-		    datasetEpisodeIndex?: number;
-		    datasetPlayback?: DatasetPlaybackController | null;
-		    onPrevEpisode?: () => void;
-		    onNextEpisode?: () => void;
 		    editMode?: boolean;
 		    viewScale?: number;
 		    onSelect: (id: string) => void;
 		    onResize: (id: string, sizes: [number, number]) => void;
 		    onTabChange: (id: string, activeId: string) => void;
 	  } = $props();
+
+  const runtimeStore = getContext<ViewerRuntimeStore>(VIEWER_RUNTIME);
+  const runtime = $derived($runtimeStore);
+  const viewSource = $derived(runtime.kind === 'dataset' ? 'dataset' : 'ros');
+  const mode = $derived(runtime.mode);
 
   const handleSelect = (event: Event) => {
     event.stopPropagation();
@@ -73,38 +61,6 @@
 		      title: datasetUnsupported ? `${definition?.label ?? viewType} (dataset未対応)` : definition?.label ?? viewType,
 		      mode
 		    } as Record<string, unknown>;
-		    if (viewType === 'joint_state' && viewSource === 'dataset') {
-		      baseProps.source = 'dataset';
-		      baseProps.datasetId = datasetId;
-		      baseProps.episodeIndex = datasetEpisodeIndex;
-		      baseProps.playbackController = datasetPlayback;
-		      const signalKey = typeof baseProps.topic === 'string' ? baseProps.topic : '';
-		      baseProps.sourceLabel = signalKey;
-		    }
-		    if (viewType === 'camera' && viewSource === 'dataset') {
-		      baseProps.source = 'dataset';
-		      baseProps.datasetId = datasetId;
-		      baseProps.episodeIndex = datasetEpisodeIndex;
-	      baseProps.playbackController = datasetPlayback;
-    }
-    if (viewType === 'controls' || viewType === 'progress' || viewType === 'timeline') {
-      baseProps.sessionId = sessionId;
-    }
-    if (viewType === 'timeline' && viewSource === 'dataset') {
-      baseProps.viewSource = 'dataset';
-      baseProps.datasetId = datasetId;
-      baseProps.datasetEpisodeIndex = datasetEpisodeIndex;
-      baseProps.playbackController = datasetPlayback;
-      baseProps.onPrevEpisode = onPrevEpisode;
-      baseProps.onNextEpisode = onNextEpisode;
-    }
-    if (viewType === 'controls') {
-      baseProps.sessionKind = sessionKind;
-    }
-    if (viewType === 'settings') {
-      baseProps.sessionId = sessionId;
-      baseProps.sessionKind = sessionKind;
-    }
     return baseProps;
   };
 
@@ -133,15 +89,6 @@
 		          <LayoutNode
 		            node={node.children[0]}
 		            {selectedId}
-		            {sessionId}
-		            {sessionKind}
-		            {mode}
-		            {viewSource}
-		            {datasetId}
-		            {datasetEpisodeIndex}
-		            {datasetPlayback}
-		            {onPrevEpisode}
-		            {onNextEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}
@@ -155,15 +102,6 @@
 		          <LayoutNode
 		            node={node.children[1]}
 		            {selectedId}
-		            {sessionId}
-		            {sessionKind}
-		            {mode}
-		            {viewSource}
-		            {datasetId}
-		            {datasetEpisodeIndex}
-		            {datasetPlayback}
-		            {onPrevEpisode}
-		            {onNextEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}
@@ -180,15 +118,6 @@
 		          <LayoutNode
 		            node={tab.child}
 		            {selectedId}
-		            {sessionId}
-		            {sessionKind}
-		            {mode}
-		            {viewSource}
-		            {datasetId}
-		            {datasetEpisodeIndex}
-		            {datasetPlayback}
-		            {onPrevEpisode}
-		            {onNextEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}

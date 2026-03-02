@@ -1,23 +1,20 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import { api } from '$lib/api/client';
-  import type { DatasetPlaybackController } from '$lib/recording/datasetPlayback';
+  import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
   let {
     topic = '',
     title = 'Camera',
-    source = 'ros',
-    datasetId = '',
-    episodeIndex = 0,
-    playbackController = null
   }: {
     topic?: string;
     title?: string;
-    source?: 'ros' | 'dataset';
-    datasetId?: string;
-    episodeIndex?: number;
-    playbackController?: DatasetPlaybackController | null;
   } = $props();
+
+  const runtimeStore = getContext<ViewerRuntimeStore>(VIEWER_RUNTIME);
+  const runtime = $derived($runtimeStore);
+  const isDataset = $derived(runtime.kind === 'dataset');
 
   let imageSrc = $state('');
   let error = $state('');
@@ -55,21 +52,22 @@
 
   const requiresCompressed = $derived(Boolean(topic) && !topic.endsWith('/compressed'));
   const datasetVideoUrl = $derived.by(() => {
-    if (source !== 'dataset') return '';
-    if (!datasetId || !topic) return '';
-    return api.storage.datasetViewerVideoUrl(datasetId, topic, Math.max(0, Math.floor(Number(episodeIndex) || 0)));
+    if (!isDataset) return '';
+    if (runtime.kind !== 'dataset') return '';
+    if (!runtime.datasetId || !topic) return '';
+    return api.storage.datasetViewerVideoUrl(runtime.datasetId, topic, runtime.episodeIndex);
   });
 
   let lastDatasetVideoUrl = '';
   $effect(() => {
-    if (source !== 'dataset') return;
+    if (!isDataset) return;
     if (datasetVideoUrl === lastDatasetVideoUrl) return;
     lastDatasetVideoUrl = datasetVideoUrl;
     videoError = false;
   });
 
   $effect(() => {
-    if (source === 'dataset') {
+    if (isDataset) {
       unsubscribe?.();
       unsubscribe = null;
       imageSrc = '';
@@ -102,10 +100,11 @@
   });
 
   $effect(() => {
-    if (source !== 'dataset') return;
-    if (!playbackController) return;
+    if (!isDataset) return;
     if (!videoEl) return;
-    unregisterPlayback = playbackController.register(videoEl);
+    if (runtime.kind !== 'dataset') return;
+    if (!runtime.playback) return;
+    unregisterPlayback = runtime.playback.register(videoEl);
     return () => {
       unregisterPlayback?.();
       unregisterPlayback = null;
@@ -116,19 +115,19 @@
 <div class="flex h-full flex-col gap-3">
   <div class="flex items-center justify-between">
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
-    <span class="text-[10px] text-slate-400">{source === 'dataset' ? topic || 'no camera' : topic || 'no topic'}</span>
+    <span class="text-[10px] text-slate-400">{isDataset ? topic || 'no camera' : topic || 'no topic'}</span>
   </div>
   {#if error}
     <p class="text-xs text-rose-500">{error}</p>
   {/if}
   <div class="flex-1 overflow-hidden rounded-2xl border border-slate-200 bg-slate-950/5">
-    {#if source === 'dataset'}
+  {#if isDataset}
       {#if datasetVideoUrl}
         {#if videoError}
           <div class="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-400">
             動画の読み込みに失敗しました。
           </div>
-        {:else}
+  {:else}
           <!-- svelte-ignore a11y_media_has_caption -->
           {#key datasetVideoUrl}
             <video

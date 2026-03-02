@@ -1,32 +1,31 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import type { DatasetPlaybackController, DatasetPlaybackState } from '$lib/recording/datasetPlayback';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
     type RosbridgeStatus
   } from '$lib/recording/recorderStatus';
+  import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
   let {
-    sessionId = '',
     title = 'Timeline',
-    mode = 'recording',
-    viewSource = 'ros',
-    datasetId = '',
-    datasetEpisodeIndex = 0,
-    playbackController = null,
-    onPrevEpisode = undefined,
-    onNextEpisode = undefined
   }: {
-    sessionId?: string;
     title?: string;
-    mode?: 'recording' | 'operate';
-    viewSource?: 'ros' | 'dataset';
-    datasetId?: string;
-    datasetEpisodeIndex?: number;
-    playbackController?: DatasetPlaybackController | null;
-    onPrevEpisode?: () => void;
-    onNextEpisode?: () => void;
   } = $props();
+
+  const runtimeStore = getContext<ViewerRuntimeStore>(VIEWER_RUNTIME);
+  const runtime = $derived($runtimeStore);
+  const isDataset = $derived(runtime.kind === 'dataset');
+  const mode = $derived(runtime.mode);
+  const playbackController = $derived(
+    runtime.kind === 'dataset' ? (runtime.playback as DatasetPlaybackController | null) : null
+  );
+  const datasetId = $derived(runtime.kind === 'dataset' ? runtime.datasetId : '');
+  const datasetEpisodeIndex = $derived(runtime.kind === 'dataset' ? runtime.episodeIndex : 0);
+  const sessionId = $derived(runtime.kind === 'ros' ? runtime.sessionId : '');
+  const onPrevEpisode = $derived(runtime.kind === 'dataset' ? runtime.onPrevEpisode : undefined);
+  const onNextEpisode = $derived(runtime.kind === 'dataset' ? runtime.onNextEpisode : undefined);
 
   let recorderStatus = $state<RecorderStatus | null>(null);
   let rosbridgeStatus = $state<RosbridgeStatus>('idle');
@@ -46,7 +45,7 @@
 
   $effect(() => {
     if (typeof window === 'undefined') return;
-    if (viewSource === 'dataset') return;
+    if (isDataset) return;
     return subscribeRecorderStatus({
       onStatus: (next) => {
         recorderStatus = next;
@@ -58,7 +57,7 @@
   });
 
   $effect(() => {
-    if (viewSource !== 'dataset') return;
+    if (!isDataset) return;
     if (!playbackController) return;
     playbackState = playbackController.getState();
     const unsubState = playbackController.subscribeState((next) => {
@@ -137,7 +136,7 @@
   const formatSeconds = (value: number) => `${value.toFixed(1)}s`;
 
   const datasetCanSeek = $derived(
-    viewSource === 'dataset' &&
+    isDataset &&
       Boolean(playbackController) &&
       playbackState.ready &&
       Number.isFinite(playbackState.duration) &&
@@ -210,7 +209,7 @@
   <div class="flex items-center justify-between">
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
     <span class="text-[10px] text-slate-400">
-      {#if viewSource === 'dataset'}
+      {#if isDataset}
         {datasetId ? `${datasetId} / ep ${Number(datasetEpisodeIndex) + 1}` : 'dataset未選択'}
       {:else}
         {timelineLabel}
@@ -218,7 +217,7 @@
     </span>
   </div>
 
-  {#if viewSource === 'dataset'}
+  {#if isDataset}
     {#if !playbackController}
       <div class="rounded-xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
         再生コントローラが見つかりません。

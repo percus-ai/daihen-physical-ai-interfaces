@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import { AxisX, AxisY, GridY, Line, Plot, RuleX } from 'svelteplot';
   import { api } from '$lib/api/client';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
-  import type { DatasetPlaybackController, DatasetPlaybackState } from '$lib/recording/datasetPlayback';
+  import type { DatasetPlaybackState } from '$lib/recording/datasetPlayback';
+  import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
-  type JointStateSource = 'ros' | 'dataset';
   type DatasetSeries = {
     names?: string[];
     positions?: number[][];
@@ -12,28 +13,24 @@
   };
 
   let {
-    source = 'ros',
     topic = '',
-    sourceLabel = '',
-    datasetId = '',
-    episodeIndex = 0,
-    playbackController = null,
+    label = '',
     title = 'Joint State',
     maxPoints = 160,
     showVelocity = false,
     renderFps = 60
   }: {
-    source?: JointStateSource;
     topic?: string;
-    sourceLabel?: string;
-    datasetId?: string;
-    episodeIndex?: number;
-    playbackController?: DatasetPlaybackController | null;
+    label?: string;
     title?: string;
     maxPoints?: number;
     showVelocity?: boolean;
     renderFps?: number;
   } = $props();
+
+  const runtimeStore = getContext<ViewerRuntimeStore>(VIEWER_RUNTIME);
+  const runtime = $derived($runtimeStore);
+  const isDataset = $derived(runtime.kind === 'dataset');
 
   type SeriesPoint = { i: number; value: number };
   type RingSeries = {
@@ -92,7 +89,7 @@
     Math.min(Math.max(Number(renderFps) || 24, 1), 60)
   );
   const renderIntervalMs = $derived(1000 / normalizedRenderFps);
-  const sourceText = $derived(source === 'dataset' ? sourceLabel || 'dataset series' : topic || 'no topic');
+  const sourceText = $derived(isDataset ? label || topic || 'dataset series' : topic || 'no topic');
 
   const buildRing = (names: string[]): RingSeries[] =>
     names.map((name, idx) => ({
@@ -261,8 +258,9 @@
   };
 
   const playheadSampleIndex = $derived.by(() => {
-    if (source !== 'dataset') return null;
-    if (!playbackController) return null;
+    if (!isDataset) return null;
+    if (runtime.kind !== 'dataset') return null;
+    if (!runtime.playback) return null;
     if (!playbackState.ready) return null;
     if (!datasetTimestamps.length) return null;
     const nearest = findNearestIndex(datasetTimestamps, playbackState.currentTime, datasetTimestampsSorted);
@@ -305,7 +303,6 @@
   };
 
   const handleMessage = (msg: Record<string, unknown>) => {
-    if (source !== 'ros') return;
     const positions = (msg.position as number[] | undefined) ?? [];
     const velocities = (msg.velocity as number[] | undefined) ?? [];
     if (!positions.length) return;
@@ -349,10 +346,10 @@
       animationFrameId = null;
     }
 
-    if (source === 'dataset') {
+    if (isDataset) {
       const signalKey = (topic || '').trim();
-      const datasetIdValue = (datasetId || '').trim();
-      const episode = Math.max(0, Math.floor(Number(episodeIndex) || 0));
+      const datasetIdValue = runtime.kind === 'dataset' ? (runtime.datasetId || '').trim() : '';
+      const episode = runtime.kind === 'dataset' ? runtime.episodeIndex : 0;
       if (!datasetIdValue || !signalKey) {
         resetViewState();
         status = 'idle';
@@ -387,13 +384,14 @@
   });
 
   $effect(() => {
-    if (source !== 'dataset') return;
-    if (!playbackController) return;
-    playbackState = playbackController.getState();
-    const unsubState = playbackController.subscribeState((next) => {
+    if (!isDataset) return;
+    if (runtime.kind !== 'dataset') return;
+    if (!runtime.playback) return;
+    playbackState = runtime.playback.getState();
+    const unsubState = runtime.playback.subscribeState((next) => {
       playbackState = next;
     });
-    const unsubTime = playbackController.subscribeTime((time) => {
+    const unsubTime = runtime.playback.subscribeTime((time) => {
       playbackState = { ...playbackState, currentTime: time };
     }, { maxFps: 5 });
 
@@ -468,10 +466,10 @@
       </div>
     {:else}
       <div class="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-400">
-        {#if source === 'dataset' && status === 'error'}
+        {#if isDataset && status === 'error'}
           {datasetError || '系列データの取得に失敗しました。'} ({status})
         {:else}
-          {source === 'dataset' ? 'データを読み込み中…' : 'joint_states を待機中…'} ({status})
+          {isDataset ? 'データを読み込み中…' : 'joint_states を待機中…'} ({status})
         {/if}
       </div>
     {/if}

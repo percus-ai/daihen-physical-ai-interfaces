@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, setContext } from 'svelte';
   import { Button } from 'bits-ui';
   import { get, toStore } from 'svelte/store';
   import { page } from '$app/state';
@@ -12,6 +12,7 @@
 	  } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
+  import { VIEWER_RUNTIME, type ViewerRuntime, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
@@ -141,7 +142,16 @@
     signalFields.find((field) => field.key === selectedSignalField) as DatasetViewerSignalField | undefined
   );
 
-	  // JointStateView fetches signal series on demand.
+  const runtimeStore: ViewerRuntimeStore = toStore(() => {
+    return {
+      kind: 'dataset',
+      mode: 'recording',
+      datasetId,
+      episodeIndex: Math.max(0, Math.floor(Number(selectedEpisode) || 0)),
+      playback: null
+    } satisfies ViewerRuntime;
+  });
+  setContext(VIEWER_RUNTIME, runtimeStore);
 
   $effect(() => {
     if (playbackEpisodes <= 0) {
@@ -526,11 +536,8 @@
 	      {:else}
 	        <div class="mt-4 h-[420px]">
 	          <JointStateView
-	            source="dataset"
-	            sourceLabel={selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField}
-	            datasetId={datasetId}
-	            episodeIndex={selectedEpisode}
 	            topic={selectedSignalField}
+              label={selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField}
 	            title="Joint State / Dataset"
 	            showVelocity={true}
 	          />

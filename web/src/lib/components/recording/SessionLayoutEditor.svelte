@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, setContext } from 'svelte';
   import type { Snippet } from 'svelte';
   import { toStore } from 'svelte/store';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { VIEWER_RUNTIME, type ViewerRuntime, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import BlueprintTree from '$lib/components/recording/BlueprintTree.svelte';
@@ -85,12 +86,37 @@
 			    onNextEpisode?: () => void;
   } = $props();
 
+  const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
+
   const resolvedLayoutSessionId = $derived(layoutSessionId || blueprintSessionId);
   const resolvedLayoutSessionKind = $derived(layoutSessionKind || blueprintSessionKind);
   const viewOptions = $derived(getViewOptionsBySource(viewSource));
   const effectiveInspectorExtraTabs = $derived.by(() =>
     editMode ? (inspectorExtraTabs ?? []).filter((tab) => Boolean(tab?.id) && Boolean(tab?.label)) : []
   );
+
+  const runtimeStore: ViewerRuntimeStore = toStore(() => {
+    const mode = layoutMode;
+    if (viewSource === 'dataset') {
+      return {
+        kind: 'dataset',
+        mode,
+        datasetId,
+        episodeIndex: Math.max(0, Math.floor(Number(datasetEpisodeIndex) || 0)),
+        playback: datasetPlayback,
+        onPrevEpisode,
+        onNextEpisode
+      } satisfies ViewerRuntime;
+    }
+    return {
+      kind: 'ros',
+      mode,
+      sessionId: resolvedLayoutSessionId,
+      sessionKind: resolvedLayoutSessionKind
+    } satisfies ViewerRuntime;
+  });
+
+  setContext(VIEWER_RUNTIME, runtimeStore);
 
 	  const topicsQuery = createQuery<ProfileStatusResponse>(
 	    toStore(() => ({
@@ -113,7 +139,6 @@
 	    return [];
 	  });
 
-		  const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
 		  let lastDatasetPlaybackSignature = $state('');
 		  let lastDatasetAutoplayNonce = $state(0);
 
@@ -467,15 +492,6 @@
 			            <LayoutNode
 			              node={blueprint}
 			              selectedId={selectedId}
-		              sessionId={resolvedLayoutSessionId}
-			              sessionKind={resolvedLayoutSessionKind}
-			              mode={layoutMode}
-			              viewSource={viewSource}
-			              datasetId={datasetId}
-			              datasetEpisodeIndex={datasetEpisodeIndex}
-			              datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
-			              onPrevEpisode={onPrevEpisode}
-			              onNextEpisode={onNextEpisode}
 			              editMode={editMode}
 			              viewScale={editorViewScale}
 			              onSelect={updateSelection}
@@ -655,15 +671,6 @@
 			      <LayoutNode
 			        node={blueprint}
 			        selectedId={selectedId}
-		        sessionId={resolvedLayoutSessionId}
-		        sessionKind={resolvedLayoutSessionKind}
-		        mode={layoutMode}
-			        viewSource={viewSource}
-			        datasetId={datasetId}
-			        datasetEpisodeIndex={datasetEpisodeIndex}
-			        datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
-			        onPrevEpisode={onPrevEpisode}
-			        onNextEpisode={onNextEpisode}
 			        editMode={editMode}
 			        viewScale={1}
 			        onSelect={updateSelection}

@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import { AlertDialog, Button } from 'bits-ui';
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
   import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
+  import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -11,16 +13,16 @@
   } from '$lib/recording/recorderStatus';
 
   let {
-    sessionId = '',
     title = 'Controls',
-    mode = 'recording',
-    sessionKind = ''
   }: {
-    sessionId?: string;
     title?: string;
-    mode?: 'recording' | 'operate';
-    sessionKind?: '' | 'recording' | 'inference' | 'teleop';
   } = $props();
+
+  const runtimeStore = getContext<ViewerRuntimeStore>(VIEWER_RUNTIME);
+  const runtime = $derived($runtimeStore);
+  const mode = $derived(runtime.mode);
+  const sessionId = $derived(runtime.kind === 'ros' ? runtime.sessionId : '');
+  const sessionKind = $derived(runtime.kind === 'ros' ? runtime.sessionKind : '');
 
   let recorderStatus = $state<RecorderStatus | null>(null);
   let rosbridgeStatus = $state<RosbridgeStatus>('idle');

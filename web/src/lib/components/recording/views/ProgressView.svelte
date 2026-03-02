@@ -1,19 +1,22 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
     type RosbridgeStatus
   } from '$lib/recording/recorderStatus';
+  import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
   let {
-    sessionId = '',
     title = 'Progress',
-    mode = 'recording'
   }: {
-    sessionId?: string;
     title?: string;
-    mode?: 'recording' | 'operate';
   } = $props();
+
+  const runtimeStore = getContext<ViewerRuntimeStore>(VIEWER_RUNTIME);
+  const runtime = $derived($runtimeStore);
+  const mode = $derived(runtime.mode);
+  const sessionId = $derived(runtime.kind === 'ros' ? runtime.sessionId : '');
 
   let recorderStatus = $state<RecorderStatus | null>(null);
   let rosbridgeStatus = $state<RosbridgeStatus>('idle');
