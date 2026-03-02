@@ -38,6 +38,9 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
   let lastRafAt = 0;
   let lastReportedTime = -1;
   const targetUpdateIntervalMs = 1000 / 30; // keep UI responsive without spamming renders
+  let clockBaseTime = 0;
+  let clockBaseAt = 0;
+  let lastClockSyncAt = 0;
 
   const requestVideoFrame = (video: HTMLVideoElement, cb: () => void): number | null => {
     const fn = (
@@ -78,6 +81,21 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
     leader = videos.values().next().value ?? null;
   };
 
+  const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+  const syncClockBase = (time?: number) => {
+    const now = nowMs();
+    const nextTime =
+      typeof time === 'number' && Number.isFinite(time)
+        ? time
+        : leader && Number.isFinite(leader.currentTime)
+          ? leader.currentTime
+          : state.currentTime;
+    clockBaseTime = Math.max(0, nextTime);
+    clockBaseAt = now;
+    lastClockSyncAt = now;
+  };
+
   const stopClock = () => {
     if (rafId != null && typeof window !== 'undefined') {
       window.cancelAnimationFrame(rafId);
@@ -95,6 +113,32 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
     if (!leader) return;
     if (!state.playing) return;
     if (rafId != null || rvfcId != null) return;
+
+    // Initialize base for smooth wall-clock time even if `currentTime` updates sparsely.
+    syncClockBase();
+
+    const updateFromClock = () => {
+      if (!leader) return;
+      const now = nowMs();
+      if (ignoreTimeUpdates) return;
+
+      let est = clockBaseTime + ((now - clockBaseAt) / 1000) * (Number.isFinite(state.rate) ? state.rate : 1);
+      if (state.duration > 0 && Number.isFinite(state.duration)) est = clamp(est, 0, state.duration);
+      if (Number.isFinite(est) && Math.abs(est - lastReportedTime) > 1e-3) {
+        lastReportedTime = est;
+        setState({ currentTime: est });
+      }
+
+      // Periodically resync to avoid drift.
+      if (now - lastClockSyncAt > 250 && Number.isFinite(leader.currentTime)) {
+        const actual = leader.currentTime;
+        if (Number.isFinite(actual) && Math.abs(actual - est) > 0.08) {
+          syncClockBase(actual);
+        } else {
+          lastClockSyncAt = now;
+        }
+      }
+    };
 
     const tick = (now: number) => {
       if (!state.playing) {
@@ -114,11 +158,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         return;
       }
       lastRafAt = now;
-      const time = leader.currentTime;
-      if (Number.isFinite(time) && Math.abs(time - lastReportedTime) > 1e-3) {
-        lastReportedTime = time;
-        setState({ currentTime: time });
-      }
+      updateFromClock();
       rafId = window.requestAnimationFrame(tick);
     };
 
@@ -130,19 +170,19 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
           stopClock();
           return;
         }
-        if (!leader || ignoreTimeUpdates) {
-          rvfcId = leader ? requestVideoFrame(leader, step) : null;
+        if (!leader) {
+          stopClock();
           return;
         }
-        const time = leader.currentTime;
-        if (Number.isFinite(time) && Math.abs(time - lastReportedTime) > 1e-3) {
-          lastReportedTime = time;
-          setState({ currentTime: time });
+        if (!ignoreTimeUpdates) {
+          // Use real video time as a periodic sync point.
+          const time = leader.currentTime;
+          if (Number.isFinite(time)) syncClockBase(time);
+          updateFromClock();
         }
         rvfcId = requestVideoFrame(leader, step);
       };
       rvfcId = requestVideoFrame(leader, step);
-      return;
     }
 
     if (typeof window !== 'undefined') {
@@ -175,6 +215,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
 
     ignoreTimeUpdates = true;
     setState({ currentTime: nextTime });
+    syncClockBase(nextTime);
     for (const video of videos) {
       try {
         const boundedTime =
@@ -263,11 +304,13 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
           }
         }
         setState({ currentTime: video.currentTime });
+        syncClockBase(video.currentTime);
       };
       const onPlay = () => {
         // Prefer the element that is actually playing as the leader.
         leader = video;
         stopClock();
+        syncClockBase(video.currentTime);
         setState({ playing: true });
         startClock();
       };
