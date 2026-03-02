@@ -1,20 +1,15 @@
 <script lang="ts">
-  import { onDestroy, setContext } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { Button } from 'bits-ui';
   import { get, toStore } from 'svelte/store';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	  import {
-	    api,
-	    type DatasetViewerEpisodeListResponse,
-	    type DatasetViewerSignalField,
-	  } from '$lib/api/client';
+  import { api, type DatasetViewerEpisodeVideoWindowResponse } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
-  import { VIEWER_RUNTIME, type ViewerRuntime, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
-  import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
+  import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
   type DatasetInfo = {
@@ -84,7 +79,7 @@
 
   const openViewerModal = () => {
     if (!datasetId) return;
-    sessionViewer.open({ datasetId });
+    sessionViewer.open({ datasetId, episodeIndex: selectedEpisode });
   };
 
   const datasetAvailability = createDatasetAvailabilityController({
@@ -107,50 +102,15 @@
 
   const viewerQuery = datasetAvailability.datasetQuery;
 
-  const episodesQuery = createQuery<DatasetViewerEpisodeListResponse>(
-    toStore(() => ({
-      queryKey: qk.storage.datasetViewerEpisodes(datasetId),
-      queryFn: () => api.storage.datasetViewerEpisodes(datasetId),
-      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
-    }))
-  );
-
   let selectedEpisode = $state(0);
-  const playbackEpisodes = $derived($episodesQuery.data?.total ?? $viewerQuery.data?.total_episodes ?? 0);
-  let selectedSignalField = $state('');
+  const playbackEpisodes = $derived($viewerQuery.data?.total_episodes ?? 0);
   const datasetSyncJobId = datasetAvailability.syncJobId;
   const datasetSyncStarting = datasetAvailability.syncStarting;
   const datasetSyncJobQuery = datasetAvailability.syncJobQuery;
   const startDatasetSyncJob = datasetAvailability.startSync;
 
-  const signalFieldsQuery = datasetAvailability.signalFieldsQuery;
-
-  const signalFields = $derived($signalFieldsQuery.data?.fields ?? []);
-
-  $effect(() => {
-    if (!signalFields.length) {
-      selectedSignalField = '';
-      return;
-    }
-    if (!selectedSignalField || !signalFields.some((field) => field.key === selectedSignalField)) {
-      selectedSignalField = signalFields[0].key;
-    }
-  });
-
-  const selectedSignalMeta = $derived(
-    signalFields.find((field) => field.key === selectedSignalField) as DatasetViewerSignalField | undefined
-  );
-
-  const runtimeStore: ViewerRuntimeStore = toStore(() => {
-    return {
-      kind: 'dataset',
-      mode: 'recording',
-      datasetId,
-      episodeIndex: Math.max(0, Math.floor(Number(selectedEpisode) || 0)),
-      playback: null
-    } satisfies ViewerRuntime;
-  });
-  setContext(VIEWER_RUNTIME, runtimeStore);
+  const viewerCameraKeys = datasetAvailability.cameraKeys;
+  const viewerSignalKeys = datasetAvailability.signalKeys;
 
   $effect(() => {
     if (playbackEpisodes <= 0) {
@@ -159,6 +119,25 @@
     }
     if (selectedEpisode < 0) selectedEpisode = 0;
     if (selectedEpisode >= playbackEpisodes) selectedEpisode = playbackEpisodes - 1;
+  });
+
+  const videoWindowQuery = createQuery<DatasetViewerEpisodeVideoWindowResponse>(
+    toStore(() => ({
+      queryKey: qk.storage.datasetViewerEpisodeVideoWindow(datasetId, selectedEpisode),
+      queryFn: () => api.storage.datasetViewerEpisodeVideoWindow(datasetId, selectedEpisode),
+      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
+    }))
+  );
+  const viewerVideoWindows = $derived.by(() => {
+    const videos = $videoWindowQuery.data?.videos ?? [];
+    const out: Record<string, { from_s: number; to_s: number }> = {};
+    for (const video of videos) {
+      out[video.key] = {
+        from_s: Number(video.from_s) || 0,
+        to_s: Number(video.to_s) || 0
+      };
+    }
+    return out;
   });
 
   const refetchDataset = async () => {
@@ -438,15 +417,13 @@
         {/if}
       </div>
     </div>
-  {:else if $viewerQuery.isLoading || $episodesQuery.isLoading}
+  {:else if $viewerQuery.isLoading}
     <p class="mt-4 text-sm text-slate-600">再生情報を読み込み中...</p>
-  {:else if $viewerQuery.error || $episodesQuery.error}
+  {:else if $viewerQuery.error}
     <p class="mt-4 text-sm text-rose-600">
       {$viewerQuery.error instanceof Error
         ? $viewerQuery.error.message
-        : $episodesQuery.error instanceof Error
-          ? $episodesQuery.error.message
-          : '再生情報の取得に失敗しました。'}
+        : '再生情報の取得に失敗しました。'}
     </p>
   {:else if playbackEpisodes > 0}
     <div class="mt-4 flex flex-wrap items-end gap-3">
@@ -482,65 +459,25 @@
       </p>
     </div>
 
-    {#if $viewerQuery.data?.use_videos && ($viewerQuery.data?.cameras?.length ?? 0) > 0}
-      <div class="mt-4 grid gap-4 lg:grid-cols-2">
-        {#each $viewerQuery.data.cameras as camera}
-          <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-3">
-            <div class="mb-2 flex items-center justify-between">
-              <p class="text-sm font-semibold text-slate-800">{camera.label}</p>
-              <p class="text-xs text-slate-500">
-                {camera.width ?? '-'}x{camera.height ?? '-'} / {camera.codec ?? '-'} / {camera.fps ?? '-'}fps
-              </p>
-            </div>
-            {#key `${camera.key}:${selectedEpisode}`}
-              <!-- svelte-ignore a11y_media_has_caption -->
-              <video
-                class="w-full rounded-xl bg-slate-900"
-                controls
-                preload="metadata"
-                crossorigin="use-credentials"
-                src={api.storage.datasetViewerVideoUrl(datasetId, camera.key, selectedEpisode)}
-              ></video>
-            {/key}
-          </div>
-        {/each}
-      </div>
-    {:else}
-      <p class="mt-4 text-sm text-slate-600">動画再生可能なカメラはありません。</p>
-    {/if}
-
-	    <div class="mt-6 rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-	      <div class="flex flex-wrap items-end gap-3">
-	        <div class="min-w-64 flex-1">
-	          <label class="label" for="signal-field">トピック（保存フィールド）</label>
-	          <select id="signal-field" class="input mt-2" bind:value={selectedSignalField}>
-	            {#each signalFields as field}
-	              <option value={field.key}>{field.key}</option>
-	            {/each}
-	          </select>
-	        </div>
-	      </div>
-	      {#if $signalFieldsQuery.isLoading}
-	        <p class="mt-3 text-sm text-slate-600">表示可能フィールドを読み込み中...</p>
-	      {:else if $signalFieldsQuery.error}
-        <p class="mt-3 text-sm text-rose-600">
-          {$signalFieldsQuery.error instanceof Error
-            ? $signalFieldsQuery.error.message
-            : '表示可能フィールドの取得に失敗しました。'}
-        </p>
-	      {:else if !signalFields.length}
-	        <p class="mt-3 text-sm text-slate-600">可視化できる数値ベクトルフィールドがありません。</p>
-	      {:else}
-	        <div class="mt-4 h-[420px]">
-	          <JointStateView
-	            topic={selectedSignalField}
-              label={selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField}
-	            title="Joint State / Dataset"
-	            showVelocity={true}
-	          />
-	        </div>
-	      {/if}
-	    </div>
+    <div class="mt-4 h-[82vh] min-h-0">
+      <SessionLayoutEditor
+        blueprintSessionId={datasetId}
+        blueprintSessionKind="recording"
+        layoutSessionId={datasetId}
+        layoutSessionKind="recording"
+        layoutMode="recording"
+        viewSource="dataset"
+        editMode={false}
+        initialInspectorTab="selection"
+        persistBlueprintDraft={false}
+        embedded={true}
+        datasetId={datasetId}
+        datasetEpisodeIndex={selectedEpisode}
+        datasetCameraKeys={$viewerCameraKeys}
+        datasetSignalKeys={$viewerSignalKeys}
+        datasetVideoWindows={viewerVideoWindows}
+      />
+    </div>
   {:else}
     <p class="mt-4 text-sm text-slate-600">再生可能なエピソードがありません。</p>
   {/if}
