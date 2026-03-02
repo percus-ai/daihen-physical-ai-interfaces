@@ -1014,12 +1014,6 @@
                     <span class="text-[10px] font-semibold text-slate-500 tabular-nums">{carouselIndex + 1} / {totalLinks}</span>
                   </div>
                 </div>
-              {:else}
-                <div class="mt-3 rounded-xl border border-dashed border-slate-200/70 bg-white/70 p-3">
-                  <p class="text-xs text-slate-500">
-                    紐付けずにプレビューだけしたい場合も、まずは「新規紐付け」からエピソードを選択してプレビューしてください。
-                  </p>
-                </div>
               {/if}
             </div>
             <div class="mt-3 text-sm text-slate-600">
