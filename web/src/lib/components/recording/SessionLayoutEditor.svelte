@@ -126,9 +126,54 @@
 	    return [];
 	  });
 
-	  const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
-	  let lastDatasetPlaybackSignature = $state('');
-	  let lastDatasetAutoplayNonce = $state(0);
+		  const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
+		  let lastDatasetPlaybackSignature = $state('');
+		  let lastDatasetAutoplayNonce = $state(0);
+		  let pendingAutoplayOnDatasetChange = $state(false);
+
+		  const linkedEpisodeLinks = $derived.by(() => {
+		    if (!showSearchTab) return [] as ExperimentEpisodeLink[];
+		    return [...(searchEpisodeLinks ?? [])]
+		      .filter((link) => Boolean(link.dataset_id) && Number.isFinite(Number(link.episode_index)))
+		      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+		      .map((link, idx) => ({
+		        dataset_id: String(link.dataset_id),
+		        episode_index: Math.max(0, Math.floor(Number(link.episode_index) || 0)),
+		        sort_order: idx
+		      }));
+		  });
+
+		  const linkedEpisodeIndex = $derived.by(() => {
+		    if (!linkedEpisodeLinks.length) return -1;
+		    const key = `${datasetId}:${Math.max(0, Math.floor(Number(datasetEpisodeIndex) || 0))}`;
+		    return linkedEpisodeLinks.findIndex((link) => `${link.dataset_id}:${link.episode_index}` === key);
+		  });
+
+		  const prevLinkedEpisode = $derived.by(() => {
+		    if (!linkedEpisodeLinks.length) return null;
+		    if (linkedEpisodeIndex > 0) return linkedEpisodeLinks[linkedEpisodeIndex - 1] ?? null;
+		    return null;
+		  });
+
+		  const nextLinkedEpisode = $derived.by(() => {
+		    if (!linkedEpisodeLinks.length) return null;
+		    if (linkedEpisodeIndex >= 0) return linkedEpisodeLinks[linkedEpisodeIndex + 1] ?? null;
+		    return linkedEpisodeLinks[0] ?? null;
+		  });
+
+		  const navigateToLinkedEpisode = (link: ExperimentEpisodeLink | null) => {
+		    if (!link) return;
+		    if (!onPreviewEpisode) return;
+		    pendingAutoplayOnDatasetChange = true;
+		    onPreviewEpisode(link.dataset_id, link.episode_index);
+		  };
+
+		  const onPrevLinkedEpisode = $derived.by(() =>
+		    prevLinkedEpisode ? () => navigateToLinkedEpisode(prevLinkedEpisode) : undefined
+		  );
+		  const onNextLinkedEpisode = $derived.by(() =>
+		    nextLinkedEpisode ? () => navigateToLinkedEpisode(nextLinkedEpisode) : undefined
+		  );
 
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
   let selectedId = $state('');
@@ -388,6 +433,10 @@
 	    if (signature === lastDatasetPlaybackSignature) return;
 	    lastDatasetPlaybackSignature = signature;
 	    datasetPlayback.reset();
+	    if (pendingAutoplayOnDatasetChange) {
+	      pendingAutoplayOnDatasetChange = false;
+	      datasetPlayback.play();
+	    }
 	  });
 
 	  $effect(() => {
@@ -592,21 +641,23 @@
           bind:this={editorContentEl}
         >
 		          <div class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-2">
-		            <LayoutNode
-		              node={blueprint}
-		              selectedId={selectedId}
-	              sessionId={resolvedLayoutSessionId}
-	              sessionKind={resolvedLayoutSessionKind}
-	              mode={layoutMode}
-		              viewSource={viewSource}
-		              datasetId={datasetId}
-		              datasetEpisodeIndex={datasetEpisodeIndex}
-		              datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
-		              editMode={editMode}
-		              viewScale={editorViewScale}
-		              onSelect={updateSelection}
-		              onResize={handleResize}
-	              onTabChange={handleTabChange}
+			            <LayoutNode
+			              node={blueprint}
+			              selectedId={selectedId}
+		              sessionId={resolvedLayoutSessionId}
+		              sessionKind={resolvedLayoutSessionKind}
+		              mode={layoutMode}
+			              viewSource={viewSource}
+			              datasetId={datasetId}
+			              datasetEpisodeIndex={datasetEpisodeIndex}
+			              datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
+			              onPrevLinkedEpisode={onPrevLinkedEpisode}
+			              onNextLinkedEpisode={onNextLinkedEpisode}
+			              editMode={editMode}
+			              viewScale={editorViewScale}
+			              onSelect={updateSelection}
+			              onResize={handleResize}
+		              onTabChange={handleTabChange}
             />
           </div>
 
@@ -818,21 +869,23 @@
     </div>
   {:else}
 		    <div class={embedded ? 'card p-4 h-full min-h-0' : 'card p-4 min-h-[640px] lg:h-[var(--app-shell-height)]'}>
-		      <LayoutNode
-		        node={blueprint}
-		        selectedId={selectedId}
-	        sessionId={resolvedLayoutSessionId}
-	        sessionKind={resolvedLayoutSessionKind}
-	        mode={layoutMode}
-		        viewSource={viewSource}
-		        datasetId={datasetId}
-		        datasetEpisodeIndex={datasetEpisodeIndex}
-		        datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
-		        editMode={editMode}
-		        viewScale={1}
-		        onSelect={updateSelection}
-		        onResize={handleResize}
-	        onTabChange={handleTabChange}
+			      <LayoutNode
+			        node={blueprint}
+			        selectedId={selectedId}
+		        sessionId={resolvedLayoutSessionId}
+		        sessionKind={resolvedLayoutSessionKind}
+		        mode={layoutMode}
+			        viewSource={viewSource}
+			        datasetId={datasetId}
+			        datasetEpisodeIndex={datasetEpisodeIndex}
+			        datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
+			        onPrevLinkedEpisode={onPrevLinkedEpisode}
+			        onNextLinkedEpisode={onNextLinkedEpisode}
+			        editMode={editMode}
+			        viewScale={1}
+			        onSelect={updateSelection}
+			        onResize={handleResize}
+		        onTabChange={handleTabChange}
 	      />
 	    </div>
   {/if}

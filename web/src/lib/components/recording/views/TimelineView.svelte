@@ -13,7 +13,9 @@
     viewSource = 'ros',
     datasetId = '',
     datasetEpisodeIndex = 0,
-    playbackController = null
+    playbackController = null,
+    onPrevLinkedEpisode = undefined,
+    onNextLinkedEpisode = undefined
   }: {
     sessionId?: string;
     title?: string;
@@ -22,6 +24,8 @@
     datasetId?: string;
     datasetEpisodeIndex?: number;
     playbackController?: DatasetPlaybackController | null;
+    onPrevLinkedEpisode?: () => void;
+    onNextLinkedEpisode?: () => void;
   } = $props();
 
   let recorderStatus = $state<RecorderStatus | null>(null);
@@ -141,15 +145,57 @@
     }
   };
 
-  const handleStop = () => {
-    playbackController?.stop();
-  };
-
   const handleSeek = (event: Event) => {
     if (!playbackController) return;
     const value = Number((event.target as HTMLInputElement | null)?.value ?? 0);
     playbackController.seek(value);
   };
+
+  let pendingRestartTimer: number | null = $state(null);
+
+  const clearPendingRestart = () => {
+    if (pendingRestartTimer != null && typeof window !== 'undefined') {
+      window.clearTimeout(pendingRestartTimer);
+    }
+    pendingRestartTimer = null;
+  };
+
+  const scheduleRestartPlay = () => {
+    if (!playbackController) return;
+    if (typeof window === 'undefined') return;
+    clearPendingRestart();
+    pendingRestartTimer = window.setTimeout(() => {
+      pendingRestartTimer = null;
+      playbackController.play();
+    }, 1000);
+  };
+
+  const handleRestartOrPrevEpisode = () => {
+    if (!playbackController) return;
+    if (pendingRestartTimer != null) {
+      clearPendingRestart();
+      // Second press during the 1s delay: jump to previous linked episode (if available).
+      playbackController.pause();
+      onPrevLinkedEpisode?.();
+      return;
+    }
+    playbackController.pause();
+    playbackController.seek(0);
+    scheduleRestartPlay();
+  };
+
+  const handleNextEpisode = () => {
+    if (!playbackController) return;
+    playbackController.pause();
+    onNextLinkedEpisode?.();
+  };
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    return () => {
+      clearPendingRestart();
+    };
+  });
 </script>
 
 <div class="flex h-full flex-col gap-3">
@@ -171,43 +217,58 @@
       </div>
     {:else}
       <div class="rounded-2xl border border-slate-200/60 bg-white/70 p-3">
-        <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
-          <span>データセット再生</span>
-          <span class="tabular-nums">
-            {formatSeconds(playbackState.currentTime)} / {formatSeconds(playbackState.duration || 0)}
-          </span>
-        </div>
+        <div class="flex items-center gap-3">
+          <div class="flex shrink-0 items-center gap-1">
+            <button
+              class="grid h-9 w-9 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+              type="button"
+              onclick={handleRestartOrPrevEpisode}
+              disabled={!datasetCanSeek}
+              aria-label="0秒に戻す / もう一度で前のエピソード"
+              title="0秒に戻す / もう一度で前へ"
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4">
+                <path d="M11 15L6 10l5-5" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M17 15l-5-5 5-5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
 
-        <div class="mt-3 flex items-center gap-2">
-          <button
-            class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-            onclick={handleTogglePlay}
-            disabled={!datasetCanSeek}
-          >
-            {playbackState.playing ? '一時停止' : '再生'}
-          </button>
-          <button
-            class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-            onclick={handleStop}
-            disabled={!datasetCanSeek}
-          >
-            停止
-          </button>
-          <div class="flex-1"></div>
-          <span class="text-[10px] text-slate-400">
-            {#if !playbackState.ready}
-              動画メタデータ読込中…
-            {:else if !datasetCanSeek}
-              再生不可
-            {:else}
-              シーク可能
-            {/if}
-          </span>
-        </div>
+            <button
+              class="grid h-9 w-9 place-items-center rounded-full bg-brand text-white shadow-glow transition hover:translate-y-[-1px] hover:shadow-lg disabled:opacity-50"
+              type="button"
+              onclick={handleTogglePlay}
+              disabled={!datasetCanSeek}
+              aria-label={playbackState.playing ? '一時停止' : '再生'}
+              title={playbackState.playing ? '一時停止' : '再生'}
+            >
+              {#if playbackState.playing}
+                <svg viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+                  <path d="M6 4h3v12H6V4zM11 4h3v12h-3V4z" />
+                </svg>
+              {:else}
+                <svg viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+                  <path d="M7 5v10l9-5-9-5z" />
+                </svg>
+              {/if}
+            </button>
 
-        <div class="mt-3">
+            <button
+              class="grid h-9 w-9 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+              type="button"
+              onclick={handleNextEpisode}
+              disabled={!datasetCanSeek || !onNextLinkedEpisode}
+              aria-label="次のエピソード"
+              title="次へ"
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4">
+                <path d="M9 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M3 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
+
           <input
-            class="h-2 w-full accent-[rgb(91,124,250)] disabled:opacity-50"
+            class="h-2 w-full flex-1 accent-[rgb(91,124,250)] disabled:opacity-50"
             type="range"
             min="0"
             max={Math.max(0, playbackState.duration || 0)}
@@ -216,7 +277,15 @@
             oninput={handleSeek}
             disabled={!datasetCanSeek}
           />
+
+          <span class="shrink-0 text-right text-xs font-semibold text-slate-600 tabular-nums">
+            {formatSeconds(playbackState.currentTime)} / {formatSeconds(playbackState.duration || 0)}
+          </span>
         </div>
+
+        {#if !playbackState.ready}
+          <p class="mt-2 text-[10px] text-slate-400">動画メタデータ読込中…</p>
+        {/if}
       </div>
     {/if}
   {:else if mode !== 'recording'}

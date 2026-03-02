@@ -17,6 +17,8 @@
 		    datasetId = '',
 		    datasetEpisodeIndex = 0,
 		    datasetPlayback = null,
+		    onPrevLinkedEpisode = undefined,
+		    onNextLinkedEpisode = undefined,
 		    editMode = true,
 		    viewScale = 1,
 		    onSelect,
@@ -32,6 +34,8 @@
 		    datasetId?: string;
 		    datasetEpisodeIndex?: number;
 		    datasetPlayback?: DatasetPlaybackController | null;
+		    onPrevLinkedEpisode?: () => void;
+		    onNextLinkedEpisode?: () => void;
 		    editMode?: boolean;
 		    viewScale?: number;
 		    onSelect: (id: string) => void;
@@ -91,6 +95,8 @@
       baseProps.datasetId = datasetId;
       baseProps.datasetEpisodeIndex = datasetEpisodeIndex;
       baseProps.playbackController = datasetPlayback;
+      baseProps.onPrevLinkedEpisode = onPrevLinkedEpisode;
+      baseProps.onNextLinkedEpisode = onNextLinkedEpisode;
     }
     if (viewType === 'controls') {
       baseProps.sessionKind = sessionKind;
@@ -134,6 +140,8 @@
 		            {datasetId}
 		            {datasetEpisodeIndex}
 		            {datasetPlayback}
+		            {onPrevLinkedEpisode}
+		            {onNextLinkedEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}
@@ -154,6 +162,8 @@
 		            {datasetId}
 		            {datasetEpisodeIndex}
 		            {datasetPlayback}
+		            {onPrevLinkedEpisode}
+		            {onNextLinkedEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}
@@ -177,6 +187,8 @@
 		            {datasetId}
 		            {datasetEpisodeIndex}
 		            {datasetPlayback}
+		            {onPrevLinkedEpisode}
+		            {onNextLinkedEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}
