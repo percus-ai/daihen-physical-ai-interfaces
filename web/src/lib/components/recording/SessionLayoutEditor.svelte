@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, setContext } from 'svelte';
+  import { onMount, setContext, tick } from 'svelte';
   import type { Snippet } from 'svelte';
   import { toStore } from 'svelte/store';
   import { Button } from 'bits-ui';
@@ -133,16 +133,16 @@
 	  const topics = $derived(
 	    (viewSource === 'dataset' ? datasetCameraKeys : viewSource === 'ros' ? ($topicsQuery.data?.topics ?? []) : []) as string[]
 	  );
-	  const inspectorTopics = $derived.by(() => {
-	    if (viewSource === 'dataset') {
-	      if (selectedViewNode?.viewType === 'joint_state') {
-	        return datasetSignalKeys;
+		  const inspectorTopics = $derived.by(() => {
+		    if (viewSource === 'dataset') {
+		      if (selectedViewNode?.viewType === 'joint_state') {
+		        return datasetSignalKeys;
 	      }
 	      return datasetCameraKeys;
 	    }
 	    if (viewSource === 'ros') return $topicsQuery.data?.topics ?? [];
-	    return [];
-	  });
+		    return [];
+		  });
 
 		  let lastDatasetPlaybackSignature = $state('');
 		  let lastDatasetAutoplayNonce = $state(0);
@@ -232,14 +232,26 @@
     selectedId = ensureValidSelection(blueprint, selectedId);
   });
 
-  $effect(() => {
-    if (!mounted) return;
-    if (viewSource !== 'dataset') return;
-    const signature = `${datasetId}:${datasetEpisodeIndex}`;
-    if (signature === lastDatasetPlaybackSignature) return;
-    lastDatasetPlaybackSignature = signature;
-    datasetPlayback.reset();
-  });
+	  $effect(() => {
+	    if (!mounted) return;
+	    if (viewSource !== 'dataset') return;
+	    const normalizedDatasetId = String(datasetId || '').trim();
+	    const normalizedEpisode = Math.max(0, Math.floor(Number(datasetEpisodeIndex) || 0));
+	    const signature = `${normalizedDatasetId}:${normalizedEpisode}`;
+	    if (signature === lastDatasetPlaybackSignature) return;
+	    lastDatasetPlaybackSignature = signature;
+
+	    const prev = datasetPlayback.getState();
+	    datasetPlayback.reset();
+	    if (prev.rate !== 1) datasetPlayback.setRate(prev.rate);
+
+	    // Keep playback going when users navigate episodes while playing.
+	    if (prev.playing) {
+	      void tick().then(() => {
+	        datasetPlayback.play();
+	      });
+	    }
+	  });
 
   $effect(() => {
     if (!mounted) return;

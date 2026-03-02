@@ -73,15 +73,16 @@
   let pendingSample: PendingSample | null = null;
   let animationFrameId: number | null = null;
   let lastRenderAt = 0;
-  let datasetError = $state('');
-  let lastDatasetSignature = $state('');
-  let activeDatasetRequestId = $state(0);
-  let datasetTimestamps = $state<number[]>([]);
-  let datasetTimestampsSorted = $state(true);
-  let playbackState = $state<DatasetPlaybackState>({
-    playing: false,
-    currentTime: 0,
-    duration: 0,
+	  let datasetError = $state('');
+	  let lastDatasetSignature = $state('');
+	  let activeDatasetRequestId = $state(0);
+	  let datasetTimestamps = $state<number[]>([]);
+	  let datasetTimestampsSorted = $state(true);
+	  let datasetSeriesFps = $state<number | null>(null);
+	  let playbackState = $state<DatasetPlaybackState>({
+	    playing: false,
+	    currentTime: 0,
+	    duration: 0,
     rate: 1,
     ready: false
   });
@@ -226,9 +227,9 @@
     status = 'dataset';
   };
 
-  const findNearestIndex = (values: number[], target: number, isSorted: boolean) => {
-    if (!values.length) return null;
-    if (!Number.isFinite(target)) return 0;
+	  const findNearestIndex = (values: number[], target: number, isSorted: boolean) => {
+	    if (!values.length) return null;
+	    if (!Number.isFinite(target)) return 0;
 
     if (!isSorted) {
       let best = 0;
@@ -254,40 +255,67 @@
       if (value < target) lo = mid;
       else hi = mid;
     }
-    return target - values[lo] <= values[hi] - target ? lo : hi;
-  };
+	    return target - values[lo] <= values[hi] - target ? lo : hi;
+	  };
 
-  const playheadSampleIndex = $derived.by(() => {
-    if (!isDataset) return null;
-    if (runtime.kind !== 'dataset') return null;
-    if (!runtime.playback) return null;
-    if (!playbackState.ready) return null;
-    if (!datasetTimestamps.length) return null;
-    const nearest = findNearestIndex(datasetTimestamps, playbackState.currentTime, datasetTimestampsSorted);
-    if (nearest == null) return null;
-    return nearest + 1;
-  });
+	  const datasetTimeAxisS = $derived.by(() => {
+	    if (!datasetTimestamps.length) return [];
+	    const t0 = Number(datasetTimestamps[0] ?? 0);
+	    const deltas = datasetTimestamps.map((value) => (Number(value) || 0) - (Number.isFinite(t0) ? t0 : 0));
+	    if (!deltas.length) return [];
+
+	    const span = deltas[deltas.length - 1] ?? 0;
+	    const fps = datasetSeriesFps ?? null;
+	    if (fps && Number.isFinite(fps) && fps > 0 && Number.isFinite(span) && span > 0) {
+	      const expected = (deltas.length - 1) / fps;
+	      const scales = [1, 1e-3, 1e-6, 1e-9];
+	      let bestScale = 1;
+	      let bestError = Number.POSITIVE_INFINITY;
+	      for (const scale of scales) {
+	        const error = Math.abs(span * scale - expected);
+	        if (error < bestError) {
+	          bestError = error;
+	          bestScale = scale;
+	        }
+	      }
+	      return deltas.map((value) => value * bestScale);
+	    }
+	    return deltas;
+	  });
+
+	  const playheadSampleIndex = $derived.by(() => {
+	    if (!isDataset) return null;
+	    if (runtime.kind !== 'dataset') return null;
+	    if (!runtime.playback) return null;
+	    if (!playbackState.ready) return null;
+	    if (!datasetTimeAxisS.length) return null;
+	    const nearest = findNearestIndex(datasetTimeAxisS, playbackState.currentTime, datasetTimestampsSorted);
+	    if (nearest == null) return null;
+	    return nearest + 1;
+	  });
   const playheadData = $derived(
     typeof playheadSampleIndex === 'number' && playheadSampleIndex > 0 ? [{ i: playheadSampleIndex }] : []
   );
 
-  const loadDatasetSeries = async (
-    signalKey: string,
-    datasetIdValue: string,
-    episode: number,
-    requestId: number
-  ) => {
-    datasetError = '';
-    status = 'loading';
-    resetViewState();
-    try {
-      const payload = await api.storage.datasetViewerSignalSeries(datasetIdValue, episode, signalKey);
-      if (requestId !== activeDatasetRequestId) return;
-      buildDatasetSeries({
-        names: payload.names,
-        positions: payload.positions,
-        timestamps: payload.timestamps
-      });
+	  const loadDatasetSeries = async (
+	    signalKey: string,
+	    datasetIdValue: string,
+	    episode: number,
+	    requestId: number
+	  ) => {
+	    datasetError = '';
+	    status = 'loading';
+	    resetViewState();
+	    datasetSeriesFps = null;
+	    try {
+	      const payload = await api.storage.datasetViewerSignalSeries(datasetIdValue, episode, signalKey);
+	      if (requestId !== activeDatasetRequestId) return;
+	      datasetSeriesFps = Number(payload.fps) || null;
+	      buildDatasetSeries({
+	        names: payload.names,
+	        positions: payload.positions,
+	        timestamps: payload.timestamps
+	      });
     } catch (err) {
       if (requestId !== activeDatasetRequestId) return;
       const message =

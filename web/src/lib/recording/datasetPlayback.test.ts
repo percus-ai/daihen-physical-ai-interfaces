@@ -112,5 +112,30 @@ describe('datasetPlayback', () => {
     expect(() => controller.play()).not.toThrow();
     controller.pause();
   });
-});
 
+  it('uses the shortest duration across videos and stops at the common end', () => {
+    const controller = createDatasetPlaybackController();
+    const v1 = new FakeVideo() as unknown as HTMLVideoElement;
+    const v2 = new FakeVideo() as unknown as HTMLVideoElement;
+    controller.register(v1);
+    controller.register(v2);
+
+    (v1 as unknown as FakeVideo).duration = 10;
+    (v1 as unknown as FakeVideo).readyState = 1;
+    (v1 as unknown as FakeVideo).dispatch('loadedmetadata');
+    (v2 as unknown as FakeVideo).duration = 30;
+    (v2 as unknown as FakeVideo).readyState = 1;
+    (v2 as unknown as FakeVideo).dispatch('loadedmetadata');
+
+    expect(controller.getState().duration).toBe(10);
+
+    controller.play();
+    (v2 as unknown as FakeVideo).currentTime = 12;
+    (v2 as unknown as FakeVideo).dispatch('timeupdate');
+
+    expect(controller.getState().playing).toBe(false);
+    expect(controller.getState().currentTime).toBe(10);
+    expect((v1 as unknown as FakeVideo).paused).toBe(true);
+    expect((v2 as unknown as FakeVideo).paused).toBe(true);
+  });
+});

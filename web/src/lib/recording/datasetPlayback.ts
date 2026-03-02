@@ -210,15 +210,15 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
   };
 
   const updateDuration = () => {
-    let maxDuration = 0;
+    let minDuration = Number.POSITIVE_INFINITY;
     let hasMetadata = false;
     for (const video of videos) {
-      if (Number.isFinite(video.duration) && video.duration > maxDuration) {
-        maxDuration = video.duration;
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        minDuration = Math.min(minDuration, video.duration);
       }
       if (video.readyState >= 1) hasMetadata = true;
     }
-    const nextDuration = maxDuration;
+    const nextDuration = Number.isFinite(minDuration) ? minDuration : 0;
     const nextCurrentTime =
       nextDuration > 0 && Number.isFinite(nextDuration)
         ? clamp(state.currentTime, 0, nextDuration)
@@ -329,8 +329,31 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
             return;
           }
         }
-        setState({ currentTime: video.currentTime });
-        syncClockBase(video.currentTime);
+        const duration = state.duration;
+        const nextTime =
+          duration > 0 && Number.isFinite(duration)
+            ? clamp(video.currentTime, 0, duration)
+            : Math.max(0, video.currentTime);
+
+        if (duration > 0 && Number.isFinite(duration) && video.currentTime >= duration) {
+          // Some videos (or cameras) may contain more frames than others. Always stop at the common end.
+          pauseAll();
+          stopClock();
+          setState({ playing: false });
+          seekInternal(nextTime);
+          return;
+        }
+
+        setState({ currentTime: nextTime });
+        syncClockBase(nextTime);
+      };
+      const onEnded = () => {
+        pauseAll();
+        stopClock();
+        setState({ playing: false });
+        if (state.duration > 0 && Number.isFinite(state.duration)) {
+          seekInternal(state.duration);
+        }
       };
       const onPlay = () => {
         // Prefer the element that is actually playing as the leader.
@@ -353,6 +376,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
       video.addEventListener('loadedmetadata', onLoadedMetadata);
       video.addEventListener('durationchange', onDurationChange);
       video.addEventListener('timeupdate', onTimeUpdate);
+      video.addEventListener('ended', onEnded);
       video.addEventListener('play', onPlay);
       video.addEventListener('pause', onPause);
       video.addEventListener('ratechange', onRateChange);
@@ -363,6 +387,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         video.removeEventListener('loadedmetadata', onLoadedMetadata);
         video.removeEventListener('durationchange', onDurationChange);
         video.removeEventListener('timeupdate', onTimeUpdate);
+        video.removeEventListener('ended', onEnded);
         video.removeEventListener('play', onPlay);
         video.removeEventListener('pause', onPause);
         video.removeEventListener('ratechange', onRateChange);
