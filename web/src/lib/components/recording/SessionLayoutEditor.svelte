@@ -40,6 +40,11 @@
     isFieldSupported,
     type ViewConfigSource
   } from '$lib/recording/viewRegistry';
+  import {
+    ensureDatasetCameraTopics,
+    ensureDatasetJointTopics,
+    fillDefaultConfig
+  } from '$lib/recording/blueprintNormalization';
   import { type BlueprintSessionKind } from '$lib/blueprints/draftStorage';
 
   type ProfileStatusResponse = {
@@ -162,139 +167,45 @@
     }
   });
 
-  const fillDefaultConfig = (node: BlueprintNode, topics: string[]): BlueprintNode => {
-    if (node.type === 'view') {
-      const definition = getViewDefinition(node.viewType);
-      if (!definition?.defaultConfig) return node;
-      const defaults = definition.defaultConfig(topics, viewSource);
-      return {
-        ...node,
-        config: {
-          ...defaults,
-          ...node.config
-        }
-      };
-    }
-    if (node.type === 'split') {
-      return {
-        ...node,
-        children: [fillDefaultConfig(node.children[0], topics), fillDefaultConfig(node.children[1], topics)]
-      };
-    }
-    return {
-      ...node,
-      tabs: node.tabs.map((tab) => ({
-        ...tab,
-        child: fillDefaultConfig(tab.child, topics)
-      }))
-    };
-  };
-
   onMount(() => {
     mounted = true;
   });
 
-	  const ensureDatasetCameraTopics = (node: BlueprintNode, keys: string[], used = new Set<string>()): BlueprintNode => {
-	    if (!keys.length) return node;
-	    if (node.type === 'view' && node.viewType === 'camera') {
-	      const topic = typeof node.config?.topic === 'string' ? node.config.topic.trim() : '';
-	      if (topic && keys.includes(topic)) {
-	        used.add(topic);
-	        return node;
-	      }
+  $effect(() => {
+    if (!mounted) return;
+    if (viewSource !== 'dataset') {
+      lastDatasetCameraKeysSignature = '';
+      return;
+    }
+    if (!datasetId) return;
+    const signature = `${datasetId}:${datasetCameraKeys.join('|')}`;
+    if (signature === lastDatasetCameraKeysSignature) return;
+    lastDatasetCameraKeysSignature = signature;
+    if (!datasetCameraKeys.length) return;
+    const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
+    if (next !== blueprint) {
+      blueprint = next;
+      selectedId = ensureValidSelection(next, selectedId);
+    }
+  });
 
-	      const fallback = keys.find((key) => !used.has(key)) ?? keys[0] ?? '';
-	      if (!fallback) return node;
-
-	      used.add(fallback);
-	      return {
-	        ...node,
-	        config: {
-	          ...node.config,
-	          topic: fallback
-	        }
-	      };
-	    }
-	    if (node.type === 'split') {
-	      const left = ensureDatasetCameraTopics(node.children[0], keys, used);
-	      const right = ensureDatasetCameraTopics(node.children[1], keys, used);
-	      if (left === node.children[0] && right === node.children[1]) return node;
-	      return { ...node, children: [left, right] };
-	    }
-	    if (node.type !== 'tabs') return node;
-	    const nextTabs = node.tabs.map((tab) => {
-	      const child = ensureDatasetCameraTopics(tab.child, keys, used);
-	      return child === tab.child ? tab : { ...tab, child };
-	    });
-	    const changed = nextTabs.some((tab, idx) => tab !== node.tabs[idx]);
-	    return changed ? { ...node, tabs: nextTabs } : node;
-	  };
-
-		  const ensureDatasetJointTopics = (node: BlueprintNode, keys: string[]): BlueprintNode => {
-		    if (!keys.length) return node;
-		    const resolvedFallback = keys.includes('observation.state') ? 'observation.state' : keys[0] ?? '';
-		    if (!resolvedFallback) return node;
-		    if (node.type === 'view' && node.viewType === 'joint_state') {
-		      const topic = typeof node.config?.topic === 'string' ? node.config.topic.trim() : '';
-		      if (topic && keys.includes(topic)) return node;
-	      return {
-	        ...node,
-	        config: {
-	          ...node.config,
-	          topic: resolvedFallback
-	        }
-	      };
-		    }
-		    if (node.type === 'split') {
-		      const left = ensureDatasetJointTopics(node.children[0], keys);
-		      const right = ensureDatasetJointTopics(node.children[1], keys);
-		      if (left === node.children[0] && right === node.children[1]) return node;
-		      return { ...node, children: [left, right] };
-		    }
-		    if (node.type !== 'tabs') return node;
-		    const nextTabs = node.tabs.map((tab) => {
-		      const child = ensureDatasetJointTopics(tab.child, keys);
-		      return child === tab.child ? tab : { ...tab, child };
-		    });
-	    const changed = nextTabs.some((tab, idx) => tab !== node.tabs[idx]);
-	    return changed ? { ...node, tabs: nextTabs } : node;
-	  };
-
-		  $effect(() => {
-		    if (!mounted) return;
-		    if (viewSource !== 'dataset') {
-		      lastDatasetCameraKeysSignature = '';
-		      return;
-		    }
-		    if (!datasetId) return;
-		    const signature = `${datasetId}:${datasetCameraKeys.join('|')}`;
-		    if (signature === lastDatasetCameraKeysSignature) return;
-		    lastDatasetCameraKeysSignature = signature;
-		    if (!datasetCameraKeys.length) return;
-		    const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
-		    if (next !== blueprint) {
-		      blueprint = next;
-		      selectedId = ensureValidSelection(next, selectedId);
-		    }
-		  });
-
-		  $effect(() => {
-		    if (!mounted) return;
-		    if (viewSource !== 'dataset') {
-		      lastDatasetSignalKeysSignature = '';
-		      return;
-		    }
-		    if (!datasetId) return;
-		    const signature = `${datasetId}:${datasetSignalKeys.join('|')}`;
-		    if (signature === lastDatasetSignalKeysSignature) return;
-		    lastDatasetSignalKeysSignature = signature;
-		    if (!datasetSignalKeys.length) return;
-		    const next = ensureDatasetJointTopics(blueprint, datasetSignalKeys);
-		    if (next !== blueprint) {
-		      blueprint = next;
-		      selectedId = ensureValidSelection(next, selectedId);
-		    }
-		  });
+  $effect(() => {
+    if (!mounted) return;
+    if (viewSource !== 'dataset') {
+      lastDatasetSignalKeysSignature = '';
+      return;
+    }
+    if (!datasetId) return;
+    const signature = `${datasetId}:${datasetSignalKeys.join('|')}`;
+    if (signature === lastDatasetSignalKeysSignature) return;
+    lastDatasetSignalKeysSignature = signature;
+    if (!datasetSignalKeys.length) return;
+    const next = ensureDatasetJointTopics(blueprint, datasetSignalKeys);
+    if (next !== blueprint) {
+      blueprint = next;
+      selectedId = ensureValidSelection(next, selectedId);
+    }
+  });
 
   $effect(() => {
     if (!mounted) return;
@@ -316,33 +227,33 @@
   $effect(() => {
     if (filledDefaults) return;
     if ((viewSource === 'ros' || viewSource === 'dataset') && topics.length === 0) return;
-    blueprint = fillDefaultConfig(blueprint, topics);
+    blueprint = fillDefaultConfig(blueprint, topics, viewSource);
     filledDefaults = true;
     selectedId = ensureValidSelection(blueprint, selectedId);
   });
 
-	  $effect(() => {
-	    if (!mounted) return;
-	    if (viewSource !== 'dataset') return;
-	    const signature = `${datasetId}:${datasetEpisodeIndex}`;
-	    if (signature === lastDatasetPlaybackSignature) return;
-	    lastDatasetPlaybackSignature = signature;
-	    datasetPlayback.reset();
-	  });
+  $effect(() => {
+    if (!mounted) return;
+    if (viewSource !== 'dataset') return;
+    const signature = `${datasetId}:${datasetEpisodeIndex}`;
+    if (signature === lastDatasetPlaybackSignature) return;
+    lastDatasetPlaybackSignature = signature;
+    datasetPlayback.reset();
+  });
 
-	  $effect(() => {
-	    if (!mounted) return;
-	    if (viewSource !== 'dataset') return;
-	    if (!datasetAutoplayNonce) return;
-	    if (datasetAutoplayNonce === lastDatasetAutoplayNonce) return;
-	    lastDatasetAutoplayNonce = datasetAutoplayNonce;
-	    // Defer one microtask so dataset switches can reset first, then autoplay.
-	    if (typeof queueMicrotask === 'function') {
-	      queueMicrotask(() => datasetPlayback.play());
-	    } else {
-	      datasetPlayback.play();
-	    }
-	  });
+  $effect(() => {
+    if (!mounted) return;
+    if (viewSource !== 'dataset') return;
+    if (!datasetAutoplayNonce) return;
+    if (datasetAutoplayNonce === lastDatasetAutoplayNonce) return;
+    lastDatasetAutoplayNonce = datasetAutoplayNonce;
+    // Defer one microtask so dataset switches can reset first, then autoplay.
+    if (typeof queueMicrotask === 'function') {
+      queueMicrotask(() => datasetPlayback.play());
+    } else {
+      datasetPlayback.play();
+    }
+  });
 
   const selectedNode = $derived(selectedId ? findNode(blueprint, selectedId) : null);
   const selectedViewNode = $derived(selectedNode?.type === 'view' ? selectedNode : null);
