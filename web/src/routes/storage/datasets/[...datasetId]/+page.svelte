@@ -1,19 +1,17 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { Button } from 'bits-ui';
-  import { toStore } from 'svelte/store';
+  import { get, toStore } from 'svelte/store';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-  import { connectStream } from '$lib/realtime/stream';
 	  import {
 	    api,
-	    type DatasetSyncJobStatus,
 	    type DatasetViewerEpisodeListResponse,
-	    type DatasetViewerResponse,
 	    type DatasetViewerSignalField,
-	    type DatasetViewerSignalFieldsResponse
 	  } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
+  import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
@@ -89,13 +87,25 @@
     viewerModalOpen = true;
   };
 
-  const viewerQuery = createQuery<DatasetViewerResponse>(
-    toStore(() => ({
-      queryKey: qk.storage.datasetViewer(datasetId),
-      queryFn: () => api.storage.datasetViewer(datasetId),
-      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
-    }))
-  );
+  const datasetAvailability = createDatasetAvailabilityController({
+    datasetId: toStore(() => datasetId),
+    enabled: toStore(() => Boolean(datasetId)),
+    queryClient,
+    notify: (message, level = 'info') => {
+      if (level === 'error') {
+        actionError = message;
+        return;
+      }
+      actionError = '';
+      actionMessage = message;
+    },
+    onCompleted: (completedDatasetId) => {
+      void queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', completedDatasetId] });
+    }
+  });
+  onDestroy(datasetAvailability.destroy);
+
+  const viewerQuery = datasetAvailability.datasetQuery;
 
   const episodesQuery = createQuery<DatasetViewerEpisodeListResponse>(
     toStore(() => ({
@@ -108,27 +118,12 @@
   let selectedEpisode = $state(0);
   const playbackEpisodes = $derived($episodesQuery.data?.total ?? $viewerQuery.data?.total_episodes ?? 0);
   let selectedSignalField = $state('');
-  let datasetSyncJobId = $state('');
-  let datasetSyncAutoTriggered = $state(false);
-  let datasetSyncStarting = $state(false);
-  let lastDatasetIdForSync = $state('');
-  let datasetSyncHandledTerminalState = $state('');
+  const datasetSyncJobId = datasetAvailability.syncJobId;
+  const datasetSyncStarting = datasetAvailability.syncStarting;
+  const datasetSyncJobQuery = datasetAvailability.syncJobQuery;
+  const startDatasetSyncJob = datasetAvailability.startSync;
 
-  const datasetSyncJobQuery = createQuery<DatasetSyncJobStatus>(
-    toStore(() => ({
-      queryKey: qk.storage.datasetSyncJob(datasetSyncJobId),
-      queryFn: () => api.storage.datasetSyncJob(datasetSyncJobId),
-      enabled: Boolean(datasetSyncJobId)
-    }))
-  );
-
-  const signalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
-    toStore(() => ({
-      queryKey: qk.storage.datasetViewerSignalFields(datasetId),
-      queryFn: () => api.storage.datasetViewerSignalFields(datasetId),
-      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
-    }))
-  );
+  const signalFieldsQuery = datasetAvailability.signalFieldsQuery;
 
   const signalFields = $derived($signalFieldsQuery.data?.fields ?? []);
 
@@ -165,95 +160,17 @@
     await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerSignalFields(datasetId) });
   };
 
-  const startDatasetSyncJob = async () => {
-    if (!datasetId || datasetSyncStarting) return;
-    datasetSyncStarting = true;
-    actionError = '';
-    try {
-      const accepted = await api.storage.syncDataset(datasetId);
-      datasetSyncJobId = accepted.job_id;
-      actionMessage = 'データセット同期を開始しました。';
-    } catch (err) {
-      const status =
-        typeof err === 'object' && err !== null && 'status' in err
-          ? Number((err as { status?: unknown }).status)
-          : 0;
-      if (status === 409) {
-        try {
-          const active = await api.storage.datasetSyncJobs(false);
-          const existing = (active.jobs ?? []).find(
-            (job) => job.dataset_id === datasetId && (job.state === 'queued' || job.state === 'running')
-          );
-          if (existing) {
-            datasetSyncJobId = existing.job_id;
-            actionMessage = '進行中の同期ジョブに接続しました。';
-            return;
-          }
-        } catch {
-          // fall through and show the original error
-        }
-      }
-      actionError = err instanceof Error ? err.message : 'データセット同期の開始に失敗しました。';
-    } finally {
-      datasetSyncStarting = false;
-    }
-  };
-
   const cancelDatasetSyncJob = async () => {
-    if (!datasetSyncJobId) return;
+    const currentJobId = get(datasetSyncJobId);
+    if (!currentJobId) return;
     actionError = '';
     try {
-      await api.storage.cancelDatasetSyncJob(datasetSyncJobId);
-      await queryClient.invalidateQueries({ queryKey: qk.storage.datasetSyncJob(datasetSyncJobId) });
+      await api.storage.cancelDatasetSyncJob(currentJobId);
+      await queryClient.invalidateQueries({ queryKey: qk.storage.datasetSyncJob(currentJobId) });
     } catch (err) {
       actionError = err instanceof Error ? err.message : '同期中断に失敗しました。';
     }
   };
-
-  $effect(() => {
-    if (datasetId !== lastDatasetIdForSync) {
-      lastDatasetIdForSync = datasetId;
-      datasetSyncJobId = '';
-      datasetSyncAutoTriggered = false;
-      datasetSyncHandledTerminalState = '';
-    }
-  });
-
-  $effect(() => {
-    if (!datasetId) return;
-    if (dataset?.is_local) {
-      datasetSyncAutoTriggered = false;
-      return;
-    }
-    if (datasetSyncJobId || datasetSyncAutoTriggered) return;
-    datasetSyncAutoTriggered = true;
-    void startDatasetSyncJob();
-  });
-
-  $effect(() => {
-    const state = $datasetSyncJobQuery.data?.state ?? '';
-    if (!state) return;
-    if (state === datasetSyncHandledTerminalState) return;
-    if (state === 'completed') {
-      datasetSyncHandledTerminalState = state;
-      void refetchDataset();
-    }
-  });
-
-  $effect(() => {
-    if (!datasetSyncJobId) return;
-    const currentJobId = datasetSyncJobId;
-    const streamPath = `/api/stream/storage/dataset-sync/jobs/${encodeURIComponent(currentJobId)}`;
-    const stop = connectStream<DatasetSyncJobStatus>({
-      path: streamPath,
-      onMessage: (payload) => {
-        queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), payload);
-      }
-    });
-    return () => {
-      stop();
-    };
-  });
 
   const refetchCandidates = async () => {
     if (!profileName) return;
@@ -496,14 +413,14 @@
       {/if}
       <div class="mt-3 flex flex-wrap gap-2">
         <button
-          class={`btn-ghost ${datasetSyncStarting ? 'opacity-50 cursor-not-allowed' : ''}`}
+          class={`btn-ghost ${$datasetSyncStarting ? 'opacity-50 cursor-not-allowed' : ''}`}
           type="button"
-          disabled={datasetSyncStarting}
+          disabled={$datasetSyncStarting}
           onclick={startDatasetSyncJob}
         >
           同期を再実行
         </button>
-        {#if datasetSyncJobId}
+        {#if $datasetSyncJobId}
           <button
             class="btn-ghost"
             type="button"

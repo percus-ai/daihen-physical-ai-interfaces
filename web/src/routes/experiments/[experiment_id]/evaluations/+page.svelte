@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { toStore } from 'svelte/store';
   import { page } from '$app/state';
   import { Button, Dialog, Tooltip } from 'bits-ui';
@@ -6,12 +7,9 @@
   import toast from 'svelte-french-toast';
 	  import {
 	    api,
-	    type DatasetSyncJobStatus,
-	    type DatasetViewerSignalFieldsResponse,
 	    type ExperimentEpisodeLink
 	  } from '$lib/api/client';
-  import { qk } from '$lib/queryKeys';
-  import { connectStream } from '$lib/realtime/stream';
+  import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import DatasetEpisodeThumbnail from '$lib/components/recording/DatasetEpisodeThumbnail.svelte';
   import { formatPercent } from '$lib/format';
@@ -134,11 +132,6 @@
   const queryClient = useQueryClient();
   let viewerLayoutEditMode = $state(false);
   let viewerInitialInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
-  let viewerSyncJobId = $state('');
-  let viewerSyncAutoTriggered = $state(false);
-  let viewerSyncStarting = $state(false);
-  let viewerSyncHandledTerminalState = $state('');
-  let lastViewerDatasetId = $state('');
   let viewerDatasetAutoplayNonce = $state(0);
 
   let viewerMetaByDatasetId = $state<Record<string, { cameraKey: string }>>({});
@@ -170,129 +163,36 @@
   const viewerDatasetId = $derived(modalDatasetId);
   const viewerEpisodeRaw = $derived(modalEpisodeIndex);
 
-  const viewerDatasetQuery = createQuery(
-    toStore(() => ({
-      queryKey: qk.storage.datasetViewer(viewerDatasetId),
-      queryFn: () => api.storage.datasetViewer(viewerDatasetId),
-      enabled: Boolean(viewerDatasetId)
-    }))
-  );
+  const viewerAvailability = createDatasetAvailabilityController({
+    datasetId: toStore(() => viewerDatasetId),
+    enabled: toStore(() => Boolean(linkModalOpen) && Boolean(viewerDatasetId)),
+    queryClient,
+    notify: (message, level = 'info') => {
+      if (level === 'success') toast.success(message);
+      else if (level === 'error') toast.error(message);
+      else toast(message);
+    }
+  });
+  onDestroy(viewerAvailability.destroy);
 
-  const viewerIsLocal = $derived(Boolean($viewerDatasetQuery.data?.is_local));
-  const viewerTotalEpisodes = $derived(Number($viewerDatasetQuery.data?.total_episodes ?? 0));
+  const viewerDatasetQuery = viewerAvailability.datasetQuery;
+  const viewerIsLocal = viewerAvailability.isLocal;
+  const viewerTotalEpisodes = viewerAvailability.totalEpisodes;
   const viewerEpisodeIndex = $derived.by(() => {
     const next = Math.max(0, Math.floor(Number(viewerEpisodeRaw) || 0));
     if (!Number.isFinite(next)) return 0;
-    if (viewerTotalEpisodes <= 0) return next;
-    if (next >= viewerTotalEpisodes) return Math.max(0, viewerTotalEpisodes - 1);
+    const total = $viewerTotalEpisodes;
+    if (total <= 0) return next;
+    if (next >= total) return Math.max(0, total - 1);
     return next;
   });
 
-  const viewerSignalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
-    toStore(() => ({
-      queryKey: qk.storage.datasetViewerSignalFields(viewerDatasetId),
-      queryFn: () => api.storage.datasetViewerSignalFields(viewerDatasetId),
-      enabled: Boolean(viewerDatasetId) && viewerIsLocal
-    }))
-  );
-
-	  const viewerSignalFields = $derived($viewerSignalFieldsQuery.data?.fields ?? []);
-	  const viewerSignalFieldsLoaded = $derived(!$viewerSignalFieldsQuery.isLoading && !$viewerSignalFieldsQuery.isFetching);
-	  const viewerDatasetSignalKeys = $derived.by(() => {
-	    const keys = viewerSignalFields.map((field) => field.key);
-	    const useFallback = viewerIsLocal && viewerSignalFieldsLoaded && keys.length === 0;
-	    return useFallback ? ['observation.state', 'action'] : keys;
-	  });
-
-  const viewerSyncJobQuery = createQuery<DatasetSyncJobStatus>(
-    toStore(() => ({
-      queryKey: qk.storage.datasetSyncJob(viewerSyncJobId),
-      queryFn: () => api.storage.datasetSyncJob(viewerSyncJobId),
-      enabled: Boolean(viewerSyncJobId)
-    }))
-  );
-
-  const refetchViewerDataset = async () => {
-    if (!viewerDatasetId) return;
-    await queryClient.invalidateQueries({
-      queryKey: qk.storage.datasetViewer(viewerDatasetId)
-    });
-  };
-
-  const startViewerSyncJob = async () => {
-    if (!viewerDatasetId || viewerSyncStarting) return;
-    viewerSyncStarting = true;
-    try {
-      const accepted = await api.storage.syncDataset(viewerDatasetId);
-      viewerSyncJobId = accepted.job_id;
-    } catch (err) {
-      const status =
-        typeof err === 'object' && err !== null && 'status' in err
-          ? Number((err as { status?: unknown }).status)
-          : 0;
-      if (status === 409) {
-        try {
-          const active = await api.storage.datasetSyncJobs(false);
-          const existing = (active.jobs ?? []).find(
-            (job) =>
-              job.dataset_id === viewerDatasetId && (job.state === 'queued' || job.state === 'running')
-          );
-          if (existing) {
-            viewerSyncJobId = existing.job_id;
-          }
-        } catch {
-          // ignore and keep current UI state
-        }
-      }
-    } finally {
-      viewerSyncStarting = false;
-    }
-  };
-
-  $effect(() => {
-    if (viewerDatasetId !== lastViewerDatasetId) {
-      lastViewerDatasetId = viewerDatasetId;
-      viewerSyncJobId = '';
-      viewerSyncAutoTriggered = false;
-      viewerSyncHandledTerminalState = '';
-    }
-  });
-
-  $effect(() => {
-    if (!viewerDatasetId) return;
-    if (viewerIsLocal) {
-      viewerSyncAutoTriggered = false;
-      return;
-    }
-    if (!$viewerDatasetQuery.data || viewerSyncJobId || viewerSyncAutoTriggered) return;
-    viewerSyncAutoTriggered = true;
-    void startViewerSyncJob();
-  });
-
-  $effect(() => {
-    const state = $viewerSyncJobQuery.data?.state ?? '';
-    if (!state) return;
-    if (state === viewerSyncHandledTerminalState) return;
-    if (state === 'completed') {
-      viewerSyncHandledTerminalState = state;
-      void refetchViewerDataset();
-    }
-  });
-
-  $effect(() => {
-    if (!viewerSyncJobId) return;
-    const currentJobId = viewerSyncJobId;
-    const streamPath = `/api/stream/storage/dataset-sync/jobs/${encodeURIComponent(currentJobId)}`;
-    const stop = connectStream<DatasetSyncJobStatus>({
-      path: streamPath,
-      onMessage: (payload) => {
-        queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), payload);
-      }
-    });
-    return () => {
-      stop();
-    };
-  });
+  const viewerDatasetSignalKeys = viewerAvailability.signalKeys;
+  const viewerSyncJobQuery = viewerAvailability.syncJobQuery;
+  const viewerSyncJobId = viewerAvailability.syncJobId;
+  const viewerSyncStarting = viewerAvailability.syncStarting;
+  const refetchViewerDataset = viewerAvailability.refetch;
+  const startViewerSyncJob = viewerAvailability.startSync;
 
   const buildEvaluationDrafts = (exp: Experiment, existing: Evaluation[]) => {
     const map = new Map(existing.map((item) => [item.trial_index, item]));
@@ -747,7 +647,7 @@
 	              </p>
 	              {#if viewerDatasetId && $viewerDatasetQuery.isLoading}
 	                <p class="mt-1 text-[11px] text-slate-500">データセット情報を取得中...</p>
-	              {:else if viewerDatasetId && !viewerIsLocal}
+	              {:else if viewerDatasetId && !$viewerIsLocal}
 	                <p class="mt-1 text-[11px] text-slate-500">ローカル未配置: 同期を開始しました。</p>
 	              {/if}
             </div>
@@ -781,7 +681,7 @@
 		              datasetId={viewerDatasetId}
 			              datasetEpisodeIndex={viewerEpisodeIndex}
 			              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
-			              datasetSignalKeys={viewerDatasetSignalKeys}
+			              datasetSignalKeys={$viewerDatasetSignalKeys}
 		              datasetAutoplayNonce={viewerDatasetAutoplayNonce}
 		                searchDatasets={allDatasets}
 		                searchRecommendedDatasetId={recommendedDatasetId}
