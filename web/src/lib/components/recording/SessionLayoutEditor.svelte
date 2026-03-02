@@ -242,31 +242,39 @@
     mounted = true;
   });
 
-	  const ensureDatasetCameraTopics = (node: BlueprintNode, keys: string[]): BlueprintNode => {
+	  const ensureDatasetCameraTopics = (node: BlueprintNode, keys: string[], used = new Set<string>()): BlueprintNode => {
 	    if (!keys.length) return node;
 	    if (node.type === 'view' && node.viewType === 'camera') {
-	      const topic = typeof node.config?.topic === 'string' ? node.config.topic : '';
-	      if (topic && keys.includes(topic)) return node;
-      return {
-        ...node,
-        config: {
-          ...node.config,
-          topic: keys[0] ?? ''
-        }
-      };
-    }
-    if (node.type === 'split') {
-      const left = ensureDatasetCameraTopics(node.children[0], keys);
-      const right = ensureDatasetCameraTopics(node.children[1], keys);
-      if (left === node.children[0] && right === node.children[1]) return node;
-      return { ...node, children: [left, right] };
-    }
-    if (node.type !== 'tabs') return node;
-    const nextTabs = node.tabs.map((tab) => {
-      const child = ensureDatasetCameraTopics(tab.child, keys);
-      return child === tab.child ? tab : { ...tab, child };
-    });
-    const changed = nextTabs.some((tab, idx) => tab !== node.tabs[idx]);
+	      const topic = typeof node.config?.topic === 'string' ? node.config.topic.trim() : '';
+	      if (topic && keys.includes(topic)) {
+	        used.add(topic);
+	        return node;
+	      }
+
+	      const fallback = keys.find((key) => !used.has(key)) ?? keys[0] ?? '';
+	      if (!fallback) return node;
+
+	      used.add(fallback);
+	      return {
+	        ...node,
+	        config: {
+	          ...node.config,
+	          topic: fallback
+	        }
+	      };
+	    }
+	    if (node.type === 'split') {
+	      const left = ensureDatasetCameraTopics(node.children[0], keys, used);
+	      const right = ensureDatasetCameraTopics(node.children[1], keys, used);
+	      if (left === node.children[0] && right === node.children[1]) return node;
+	      return { ...node, children: [left, right] };
+	    }
+	    if (node.type !== 'tabs') return node;
+	    const nextTabs = node.tabs.map((tab) => {
+	      const child = ensureDatasetCameraTopics(tab.child, keys, used);
+	      return child === tab.child ? tab : { ...tab, child };
+	    });
+	    const changed = nextTabs.some((tab, idx) => tab !== node.tabs[idx]);
 	    return changed ? { ...node, tabs: nextTabs } : node;
 	  };
 

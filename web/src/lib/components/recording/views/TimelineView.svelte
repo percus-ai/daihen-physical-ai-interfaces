@@ -60,9 +60,17 @@
   $effect(() => {
     if (viewSource !== 'dataset') return;
     if (!playbackController) return;
-    return playbackController.subscribe((next) => {
+    playbackState = playbackController.getState();
+    const unsubState = playbackController.subscribeState((next) => {
       playbackState = next;
     });
+    const unsubTime = playbackController.subscribeTime((time) => {
+      playbackState = { ...playbackState, currentTime: time };
+    }, { maxFps: 30 });
+    return () => {
+      unsubState?.();
+      unsubTime?.();
+    };
   });
 
   const status = $derived(recorderStatus ?? {});

@@ -389,40 +389,17 @@
   $effect(() => {
     if (source !== 'dataset') return;
     if (!playbackController) return;
-    let pending: DatasetPlaybackState | null = null;
-    let rafId: number | null = null;
-    let lastAt = 0;
-    const minIntervalMs = 1000 / 20;
-
-    const flush = (timestamp: number) => {
-      rafId = null;
-      if (timestamp - lastAt < minIntervalMs) {
-        rafId = window.requestAnimationFrame(flush);
-        return;
-      }
-      lastAt = timestamp;
-      if (!pending) return;
-      playbackState = pending;
-      pending = null;
-    };
-
-    const unsub = playbackController.subscribe((next) => {
-      pending = next;
-      if (typeof window === 'undefined') {
-        playbackState = next;
-        pending = null;
-        return;
-      }
-      if (rafId == null) rafId = window.requestAnimationFrame(flush);
+    playbackState = playbackController.getState();
+    const unsubState = playbackController.subscribeState((next) => {
+      playbackState = next;
     });
+    const unsubTime = playbackController.subscribeTime((time) => {
+      playbackState = { ...playbackState, currentTime: time };
+    }, { maxFps: 5 });
 
     return () => {
-      unsub?.();
-      if (rafId != null && typeof window !== 'undefined') {
-        window.cancelAnimationFrame(rafId);
-      }
-      rafId = null;
-      pending = null;
+      unsubState?.();
+      unsubTime?.();
     };
   });
 </script>

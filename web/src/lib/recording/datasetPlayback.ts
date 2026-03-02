@@ -8,7 +8,8 @@ export type DatasetPlaybackState = {
 
 export type DatasetPlaybackController = {
   getState: () => DatasetPlaybackState;
-  subscribe: (fn: (state: DatasetPlaybackState) => void) => () => void;
+  subscribeState: (fn: (state: DatasetPlaybackState) => void) => () => void;
+  subscribeTime: (fn: (time: number) => void, opts?: { maxFps?: number }) => () => void;
   register: (video: HTMLVideoElement) => () => void;
   play: () => void;
   pause: () => void;
@@ -29,15 +30,15 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
     ready: false
   };
 
-  const subscribers = new Set<(value: DatasetPlaybackState) => void>();
+  const stateSubscribers = new Set<(value: DatasetPlaybackState) => void>();
+  const timeSubscribers = new Set<{ fn: (time: number) => void; maxFps: number; lastAt: number }>();
   const videos = new Set<HTMLVideoElement>();
 
   let leader: HTMLVideoElement | null = null;
   let ignoreTimeUpdates = false;
   let rafId: number | null = null;
   let lastRafAt = 0;
-  let lastReportedTime = -1;
-  const targetUpdateIntervalMs = 1000 / 20; // keep UI responsive without spamming renders
+  const tickIntervalMs = 1000 / 60;
   let clockBaseTime = 0;
   let clockBaseAt = 0;
   let lastClockSyncAt = 0;
@@ -68,13 +69,35 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
   };
   let rvfcId: number | null = null;
 
-  const notify = () => {
-    for (const subscriber of subscribers) subscriber(state);
+  const notifyState = () => {
+    for (const subscriber of stateSubscribers) subscriber(state);
+  };
+
+  const notifyTime = () => {
+    const now = nowMs();
+    for (const entry of timeSubscribers) {
+      const intervalMs = entry.maxFps > 0 ? 1000 / entry.maxFps : 0;
+      if (intervalMs > 0 && now - entry.lastAt < intervalMs) continue;
+      entry.lastAt = now;
+      entry.fn(state.currentTime);
+    }
   };
 
   const setState = (patch: Partial<DatasetPlaybackState>) => {
+    // Avoid broadcasting time updates to all state subscribers.
+    if (Object.keys(patch).length === 1 && Object.prototype.hasOwnProperty.call(patch, 'currentTime')) {
+      const value = patch.currentTime;
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        state.currentTime = value;
+        notifyTime();
+      }
+      return;
+    }
+
+    const prevTime = state.currentTime;
     state = { ...state, ...patch };
-    notify();
+    notifyState();
+    if (state.currentTime !== prevTime) notifyTime();
   };
 
   const pickLeader = () => {
@@ -106,7 +129,6 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
       rvfcId = null;
     }
     lastRafAt = 0;
-    lastReportedTime = -1;
   };
 
   const startClock = () => {
@@ -119,15 +141,12 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
 
     const updateFromClock = () => {
       if (!leader) return;
-      const now = nowMs();
       if (ignoreTimeUpdates) return;
 
+      const now = nowMs();
       let est = clockBaseTime + ((now - clockBaseAt) / 1000) * (Number.isFinite(state.rate) ? state.rate : 1);
       if (state.duration > 0 && Number.isFinite(state.duration)) est = clamp(est, 0, state.duration);
-      if (Number.isFinite(est) && Math.abs(est - lastReportedTime) > 1e-3) {
-        lastReportedTime = est;
-        setState({ currentTime: est });
-      }
+      if (Number.isFinite(est)) setState({ currentTime: est });
 
       // Periodically resync to avoid drift.
       if (now - lastClockSyncAt > 250 && Number.isFinite(leader.currentTime)) {
@@ -153,7 +172,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         rafId = window.requestAnimationFrame(tick);
         return;
       }
-      if (now - lastRafAt < targetUpdateIntervalMs) {
+      if (now - lastRafAt < tickIntervalMs) {
         rafId = window.requestAnimationFrame(tick);
         return;
       }
@@ -257,11 +276,18 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
 
   return {
     getState: () => state,
-    subscribe: (fn) => {
-      subscribers.add(fn);
-      fn(state);
+    subscribeState: (fn) => {
+      stateSubscribers.add(fn);
       return () => {
-        subscribers.delete(fn);
+        stateSubscribers.delete(fn);
+      };
+    },
+    subscribeTime: (fn, opts) => {
+      const maxFps = Math.min(Math.max(Number(opts?.maxFps ?? 30) || 30, 1), 60);
+      const entry = { fn, maxFps, lastAt: 0 };
+      timeSubscribers.add(entry);
+      return () => {
+        timeSubscribers.delete(entry);
       };
     },
     register: (video) => {
