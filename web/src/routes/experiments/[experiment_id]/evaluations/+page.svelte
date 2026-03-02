@@ -495,6 +495,55 @@
     }
   };
 
+  let episodeLinksAutoSaving = $state(false);
+  let episodeLinksAutoSaveError = $state('');
+  let lastEpisodeLinksAutoSaveTrialIndex = $state<number | null>(null);
+  let pendingEpisodeLinksAutoSaveTimer: number | null = $state(null);
+  let episodeLinksAutoSaveGeneration = $state(0);
+
+  const snapshotEvaluationReplaceItems = () =>
+    evaluationItems.map((item) => ({
+      value: item.value ?? '',
+      blueprint_id: item.blueprint_id || null,
+      notes: item.notes || null,
+      image_files: item.image_files,
+      episode_links: item.episode_links
+    }));
+
+  const flushEpisodeLinksAutoSave = async (generation: number) => {
+    if (!experiment) return;
+    if (submitting) return; // avoid fighting the explicit save flow
+    episodeLinksAutoSaving = true;
+    episodeLinksAutoSaveError = '';
+    const items = snapshotEvaluationReplaceItems();
+    try {
+      await api.experiments.replaceEvaluations(experiment.id, { items });
+    } catch {
+      episodeLinksAutoSaveError = '紐付けエピソードの自動保存に失敗しました。';
+      return;
+    } finally {
+      episodeLinksAutoSaving = false;
+    }
+    if (episodeLinksAutoSaveGeneration !== generation) {
+      // Another change happened while saving; schedule one more flush.
+      scheduleEpisodeLinksAutoSave(lastEpisodeLinksAutoSaveTrialIndex ?? activeTrialIndex);
+    }
+  };
+
+  const scheduleEpisodeLinksAutoSave = (trialIndex: number) => {
+    lastEpisodeLinksAutoSaveTrialIndex = trialIndex;
+    episodeLinksAutoSaveGeneration += 1;
+    const generation = episodeLinksAutoSaveGeneration;
+    if (pendingEpisodeLinksAutoSaveTimer != null && typeof window !== 'undefined') {
+      window.clearTimeout(pendingEpisodeLinksAutoSaveTimer);
+    }
+    if (typeof window === 'undefined') return;
+    pendingEpisodeLinksAutoSaveTimer = window.setTimeout(() => {
+      pendingEpisodeLinksAutoSaveTimer = null;
+      void flushEpisodeLinksAutoSave(generation);
+    }, 650);
+  };
+
   function normalizeEpisodeLinks(links: ExperimentEpisodeLink[]) {
     return links
       .slice()
@@ -575,6 +624,7 @@
         sort_order: activeEpisodeLinks.length
       }
     ]);
+    scheduleEpisodeLinksAutoSave(activeTrialIndex);
   };
 
   const handleRemoveEpisodeLink = (datasetId: string, episodeIndex: number) => {
@@ -584,6 +634,7 @@
     updateActiveEpisodeLinks(
       activeEpisodeLinks.filter((link) => !(link.dataset_id === datasetId && link.episode_index === nextEpisode))
     );
+    scheduleEpisodeLinksAutoSave(activeTrialIndex);
   };
 
   const openLinkEditor = (trialIndex: number) => {
@@ -687,19 +738,24 @@
       <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4">
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
           <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p class="text-sm font-semibold text-slate-900">セッションビューア</p>
-              <p class="text-xs text-slate-500">
-                試行 {activeTrialIndex}
-                {#if viewerDatasetId}
-                  / {viewerDatasetId} / episode {viewerEpisodeIndex}
-                {/if}
-              </p>
-              {#if viewerDatasetId && $viewerDatasetQuery.isLoading}
-                <p class="mt-1 text-[11px] text-slate-500">データセット情報を取得中...</p>
-              {:else if viewerDatasetId && !viewerIsLocal}
-                <p class="mt-1 text-[11px] text-slate-500">ローカル未配置: 同期を開始しました。</p>
-              {/if}
+	            <div>
+	              <p class="text-sm font-semibold text-slate-900">セッションビューア</p>
+	              <p class="text-xs text-slate-500">
+	                試行 {activeTrialIndex}
+	                {#if viewerDatasetId}
+	                  / {viewerDatasetId} / episode {viewerEpisodeIndex}
+	                {/if}
+	              </p>
+	              {#if episodeLinksAutoSaving && lastEpisodeLinksAutoSaveTrialIndex === activeTrialIndex}
+	                <p class="mt-1 text-[11px] text-slate-500">紐付けを自動保存中...</p>
+	              {:else if episodeLinksAutoSaveError && lastEpisodeLinksAutoSaveTrialIndex === activeTrialIndex}
+	                <p class="mt-1 text-[11px] text-rose-600">{episodeLinksAutoSaveError}</p>
+	              {/if}
+	              {#if viewerDatasetId && $viewerDatasetQuery.isLoading}
+	                <p class="mt-1 text-[11px] text-slate-500">データセット情報を取得中...</p>
+	              {:else if viewerDatasetId && !viewerIsLocal}
+	                <p class="mt-1 text-[11px] text-slate-500">ローカル未配置: 同期を開始しました。</p>
+	              {/if}
             </div>
             <div class="flex flex-wrap gap-2">
               <Button.Root
