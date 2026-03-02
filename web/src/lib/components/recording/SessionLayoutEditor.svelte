@@ -63,6 +63,7 @@
 			    viewSource = 'ros',
 			    editMode = true,
 			    initialInspectorTab = 'blueprint',
+			    persistBlueprintDraft = true,
 			    embedded = false,
 			    datasetId = '',
 			    datasetEpisodeIndex = 0,
@@ -84,6 +85,7 @@
     viewSource?: ViewConfigSource;
     editMode?: boolean;
     initialInspectorTab?: 'blueprint' | 'selection' | 'search';
+    persistBlueprintDraft?: boolean;
 			    embedded?: boolean;
 			    datasetId?: string;
 			    datasetEpisodeIndex?: number;
@@ -357,7 +359,7 @@
     activeBlueprintName = detail.name;
     blueprint = detail.blueprint;
 
-    if (useDraft && blueprintSessionId) {
+    if (persistBlueprintDraft && useDraft && blueprintSessionId) {
       const draft = loadBlueprintDraft(kind, blueprintSessionId, detail.id);
       if (draft) {
         blueprint = draft;
@@ -422,6 +424,7 @@
 
   $effect(() => {
     if (!mounted) return;
+    if (!persistBlueprintDraft) return;
     if (!blueprintSessionId || !blueprintSessionKind || !activeBlueprintId) return;
     saveBlueprintDraft(blueprintSessionKind, blueprintSessionId, activeBlueprintId, blueprint);
   });
