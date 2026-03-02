@@ -2,13 +2,12 @@
   import { onMount } from 'svelte';
   import { toStore } from 'svelte/store';
   import { Button, Tabs } from 'bits-ui';
-  import toast from 'svelte-french-toast';
   import { createQuery } from '@tanstack/svelte-query';
   import { api, type ExperimentEpisodeLink } from '$lib/api/client';
 
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import BlueprintTree from '$lib/components/recording/BlueprintTree.svelte';
-  import BlueprintCombobox from '$lib/components/blueprints/BlueprintCombobox.svelte';
+  import BlueprintWorkspace from '$lib/components/recording/BlueprintWorkspace.svelte';
   import DatasetEpisodeSearchTab from '$lib/components/recording/DatasetEpisodeSearchTab.svelte';
   import {
     createDatasetPlaybackController,
@@ -39,16 +38,7 @@
     isFieldSupported,
     type ViewConfigSource
   } from '$lib/recording/viewRegistry';
-  import {
-    loadBlueprintDraft,
-    saveBlueprintDraft,
-    type BlueprintSessionKind
-  } from '$lib/blueprints/draftStorage';
-  import {
-    createBlueprintManager,
-    type WebuiBlueprintDetail,
-    type WebuiBlueprintSummary
-  } from '$lib/blueprints/blueprintManager';
+  import { type BlueprintSessionKind } from '$lib/blueprints/draftStorage';
 
   type ProfileStatusResponse = {
     topics?: string[];
@@ -180,7 +170,6 @@
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
   let selectedId = $state('');
   let mounted = $state(false);
-  let lastResolveSignature = $state('');
   let filledDefaults = $state(false);
   let editInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
   let inspectorInitialized = $state(false);
@@ -190,27 +179,11 @@
   let editorRightPaneWidth = $state(420);
   let editorViewScale = $state(1);
 
-  let activeBlueprintId = $state('');
-  let activeBlueprintName = $state('');
-  let savedBlueprints = $state<WebuiBlueprintSummary[]>([]);
-  let blueprintBusy = $state(false);
-  let blueprintActionPending = $state(false);
-
   $effect(() => {
     if (!selectedId && blueprint?.id) {
       selectedId = blueprint.id;
     }
   });
-
-  const notifyBlueprintError = (message: string) => {
-    if (!message || typeof window === 'undefined') return;
-    toast.error(message);
-  };
-
-  const notifyBlueprintNotice = (message: string) => {
-    if (!message || typeof window === 'undefined') return;
-    toast.success(message);
-  };
 
   const fillDefaultConfig = (node: BlueprintNode, topics: string[]): BlueprintNode => {
     if (node.type === 'view') {
@@ -350,84 +323,11 @@
     inspectorInitialized = true;
   });
 
-  const applyBlueprintDetail = (
-    detail: WebuiBlueprintDetail,
-    useDraft: boolean,
-    kind: BlueprintSessionKind
-  ) => {
-    activeBlueprintId = detail.id;
-    activeBlueprintName = detail.name;
+  const applyBlueprintFromWorkspace = (detail: { id: string; name: string; blueprint: BlueprintNode }) => {
     blueprint = detail.blueprint;
-
-    if (persistBlueprintDraft && useDraft && blueprintSessionId) {
-      const draft = loadBlueprintDraft(kind, blueprintSessionId, detail.id);
-      if (draft) {
-        blueprint = draft;
-      }
-    }
-
     selectedId = ensureValidSelection(blueprint, selectedId);
     filledDefaults = false;
   };
-
-  const blueprintManager = createBlueprintManager({
-    getSessionId: () => blueprintSessionId,
-    getSessionKind: () => blueprintSessionKind,
-    getActiveBlueprintId: () => activeBlueprintId,
-    getActiveBlueprintName: () => activeBlueprintName,
-    getBlueprint: () => blueprint,
-    setSavedBlueprints: (items) => {
-      savedBlueprints = items;
-    },
-    setBusy: (value) => {
-      blueprintBusy = value;
-    },
-    setActionPending: (value) => {
-      blueprintActionPending = value;
-    },
-    setError: (message) => {
-      notifyBlueprintError(message);
-    },
-    setNotice: (message) => {
-      notifyBlueprintNotice(message);
-    },
-    applyBlueprintDetail
-  });
-
-  const resolveSessionBlueprint = blueprintManager.resolveSessionBlueprint;
-  const handleOpenBlueprint = blueprintManager.openBlueprint;
-  const handleSaveBlueprint = blueprintManager.saveBlueprint;
-  const handleDuplicateBlueprint = blueprintManager.duplicateBlueprint;
-  const handleDeleteBlueprint = blueprintManager.deleteBlueprint;
-  const handleResetBlueprint = blueprintManager.resetBlueprint;
-  const handleSaveBlueprintWithToast = async () => {
-    if (typeof window === 'undefined') {
-      await handleSaveBlueprint();
-      return;
-    }
-    const loadingToastId = toast.loading('保存中...');
-    try {
-      await handleSaveBlueprint();
-    } finally {
-      toast.dismiss(loadingToastId);
-    }
-  };
-
-  $effect(() => {
-    if (!mounted) return;
-    if (!blueprintSessionId || !blueprintSessionKind) return;
-    const signature = `${blueprintSessionKind}:${blueprintSessionId}`;
-    if (signature === lastResolveSignature) return;
-    lastResolveSignature = signature;
-    void resolveSessionBlueprint();
-  });
-
-  $effect(() => {
-    if (!mounted) return;
-    if (!persistBlueprintDraft) return;
-    if (!blueprintSessionId || !blueprintSessionKind || !activeBlueprintId) return;
-    saveBlueprintDraft(blueprintSessionKind, blueprintSessionId, activeBlueprintId, blueprint);
-  });
 
   $effect(() => {
     if (filledDefaults) return;
@@ -587,63 +487,15 @@
   {#if editMode}
     <div class={embedded ? 'card p-4 h-full min-h-0' : 'card p-4 min-h-[640px] lg:h-[var(--app-shell-height)]'}>
       <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4" bind:this={editorShellEl}>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3" bind:this={editorToolbarEl}>
-          <div class="flex flex-wrap items-end gap-3">
-            <div class="min-w-[240px] flex-1">
-              <p class="label">保存済みブループリント</p>
-              <div class="mt-2">
-                <BlueprintCombobox
-                  items={savedBlueprints}
-                  value={activeBlueprintId}
-                  disabled={blueprintBusy || blueprintActionPending || !blueprintSessionKind}
-                  onSelect={handleOpenBlueprint}
-                />
-              </div>
-            </div>
-
-            <label class="min-w-[220px] flex-1 text-xs font-semibold text-slate-600">
-              <span>名前</span>
-              <input class="input mt-1" type="text" bind:value={activeBlueprintName} />
-            </label>
-
-            <div class="flex flex-wrap gap-2">
-              <Button.Root
-                class="btn-primary"
-                type="button"
-                disabled={blueprintBusy || blueprintActionPending || !activeBlueprintId || !blueprintSessionKind}
-                onclick={() => {
-                  void handleSaveBlueprintWithToast();
-                }}
-              >
-                保存
-              </Button.Root>
-              <Button.Root
-                class="btn-ghost"
-                type="button"
-                disabled={blueprintBusy || blueprintActionPending || !activeBlueprintId || !blueprintSessionKind}
-                onclick={handleDuplicateBlueprint}
-              >
-                複製
-              </Button.Root>
-              <Button.Root
-                class="btn-ghost"
-                type="button"
-                disabled={blueprintBusy || blueprintActionPending || !activeBlueprintId || !blueprintSessionKind}
-                onclick={handleResetBlueprint}
-              >
-                リセット
-              </Button.Root>
-              <Button.Root
-                class="btn-ghost border-rose-200/70 text-rose-600 hover:border-rose-300/80"
-                type="button"
-                disabled={blueprintBusy || blueprintActionPending || !activeBlueprintId || !blueprintSessionKind}
-                onclick={handleDeleteBlueprint}
-              >
-                削除
-              </Button.Root>
-            </div>
-          </div>
-          <p class="mt-2 text-[11px] text-slate-500">編集中の内容はローカルに自動保存されます。</p>
+        <div bind:this={editorToolbarEl}>
+          <BlueprintWorkspace
+            sessionId={blueprintSessionId}
+            sessionKind={blueprintSessionKind}
+            {blueprint}
+            persistDraft={persistBlueprintDraft}
+            disabled={!mounted}
+            onApplyBlueprintDetail={applyBlueprintFromWorkspace}
+          />
         </div>
 
         <div
