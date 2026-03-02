@@ -13,7 +13,7 @@
 	    type DatasetViewerSignalField,
 	    type DatasetViewerSignalFieldsResponse
 	  } from '$lib/api/client';
-  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
+  import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
@@ -624,7 +624,7 @@
   {/if}
 </section>
 
-<DatasetViewerModal bind:open={viewerModalOpen} datasetId={datasetId} title="Dataset Viewer" />
+<SessionViewerModal bind:open={viewerModalOpen} datasetId={datasetId} title="Session Viewer" />
 
 <section class="card p-6">
   <div class="flex items-center justify-between">

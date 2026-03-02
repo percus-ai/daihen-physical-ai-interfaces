@@ -11,7 +11,7 @@
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
-  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
+  import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
 
   type RecordingSummary = {
     recording_id: string;
@@ -517,4 +517,4 @@
 </section>
 
 <OperateStatusCards status={$operateStatusQuery.data} />
-<DatasetViewerModal bind:open={viewerModalOpen} datasetId={viewerDatasetId} title="Dataset Viewer" />
+<SessionViewerModal bind:open={viewerModalOpen} datasetId={viewerDatasetId} title="Session Viewer" />

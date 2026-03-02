@@ -11,7 +11,7 @@
     open = $bindable(false),
     datasetId = '',
     episodeIndex = 0,
-    title = 'Dataset Viewer',
+    title = 'Session Viewer',
     initialInspectorTab = 'selection',
     startInEditMode = false
   }: {
@@ -24,9 +24,9 @@
   } = $props();
 
   const queryClient = useQueryClient();
-  let viewerLayoutEditMode = $state(Boolean(startInEditMode));
-  let selectedEpisodeRaw = $state(Math.max(0, Math.floor(Number(episodeIndex) || 0)));
-  let episodeInputText = $state(String(selectedEpisodeRaw + 1));
+  let viewerLayoutEditMode = $state(false);
+  let selectedEpisodeRaw = $state(0);
+  let episodeInputText = $state('1');
 
   let viewerSyncJobId = $state('');
   let viewerSyncStarting = $state(false);
@@ -45,7 +45,7 @@
 
   const viewerDatasetQuery = createQuery(
     toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-modal-v2', datasetId],
+      queryKey: ['storage', 'session-viewer-modal', datasetId],
       queryFn: () => api.storage.datasetViewer(datasetId),
       enabled: Boolean(open) && Boolean(datasetId)
     }))
@@ -63,7 +63,7 @@
 
   const viewerSignalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-modal-v2', datasetId, 'signals'],
+      queryKey: ['storage', 'session-viewer-modal', datasetId, 'signals'],
       queryFn: () => api.storage.datasetViewerSignalFields(datasetId),
       enabled: Boolean(open) && Boolean(datasetId) && viewerIsLocal
     }))
@@ -83,7 +83,7 @@
 
   const viewerSyncJobQuery = createQuery<DatasetSyncJobStatus>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset-viewer-modal-v2', datasetId, 'dataset-sync', viewerSyncJobId],
+      queryKey: ['storage', 'session-viewer-modal', datasetId, 'dataset-sync', viewerSyncJobId],
       queryFn: () => api.storage.datasetSyncJob(viewerSyncJobId),
       enabled: Boolean(open) && Boolean(viewerSyncJobId)
     }))
@@ -92,7 +92,7 @@
   const refetchViewerDataset = async () => {
     if (!datasetId) return;
     await queryClient.invalidateQueries({
-      queryKey: ['storage', 'dataset-viewer-modal-v2', datasetId]
+      queryKey: ['storage', 'session-viewer-modal', datasetId]
     });
   };
 
@@ -259,12 +259,7 @@
               {/if}
             {/if}
             <div class="flex flex-wrap gap-2">
-              <Button.Root
-                class="btn-ghost"
-                type="button"
-                onclick={startViewerSyncJob}
-                disabled={viewerSyncStarting}
-              >
+              <Button.Root class="btn-ghost" type="button" onclick={startViewerSyncJob} disabled={viewerSyncStarting}>
                 {viewerSyncStarting ? '同期開始中...' : '同期を再実行'}
               </Button.Root>
               <Button.Root class="btn-ghost" type="button" onclick={refetchViewerDataset}>

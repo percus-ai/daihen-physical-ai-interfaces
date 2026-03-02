@@ -2,7 +2,7 @@
   import { Button } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
-  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
+  import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
   type DatasetSummary = {
@@ -321,4 +321,4 @@
   {/if}
 </section>
 
-<DatasetViewerModal bind:open={viewerModalOpen} datasetId={viewerDatasetId} title="Dataset Viewer" />
+<SessionViewerModal bind:open={viewerModalOpen} datasetId={viewerDatasetId} title="Session Viewer" />

@@ -3,7 +3,7 @@
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
-  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
+  import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -645,4 +645,4 @@
   </AlertDialog.Portal>
 </AlertDialog.Root>
 
-<DatasetViewerModal bind:open={datasetViewerOpen} datasetId={datasetViewerId} title="Dataset Viewer" />
+<SessionViewerModal bind:open={datasetViewerOpen} datasetId={datasetViewerId} title="Session Viewer" />
