@@ -926,12 +926,12 @@
                     </div>
                   {/if}
 
-                  <div class="flex items-center gap-2 rounded-xl border border-slate-200/70 bg-white/80 p-2 sm:col-span-1">
+                  <div class="flex items-center gap-2 rounded-xl border border-slate-200/70 bg-white/80 p-2 sm:col-start-1 sm:row-start-2">
                     <button
                       class="btn-ghost px-3 py-2"
-	                      type="button"
-	                      disabled={!canPrev}
-	                      onclick={() => setEpisodeCarouselIndex(item.trial_index, carouselIndex - 1, totalLinks)}
+                      type="button"
+                      disabled={!canPrev}
+                      onclick={() => setEpisodeCarouselIndex(item.trial_index, carouselIndex - 1, totalLinks)}
 	                    >
 	                      ←
 	                    </button>
@@ -958,13 +958,9 @@
 	                    >
 	                      →
 	                    </button>
-	                    <div class="flex-1"></div>
-	                    <span class="text-[10px] font-semibold text-slate-500 tabular-nums">{carouselIndex + 1} / {totalLinks}</span>
-	                  </div>
-
-                  {#if secondary}
-                    <div class="hidden sm:block"></div>
-                  {/if}
+                    <div class="flex-1"></div>
+                    <span class="text-[10px] font-semibold text-slate-500 tabular-nums">{carouselIndex + 1} / {totalLinks}</span>
+                  </div>
                 </div>
               {:else}
                 <div class="mt-3 rounded-xl border border-dashed border-slate-200/70 bg-white/70 p-3">
