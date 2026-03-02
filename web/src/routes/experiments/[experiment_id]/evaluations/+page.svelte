@@ -11,6 +11,7 @@
 	  } from '$lib/api/client';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
+  import DatasetEpisodeSearchTab from '$lib/components/recording/DatasetEpisodeSearchTab.svelte';
   import DatasetEpisodeThumbnail from '$lib/components/recording/DatasetEpisodeThumbnail.svelte';
   import { formatPercent } from '$lib/format';
 
@@ -508,6 +509,37 @@
     modalEpisodeIndex = nextEpisode;
   };
 
+  const handlePreviewEpisodeAutoplay = (datasetId: string, episodeIndex: number) => {
+    handlePreviewEpisode(datasetId, episodeIndex);
+    viewerDatasetAutoplayNonce += 1;
+  };
+
+  const activeEpisodeIndexInLinks = $derived.by(() => {
+    if (!viewerDatasetId) return -1;
+    const key = `${viewerDatasetId}:${viewerEpisodeIndex}`;
+    return activeEpisodeLinks.findIndex((link) => `${link.dataset_id}:${link.episode_index}` === key);
+  });
+
+  const prevLinkedEpisode = $derived.by(() => {
+    if (!activeEpisodeLinks.length) return null;
+    if (activeEpisodeIndexInLinks > 0) return activeEpisodeLinks[activeEpisodeIndexInLinks - 1] ?? null;
+    return null;
+  });
+
+  const nextLinkedEpisode = $derived.by(() => {
+    if (!activeEpisodeLinks.length) return null;
+    if (activeEpisodeIndexInLinks >= 0) return activeEpisodeLinks[activeEpisodeIndexInLinks + 1] ?? null;
+    return activeEpisodeLinks[0] ?? null;
+  });
+
+  const onPrevEpisode = $derived.by(() =>
+    prevLinkedEpisode ? () => handlePreviewEpisodeAutoplay(prevLinkedEpisode.dataset_id, prevLinkedEpisode.episode_index) : undefined
+  );
+
+  const onNextEpisode = $derived.by(() =>
+    nextLinkedEpisode ? () => handlePreviewEpisodeAutoplay(nextLinkedEpisode.dataset_id, nextLinkedEpisode.episode_index) : undefined
+  );
+
   const handleAddEpisodeLink = (datasetId: string, episodeIndex: number) => {
     if (!datasetId) return;
     const nextEpisode = Math.max(0, Math.floor(Number(episodeIndex) || 0));
@@ -668,6 +700,18 @@
 
         {#if viewerDatasetId}
           <div class="min-h-0">
+            {#snippet searchInspectorPanel()}
+              <DatasetEpisodeSearchTab
+                datasets={allDatasets}
+                recommendedDatasetId={recommendedDatasetId}
+                previewDatasetId={viewerDatasetId}
+                previewEpisodeIndex={viewerEpisodeIndex}
+                episodeLinks={activeEpisodeLinks}
+                onPreview={handlePreviewEpisode}
+                onAdd={handleAddEpisodeLink}
+                onRemove={handleRemoveEpisodeLink}
+              />
+            {/snippet}
 		            <SessionLayoutEditor
 		              blueprintSessionId={viewerDatasetId}
 		              blueprintSessionKind="recording"
@@ -677,18 +721,15 @@
 		              viewSource="dataset"
 		              editMode={viewerLayoutEditMode}
 	                initialInspectorTab={viewerInitialInspectorTab}
+                inspectorExtraTabs={viewerLayoutEditMode ? [{ id: 'search', label: 'Search', panel: searchInspectorPanel }] : []}
 		              embedded={true}
 		              datasetId={viewerDatasetId}
 			              datasetEpisodeIndex={viewerEpisodeIndex}
 			              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
 			              datasetSignalKeys={$viewerDatasetSignalKeys}
 		              datasetAutoplayNonce={viewerDatasetAutoplayNonce}
-		                searchDatasets={allDatasets}
-		                searchRecommendedDatasetId={recommendedDatasetId}
-		                searchEpisodeLinks={activeEpisodeLinks}
-	                onPreviewEpisode={handlePreviewEpisode}
-	                onAddEpisodeLink={handleAddEpisodeLink}
-	                onRemoveEpisodeLink={handleRemoveEpisodeLink}
+                {onPrevEpisode}
+                {onNextEpisode}
 	            />
           </div>
         {:else}

@@ -14,8 +14,8 @@
     datasetId = '',
     datasetEpisodeIndex = 0,
     playbackController = null,
-    onPrevLinkedEpisode = undefined,
-    onNextLinkedEpisode = undefined
+    onPrevEpisode = undefined,
+    onNextEpisode = undefined
   }: {
     sessionId?: string;
     title?: string;
@@ -24,8 +24,8 @@
     datasetId?: string;
     datasetEpisodeIndex?: number;
     playbackController?: DatasetPlaybackController | null;
-    onPrevLinkedEpisode?: () => void;
-    onNextLinkedEpisode?: () => void;
+    onPrevEpisode?: () => void;
+    onNextEpisode?: () => void;
   } = $props();
 
   let recorderStatus = $state<RecorderStatus | null>(null);
@@ -184,7 +184,7 @@
       clearPendingRestart();
       // Second press during the 1s delay: jump to previous linked episode (if available).
       playbackController.pause();
-      onPrevLinkedEpisode?.();
+      onPrevEpisode?.();
       return;
     }
     playbackController.pause();
@@ -195,7 +195,7 @@
   const handleNextEpisode = () => {
     if (!playbackController) return;
     playbackController.pause();
-    onNextLinkedEpisode?.();
+    onNextEpisode?.();
   };
 
   $effect(() => {
@@ -264,7 +264,7 @@
               class="grid h-9 w-9 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
               type="button"
               onclick={handleNextEpisode}
-              disabled={!datasetCanSeek || !onNextLinkedEpisode}
+              disabled={!datasetCanSeek || !onNextEpisode}
               aria-label="次のエピソード"
               title="次へ"
             >

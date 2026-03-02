@@ -3,26 +3,29 @@
   import type { Snippet } from 'svelte';
 
   let {
-    value = $bindable<'blueprint' | 'selection' | 'search'>('blueprint'),
-    showSearchTab = false,
+    value = $bindable<string>('blueprint'),
     children,
     blueprintPanel,
     selectionPanel,
-    searchPanel
+    extraTabs = []
   }: {
-    value?: 'blueprint' | 'selection' | 'search';
-    showSearchTab?: boolean;
+    value?: string;
     // Svelte 5 passes component children via this prop; declare it to keep typings happy even when using named snippets.
     children?: Snippet;
     blueprintPanel?: Snippet;
     selectionPanel?: Snippet;
-    searchPanel?: Snippet;
+    extraTabs?: { id: string; label: string; panel?: Snippet }[];
   } = $props();
+
+  const resolvedExtraTabs = $derived.by(() =>
+    (extraTabs ?? []).filter((tab) => Boolean(tab?.id) && tab.id !== 'blueprint' && tab.id !== 'selection')
+  );
 </script>
 
 <Tabs.Root bind:value={value}>
   <Tabs.List
-    class={`inline-grid ${showSearchTab ? 'grid-cols-3' : 'grid-cols-2'} gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1`}
+    class="inline-grid gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1"
+    style={`grid-template-columns: repeat(${2 + resolvedExtraTabs.length}, minmax(0, 1fr));`}
   >
     <Tabs.Trigger
       value="blueprint"
@@ -36,14 +39,14 @@
     >
       Selection
     </Tabs.Trigger>
-    {#if showSearchTab}
+    {#each resolvedExtraTabs as tab (tab.id)}
       <Tabs.Trigger
-        value="search"
+        value={tab.id}
         class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
       >
-        Search
+        {tab.label}
       </Tabs.Trigger>
-    {/if}
+    {/each}
   </Tabs.List>
 
   <Tabs.Content value="blueprint" class="mt-3">
@@ -54,9 +57,9 @@
     {@render selectionPanel?.()}
   </Tabs.Content>
 
-  {#if showSearchTab}
-    <Tabs.Content value="search" class="mt-3">
-      {@render searchPanel?.()}
+  {#each resolvedExtraTabs as tab (tab.id)}
+    <Tabs.Content value={tab.id} class="mt-3">
+      {@render tab.panel?.()}
     </Tabs.Content>
-  {/if}
+  {/each}
 </Tabs.Root>

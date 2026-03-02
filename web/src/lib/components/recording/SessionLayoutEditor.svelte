@@ -1,15 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { Snippet } from 'svelte';
   import { toStore } from 'svelte/store';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
-  import { api, type ExperimentEpisodeLink } from '$lib/api/client';
+  import { api } from '$lib/api/client';
 
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import BlueprintTree from '$lib/components/recording/BlueprintTree.svelte';
   import BlueprintWorkspace from '$lib/components/recording/BlueprintWorkspace.svelte';
   import InspectorTabs from '$lib/components/recording/InspectorTabs.svelte';
-  import DatasetEpisodeSearchTab from '$lib/components/recording/DatasetEpisodeSearchTab.svelte';
   import {
     createDatasetPlaybackController,
     type DatasetPlaybackController
@@ -61,12 +61,9 @@
 			    datasetCameraKeys = [],
 			    datasetSignalKeys = [],
 			    datasetAutoplayNonce = 0,
-			    searchDatasets = [],
-			    searchRecommendedDatasetId = '',
-			    searchEpisodeLinks = [],
-			    onPreviewEpisode = undefined,
-		    onAddEpisodeLink = undefined,
-		    onRemoveEpisodeLink = undefined
+			    inspectorExtraTabs = [],
+			    onPrevEpisode = undefined,
+			    onNextEpisode = undefined
 		  }: {
     blueprintSessionId?: string;
     blueprintSessionKind?: BlueprintSessionKind | '';
@@ -75,7 +72,7 @@
     layoutMode?: 'recording' | 'operate';
     viewSource?: ViewConfigSource;
     editMode?: boolean;
-    initialInspectorTab?: 'blueprint' | 'selection' | 'search';
+    initialInspectorTab?: string;
     persistBlueprintDraft?: boolean;
 			    embedded?: boolean;
 			    datasetId?: string;
@@ -83,19 +80,16 @@
 			    datasetCameraKeys?: string[];
 			    datasetSignalKeys?: string[];
 			    datasetAutoplayNonce?: number;
-			    searchDatasets?: { id: string; name?: string; status?: string }[];
-			    searchRecommendedDatasetId?: string;
-			    searchEpisodeLinks?: ExperimentEpisodeLink[];
-			    onPreviewEpisode?: (datasetId: string, episodeIndex: number) => void;
-			    onAddEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
-    onRemoveEpisodeLink?: (datasetId: string, episodeIndex: number) => void;
+			    inspectorExtraTabs?: { id: string; label: string; panel?: Snippet }[];
+			    onPrevEpisode?: () => void;
+			    onNextEpisode?: () => void;
   } = $props();
 
   const resolvedLayoutSessionId = $derived(layoutSessionId || blueprintSessionId);
   const resolvedLayoutSessionKind = $derived(layoutSessionKind || blueprintSessionKind);
   const viewOptions = $derived(getViewOptionsBySource(viewSource));
-  const showSearchTab = $derived(
-    viewSource === 'dataset' && Boolean(onPreviewEpisode) && Boolean(onAddEpisodeLink) && Boolean(onRemoveEpisodeLink)
+  const effectiveInspectorExtraTabs = $derived.by(() =>
+    editMode ? (inspectorExtraTabs ?? []).filter((tab) => Boolean(tab?.id) && Boolean(tab?.label)) : []
   );
 
 	  const topicsQuery = createQuery<ProfileStatusResponse>(
@@ -122,51 +116,6 @@
 		  const datasetPlayback: DatasetPlaybackController = createDatasetPlaybackController();
 		  let lastDatasetPlaybackSignature = $state('');
 		  let lastDatasetAutoplayNonce = $state(0);
-		  let pendingAutoplayOnDatasetChange = $state(false);
-
-		  const linkedEpisodeLinks = $derived.by(() => {
-		    if (!showSearchTab) return [] as ExperimentEpisodeLink[];
-		    return [...(searchEpisodeLinks ?? [])]
-		      .filter((link) => Boolean(link.dataset_id) && Number.isFinite(Number(link.episode_index)))
-		      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-		      .map((link, idx) => ({
-		        dataset_id: String(link.dataset_id),
-		        episode_index: Math.max(0, Math.floor(Number(link.episode_index) || 0)),
-		        sort_order: idx
-		      }));
-		  });
-
-		  const linkedEpisodeIndex = $derived.by(() => {
-		    if (!linkedEpisodeLinks.length) return -1;
-		    const key = `${datasetId}:${Math.max(0, Math.floor(Number(datasetEpisodeIndex) || 0))}`;
-		    return linkedEpisodeLinks.findIndex((link) => `${link.dataset_id}:${link.episode_index}` === key);
-		  });
-
-		  const prevLinkedEpisode = $derived.by(() => {
-		    if (!linkedEpisodeLinks.length) return null;
-		    if (linkedEpisodeIndex > 0) return linkedEpisodeLinks[linkedEpisodeIndex - 1] ?? null;
-		    return null;
-		  });
-
-		  const nextLinkedEpisode = $derived.by(() => {
-		    if (!linkedEpisodeLinks.length) return null;
-		    if (linkedEpisodeIndex >= 0) return linkedEpisodeLinks[linkedEpisodeIndex + 1] ?? null;
-		    return linkedEpisodeLinks[0] ?? null;
-		  });
-
-		  const navigateToLinkedEpisode = (link: ExperimentEpisodeLink | null) => {
-		    if (!link) return;
-		    if (!onPreviewEpisode) return;
-		    pendingAutoplayOnDatasetChange = true;
-		    onPreviewEpisode(link.dataset_id, link.episode_index);
-		  };
-
-		  const onPrevLinkedEpisode = $derived.by(() =>
-		    prevLinkedEpisode ? () => navigateToLinkedEpisode(prevLinkedEpisode) : undefined
-		  );
-		  const onNextLinkedEpisode = $derived.by(() =>
-		    nextLinkedEpisode ? () => navigateToLinkedEpisode(nextLinkedEpisode) : undefined
-		  );
 
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
   let selectedId = $state('');
@@ -174,7 +123,7 @@
   let filledDefaults = $state(false);
   let lastDatasetCameraKeysSignature = $state('');
   let lastDatasetSignalKeysSignature = $state('');
-  let editInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
+  let editInspectorTab = $state<string>('blueprint');
   let inspectorInitialized = $state(false);
   let editorShellEl = $state<HTMLDivElement | null>(null);
   let editorToolbarEl = $state<HTMLDivElement | null>(null);
@@ -327,14 +276,9 @@
     if (inspectorInitialized) return;
     if (!editMode) return;
 
-    const desired =
-      showSearchTab && initialInspectorTab === 'search'
-        ? 'search'
-        : initialInspectorTab === 'search'
-          ? 'selection'
-          : initialInspectorTab;
-
-    editInspectorTab = desired;
+    const desired = String(initialInspectorTab || 'blueprint');
+    const available = ['blueprint', 'selection', ...effectiveInspectorExtraTabs.map((tab) => tab.id)];
+    editInspectorTab = available.includes(desired) ? desired : 'selection';
     inspectorInitialized = true;
   });
 
@@ -359,10 +303,6 @@
 	    if (signature === lastDatasetPlaybackSignature) return;
 	    lastDatasetPlaybackSignature = signature;
 	    datasetPlayback.reset();
-	    if (pendingAutoplayOnDatasetChange) {
-	      pendingAutoplayOnDatasetChange = false;
-	      datasetPlayback.play();
-	    }
 	  });
 
 	  $effect(() => {
@@ -371,7 +311,12 @@
 	    if (!datasetAutoplayNonce) return;
 	    if (datasetAutoplayNonce === lastDatasetAutoplayNonce) return;
 	    lastDatasetAutoplayNonce = datasetAutoplayNonce;
-	    datasetPlayback.play();
+	    // Defer one microtask so dataset switches can reset first, then autoplay.
+	    if (typeof queueMicrotask === 'function') {
+	      queueMicrotask(() => datasetPlayback.play());
+	    } else {
+	      datasetPlayback.play();
+	    }
 	  });
 
   const selectedNode = $derived(selectedId ? findNode(blueprint, selectedId) : null);
@@ -523,14 +468,14 @@
 			              node={blueprint}
 			              selectedId={selectedId}
 		              sessionId={resolvedLayoutSessionId}
-		              sessionKind={resolvedLayoutSessionKind}
-		              mode={layoutMode}
+			              sessionKind={resolvedLayoutSessionKind}
+			              mode={layoutMode}
 			              viewSource={viewSource}
 			              datasetId={datasetId}
 			              datasetEpisodeIndex={datasetEpisodeIndex}
 			              datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
-			              onPrevLinkedEpisode={onPrevLinkedEpisode}
-			              onNextLinkedEpisode={onNextLinkedEpisode}
+			              onPrevEpisode={onPrevEpisode}
+			              onNextEpisode={onNextEpisode}
 			              editMode={editMode}
 			              viewScale={editorViewScale}
 			              onSelect={updateSelection}
@@ -540,7 +485,7 @@
           </div>
 
           <aside class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-3 lg:overflow-y-auto">
-            <InspectorTabs bind:value={editInspectorTab} {showSearchTab}>
+            <InspectorTabs bind:value={editInspectorTab} extraTabs={effectiveInspectorExtraTabs}>
               {#snippet blueprintPanel()}
                 <BlueprintTree node={blueprint} selectedId={selectedId} onSelect={updateSelection} />
               {/snippet}
@@ -700,21 +645,6 @@
                   </div>
                 {/if}
               {/snippet}
-
-              {#if showSearchTab}
-                {#snippet searchPanel()}
-                  <DatasetEpisodeSearchTab
-                    datasets={searchDatasets}
-                    recommendedDatasetId={searchRecommendedDatasetId}
-                    previewDatasetId={datasetId}
-                    previewEpisodeIndex={datasetEpisodeIndex}
-                    episodeLinks={searchEpisodeLinks}
-                    onPreview={onPreviewEpisode}
-                    onAdd={onAddEpisodeLink}
-                    onRemove={onRemoveEpisodeLink}
-                  />
-                {/snippet}
-              {/if}
             </InspectorTabs>
           </aside>
         </div>
@@ -732,8 +662,8 @@
 			        datasetId={datasetId}
 			        datasetEpisodeIndex={datasetEpisodeIndex}
 			        datasetPlayback={viewSource === 'dataset' ? datasetPlayback : null}
-			        onPrevLinkedEpisode={onPrevLinkedEpisode}
-			        onNextLinkedEpisode={onNextLinkedEpisode}
+			        onPrevEpisode={onPrevEpisode}
+			        onNextEpisode={onNextEpisode}
 			        editMode={editMode}
 			        viewScale={1}
 			        onSelect={updateSelection}

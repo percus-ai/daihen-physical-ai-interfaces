@@ -17,8 +17,8 @@
 		    datasetId = '',
 		    datasetEpisodeIndex = 0,
 		    datasetPlayback = null,
-		    onPrevLinkedEpisode = undefined,
-		    onNextLinkedEpisode = undefined,
+		    onPrevEpisode = undefined,
+		    onNextEpisode = undefined,
 		    editMode = true,
 		    viewScale = 1,
 		    onSelect,
@@ -34,8 +34,8 @@
 		    datasetId?: string;
 		    datasetEpisodeIndex?: number;
 		    datasetPlayback?: DatasetPlaybackController | null;
-		    onPrevLinkedEpisode?: () => void;
-		    onNextLinkedEpisode?: () => void;
+		    onPrevEpisode?: () => void;
+		    onNextEpisode?: () => void;
 		    editMode?: boolean;
 		    viewScale?: number;
 		    onSelect: (id: string) => void;
@@ -95,8 +95,8 @@
       baseProps.datasetId = datasetId;
       baseProps.datasetEpisodeIndex = datasetEpisodeIndex;
       baseProps.playbackController = datasetPlayback;
-      baseProps.onPrevLinkedEpisode = onPrevLinkedEpisode;
-      baseProps.onNextLinkedEpisode = onNextLinkedEpisode;
+      baseProps.onPrevEpisode = onPrevEpisode;
+      baseProps.onNextEpisode = onNextEpisode;
     }
     if (viewType === 'controls') {
       baseProps.sessionKind = sessionKind;
@@ -140,8 +140,8 @@
 		            {datasetId}
 		            {datasetEpisodeIndex}
 		            {datasetPlayback}
-		            {onPrevLinkedEpisode}
-		            {onNextLinkedEpisode}
+		            {onPrevEpisode}
+		            {onNextEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}
@@ -162,8 +162,8 @@
 		            {datasetId}
 		            {datasetEpisodeIndex}
 		            {datasetPlayback}
-		            {onPrevLinkedEpisode}
-		            {onNextLinkedEpisode}
+		            {onPrevEpisode}
+		            {onNextEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}
@@ -187,8 +187,8 @@
 		            {datasetId}
 		            {datasetEpisodeIndex}
 		            {datasetPlayback}
-		            {onPrevLinkedEpisode}
-		            {onNextLinkedEpisode}
+		            {onPrevEpisode}
+		            {onNextEpisode}
 		            {editMode}
 		            {viewScale}
 		            {onSelect}
