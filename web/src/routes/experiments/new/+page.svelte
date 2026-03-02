@@ -3,6 +3,7 @@
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
 
   type ModelSummary = {
     id: string;
@@ -12,7 +13,7 @@
   const DEFAULT_METRIC_OPTIONS = ['成功', '失敗', '部分成功'];
 
   const modelsQuery = createQuery<{ models?: ModelSummary[] }>({
-    queryKey: ['storage', 'models'],
+    queryKey: qk.storage.models(),
     queryFn: () => api.storage.models()
   });
 

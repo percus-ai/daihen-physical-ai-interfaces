@@ -2,6 +2,7 @@
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatBytes } from '$lib/format';
 
   type StorageUsageResponse = {
@@ -15,7 +16,7 @@
   };
 
   const usageQuery = createQuery<StorageUsageResponse>({
-    queryKey: ['storage', 'usage', 'page'],
+    queryKey: qk.storage.usagePage(),
     queryFn: api.storage.usage
   });
 </script>

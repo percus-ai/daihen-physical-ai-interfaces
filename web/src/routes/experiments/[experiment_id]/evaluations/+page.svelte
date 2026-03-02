@@ -14,6 +14,7 @@
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import DatasetEpisodeSearchTab from '$lib/components/recording/DatasetEpisodeSearchTab.svelte';
   import DatasetEpisodeThumbnail from '$lib/components/recording/DatasetEpisodeThumbnail.svelte';
+  import { qk } from '$lib/queryKeys';
   import { formatPercent } from '$lib/format';
 
   type Experiment = {
@@ -103,7 +104,7 @@
 
   const modelQuery = createQuery<ModelInfo>(
     toStore(() => ({
-      queryKey: ['storage', 'model', ($experimentQuery.data as Experiment | undefined)?.model_id ?? ''],
+      queryKey: qk.storage.model(($experimentQuery.data as Experiment | undefined)?.model_id ?? ''),
       queryFn: () =>
         api.storage.model(($experimentQuery.data as Experiment | undefined)?.model_id ?? '') as Promise<ModelInfo>,
       enabled: Boolean(($experimentQuery.data as Experiment | undefined)?.model_id)
@@ -112,7 +113,7 @@
 
   const datasetsQuery = createQuery<DatasetListResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'datasets', 'all'],
+      queryKey: qk.storage.datasetsAll(),
       queryFn: () => api.storage.datasets() as Promise<DatasetListResponse>
     }))
   );

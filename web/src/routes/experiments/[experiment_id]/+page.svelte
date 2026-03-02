@@ -5,6 +5,7 @@
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatDate } from '$lib/format';
 
   type Experiment = {
@@ -46,12 +47,12 @@
   );
 
   const modelsQuery = createQuery<{ models?: ModelSummary[] }>({
-    queryKey: ['storage', 'models'],
+    queryKey: qk.storage.models(),
     queryFn: () => api.storage.models()
   });
 
   const datasetsQuery = createQuery<{ datasets?: DatasetSummary[] }>({
-    queryKey: ['storage', 'datasets'],
+    queryKey: qk.storage.datasets(),
     queryFn: () => api.storage.datasets()
   });
 

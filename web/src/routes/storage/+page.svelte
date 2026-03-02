@@ -2,6 +2,7 @@
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatBytes } from '$lib/format';
 
   type DatasetSummary = {
@@ -32,12 +33,12 @@
   };
 
   const datasetsQuery = createQuery<DatasetListResponse>({
-    queryKey: ['storage', 'datasets'],
+    queryKey: qk.storage.datasets(),
     queryFn: () => api.storage.datasets()
   });
 
   const modelsQuery = createQuery<ModelListResponse>({
-    queryKey: ['storage', 'models'],
+    queryKey: qk.storage.models(),
     queryFn: () => api.storage.models()
   });
 </script>

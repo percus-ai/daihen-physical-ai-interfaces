@@ -2,6 +2,7 @@
   import { Button, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate, formatPercent } from '$lib/format';
 
   type OverviewResponse = {
@@ -46,7 +47,7 @@
   });
 
   const storageUsageQuery = createQuery<StorageUsageResponse>({
-    queryKey: ['storage', 'usage'],
+    queryKey: qk.storage.usage(),
     queryFn: api.storage.usage
   });
 </script>

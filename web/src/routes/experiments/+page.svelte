@@ -3,6 +3,7 @@
   import { createQuery } from '@tanstack/svelte-query';
   import { toStore } from 'svelte/store';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatDate, formatPercent } from '$lib/format';
   import { goto } from '$app/navigation';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
@@ -47,7 +48,7 @@
   };
 
   const modelsQuery = createQuery<{ models?: ModelSummary[] }>({
-    queryKey: ['storage', 'models'],
+    queryKey: qk.storage.models(),
     queryFn: () => api.storage.models()
   });
 

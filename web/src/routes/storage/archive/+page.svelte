@@ -2,6 +2,7 @@
   import { Button } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
 
   type ArchiveListResponse = {
@@ -10,7 +11,7 @@
   };
 
   const archiveQuery = createQuery<ArchiveListResponse>({
-    queryKey: ['storage', 'archive', 'manage'],
+    queryKey: qk.storage.archiveManage(),
     queryFn: api.storage.archive
   });
 
@@ -27,7 +28,7 @@
   const selectedCount = $derived(selectedDatasetIds.length + selectedModelIds.length);
 
   const refetchArchive = async () => {
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'archive', 'manage'] });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.archiveManage() });
   };
 
   async function handleBulkRestore() {

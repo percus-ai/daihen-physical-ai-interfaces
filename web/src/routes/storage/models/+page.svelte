@@ -2,6 +2,7 @@
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api, type ModelSyncJobState, type ModelSyncJobStatus } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
   import { connectStream } from '$lib/realtime/stream';
 
@@ -33,12 +34,12 @@
   };
 
   const modelsQuery = createQuery<ModelListResponse>({
-    queryKey: ['storage', 'models', 'manage'],
+    queryKey: qk.storage.modelsManage(),
     queryFn: () => api.storage.models()
   });
 
   const datasetsQuery = createQuery<DatasetListResponse>({
-    queryKey: ['storage', 'datasets', 'lookup'],
+    queryKey: qk.storage.datasetsLookup(),
     queryFn: () => api.storage.datasets()
   });
 

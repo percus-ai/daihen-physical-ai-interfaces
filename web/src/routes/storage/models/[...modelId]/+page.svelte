@@ -5,6 +5,7 @@
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
 
   type ModelInfo = {
@@ -25,7 +26,7 @@
 
   const modelQuery = createQuery<ModelInfo>(
     toStore(() => ({
-      queryKey: ['storage', 'model', modelId],
+      queryKey: qk.storage.model(modelId),
       queryFn: () => api.storage.model(modelId) as Promise<ModelInfo>,
       enabled: Boolean(modelId)
     }))
@@ -40,7 +41,7 @@
 
   const refetchModel = async () => {
     if (!modelId) return;
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'model', modelId] });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.model(modelId) });
   };
 
   async function handleArchive() {

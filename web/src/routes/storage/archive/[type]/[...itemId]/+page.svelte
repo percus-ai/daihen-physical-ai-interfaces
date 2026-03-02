@@ -5,6 +5,7 @@
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
 
   type ArchiveItem = {
@@ -32,7 +33,7 @@
       const currentIsDataset = itemType === 'dataset';
       const currentIsModel = itemType === 'model';
       return {
-        queryKey: ['storage', 'archive', itemType, itemId],
+        queryKey: qk.storage.archiveItem(itemType, itemId),
         queryFn: () => {
           const request = currentIsDataset
             ? api.storage.dataset(itemId)
@@ -53,7 +54,7 @@
   const refetchItem = async () => {
     if (!itemId) return;
     await queryClient.invalidateQueries({
-      queryKey: ['storage', 'archive', itemType, itemId]
+      queryKey: qk.storage.archiveItem(itemType, itemId)
     });
   };
 

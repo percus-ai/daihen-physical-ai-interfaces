@@ -45,7 +45,7 @@
 
   const datasetQuery = createQuery<DatasetInfo>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId],
+      queryKey: qk.storage.dataset(datasetId),
       queryFn: () => api.storage.dataset(datasetId) as Promise<DatasetInfo>,
       enabled: Boolean(datasetId)
     }))
@@ -57,7 +57,7 @@
 
   const candidatesQuery = createQuery<DatasetListResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'datasets', 'profile', profileName],
+      queryKey: qk.storage.datasetsByProfile(profileName),
       queryFn: () => api.storage.datasets(profileName) as Promise<DatasetListResponse>,
       enabled: Boolean(profileName)
     }))
@@ -101,7 +101,7 @@
       actionMessage = message;
     },
     onCompleted: (completedDatasetId) => {
-      void queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', completedDatasetId] });
+      void queryClient.invalidateQueries({ queryKey: qk.storage.dataset(completedDatasetId) });
     }
   });
   onDestroy(datasetAvailability.destroy);
@@ -164,7 +164,7 @@
 
   const refetchDataset = async () => {
     if (!datasetId) return;
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId] });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.dataset(datasetId) });
     await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewer(datasetId) });
     await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerEpisodes(datasetId) });
     await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerSignalFields(datasetId) });
@@ -185,7 +185,7 @@
   const refetchCandidates = async () => {
     if (!profileName) return;
     await queryClient.invalidateQueries({
-      queryKey: ['storage', 'datasets', 'profile', profileName]
+      queryKey: qk.storage.datasetsByProfile(profileName)
     });
   };
 

@@ -2,6 +2,7 @@
   import { Button } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { qk } from '$lib/queryKeys';
   import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
@@ -25,7 +26,7 @@
   };
 
   const datasetsQuery = createQuery<DatasetListResponse>({
-    queryKey: ['storage', 'datasets', 'manage'],
+    queryKey: qk.storage.datasetsManage(),
     queryFn: () => api.storage.datasets()
   });
 
@@ -58,7 +59,7 @@
   const canReupload = $derived(selectedIds.length > 0 && !actionLoading);
 
   const refetchDatasets = async () => {
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'datasets', 'manage'] });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetsManage() });
   };
 
   const displayDatasetLabel = (dataset: DatasetSummary) => dataset.name ?? dataset.id;

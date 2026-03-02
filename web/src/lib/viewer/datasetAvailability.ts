@@ -81,6 +81,8 @@ export const createDatasetAvailabilityController = (opts: {
     const currentDatasetId = get(datasetId);
     if (!currentDatasetId) return;
     await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewer(currentDatasetId) });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerSignalFields(currentDatasetId) });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerEpisodes(currentDatasetId) });
   };
 
   const startSync = async () => {
