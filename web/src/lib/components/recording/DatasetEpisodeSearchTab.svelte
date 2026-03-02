@@ -78,18 +78,66 @@
 
   const selectedTotalEpisodes = $derived(Number($selectedDatasetViewerQuery.data?.total_episodes ?? 0));
 
-  const unselectedEpisodes = $derived.by(() => {
+  const upperBound = (sorted: number[], value: number) => {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (sorted[mid] <= value) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
+  const lowerBound = (sorted: number[], value: number) => {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (sorted[mid] < value) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
+  const selectedIndicesSortedForDataset = $derived.by(() => {
     if (!selectedDatasetId) return [] as number[];
     const total = Math.max(0, Math.floor(Number(selectedTotalEpisodes) || 0));
     if (!Number.isFinite(total) || total <= 0) return [] as number[];
 
-    const result: number[] = [];
-    for (let index = 0; index < total; index += 1) {
-      if (selectedKeySet.has(`${selectedDatasetId}:${index}`)) continue;
-      result.push(index);
+    const unique = new Set<number>();
+    for (const link of activeEpisodeLinks) {
+      if (String(link.dataset_id ?? '') !== selectedDatasetId) continue;
+      const index = Math.floor(Number(link.episode_index) || 0);
+      if (!Number.isFinite(index) || index < 0 || index >= total) continue;
+      unique.add(index);
     }
-    return result;
+    return [...unique].sort((a, b) => a - b);
   });
+
+  const isSelectedEpisodeIndex = (sortedSelected: number[], episodeIndex: number) => {
+    const pos = lowerBound(sortedSelected, episodeIndex);
+    return pos < sortedSelected.length && sortedSelected[pos] === episodeIndex;
+  };
+
+  const kthUnselectedEpisodeIndex = (total: number, sortedSelected: number[], rowIndex: number) => {
+    // rowIndex is 0-indexed among unselected episodes.
+    if (total <= 0) return -1;
+    const unselectedTotal = total - sortedSelected.length;
+    if (rowIndex < 0 || rowIndex >= unselectedTotal) return -1;
+
+    const target = rowIndex + 1; // 1-indexed count
+    let lo = 0;
+    let hi = total - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const selectedLE = upperBound(sortedSelected, mid);
+      const unselectedUpTo = (mid + 1) - selectedLE;
+      if (unselectedUpTo >= target) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  };
 
   let unselectedScrollEl = $state<HTMLDivElement | null>(null);
   let unselectedScrollTop = $state(0);
@@ -97,7 +145,12 @@
   const rowHeight = 44;
   const overscan = 6;
 
-  const unselectedTotalRows = $derived(unselectedEpisodes.length);
+  const unselectedTotalRows = $derived.by(() => {
+    if (!selectedDatasetId) return 0;
+    const total = Math.max(0, Math.floor(Number(selectedTotalEpisodes) || 0));
+    if (!Number.isFinite(total) || total <= 0) return 0;
+    return Math.max(0, total - selectedIndicesSortedForDataset.length);
+  });
   const unselectedStartIndex = $derived(
     Math.max(0, Math.floor((unselectedScrollTop || 0) / rowHeight) - overscan)
   );
@@ -107,9 +160,20 @@
   const unselectedEndIndex = $derived(
     Math.min(unselectedTotalRows, unselectedStartIndex + unselectedVisibleCount)
   );
-  const unselectedVisibleEpisodes = $derived(
-    unselectedEpisodes.slice(unselectedStartIndex, unselectedEndIndex)
-  );
+  const unselectedVisibleEpisodes = $derived.by(() => {
+    if (!selectedDatasetId) return [] as number[];
+    const total = Math.max(0, Math.floor(Number(selectedTotalEpisodes) || 0));
+    if (!Number.isFinite(total) || total <= 0) return [] as number[];
+
+    const result: number[] = [];
+    const start = Math.max(0, Math.floor(Number(unselectedStartIndex) || 0));
+    const end = Math.min(Math.max(0, Math.floor(Number(unselectedEndIndex) || 0)), unselectedTotalRows);
+    for (let row = start; row < end; row += 1) {
+      const episodeIndex = kthUnselectedEpisodeIndex(total, selectedIndicesSortedForDataset, row);
+      if (episodeIndex >= 0) result.push(episodeIndex);
+    }
+    return result;
+  });
 
   const updateViewportHeight = () => {
     if (!unselectedScrollEl) return;
@@ -123,6 +187,10 @@
     selectedDatasetId = datasetId;
     step = 'episode';
     episodeJumpInput = '';
+    unselectedScrollTop = 0;
+    if (unselectedScrollEl) {
+      unselectedScrollEl.scrollTop = 0;
+    }
   };
 
   const handlePreview = (datasetId: string, episodeIndex: number) => {
@@ -141,8 +209,23 @@
     if (!selectedDatasetId) return;
     const raw = Math.floor(Number(episodeJumpInput) || 0);
     if (!Number.isFinite(raw) || raw <= 0) return;
+    const total = Math.max(0, Math.floor(Number(selectedTotalEpisodes) || 0));
+    if (!Number.isFinite(total) || total <= 0) return;
     const episodeIndex = raw - 1;
+    if (episodeIndex < 0 || episodeIndex >= total) return;
     handlePreview(selectedDatasetId, episodeIndex);
+
+    // Best-effort: align the unselected list position to the target when it exists in that list.
+    // (If already selected/linked, the episode won't exist in unselected list.)
+    if (!unselectedScrollEl) return;
+    if (isSelectedEpisodeIndex(selectedIndicesSortedForDataset, episodeIndex)) return;
+    const selectedBefore = lowerBound(selectedIndicesSortedForDataset, episodeIndex);
+    const rowIndex = episodeIndex - selectedBefore;
+    const nextTop = Math.max(0, rowIndex * rowHeight - rowHeight * 2);
+    if (Math.abs(unselectedScrollEl.scrollTop - nextTop) > 1) {
+      unselectedScrollEl.scrollTop = nextTop;
+      unselectedScrollTop = nextTop;
+    }
   };
 
   $effect(() => {
@@ -266,7 +349,12 @@
             handleJump();
           }}
         />
-        <button class="btn-ghost" type="button" onclick={handleJump} disabled={!selectedDatasetId}>
+        <button
+          class="btn-ghost"
+          type="button"
+          onclick={handleJump}
+          disabled={!selectedDatasetId || $selectedDatasetViewerQuery.isLoading || selectedTotalEpisodes <= 0}
+        >
           表示
         </button>
       </div>
