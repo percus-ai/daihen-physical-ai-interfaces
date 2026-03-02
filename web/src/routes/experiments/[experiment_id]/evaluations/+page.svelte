@@ -3,6 +3,7 @@
   import { page } from '$app/state';
   import { Button, Dialog, Tooltip } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import toast from 'svelte-french-toast';
 	  import {
 	    api,
 	    type DatasetSyncJobStatus,
@@ -496,10 +497,9 @@
   };
 
   let episodeLinksAutoSaving = $state(false);
-  let episodeLinksAutoSaveError = $state('');
-  let lastEpisodeLinksAutoSaveTrialIndex = $state<number | null>(null);
-  let pendingEpisodeLinksAutoSaveTimer: number | null = $state(null);
-  let episodeLinksAutoSaveGeneration = $state(0);
+  let episodeLinksAutoSavePending = $state(false);
+  let episodeLinksAutoSaveTimer: number | null = $state(null);
+  const EPISODE_LINKS_AUTOSAVE_TOAST_ID = 'episode-links-autosave';
 
   const snapshotEvaluationReplaceItems = () =>
     evaluationItems.map((item) => ({
@@ -510,37 +510,38 @@
       episode_links: item.episode_links
     }));
 
-  const flushEpisodeLinksAutoSave = async (generation: number) => {
+  const flushEpisodeLinksAutoSave = async () => {
     if (!experiment) return;
     if (submitting) return; // avoid fighting the explicit save flow
+    if (episodeLinksAutoSaving) {
+      episodeLinksAutoSavePending = true;
+      return;
+    }
     episodeLinksAutoSaving = true;
-    episodeLinksAutoSaveError = '';
+    episodeLinksAutoSavePending = false;
     const items = snapshotEvaluationReplaceItems();
     try {
+      toast.loading('紐付けを自動保存中...', { id: EPISODE_LINKS_AUTOSAVE_TOAST_ID });
       await api.experiments.replaceEvaluations(experiment.id, { items });
     } catch {
-      episodeLinksAutoSaveError = '紐付けエピソードの自動保存に失敗しました。';
+      toast.error('紐付けエピソードの自動保存に失敗しました。', { id: EPISODE_LINKS_AUTOSAVE_TOAST_ID });
       return;
     } finally {
       episodeLinksAutoSaving = false;
     }
-    if (episodeLinksAutoSaveGeneration !== generation) {
-      // Another change happened while saving; schedule one more flush.
-      scheduleEpisodeLinksAutoSave(lastEpisodeLinksAutoSaveTrialIndex ?? activeTrialIndex);
-    }
+    toast.dismiss(EPISODE_LINKS_AUTOSAVE_TOAST_ID);
+    if (episodeLinksAutoSavePending) scheduleEpisodeLinksAutoSave();
   };
 
-  const scheduleEpisodeLinksAutoSave = (trialIndex: number) => {
-    lastEpisodeLinksAutoSaveTrialIndex = trialIndex;
-    episodeLinksAutoSaveGeneration += 1;
-    const generation = episodeLinksAutoSaveGeneration;
-    if (pendingEpisodeLinksAutoSaveTimer != null && typeof window !== 'undefined') {
-      window.clearTimeout(pendingEpisodeLinksAutoSaveTimer);
+  const scheduleEpisodeLinksAutoSave = () => {
+    episodeLinksAutoSavePending = true;
+    if (episodeLinksAutoSaveTimer != null && typeof window !== 'undefined') {
+      window.clearTimeout(episodeLinksAutoSaveTimer);
     }
     if (typeof window === 'undefined') return;
-    pendingEpisodeLinksAutoSaveTimer = window.setTimeout(() => {
-      pendingEpisodeLinksAutoSaveTimer = null;
-      void flushEpisodeLinksAutoSave(generation);
+    episodeLinksAutoSaveTimer = window.setTimeout(() => {
+      episodeLinksAutoSaveTimer = null;
+      void flushEpisodeLinksAutoSave();
     }, 650);
   };
 
@@ -624,7 +625,7 @@
         sort_order: activeEpisodeLinks.length
       }
     ]);
-    scheduleEpisodeLinksAutoSave(activeTrialIndex);
+    scheduleEpisodeLinksAutoSave();
   };
 
   const handleRemoveEpisodeLink = (datasetId: string, episodeIndex: number) => {
@@ -634,7 +635,7 @@
     updateActiveEpisodeLinks(
       activeEpisodeLinks.filter((link) => !(link.dataset_id === datasetId && link.episode_index === nextEpisode))
     );
-    scheduleEpisodeLinksAutoSave(activeTrialIndex);
+    scheduleEpisodeLinksAutoSave();
   };
 
   const openLinkEditor = (trialIndex: number) => {
@@ -746,11 +747,6 @@
 	                  / {viewerDatasetId} / episode {viewerEpisodeIndex}
 	                {/if}
 	              </p>
-	              {#if episodeLinksAutoSaving && lastEpisodeLinksAutoSaveTrialIndex === activeTrialIndex}
-	                <p class="mt-1 text-[11px] text-slate-500">紐付けを自動保存中...</p>
-	              {:else if episodeLinksAutoSaveError && lastEpisodeLinksAutoSaveTrialIndex === activeTrialIndex}
-	                <p class="mt-1 text-[11px] text-rose-600">{episodeLinksAutoSaveError}</p>
-	              {/if}
 	              {#if viewerDatasetId && $viewerDatasetQuery.isLoading}
 	                <p class="mt-1 text-[11px] text-slate-500">データセット情報を取得中...</p>
 	              {:else if viewerDatasetId && !viewerIsLocal}
