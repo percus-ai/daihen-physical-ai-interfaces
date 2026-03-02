@@ -3,6 +3,12 @@
   import { createQuery } from '@tanstack/svelte-query';
   import { api, type ExperimentEpisodeLink, type DatasetViewerResponse } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
+  import {
+    kthUnselectedEpisodeIndex,
+    normalizeSelectedEpisodeIndices,
+    unselectedRowForEpisodeIndex,
+    unselectedTotalRows as getUnselectedTotalRows
+  } from '$lib/viewer/episodeIndexing';
 
   type DatasetListItem = {
     id: string;
@@ -39,16 +45,6 @@
     [...(episodeLinks ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
   );
 
-  const selectedKeySet = $derived.by(() => {
-    const set = new Set<string>();
-    for (const link of activeEpisodeLinks) {
-      if (!link.dataset_id) continue;
-      if (typeof link.episode_index !== 'number') continue;
-      set.add(`${link.dataset_id}:${link.episode_index}`);
-    }
-    return set;
-  });
-
   const normalizedPreviewEpisodeIndex = $derived(Math.max(0, Math.floor(Number(previewEpisodeIndex) || 0)));
   const previewKey = $derived(`${previewDatasetId}:${normalizedPreviewEpisodeIndex}`);
 
@@ -78,66 +74,18 @@
 
   const selectedTotalEpisodes = $derived(Number($selectedDatasetViewerQuery.data?.total_episodes ?? 0));
 
-  const upperBound = (sorted: number[], value: number) => {
-    let lo = 0;
-    let hi = sorted.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (sorted[mid] <= value) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
-
-  const lowerBound = (sorted: number[], value: number) => {
-    let lo = 0;
-    let hi = sorted.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (sorted[mid] < value) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
-
   const selectedIndicesSortedForDataset = $derived.by(() => {
     if (!selectedDatasetId) return [] as number[];
     const total = Math.max(0, Math.floor(Number(selectedTotalEpisodes) || 0));
     if (!Number.isFinite(total) || total <= 0) return [] as number[];
 
-    const unique = new Set<number>();
+    const indices: number[] = [];
     for (const link of activeEpisodeLinks) {
       if (String(link.dataset_id ?? '') !== selectedDatasetId) continue;
-      const index = Math.floor(Number(link.episode_index) || 0);
-      if (!Number.isFinite(index) || index < 0 || index >= total) continue;
-      unique.add(index);
+      indices.push(Number(link.episode_index));
     }
-    return [...unique].sort((a, b) => a - b);
+    return normalizeSelectedEpisodeIndices(total, indices);
   });
-
-  const isSelectedEpisodeIndex = (sortedSelected: number[], episodeIndex: number) => {
-    const pos = lowerBound(sortedSelected, episodeIndex);
-    return pos < sortedSelected.length && sortedSelected[pos] === episodeIndex;
-  };
-
-  const kthUnselectedEpisodeIndex = (total: number, sortedSelected: number[], rowIndex: number) => {
-    // rowIndex is 0-indexed among unselected episodes.
-    if (total <= 0) return -1;
-    const unselectedTotal = total - sortedSelected.length;
-    if (rowIndex < 0 || rowIndex >= unselectedTotal) return -1;
-
-    const target = rowIndex + 1; // 1-indexed count
-    let lo = 0;
-    let hi = total - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      const selectedLE = upperBound(sortedSelected, mid);
-      const unselectedUpTo = (mid + 1) - selectedLE;
-      if (unselectedUpTo >= target) hi = mid;
-      else lo = mid + 1;
-    }
-    return lo;
-  };
 
   let unselectedScrollEl = $state<HTMLDivElement | null>(null);
   let unselectedScrollTop = $state(0);
@@ -149,7 +97,7 @@
     if (!selectedDatasetId) return 0;
     const total = Math.max(0, Math.floor(Number(selectedTotalEpisodes) || 0));
     if (!Number.isFinite(total) || total <= 0) return 0;
-    return Math.max(0, total - selectedIndicesSortedForDataset.length);
+    return getUnselectedTotalRows(total, selectedIndicesSortedForDataset);
   });
   const unselectedStartIndex = $derived(
     Math.max(0, Math.floor((unselectedScrollTop || 0) / rowHeight) - overscan)
@@ -170,7 +118,7 @@
     const end = Math.min(Math.max(0, Math.floor(Number(unselectedEndIndex) || 0)), unselectedTotalRows);
     for (let row = start; row < end; row += 1) {
       const episodeIndex = kthUnselectedEpisodeIndex(total, selectedIndicesSortedForDataset, row);
-      if (episodeIndex >= 0) result.push(episodeIndex);
+      if (episodeIndex !== null) result.push(episodeIndex);
     }
     return result;
   });
@@ -218,9 +166,8 @@
     // Best-effort: align the unselected list position to the target when it exists in that list.
     // (If already selected/linked, the episode won't exist in unselected list.)
     if (!unselectedScrollEl) return;
-    if (isSelectedEpisodeIndex(selectedIndicesSortedForDataset, episodeIndex)) return;
-    const selectedBefore = lowerBound(selectedIndicesSortedForDataset, episodeIndex);
-    const rowIndex = episodeIndex - selectedBefore;
+    const rowIndex = unselectedRowForEpisodeIndex(total, selectedIndicesSortedForDataset, episodeIndex);
+    if (rowIndex === null) return;
     const nextTop = Math.max(0, rowIndex * rowHeight - rowHeight * 2);
     if (Math.abs(unselectedScrollEl.scrollTop - nextTop) > 1) {
       unselectedScrollEl.scrollTop = nextTop;
