@@ -389,9 +389,41 @@
   $effect(() => {
     if (source !== 'dataset') return;
     if (!playbackController) return;
-    return playbackController.subscribe((next) => {
-      playbackState = next;
+    let pending: DatasetPlaybackState | null = null;
+    let rafId: number | null = null;
+    let lastAt = 0;
+    const minIntervalMs = 1000 / 20;
+
+    const flush = (timestamp: number) => {
+      rafId = null;
+      if (timestamp - lastAt < minIntervalMs) {
+        rafId = window.requestAnimationFrame(flush);
+        return;
+      }
+      lastAt = timestamp;
+      if (!pending) return;
+      playbackState = pending;
+      pending = null;
+    };
+
+    const unsub = playbackController.subscribe((next) => {
+      pending = next;
+      if (typeof window === 'undefined') {
+        playbackState = next;
+        pending = null;
+        return;
+      }
+      if (rafId == null) rafId = window.requestAnimationFrame(flush);
     });
+
+    return () => {
+      unsub?.();
+      if (rafId != null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(rafId);
+      }
+      rafId = null;
+      pending = null;
+    };
   });
 </script>
 

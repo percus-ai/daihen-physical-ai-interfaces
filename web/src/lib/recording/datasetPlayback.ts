@@ -37,7 +37,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
   let rafId: number | null = null;
   let lastRafAt = 0;
   let lastReportedTime = -1;
-  const targetUpdateIntervalMs = 1000 / 30; // keep UI responsive without spamming renders
+  const targetUpdateIntervalMs = 1000 / 20; // keep UI responsive without spamming renders
   let clockBaseTime = 0;
   let clockBaseAt = 0;
   let lastClockSyncAt = 0;
