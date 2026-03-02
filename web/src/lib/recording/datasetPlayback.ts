@@ -34,6 +34,17 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
 
   let leader: HTMLVideoElement | null = null;
   let ignoreTimeUpdates = false;
+  let rafId: number | null = null;
+  let lastRafAt = 0;
+  let lastReportedTime = -1;
+  const targetUpdateIntervalMs = 1000 / 30; // keep UI responsive without spamming renders
+
+  const getRvfc = (video: HTMLVideoElement) =>
+    (video as unknown as { requestVideoFrameCallback?: (cb: (now: number) => void) => number })
+      .requestVideoFrameCallback;
+  const getCancelRvfc = (video: HTMLVideoElement) =>
+    (video as unknown as { cancelVideoFrameCallback?: (id: number) => void }).cancelVideoFrameCallback;
+  let rvfcId: number | null = null;
 
   const notify = () => {
     for (const subscriber of subscribers) subscriber(state);
@@ -46,6 +57,82 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
 
   const pickLeader = () => {
     leader = videos.values().next().value ?? null;
+  };
+
+  const stopClock = () => {
+    if (rafId != null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    if (rvfcId != null && leader) {
+      const cancel = getCancelRvfc(leader);
+      try {
+        cancel?.(rvfcId);
+      } catch {
+        // ignored
+      }
+      rvfcId = null;
+    }
+    lastRafAt = 0;
+    lastReportedTime = -1;
+  };
+
+  const startClock = () => {
+    if (!leader) return;
+    if (!state.playing) return;
+    if (rafId != null || rvfcId != null) return;
+
+    const tick = (now: number) => {
+      if (!state.playing) {
+        stopClock();
+        return;
+      }
+      if (!leader) {
+        stopClock();
+        return;
+      }
+      if (ignoreTimeUpdates) {
+        rafId = window.requestAnimationFrame(tick);
+        return;
+      }
+      if (now - lastRafAt < targetUpdateIntervalMs) {
+        rafId = window.requestAnimationFrame(tick);
+        return;
+      }
+      lastRafAt = now;
+      const time = leader.currentTime;
+      if (Number.isFinite(time) && Math.abs(time - lastReportedTime) > 1e-3) {
+        lastReportedTime = time;
+        setState({ currentTime: time });
+      }
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    const rvfc = getRvfc(leader);
+    if (rvfc) {
+      const step = () => {
+        if (!state.playing) {
+          stopClock();
+          return;
+        }
+        if (!leader || ignoreTimeUpdates) {
+          rvfcId = rvfc(step);
+          return;
+        }
+        const time = leader.currentTime;
+        if (Number.isFinite(time) && Math.abs(time - lastReportedTime) > 1e-3) {
+          lastReportedTime = time;
+          setState({ currentTime: time });
+        }
+        rvfcId = rvfc(step);
+      };
+      rvfcId = rvfc(step);
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      rafId = window.requestAnimationFrame(tick);
+    }
   };
 
   const updateDuration = () => {
@@ -149,17 +236,30 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
       };
       const onTimeUpdate = () => {
         if (ignoreTimeUpdates) return;
-        if (leader !== video) return;
         if (!Number.isFinite(video.currentTime)) return;
+        if (leader !== video) {
+          // If the current leader is not actually playing, switch to the active one.
+          if (!leader || leader.paused || leader.ended) {
+            leader = video;
+            stopClock();
+            startClock();
+          } else {
+            return;
+          }
+        }
         setState({ currentTime: video.currentTime });
       };
       const onPlay = () => {
-        if (!leader) leader = video;
+        // Prefer the element that is actually playing as the leader.
+        leader = video;
+        stopClock();
         setState({ playing: true });
+        startClock();
       };
       const onPause = () => {
         const anyPlaying = Array.from(videos).some((v) => !v.paused && !v.ended);
         setState({ playing: anyPlaying });
+        if (!anyPlaying) stopClock();
       };
       const onRateChange = () => {
         if (!Number.isFinite(video.playbackRate)) return;
@@ -186,19 +286,23 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
         videos.delete(video);
         if (leader === video) pickLeader();
         updateDuration();
+        if (!leader) stopClock();
       };
     },
     play: () => {
       setState({ playing: true });
       playAll();
+      startClock();
     },
     pause: () => {
       pauseAll();
       setState({ playing: false });
+      stopClock();
     },
     stop: () => {
       pauseAll();
       setState({ playing: false });
+      stopClock();
       seekInternal(0);
     },
     seek: (time) => {
@@ -218,6 +322,7 @@ export const createDatasetPlaybackController = (): DatasetPlaybackController => 
     reset: () => {
       pauseAll();
       setState({ playing: false, currentTime: 0, duration: 0, ready: false, rate: 1 });
+      stopClock();
       for (const video of videos) {
         try {
           video.playbackRate = 1;
