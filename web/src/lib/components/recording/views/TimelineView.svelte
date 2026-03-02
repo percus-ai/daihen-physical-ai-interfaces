@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { DatasetPlaybackController, DatasetPlaybackState } from '$lib/recording/datasetPlayback';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -9,34 +8,15 @@
   let {
     sessionId = '',
     title = 'Timeline',
-    mode = 'recording',
-    viewSource = 'ros',
-    datasetId = '',
-    datasetEpisodeIndex = 0,
-    playbackController = null,
-    onPrevLinkedEpisode = undefined,
-    onNextLinkedEpisode = undefined
+    mode = 'recording'
   }: {
     sessionId?: string;
     title?: string;
     mode?: 'recording' | 'operate';
-    viewSource?: 'ros' | 'dataset';
-    datasetId?: string;
-    datasetEpisodeIndex?: number;
-    playbackController?: DatasetPlaybackController | null;
-    onPrevLinkedEpisode?: () => void;
-    onNextLinkedEpisode?: () => void;
   } = $props();
 
   let recorderStatus = $state<RecorderStatus | null>(null);
   let rosbridgeStatus = $state<RosbridgeStatus>('idle');
-  let playbackState = $state<DatasetPlaybackState>({
-    playing: false,
-    currentTime: 0,
-    duration: 0,
-    rate: 1,
-    ready: false
-  });
 
   const asNumber = (value: unknown, fallback = 0) => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -46,7 +26,6 @@
 
   $effect(() => {
     if (typeof window === 'undefined') return;
-    if (viewSource === 'dataset') return;
     return subscribeRecorderStatus({
       onStatus: (next) => {
         recorderStatus = next;
@@ -55,22 +34,6 @@
         rosbridgeStatus = next;
       }
     });
-  });
-
-  $effect(() => {
-    if (viewSource !== 'dataset') return;
-    if (!playbackController) return;
-    playbackState = playbackController.getState();
-    const unsubState = playbackController.subscribeState((next) => {
-      playbackState = next;
-    });
-    const unsubTime = playbackController.subscribeTime((time) => {
-      playbackState = { ...playbackState, currentTime: time };
-    }, { maxFps: 30 });
-    return () => {
-      unsubState?.();
-      unsubTime?.();
-    };
   });
 
   const status = $derived(recorderStatus ?? {});
@@ -135,168 +98,15 @@
   );
 
   const formatSeconds = (value: number) => `${value.toFixed(1)}s`;
-
-  const datasetCanSeek = $derived(
-    viewSource === 'dataset' &&
-      Boolean(playbackController) &&
-      playbackState.ready &&
-      Number.isFinite(playbackState.duration) &&
-      playbackState.duration > 0
-  );
-
-  const handleTogglePlay = () => {
-    if (!playbackController) return;
-    if (playbackState.playing) {
-      playbackController.pause();
-    } else {
-      playbackController.play();
-    }
-  };
-
-  const handleSeek = (event: Event) => {
-    if (!playbackController) return;
-    const value = Number((event.target as HTMLInputElement | null)?.value ?? 0);
-    playbackController.seek(value);
-  };
-
-  let pendingRestartTimer: number | null = $state(null);
-
-  const clearPendingRestart = () => {
-    if (pendingRestartTimer != null && typeof window !== 'undefined') {
-      window.clearTimeout(pendingRestartTimer);
-    }
-    pendingRestartTimer = null;
-  };
-
-  const scheduleRestartPlay = () => {
-    if (!playbackController) return;
-    if (typeof window === 'undefined') return;
-    clearPendingRestart();
-    pendingRestartTimer = window.setTimeout(() => {
-      pendingRestartTimer = null;
-      playbackController.play();
-    }, 1000);
-  };
-
-  const handleRestartOrPrevEpisode = () => {
-    if (!playbackController) return;
-    if (pendingRestartTimer != null) {
-      clearPendingRestart();
-      // Second press during the 1s delay: jump to previous linked episode (if available).
-      playbackController.pause();
-      onPrevLinkedEpisode?.();
-      return;
-    }
-    playbackController.pause();
-    playbackController.seek(0);
-    scheduleRestartPlay();
-  };
-
-  const handleNextEpisode = () => {
-    if (!playbackController) return;
-    playbackController.pause();
-    onNextLinkedEpisode?.();
-  };
-
-  $effect(() => {
-    if (typeof window === 'undefined') return;
-    return () => {
-      clearPendingRestart();
-    };
-  });
 </script>
 
 <div class="flex h-full flex-col gap-3">
   <div class="flex items-center justify-between">
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
-    <span class="text-[10px] text-slate-400">
-      {#if viewSource === 'dataset'}
-        {datasetId ? `${datasetId} / ep ${Number(datasetEpisodeIndex) + 1}` : 'dataset未選択'}
-      {:else}
-        {timelineLabel}
-      {/if}
-    </span>
+    <span class="text-[10px] text-slate-400">{timelineLabel}</span>
   </div>
 
-  {#if viewSource === 'dataset'}
-    {#if !playbackController}
-      <div class="rounded-xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
-        再生コントローラが見つかりません。
-      </div>
-    {:else}
-      <div class="rounded-2xl border border-slate-200/60 bg-white/70 p-3">
-        <div class="flex items-center gap-3">
-          <div class="flex shrink-0 items-center gap-1">
-            <button
-              class="grid h-9 w-9 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-              type="button"
-              onclick={handleRestartOrPrevEpisode}
-              disabled={!datasetCanSeek}
-              aria-label="0秒に戻す / もう一度で前のエピソード"
-              title="0秒に戻す / もう一度で前へ"
-            >
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4">
-                <path d="M11 15L6 10l5-5" stroke-linecap="round" stroke-linejoin="round" />
-                <path d="M17 15l-5-5 5-5" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-
-            <button
-              class="grid h-9 w-9 place-items-center rounded-full bg-brand text-white shadow-glow transition hover:translate-y-[-1px] hover:shadow-lg disabled:opacity-50"
-              type="button"
-              onclick={handleTogglePlay}
-              disabled={!datasetCanSeek}
-              aria-label={playbackState.playing ? '一時停止' : '再生'}
-              title={playbackState.playing ? '一時停止' : '再生'}
-            >
-              {#if playbackState.playing}
-                <svg viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
-                  <path d="M6 4h3v12H6V4zM11 4h3v12h-3V4z" />
-                </svg>
-              {:else}
-                <svg viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
-                  <path d="M7 5v10l9-5-9-5z" />
-                </svg>
-              {/if}
-            </button>
-
-            <button
-              class="grid h-9 w-9 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-              type="button"
-              onclick={handleNextEpisode}
-              disabled={!datasetCanSeek || !onNextLinkedEpisode}
-              aria-label="次のエピソード"
-              title="次へ"
-            >
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4">
-                <path d="M9 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
-                <path d="M3 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-          </div>
-
-          <input
-            class="h-2 w-full flex-1 accent-[rgb(91,124,250)] disabled:opacity-50"
-            type="range"
-            min="0"
-            max={Math.max(0, playbackState.duration || 0)}
-            step="0.05"
-            value={Math.min(Math.max(playbackState.currentTime || 0, 0), Math.max(0, playbackState.duration || 0))}
-            oninput={handleSeek}
-            disabled={!datasetCanSeek}
-          />
-
-          <span class="shrink-0 text-right text-xs font-semibold text-slate-600 tabular-nums">
-            {formatSeconds(playbackState.currentTime)} / {formatSeconds(playbackState.duration || 0)}
-          </span>
-        </div>
-
-        {#if !playbackState.ready}
-          <p class="mt-2 text-[10px] text-slate-400">動画メタデータ読込中…</p>
-        {/if}
-      </div>
-    {/if}
-  {:else if mode !== 'recording'}
+  {#if mode !== 'recording'}
     <div class="rounded-xl border border-amber-200/70 bg-amber-50/60 p-3 text-xs text-amber-700">
       このビューはデータセット収録のみ対応しています。
     </div>

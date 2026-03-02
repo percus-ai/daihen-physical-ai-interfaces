@@ -2,7 +2,6 @@
   import { Button } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
-  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
   type DatasetSummary = {
@@ -36,8 +35,6 @@
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
-  let viewerModalOpen = $state(false);
-  let viewerDatasetId = $state('');
 
   const datasets = $derived($datasetsQuery.data?.datasets ?? []);
   const selectedDatasets = $derived(datasets.filter((dataset) => selectedIds.includes(dataset.id)));
@@ -62,11 +59,6 @@
   };
 
   const displayDatasetLabel = (dataset: DatasetSummary) => dataset.name ?? dataset.id;
-
-  const openViewer = (datasetId: string) => {
-    viewerDatasetId = datasetId;
-    viewerModalOpen = true;
-  };
 
   async function handleMerge() {
     actionMessage = '';
@@ -231,10 +223,7 @@
               <td class="py-3"><span class="chip">{dataset.status}</span></td>
               <td class="py-3">{formatDate(dataset.created_at)}</td>
               <td class="py-3 text-right">
-                <div class="flex justify-end gap-2">
-                  <Button.Root class="btn-ghost" type="button" onclick={() => openViewer(dataset.id)}>ビューア</Button.Root>
-                  <Button.Root class="btn-ghost" href={`/storage/datasets/${dataset.id}`}>詳細</Button.Root>
-                </div>
+                <Button.Root class="btn-ghost" href={`/storage/datasets/${dataset.id}`}>詳細</Button.Root>
               </td>
             </tr>
           {/each}
@@ -320,5 +309,3 @@
     <p class="mt-2 text-sm text-rose-600">{actionError}</p>
   {/if}
 </section>
-
-<DatasetViewerModal bind:open={viewerModalOpen} datasetId={viewerDatasetId} title="Dataset Viewer" />

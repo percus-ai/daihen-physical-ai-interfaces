@@ -9,10 +9,6 @@ from interfaces_backend.api.operate import get_operate_status
 from interfaces_backend.api.profiles import get_active_profile_status, get_vlabor_status
 from interfaces_backend.api.training import get_job, get_job_metrics
 from interfaces_backend.services.dataset_lifecycle import UPLOAD_TOPIC, get_dataset_lifecycle
-from interfaces_backend.services.dataset_sync_jobs import (
-    DATASET_SYNC_JOB_TOPIC,
-    get_dataset_sync_jobs_service,
-)
 from interfaces_backend.services.model_sync_jobs import (
     MODEL_SYNC_JOB_TOPIC,
     get_model_sync_jobs_service,
@@ -197,21 +193,6 @@ async def stream_model_sync_job(request: Request, job_id: str):
     bus = get_realtime_event_bus()
     subscription = bus.subscribe(MODEL_SYNC_JOB_TOPIC, job_id)
     await bus.publish(MODEL_SYNC_JOB_TOPIC, job_id, snapshot.model_dump(mode="json"))
-    return sse_queue_response(
-        request,
-        subscription.queue,
-        on_close=subscription.close,
-    )
-
-
-@router.get("/storage/dataset-sync/jobs/{job_id}")
-async def stream_dataset_sync_job(request: Request, job_id: str):
-    user_id = _require_user_id()
-    jobs = get_dataset_sync_jobs_service()
-    snapshot = jobs.get(user_id=user_id, job_id=job_id)
-    bus = get_realtime_event_bus()
-    subscription = bus.subscribe(DATASET_SYNC_JOB_TOPIC, job_id)
-    await bus.publish(DATASET_SYNC_JOB_TOPIC, job_id, snapshot.model_dump(mode="json"))
     return sse_queue_response(
         request,
         subscription.queue,

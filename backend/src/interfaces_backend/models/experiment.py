@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class ExperimentCreateRequest(BaseModel):
     """Create experiment request."""
 
-    model_id: Optional[str] = Field(None, description="Model ID")
+    model_id: str = Field(..., description="Model ID")
     profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
     name: str = Field(..., description="Experiment name")
     purpose: Optional[str] = Field(None, description="Experiment purpose")
@@ -43,7 +43,7 @@ class ExperimentModel(BaseModel):
     """Experiment response."""
 
     id: str = Field(..., description="Experiment ID")
-    model_id: Optional[str] = Field(None, description="Model ID")
+    model_id: str = Field(..., description="Model ID")
     profile_instance_id: Optional[str] = Field(None, description="Profile instance ID")
     name: str = Field(..., description="Experiment name")
     purpose: Optional[str] = Field(None, description="Experiment purpose")
@@ -67,30 +67,14 @@ class ExperimentListResponse(BaseModel):
     total: int
 
 
-class ExperimentEvaluationEpisodeLinkInput(BaseModel):
-    dataset_id: str = Field(..., description="Dataset ID")
-    episode_index: int = Field(..., ge=0, description="Episode index (0-based)")
-    sort_order: Optional[int] = Field(None, ge=0, description="Sort order")
-
-
-class ExperimentEvaluationEpisodeLinkModel(BaseModel):
-    dataset_id: str = Field(..., description="Dataset ID")
-    episode_index: int = Field(..., ge=0, description="Episode index (0-based)")
-    sort_order: int = Field(0, description="Sort order")
-
-
 class ExperimentEvaluationInput(BaseModel):
     """Experiment evaluation input (index assigned by server)."""
 
     value: Optional[str] = Field(None, description="Evaluation value")
-    blueprint_id: Optional[str] = Field(None, description="Blueprint ID")
     image_files: Optional[List[str]] = Field(
         None, description="R2 keys for evaluation images",
     )
     notes: Optional[str] = Field(None, description="Notes")
-    episode_links: Optional[List[ExperimentEvaluationEpisodeLinkInput]] = Field(
-        None, description="Linked dataset episodes",
-    )
 
 
 class ExperimentEvaluationReplaceRequest(BaseModel):
@@ -106,15 +90,10 @@ class ExperimentEvaluationModel(BaseModel):
     experiment_id: str = Field(..., description="Experiment ID")
     trial_index: int = Field(..., description="Trial index (1-based)")
     value: str = Field(..., description="Evaluation value")
-    blueprint_id: Optional[str] = Field(None, description="Blueprint ID")
     image_files: Optional[List[str]] = Field(
         None, description="R2 keys for evaluation images",
     )
     notes: Optional[str] = Field(None, description="Notes")
-    episode_links: List[ExperimentEvaluationEpisodeLinkModel] = Field(
-        default_factory=list,
-        description="Linked dataset episodes",
-    )
     created_at: Optional[str] = Field(None, description="Creation timestamp")
 
 

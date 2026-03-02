@@ -116,52 +116,6 @@ class ModelSyncJobCancelResponse(BaseModel):
     message: str
 
 
-DatasetSyncJobState = Literal["queued", "running", "completed", "failed", "cancelled"]
-
-
-class DatasetSyncJobCreateRequest(BaseModel):
-    dataset_id: str = Field(..., description="Dataset ID")
-
-
-class DatasetSyncJobDetail(BaseModel):
-    files_done: int = 0
-    total_files: int = 0
-    transferred_bytes: int = 0
-    total_bytes: int = 0
-    current_file: Optional[str] = None
-
-
-class DatasetSyncJobStatus(BaseModel):
-    job_id: str
-    dataset_id: str
-    state: DatasetSyncJobState
-    progress_percent: float = 0.0
-    message: Optional[str] = None
-    error: Optional[str] = None
-    detail: DatasetSyncJobDetail = Field(default_factory=DatasetSyncJobDetail)
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class DatasetSyncJobAcceptedResponse(BaseModel):
-    accepted: bool = True
-    job_id: str
-    dataset_id: str
-    state: DatasetSyncJobState = "queued"
-    message: str = "accepted"
-
-
-class DatasetSyncJobListResponse(BaseModel):
-    jobs: List[DatasetSyncJobStatus] = Field(default_factory=list)
-
-
-class DatasetSyncJobCancelResponse(BaseModel):
-    job_id: str
-    accepted: bool
-    state: DatasetSyncJobState
-    message: str
-
-
 class ArchiveResponse(BaseModel):
     """Response for archive/restore operations."""
 
@@ -179,8 +133,8 @@ class DatasetReuploadResponse(BaseModel):
     message: str
 
 
-class DatasetViewerCameraInfo(BaseModel):
-    """Camera stream info for dataset viewer."""
+class DatasetPlaybackCameraInfo(BaseModel):
+    """Camera stream info for dataset playback."""
 
     key: str = Field(..., description="Feature key, e.g. observation.images.cam_top")
     label: str = Field(..., description="Camera label")
@@ -191,60 +145,15 @@ class DatasetViewerCameraInfo(BaseModel):
     pix_fmt: Optional[str] = Field(None, description="Pixel format")
 
 
-class DatasetViewerResponse(BaseModel):
-    """Dataset viewer metadata."""
+class DatasetPlaybackResponse(BaseModel):
+    """Playback metadata for a local dataset."""
 
     dataset_id: str = Field(..., description="Dataset ID")
     is_local: bool = Field(..., description="Whether dataset exists locally")
-    download_required: bool = Field(..., description="Whether local download is required before playback")
     total_episodes: int = Field(0, description="Total episode count")
     fps: int = Field(0, description="Dataset FPS")
     use_videos: bool = Field(False, description="Whether dataset stores videos")
-    cameras: List[DatasetViewerCameraInfo] = Field(default_factory=list)
-    dataset_meta: Optional[dict] = Field(None, description="Dataset metadata for viewer context")
-
-
-class DatasetViewerEpisode(BaseModel):
-    """Episode metadata for dataset viewer."""
-
-    episode_index: int = Field(..., description="Episode index (0-based)")
-
-
-class DatasetViewerEpisodeListResponse(BaseModel):
-    """Episode list for dataset viewer."""
-
-    dataset_id: str = Field(..., description="Dataset ID")
-    episodes: List[DatasetViewerEpisode] = Field(default_factory=list)
-    total: int = Field(0, description="Number of episodes")
-
-
-class DatasetViewerSignalField(BaseModel):
-    """Vector field metadata available for dataset viewer charts."""
-
-    key: str = Field(..., description="Feature key, e.g. action")
-    label: str = Field(..., description="Display label")
-    shape: List[int] = Field(default_factory=list, description="Feature shape")
-    names: Optional[List[str]] = Field(None, description="Axis names")
-    dtype: str = Field(..., description="Feature dtype")
-
-
-class DatasetViewerSignalFieldsResponse(BaseModel):
-    """Signal field list for dataset viewer."""
-
-    dataset_id: str = Field(..., description="Dataset ID")
-    fields: List[DatasetViewerSignalField] = Field(default_factory=list)
-
-
-class DatasetViewerSignalSeriesResponse(BaseModel):
-    """Episode signal series for chart rendering."""
-
-    dataset_id: str = Field(..., description="Dataset ID")
-    episode_index: int = Field(..., description="Episode index (0-based)")
-    field: str = Field(..., description="Feature key")
-    fps: int = Field(0, description="Dataset FPS")
-    names: List[str] = Field(default_factory=list, description="Axis names")
-    positions: List[List[float]] = Field(default_factory=list, description="Frame-wise vectors")
-    timestamps: List[float] = Field(default_factory=list, description="Frame timestamps in seconds")
+    cameras: List[DatasetPlaybackCameraInfo] = Field(default_factory=list)
 
 
 class StorageUsageResponse(BaseModel):

@@ -5,43 +5,30 @@
   import type { BlueprintNode } from '$lib/recording/blueprint';
   import { getViewDefinition } from '$lib/recording/viewRegistry';
   import PlaceholderView from '$lib/components/recording/views/PlaceholderView.svelte';
-  import type { DatasetPlaybackController } from '$lib/recording/datasetPlayback';
 
-		  let {
-		    node,
-		    selectedId = '',
-		    sessionId = '',
-		    sessionKind = '',
-		    mode = 'recording',
-		    viewSource = 'ros',
-		    datasetId = '',
-		    datasetEpisodeIndex = 0,
-		    datasetPlayback = null,
-		    onPrevLinkedEpisode = undefined,
-		    onNextLinkedEpisode = undefined,
-		    editMode = true,
-		    viewScale = 1,
-		    onSelect,
-		    onResize,
-		    onTabChange
-	  }: {
-	    node: BlueprintNode;
-	    selectedId?: string;
-	    sessionId?: string;
-	    sessionKind?: '' | 'recording' | 'inference' | 'teleop';
-	    mode?: 'recording' | 'operate';
-		    viewSource?: 'ros' | 'dataset';
-		    datasetId?: string;
-		    datasetEpisodeIndex?: number;
-		    datasetPlayback?: DatasetPlaybackController | null;
-		    onPrevLinkedEpisode?: () => void;
-		    onNextLinkedEpisode?: () => void;
-		    editMode?: boolean;
-		    viewScale?: number;
-		    onSelect: (id: string) => void;
-		    onResize: (id: string, sizes: [number, number]) => void;
-		    onTabChange: (id: string, activeId: string) => void;
-	  } = $props();
+  let {
+    node,
+    selectedId = '',
+    sessionId = '',
+    sessionKind = '',
+    mode = 'recording',
+    editMode = true,
+    viewScale = 1,
+    onSelect,
+    onResize,
+    onTabChange
+  }: {
+    node: BlueprintNode;
+    selectedId?: string;
+    sessionId?: string;
+    sessionKind?: '' | 'recording' | 'inference' | 'teleop';
+    mode?: 'recording' | 'operate';
+    editMode?: boolean;
+    viewScale?: number;
+    onSelect: (id: string) => void;
+    onResize: (id: string, sizes: [number, number]) => void;
+    onTabChange: (id: string, activeId: string) => void;
+  } = $props();
 
   const handleSelect = (event: Event) => {
     event.stopPropagation();
@@ -56,47 +43,17 @@
     handleSelect(event);
   };
 
-  const renderComponent = (viewType: string) => {
-    const definition = getViewDefinition(viewType);
-    if (viewSource === 'dataset' && definition?.sources && !definition.sources.includes('dataset')) {
-      return PlaceholderView;
-    }
-    return definition?.component ?? PlaceholderView;
-  };
+  const renderComponent = (viewType: string) => getViewDefinition(viewType)?.component ?? PlaceholderView;
 
-	  const buildProps = (viewType: string) => {
-		    const definition = getViewDefinition(viewType);
-		    const datasetUnsupported =
-		      viewSource === 'dataset' && definition?.sources && !definition.sources.includes('dataset');
-		    const baseProps = {
-		      ...(node.type === 'view' ? node.config : {}),
-		      title: datasetUnsupported ? `${definition?.label ?? viewType} (dataset未対応)` : definition?.label ?? viewType,
-		      mode
-		    } as Record<string, unknown>;
-		    if (viewType === 'joint_state' && viewSource === 'dataset') {
-		      baseProps.source = 'dataset';
-		      baseProps.datasetId = datasetId;
-		      baseProps.episodeIndex = datasetEpisodeIndex;
-		      baseProps.playbackController = datasetPlayback;
-		      const signalKey = typeof baseProps.topic === 'string' ? baseProps.topic : '';
-		      baseProps.sourceLabel = signalKey;
-		    }
-		    if (viewType === 'camera' && viewSource === 'dataset') {
-		      baseProps.source = 'dataset';
-		      baseProps.datasetId = datasetId;
-		      baseProps.episodeIndex = datasetEpisodeIndex;
-	      baseProps.playbackController = datasetPlayback;
-    }
+  const buildProps = (viewType: string) => {
+    const definition = getViewDefinition(viewType);
+    const baseProps = {
+      ...(node.type === 'view' ? node.config : {}),
+      title: definition?.label ?? viewType,
+      mode
+    } as Record<string, unknown>;
     if (viewType === 'controls' || viewType === 'progress' || viewType === 'timeline') {
       baseProps.sessionId = sessionId;
-    }
-    if (viewType === 'timeline' && viewSource === 'dataset') {
-      baseProps.viewSource = 'dataset';
-      baseProps.datasetId = datasetId;
-      baseProps.datasetEpisodeIndex = datasetEpisodeIndex;
-      baseProps.playbackController = datasetPlayback;
-      baseProps.onPrevLinkedEpisode = onPrevLinkedEpisode;
-      baseProps.onNextLinkedEpisode = onNextLinkedEpisode;
     }
     if (viewType === 'controls') {
       baseProps.sessionKind = sessionKind;
@@ -130,46 +87,34 @@
     >
       {#snippet first()}
         <div class="h-full">
-		          <LayoutNode
-		            node={node.children[0]}
-		            {selectedId}
-		            {sessionId}
-		            {sessionKind}
-		            {mode}
-		            {viewSource}
-		            {datasetId}
-		            {datasetEpisodeIndex}
-		            {datasetPlayback}
-		            {onPrevLinkedEpisode}
-		            {onNextLinkedEpisode}
-		            {editMode}
-		            {viewScale}
-		            {onSelect}
-		            {onResize}
-	            {onTabChange}
-	          />
+          <LayoutNode
+            node={node.children[0]}
+            {selectedId}
+            {sessionId}
+            {sessionKind}
+            {mode}
+            {editMode}
+            {viewScale}
+            {onSelect}
+            {onResize}
+            {onTabChange}
+          />
         </div>
       {/snippet}
       {#snippet second()}
         <div class="h-full">
-		          <LayoutNode
-		            node={node.children[1]}
-		            {selectedId}
-		            {sessionId}
-		            {sessionKind}
-		            {mode}
-		            {viewSource}
-		            {datasetId}
-		            {datasetEpisodeIndex}
-		            {datasetPlayback}
-		            {onPrevLinkedEpisode}
-		            {onNextLinkedEpisode}
-		            {editMode}
-		            {viewScale}
-		            {onSelect}
-		            {onResize}
-	            {onTabChange}
-	          />
+          <LayoutNode
+            node={node.children[1]}
+            {selectedId}
+            {sessionId}
+            {sessionKind}
+            {mode}
+            {editMode}
+            {viewScale}
+            {onSelect}
+            {onResize}
+            {onTabChange}
+          />
         </div>
       {/snippet}
     </SplitPane>
@@ -177,24 +122,18 @@
     <TabsView tabs={node.tabs} activeId={node.activeId} on:change={(event) => onTabChange?.(node.id, event.detail.activeId)}>
       {#each node.tabs as tab (tab.id)}
         {#if tab.id === node.activeId}
-		          <LayoutNode
-		            node={tab.child}
-		            {selectedId}
-		            {sessionId}
-		            {sessionKind}
-		            {mode}
-		            {viewSource}
-		            {datasetId}
-		            {datasetEpisodeIndex}
-		            {datasetPlayback}
-		            {onPrevLinkedEpisode}
-		            {onNextLinkedEpisode}
-		            {editMode}
-		            {viewScale}
-		            {onSelect}
-		            {onResize}
-	            {onTabChange}
-	          />
+          <LayoutNode
+            node={tab.child}
+            {selectedId}
+            {sessionId}
+            {sessionKind}
+            {mode}
+            {editMode}
+            {viewScale}
+            {onSelect}
+            {onResize}
+            {onTabChange}
+          />
         {/if}
       {/each}
     </TabsView>
