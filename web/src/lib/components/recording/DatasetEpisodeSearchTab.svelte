@@ -2,7 +2,6 @@
   import { toStore } from 'svelte/store';
   import { createQuery } from '@tanstack/svelte-query';
   import { api, type ExperimentEpisodeLink, type DatasetViewerResponse } from '$lib/api/client';
-  import DatasetEpisodeThumbnail from '$lib/components/recording/DatasetEpisodeThumbnail.svelte';
 
   type DatasetListItem = {
     id: string;
@@ -34,11 +33,6 @@
   let datasetQuery = $state('');
   let selectedDatasetId = $state('');
   let episodeJumpInput = $state('');
-  let viewerMetaByDatasetId = $state<Record<string, { cameraKey: string }>>({});
-  let viewerMetaLoadingByDatasetId = $state<Record<string, boolean>>({});
-  let selectedCarouselEl = $state<HTMLDivElement | null>(null);
-  let canScrollLeft = $state(false);
-  let canScrollRight = $state(false);
 
   const activeEpisodeLinks = $derived(
     [...(episodeLinks ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
@@ -82,21 +76,6 @@
   );
 
   const selectedTotalEpisodes = $derived(Number($selectedDatasetViewerQuery.data?.total_episodes ?? 0));
-  const activeDatasetsForSelected = $derived.by(() =>
-    Array.from(new Set(activeEpisodeLinks.map((link) => String(link.dataset_id ?? '')).filter(Boolean)))
-  );
-
-  const updateCarouselButtons = () => {
-    if (!selectedCarouselEl) {
-      canScrollLeft = false;
-      canScrollRight = false;
-      return;
-    }
-    const el = selectedCarouselEl;
-    const max = Math.max(0, el.scrollWidth - el.clientWidth);
-    canScrollLeft = el.scrollLeft > 4;
-    canScrollRight = el.scrollLeft < max - 4;
-  };
 
   const unselectedEpisodes = $derived.by(() => {
     if (!selectedDatasetId) return [] as number[];
@@ -186,62 +165,6 @@
     };
   });
 
-  $effect(() => {
-    // Cache dataset viewer meta for thumbnails (first camera key).
-    for (const datasetId of activeDatasetsForSelected) {
-      if (!datasetId) continue;
-      if (viewerMetaByDatasetId[datasetId]) continue;
-      if (viewerMetaLoadingByDatasetId[datasetId]) continue;
-      viewerMetaLoadingByDatasetId = { ...viewerMetaLoadingByDatasetId, [datasetId]: true };
-      void api.storage
-        .datasetViewer(datasetId)
-        .then((payload) => {
-          const cameraKey = String(payload.cameras?.[0]?.key ?? '');
-          if (!cameraKey) return;
-          viewerMetaByDatasetId = { ...viewerMetaByDatasetId, [datasetId]: { cameraKey } };
-        })
-        .catch(() => {
-          // ignore; thumbnails are best-effort
-        })
-        .finally(() => {
-          const next = { ...viewerMetaLoadingByDatasetId };
-          delete next[datasetId];
-          viewerMetaLoadingByDatasetId = next;
-        });
-    }
-  });
-
-  $effect(() => {
-    if (!selectedCarouselEl) return;
-    updateCarouselButtons();
-    const el = selectedCarouselEl;
-    const onScroll = () => {
-      updateCarouselButtons();
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    const observer = new ResizeObserver(() => {
-      updateCarouselButtons();
-    });
-    observer.observe(el);
-    return () => {
-      el.removeEventListener('scroll', onScroll);
-      observer.disconnect();
-    };
-  });
-
-  const scrollSelectedBy = (direction: -1 | 1) => {
-    if (!selectedCarouselEl) return;
-    selectedCarouselEl.scrollBy({
-      left: Math.round(selectedCarouselEl.clientWidth * 0.9) * direction,
-      behavior: 'smooth'
-    });
-  };
-
-  const getThumbUrl = (datasetId: string, episodeIndex: number) => {
-    const meta = viewerMetaByDatasetId[datasetId];
-    if (!meta?.cameraKey) return '';
-    return api.storage.datasetViewerVideoUrl(datasetId, meta.cameraKey, episodeIndex);
-  };
 </script>
 
 {#if step === 'dataset'}
@@ -352,70 +275,38 @@
 	      <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
 	        <p class="text-xs font-semibold text-slate-700">選択済</p>
 	        {#if activeEpisodeLinks.length}
-	          <div class="mt-2 flex items-center justify-between gap-2">
-	            <button
-	              class="btn-ghost shrink-0"
-	              type="button"
-	              onclick={() => scrollSelectedBy(-1)}
-	              disabled={!canScrollLeft}
-	            >
-	              前へ
-	            </button>
-	            <div
-	              class="min-w-0 flex-1 overflow-x-auto scroll-smooth"
-	              style="scroll-snap-type:x mandatory;"
-	              bind:this={selectedCarouselEl}
-	            >
-	              <div class="flex gap-2 pb-1">
-	                {#each activeEpisodeLinks as link (link.dataset_id + ':' + link.episode_index)}
-	                  {@const datasetIdValue = String(link.dataset_id ?? '')}
-	                  {@const episodeValue = Math.max(0, Math.floor(Number(link.episode_index) || 0))}
-	                  {@const isActive = `${datasetIdValue}:${episodeValue}` === previewKey}
-	                  {@const thumbSrc = datasetIdValue ? getThumbUrl(datasetIdValue, episodeValue) : ''}
-	                  <div
-	                    class={`w-[240px] shrink-0 rounded-xl border bg-white p-2 ${
-	                      isActive ? 'border-brand/50 shadow-sm' : 'border-slate-200/60'
-	                    }`}
-	                    style="scroll-snap-align:start;"
+	          <div class="mt-2 space-y-2">
+	            {#each activeEpisodeLinks as link (link.dataset_id + ':' + link.episode_index)}
+	              {@const datasetIdValue = String(link.dataset_id ?? '')}
+	              {@const episodeValue = Math.max(0, Math.floor(Number(link.episode_index) || 0))}
+	              {@const isActive = `${datasetIdValue}:${episodeValue}` === previewKey}
+	              <div
+	                class={`flex items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 ${
+	                  isActive ? 'border-brand/50 shadow-sm' : 'border-slate-200/60'
+	                }`}
+	              >
+	                <div class="min-w-0 flex-1">
+	                  <p class="truncate text-xs font-semibold text-slate-900">{datasetIdValue}</p>
+	                  <p class="truncate text-[10px] text-slate-500">ep {episodeValue + 1}</p>
+	                </div>
+	                <div class="flex shrink-0 gap-1">
+	                  <button
+	                    class="btn-ghost whitespace-nowrap"
+	                    type="button"
+	                    onclick={() => handlePreview(datasetIdValue, episodeValue)}
 	                  >
-	                    <div class="h-[120px]">
-	                      <DatasetEpisodeThumbnail
-	                        src={thumbSrc}
-                        label={viewerMetaLoadingByDatasetId[datasetIdValue] ? 'loading...' : ''}
-                      />
-	                    </div>
-	                    <div class="mt-2 min-w-0">
-	                      <p class="truncate text-xs font-semibold text-slate-900">{datasetIdValue}</p>
-	                      <p class="truncate text-[10px] text-slate-500">ep {episodeValue + 1}</p>
-	                    </div>
-	                    <div class="mt-2 flex gap-1">
-	                      <button
-	                        class="btn-ghost flex-1 whitespace-nowrap"
-	                        type="button"
-	                        onclick={() => handlePreview(datasetIdValue, episodeValue)}
-	                      >
-	                        閲覧
-	                      </button>
-	                      <button
-	                        class="btn-ghost whitespace-nowrap border-rose-200/70 text-rose-600 hover:border-rose-300/80"
-	                        type="button"
-	                        onclick={() => handleRemove(datasetIdValue, episodeValue)}
-	                      >
-	                        削除
-	                      </button>
-	                    </div>
-	                  </div>
-	                {/each}
+	                    プレビュー
+	                  </button>
+	                  <button
+	                    class="btn-ghost whitespace-nowrap border-rose-200/70 text-rose-600 hover:border-rose-300/80"
+	                    type="button"
+	                    onclick={() => handleRemove(datasetIdValue, episodeValue)}
+	                  >
+	                    削除
+	                  </button>
+	                </div>
 	              </div>
-	            </div>
-	            <button
-	              class="btn-ghost shrink-0"
-	              type="button"
-	              onclick={() => scrollSelectedBy(1)}
-	              disabled={!canScrollRight}
-	            >
-	              次へ
-	            </button>
+	            {/each}
 	          </div>
 	        {:else}
 	          <p class="mt-2 text-xs text-slate-500">まだ紐付いていません。</p>
