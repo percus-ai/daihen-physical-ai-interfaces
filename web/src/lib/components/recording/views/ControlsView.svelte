@@ -3,6 +3,7 @@
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
+  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -47,6 +48,8 @@
     updated_at?: string | null;
   } | null>(null);
   let stopUploadStream: (() => void) | null = null;
+  let datasetViewerOpen = $state(false);
+  let datasetViewerId = $state('');
 
   const runAction = async (
     label: string,
@@ -281,6 +284,13 @@
       message: 'アップロード準備中...'
     };
     startUploadStream(targetDatasetId);
+  };
+
+  const openDatasetViewer = () => {
+    const targetDatasetId = String(uploadStatus?.dataset_id || datasetId || sessionId || '').trim();
+    if (!targetDatasetId) return;
+    datasetViewerId = targetDatasetId;
+    datasetViewerOpen = true;
   };
 
   $effect(() => {
@@ -615,6 +625,11 @@
         >
           閉じる
         </AlertDialog.Cancel>
+        {#if String(uploadStatus?.phase ?? uploadStatus?.status ?? '').toLowerCase() === 'completed'}
+          <Button.Root class="btn-ghost" type="button" onclick={openDatasetViewer}>
+            ビューアで開く
+          </Button.Root>
+        {/if}
         {#if String(uploadStatus?.phase ?? uploadStatus?.status ?? '').toLowerCase() === 'failed'}
           <Button.Root
             class="btn-primary"
@@ -629,3 +644,5 @@
     </AlertDialog.Content>
   </AlertDialog.Portal>
 </AlertDialog.Root>
+
+<DatasetViewerModal bind:open={datasetViewerOpen} datasetId={datasetViewerId} title="Dataset Viewer" />

@@ -3,15 +3,17 @@
 import asyncio
 import logging
 from pathlib import Path
+from pathlib import PurePosixPath
 import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from huggingface_hub import HfApi, snapshot_download, upload_folder
 from postgrest.exceptions import APIError
+import pyarrow.parquet as pq
 from pydantic import ValidationError
 
 from interfaces_backend.models.storage import (
@@ -19,8 +21,18 @@ from interfaces_backend.models.storage import (
     ArchiveBulkRequest,
     ArchiveBulkResponse,
     ArchiveResponse,
-    DatasetPlaybackCameraInfo,
-    DatasetPlaybackResponse,
+    DatasetViewerCameraInfo,
+    DatasetViewerEpisode,
+    DatasetViewerEpisodeListResponse,
+    DatasetViewerResponse,
+    DatasetSyncJobAcceptedResponse,
+    DatasetSyncJobCancelResponse,
+    DatasetSyncJobCreateRequest,
+    DatasetSyncJobListResponse,
+    DatasetSyncJobStatus,
+    DatasetViewerSignalField,
+    DatasetViewerSignalFieldsResponse,
+    DatasetViewerSignalSeriesResponse,
     DatasetReuploadResponse,
     DatasetMergeRequest,
     DatasetMergeResponse,
@@ -39,6 +51,7 @@ from interfaces_backend.models.storage import (
     StorageUsageResponse,
 )
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
+from interfaces_backend.services.dataset_sync_jobs import get_dataset_sync_jobs_service
 from interfaces_backend.services.model_sync_jobs import get_model_sync_jobs_service
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.vlabor_profiles import resolve_profile_spec
@@ -85,13 +98,64 @@ def _camera_label_from_key(video_key: str) -> str:
     return video_key.split(".")[-1]
 
 
-def _build_playback_response(dataset_id: str, metadata: LeRobotDatasetMetadata) -> DatasetPlaybackResponse:
-    cameras: list[DatasetPlaybackCameraInfo] = []
+def _validate_dataset_id_path(dataset_id: str) -> None:
+    """Guard against path traversal when using dataset_id in filesystem paths."""
+    if not dataset_id or not isinstance(dataset_id, str):
+        raise HTTPException(status_code=400, detail="dataset_id is required")
+    if dataset_id.strip() != dataset_id:
+        raise HTTPException(status_code=400, detail="Invalid dataset id")
+    if dataset_id.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid dataset id")
+    if "\\" in dataset_id:
+        raise HTTPException(status_code=400, detail="Invalid dataset id")
+    parts = PurePosixPath(dataset_id).parts
+    if not parts:
+        raise HTTPException(status_code=400, detail="Invalid dataset id")
+    if any(part in {".", ".."} for part in parts):
+        raise HTTPException(status_code=400, detail="Invalid dataset id")
+
+
+async def _resolve_dataset_row_and_path(dataset_id: str) -> tuple[Optional[dict], Path]:
+    """Resolve dataset row (if visible in DB) and local path (if present)."""
+    _validate_dataset_id_path(dataset_id)
+    dataset_path = get_datasets_dir() / dataset_id
+    local_exists = dataset_path.exists()
+
+    client = await get_supabase_async_client()
+    try:
+        rows = (await client.table("datasets").select("*").eq("id", dataset_id).execute()).data or []
+    except APIError as exc:
+        message = str(exc).lower()
+        if "invalid input syntax for type uuid" in message:
+            raise HTTPException(status_code=400, detail=f"Invalid dataset id: {dataset_id}") from exc
+        if local_exists:
+            logger.warning("DB query failed for dataset %s; falling back to local cache: %s", dataset_id, exc)
+            return None, dataset_path
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
+    except Exception as exc:
+        if local_exists:
+            logger.warning("DB query failed for dataset %s; falling back to local cache: %s", dataset_id, exc)
+            return None, dataset_path
+        raise HTTPException(status_code=500, detail=f"Failed to query dataset: {exc}") from exc
+
+    if rows:
+        return rows[0], dataset_path
+    if local_exists:
+        return None, dataset_path
+    raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+
+
+def _build_dataset_viewer_response(
+    dataset_id: str,
+    metadata: LeRobotDatasetMetadata,
+    dataset_meta: Optional[dict] = None,
+) -> DatasetViewerResponse:
+    cameras: list[DatasetViewerCameraInfo] = []
     for video_key in metadata.video_keys:
         feature = metadata.features.get(video_key) if isinstance(metadata.features, dict) else None
         info = feature.get("info") if isinstance(feature, dict) else {}
         cameras.append(
-            DatasetPlaybackCameraInfo(
+            DatasetViewerCameraInfo(
                 key=video_key,
                 label=_camera_label_from_key(video_key),
                 width=info.get("video.width"),
@@ -102,14 +166,70 @@ def _build_playback_response(dataset_id: str, metadata: LeRobotDatasetMetadata) 
             )
         )
 
-    return DatasetPlaybackResponse(
+    return DatasetViewerResponse(
         dataset_id=dataset_id,
         is_local=True,
+        download_required=False,
         total_episodes=metadata.total_episodes,
         fps=metadata.fps,
         use_videos=bool(metadata.video_path) and len(metadata.video_keys) > 0,
         cameras=cameras,
+        dataset_meta=dataset_meta,
     )
+
+
+_NUMERIC_DTYPES = {
+    "float16",
+    "float32",
+    "float64",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+}
+
+
+def _is_vector_feature(feature: object) -> bool:
+    if not isinstance(feature, dict):
+        return False
+    dtype = str(feature.get("dtype") or "").lower().strip()
+    if dtype not in _NUMERIC_DTYPES:
+        return False
+    shape = feature.get("shape")
+    if not isinstance(shape, (list, tuple)) or len(shape) != 1:
+        return False
+    try:
+        return int(shape[0]) >= 1
+    except Exception:
+        return False
+
+
+def _resolve_axis_names(feature: dict, axis_dim: int) -> list[str]:
+    names = feature.get("names")
+    if isinstance(names, list) and len(names) == axis_dim:
+        resolved = [str(name) for name in names]
+        if all(name.strip() for name in resolved):
+            return resolved
+    return [f"joint_{idx + 1}" for idx in range(axis_dim)]
+
+
+def _to_float_vector(raw: Any, axis_dim: int) -> list[float]:
+    if isinstance(raw, (list, tuple)):
+        src = list(raw)
+    else:
+        src = [raw]
+    values: list[float] = []
+    for idx in range(axis_dim):
+        item = src[idx] if idx < len(src) else 0.0
+        try:
+            values.append(float(item))
+        except Exception:
+            values.append(0.0)
+    return values
 
 
 async def _detach_models_from_dataset(client, dataset_id: str) -> None:
@@ -132,9 +252,19 @@ async def _detach_training_jobs_from_dataset(client, dataset_id: str) -> None:
         raise
 
 
+async def _detach_episode_links_from_dataset(client, dataset_id: str) -> None:
+    await (
+        client.table("experiment_evaluation_episode_links")
+        .delete()
+        .eq("dataset_id", dataset_id)
+        .execute()
+    )
+
+
 async def _detach_dataset_references(client, dataset_id: str) -> None:
     await _detach_models_from_dataset(client, dataset_id)
     await _detach_training_jobs_from_dataset(client, dataset_id)
+    await _detach_episode_links_from_dataset(client, dataset_id)
 
 
 def _is_missing_column_error(exc: APIError, *, table_name: str, column_name: str) -> bool:
@@ -174,6 +304,10 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
+
+
+def _dataset_row_to_meta(row: dict) -> dict:
+    return _dataset_row_to_info(row).model_dump()
 
 
 def _model_row_to_info(row: dict) -> ModelInfo:
@@ -412,37 +546,153 @@ async def get_dataset(dataset_id: str):
     return _dataset_row_to_info(rows[0])
 
 
-@router.get("/datasets/{dataset_id:path}/playback", response_model=DatasetPlaybackResponse)
-async def get_dataset_playback(dataset_id: str):
-    """Get local playback metadata for a dataset."""
-    client = await get_supabase_async_client()
-    rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
-
-    dataset_path = get_datasets_dir() / dataset_id
+@router.get(
+    "/dataset-viewer/datasets/{dataset_id:path}/episodes",
+    response_model=DatasetViewerEpisodeListResponse,
+)
+async def get_dataset_viewer_episodes(dataset_id: str):
+    """List dataset episodes for viewer."""
+    _row, dataset_path = await _resolve_dataset_row_and_path(dataset_id)
     if not dataset_path.exists():
         raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
 
     try:
         metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
-        return _build_playback_response(dataset_id, metadata)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to load dataset playback metadata: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+    episodes = [DatasetViewerEpisode(episode_index=idx) for idx in range(metadata.total_episodes)]
+    return DatasetViewerEpisodeListResponse(
+        dataset_id=dataset_id,
+        episodes=episodes,
+        total=len(episodes),
+    )
 
 
-@router.get("/datasets/{dataset_id:path}/playback/{video_key:path}/{episode_index}")
-async def get_dataset_playback_video(dataset_id: str, video_key: str, episode_index: int):
+@router.get(
+    "/dataset-viewer/datasets/{dataset_id:path}/episodes/{episode_index}/signals",
+    response_model=DatasetViewerSignalSeriesResponse,
+)
+async def get_dataset_viewer_signal_series(
+    dataset_id: str,
+    episode_index: int,
+    field: str = Query(..., min_length=1),
+):
+    """Load one episode series for a specific vector field from dataset parquet."""
+    if episode_index < 0:
+        raise HTTPException(status_code=400, detail="episode_index must be >= 0")
+
+    _row, dataset_path = await _resolve_dataset_row_and_path(dataset_id)
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
+
+    try:
+        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+    if episode_index >= metadata.total_episodes:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Episode index out of range: {episode_index} (total={metadata.total_episodes})",
+        )
+
+    feature_map = metadata.features if isinstance(metadata.features, dict) else {}
+    feature = feature_map.get(field)
+    if not _is_vector_feature(feature):
+        raise HTTPException(status_code=404, detail=f"Signal field not found or not supported: {field}")
+
+    shape = feature.get("shape") if isinstance(feature, dict) else []
+    axis_dim = int(shape[0]) if isinstance(shape, (list, tuple)) and shape else 0
+    if axis_dim <= 0:
+        raise HTTPException(status_code=400, detail=f"Signal field has invalid shape: {field}")
+    names = _resolve_axis_names(feature, axis_dim)
+
+    try:
+        relative_data_path = metadata.get_data_file_path(episode_index)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve data file path: {exc}") from exc
+    data_path = dataset_path / relative_data_path
+    if not data_path.exists():
+        raise HTTPException(status_code=404, detail=f"Data file not found: {relative_data_path}")
+
+    try:
+        parquet = pq.ParquetFile(data_path)
+        # parquet.schema.names returns leaf names (e.g. "element") for list types.
+        # schema_arrow.names gives the correct top-level column names.
+        schema_names = set(parquet.schema_arrow.names)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read parquet schema: {exc}") from exc
+
+    # LeRobot datasets can store one parquet per episode (no episode_index column),
+    # or a single parquet with episode_index partitioning. Support both.
+    required_columns = {field}
+    if not required_columns.issubset(schema_names):
+        raise HTTPException(status_code=404, detail=f"Required columns missing in parquet: {sorted(required_columns)}")
+
+    has_episode_index = "episode_index" in schema_names
+    columns = [field]
+    if has_episode_index:
+        columns.append("episode_index")
+    if "frame_index" in schema_names:
+        columns.append("frame_index")
+    if "timestamp" in schema_names:
+        columns.append("timestamp")
+
+    try:
+        table = pq.read_table(
+            data_path,
+            columns=columns,
+            filters=[("episode_index", "=", episode_index)] if has_episode_index else None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load episode series: {exc}") from exc
+
+    if table.num_rows == 0:
+        return DatasetViewerSignalSeriesResponse(
+            dataset_id=dataset_id,
+            episode_index=episode_index,
+            field=field,
+            fps=metadata.fps,
+            names=names,
+            positions=[],
+            timestamps=[],
+        )
+
+    raw_vectors = table.column(field).to_pylist()
+    positions = [_to_float_vector(raw, axis_dim) for raw in raw_vectors]
+
+    if "timestamp" in columns:
+        timestamps_raw = table.column("timestamp").to_pylist()
+        timestamps = [float(v) for v in timestamps_raw]
+    else:
+        fps = metadata.fps if metadata.fps > 0 else 30
+        timestamps = [float(i) / float(fps) for i in range(len(positions))]
+
+    if "frame_index" in columns:
+        frame_indices = [int(v) for v in table.column("frame_index").to_pylist()]
+        order = sorted(range(len(frame_indices)), key=lambda idx: frame_indices[idx])
+        positions = [positions[idx] for idx in order]
+        timestamps = [timestamps[idx] for idx in order]
+
+    return DatasetViewerSignalSeriesResponse(
+        dataset_id=dataset_id,
+        episode_index=episode_index,
+        field=field,
+        fps=metadata.fps,
+        names=names,
+        positions=positions,
+        timestamps=timestamps,
+    )
+
+
+@router.get("/dataset-viewer/datasets/{dataset_id:path}/episodes/{episode_index}/videos/{video_key:path}")
+async def get_dataset_viewer_video(dataset_id: str, video_key: str, episode_index: int):
     """Stream a dataset episode video for playback."""
     if episode_index < 0:
         raise HTTPException(status_code=400, detail="episode_index must be >= 0")
 
-    client = await get_supabase_async_client()
-    rows = (await client.table("datasets").select("id").eq("id", dataset_id).execute()).data or []
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
-
-    dataset_path = get_datasets_dir() / dataset_id
+    _row, dataset_path = await _resolve_dataset_row_and_path(dataset_id)
     if not dataset_path.exists():
         raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
 
@@ -459,17 +709,96 @@ async def get_dataset_playback_video(dataset_id: str, video_key: str, episode_in
             detail=f"Episode index out of range: {episode_index} (total={metadata.total_episodes})",
         )
 
-    relative_path = metadata.get_video_file_path(episode_index, video_key)
+    try:
+        relative_path = metadata.get_video_file_path(episode_index, video_key)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve video file path: {exc}") from exc
     video_path = Path(dataset_path) / relative_path
     if not video_path.exists():
         raise HTTPException(status_code=404, detail=f"Video file not found: {relative_path}")
 
+    suffix = video_path.suffix.lower()
+    media_type = "video/mp4" if suffix == ".mp4" else "video/webm" if suffix == ".webm" else "application/octet-stream"
     return FileResponse(
         path=video_path,
-        media_type="video/mp4",
+        media_type=media_type,
         filename=video_path.name,
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get("/dataset-viewer/datasets/{dataset_id:path}/signals", response_model=DatasetViewerSignalFieldsResponse)
+async def get_dataset_viewer_signal_fields(dataset_id: str):
+    """List numeric vector fields that can be visualized as joint-state style charts."""
+    _row, dataset_path = await _resolve_dataset_row_and_path(dataset_id)
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail=f"Local dataset not found: {dataset_id}")
+
+    try:
+        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
+
+    feature_map = metadata.features if isinstance(metadata.features, dict) else {}
+    fields: list[DatasetViewerSignalField] = []
+    excluded_keys = {
+        "episode_index",
+        "frame_index",
+        "index",
+        "task_index",
+        "timestamp",
+    }
+    for key in sorted(feature_map.keys()):
+        if key in excluded_keys:
+            continue
+        feature = feature_map.get(key)
+        if not _is_vector_feature(feature):
+            continue
+        try:
+            shape = feature.get("shape") if isinstance(feature, dict) else []
+            axis_dim = int(shape[0]) if isinstance(shape, (list, tuple)) and shape else 0
+            if axis_dim < 2:
+                continue
+            fields.append(
+                DatasetViewerSignalField(
+                    key=key,
+                    label=key,
+                    shape=[axis_dim],
+                    names=_resolve_axis_names(feature, axis_dim) if isinstance(feature, dict) else [],
+                    dtype=str(feature.get("dtype") or "") if isinstance(feature, dict) else "",
+                )
+            )
+        except Exception as exc:
+            logger.warning("Skip invalid signal feature %s: %s", key, exc)
+            continue
+
+    return DatasetViewerSignalFieldsResponse(dataset_id=dataset_id, fields=fields)
+
+
+@router.get("/dataset-viewer/datasets/{dataset_id:path}", response_model=DatasetViewerResponse)
+async def get_dataset_viewer(dataset_id: str):
+    """Get dataset viewer metadata."""
+    row, dataset_path = await _resolve_dataset_row_and_path(dataset_id)
+    dataset_meta = _dataset_row_to_meta(row) if row else None
+    if not dataset_path.exists():
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+        return DatasetViewerResponse(
+            dataset_id=dataset_id,
+            is_local=False,
+            download_required=True,
+            total_episodes=int((row or {}).get("episode_count") or 0),
+            fps=0,
+            use_videos=False,
+            cameras=[],
+            dataset_meta=dataset_meta,
+        )
+
+    try:
+        metadata = LeRobotDatasetMetadata(dataset_id, root=dataset_path)
+        return _build_dataset_viewer_response(dataset_id, metadata, dataset_meta=dataset_meta)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
 
 
 @router.delete("/datasets/{dataset_id:path}", response_model=ArchiveResponse)
@@ -519,6 +848,87 @@ async def reupload_dataset(dataset_id: str):
         id=dataset_id,
         success=True,
         message="Dataset re-upload completed",
+    )
+
+
+async def _run_dataset_sync_job(*, job_id: str, dataset_id: str) -> None:
+    jobs = get_dataset_sync_jobs_service()
+    sync_service = R2DBSyncService()
+    try:
+        jobs.set_running(
+            job_id=job_id,
+            progress_percent=5.0,
+            message="データセット同期を開始しました。",
+        )
+        result = await sync_service.ensure_dataset_local(dataset_id, auto_download=True)
+    except Exception as exc:
+        logger.exception("Dataset sync job failed unexpectedly: %s", job_id)
+        jobs.fail(
+            job_id=job_id,
+            message="データセット同期に失敗しました。",
+            error=str(exc),
+        )
+    else:
+        if result.success:
+            jobs.complete(
+                job_id=job_id,
+                message="ローカルキャッシュを利用しました。" if result.skipped else "データセット同期が完了しました。",
+            )
+            return
+        jobs.fail(
+            job_id=job_id,
+            message="データセット同期に失敗しました。",
+            error=result.message,
+        )
+    finally:
+        jobs.release_runtime_handles(job_id=job_id)
+
+
+@router.post("/dataset-sync/jobs", response_model=DatasetSyncJobAcceptedResponse, status_code=202)
+async def sync_dataset(request: DatasetSyncJobCreateRequest):
+    """Start a background dataset sync job."""
+    dataset_id = request.dataset_id.strip()
+    if not dataset_id:
+        raise HTTPException(status_code=400, detail="Dataset ID is required")
+    user_id = require_user_id()
+
+    client = await get_supabase_async_client()
+    rows = (
+        await client.table("datasets").select("id,status").eq("id", dataset_id).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+    if rows[0].get("status") != "active":
+        raise HTTPException(status_code=400, detail="Dataset is not active")
+
+    jobs = get_dataset_sync_jobs_service()
+    accepted = jobs.create(user_id=user_id, dataset_id=dataset_id)
+    task = asyncio.create_task(_run_dataset_sync_job(job_id=accepted.job_id, dataset_id=dataset_id))
+    jobs.attach_task(user_id=user_id, job_id=accepted.job_id, task=task)
+    return accepted
+
+
+@router.get("/dataset-sync/jobs", response_model=DatasetSyncJobListResponse)
+async def list_dataset_sync_jobs(include_terminal: bool = Query(False, description="Include completed jobs")):
+    user_id = require_user_id()
+    jobs = get_dataset_sync_jobs_service()
+    return jobs.list(user_id=user_id, include_terminal=include_terminal)
+
+
+@router.get("/dataset-sync/jobs/{job_id}", response_model=DatasetSyncJobStatus)
+async def get_dataset_sync_job(job_id: str):
+    user_id = require_user_id()
+    jobs = get_dataset_sync_jobs_service()
+    return jobs.get(user_id=user_id, job_id=job_id)
+
+
+@router.post("/dataset-sync/jobs/{job_id}/cancel", response_model=DatasetSyncJobCancelResponse)
+async def cancel_dataset_sync_job(job_id: str):
+    user_id = require_user_id()
+    jobs = get_dataset_sync_jobs_service()
+    return jobs.cancel(
+        user_id=user_id,
+        job_id=job_id,
     )
 
 

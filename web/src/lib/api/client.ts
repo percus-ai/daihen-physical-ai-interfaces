@@ -12,7 +12,7 @@ class ApiError extends Error {
 
 export type ExperimentDetail = {
   id: string;
-  model_id: string;
+  model_id?: string | null;
   profile_instance_id?: string | null;
   name?: string | null;
   purpose?: string | null;
@@ -35,9 +35,35 @@ export type ExperimentEvaluation = {
   experiment_id?: string;
   trial_index: number;
   value?: string;
+  blueprint_id?: string | null;
   image_files?: string[] | null;
   notes?: string | null;
+  episode_links?: ExperimentEpisodeLink[];
   created_at?: string;
+};
+
+export type ExperimentEpisodeLink = {
+  dataset_id: string;
+  episode_index: number;
+  sort_order: number;
+};
+
+export type ExperimentEpisodeLinkInput = {
+  dataset_id: string;
+  episode_index: number;
+  sort_order?: number | null;
+};
+
+export type ExperimentEvaluationReplaceItem = {
+  value?: string | null;
+  blueprint_id?: string | null;
+  image_files?: string[] | null;
+  notes?: string | null;
+  episode_links?: ExperimentEpisodeLinkInput[] | null;
+};
+
+export type ExperimentEvaluationReplaceRequest = {
+  items: ExperimentEvaluationReplaceItem[];
 };
 
 export type ExperimentEvaluationListResponse = {
@@ -149,7 +175,7 @@ export type InferenceRunnerControlResponse = {
   recorder_state?: string | null;
 };
 
-export type DatasetPlaybackCameraInfo = {
+export type DatasetViewerCameraInfo = {
   key: string;
   label: string;
   width?: number | null;
@@ -159,13 +185,89 @@ export type DatasetPlaybackCameraInfo = {
   pix_fmt?: string | null;
 };
 
-export type DatasetPlaybackResponse = {
+export type DatasetViewerResponse = {
   dataset_id: string;
   is_local: boolean;
+  download_required: boolean;
   total_episodes: number;
   fps: number;
   use_videos: boolean;
-  cameras: DatasetPlaybackCameraInfo[];
+  cameras: DatasetViewerCameraInfo[];
+  dataset_meta?: Record<string, unknown> | null;
+};
+
+export type DatasetViewerEpisode = {
+  episode_index: number;
+};
+
+export type DatasetViewerEpisodeListResponse = {
+  dataset_id: string;
+  episodes: DatasetViewerEpisode[];
+  total: number;
+};
+
+export type DatasetViewerSignalField = {
+  key: string;
+  label: string;
+  shape: number[];
+  names?: string[] | null;
+  dtype: string;
+};
+
+export type DatasetViewerSignalFieldsResponse = {
+  dataset_id: string;
+  fields: DatasetViewerSignalField[];
+};
+
+export type DatasetViewerSignalSeriesResponse = {
+  dataset_id: string;
+  episode_index: number;
+  field: string;
+  fps: number;
+  names: string[];
+  positions: number[][];
+  timestamps: number[];
+};
+
+export type DatasetSyncJobState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type DatasetSyncJobDetail = {
+  files_done?: number;
+  total_files?: number;
+  transferred_bytes?: number;
+  total_bytes?: number;
+  current_file?: string | null;
+};
+
+export type DatasetSyncJobStatus = {
+  job_id: string;
+  dataset_id: string;
+  state: DatasetSyncJobState;
+  progress_percent?: number;
+  message?: string | null;
+  error?: string | null;
+  detail?: DatasetSyncJobDetail;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type DatasetSyncJobAcceptedResponse = {
+  accepted: boolean;
+  job_id: string;
+  dataset_id: string;
+  state: DatasetSyncJobState;
+  message?: string;
+};
+
+export type DatasetSyncJobListResponse = {
+  jobs: DatasetSyncJobStatus[];
+};
+
+export type DatasetSyncJobCancelResponse = {
+  job_id: string;
+  accepted: boolean;
+  state: DatasetSyncJobState;
+  message?: string;
 };
 
 export type ModelSyncJobState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -587,10 +689,38 @@ export const api = {
     models: (profileName?: string) =>
       fetchApi(`/api/storage/models${profileName ? `?profile_name=${profileName}` : ''}`),
     dataset: (datasetId: string) => fetchApi(`/api/storage/datasets/${datasetId}`),
-    datasetPlayback: (datasetId: string) =>
-      fetchApi<DatasetPlaybackResponse>(`/api/storage/datasets/${datasetId}/playback`),
-    datasetPlaybackVideoUrl: (datasetId: string, videoKey: string, episodeIndex: number) =>
-      `${getBackendUrl()}/api/storage/datasets/${encodeURIComponent(datasetId)}/playback/${encodeURIComponent(videoKey)}/${episodeIndex}`,
+    datasetViewer: (datasetId: string) =>
+      fetchApi<DatasetViewerResponse>(`/api/storage/dataset-viewer/datasets/${datasetId}`),
+    datasetViewerEpisodes: (datasetId: string) =>
+      fetchApi<DatasetViewerEpisodeListResponse>(
+        `/api/storage/dataset-viewer/datasets/${datasetId}/episodes`
+      ),
+    datasetViewerSignalFields: (datasetId: string) =>
+      fetchApi<DatasetViewerSignalFieldsResponse>(
+        `/api/storage/dataset-viewer/datasets/${datasetId}/signals`
+      ),
+    datasetViewerSignalSeries: (datasetId: string, episodeIndex: number, field: string) =>
+      fetchApi<DatasetViewerSignalSeriesResponse>(
+        `/api/storage/dataset-viewer/datasets/${datasetId}/episodes/${episodeIndex}/signals?field=${encodeURIComponent(field)}`
+      ),
+    datasetViewerVideoUrl: (datasetId: string, videoKey: string, episodeIndex: number) =>
+      `${getBackendUrl()}/api/storage/dataset-viewer/datasets/${encodeURIComponent(datasetId)}/episodes/${episodeIndex}/videos/${encodeURIComponent(videoKey)}`,
+    syncDataset: (datasetId: string) =>
+      fetchApi<DatasetSyncJobAcceptedResponse>('/api/storage/dataset-sync/jobs', {
+        method: 'POST',
+        body: JSON.stringify({ dataset_id: datasetId })
+      }),
+    datasetSyncJobs: (includeTerminal = false) =>
+      fetchApi<DatasetSyncJobListResponse>(
+        `/api/storage/dataset-sync/jobs${includeTerminal ? '?include_terminal=true' : ''}`
+      ),
+    datasetSyncJob: (jobId: string) =>
+      fetchApi<DatasetSyncJobStatus>(`/api/storage/dataset-sync/jobs/${encodeURIComponent(jobId)}`),
+    cancelDatasetSyncJob: (jobId: string) =>
+      fetchApi<DatasetSyncJobCancelResponse>(
+        `/api/storage/dataset-sync/jobs/${encodeURIComponent(jobId)}/cancel`,
+        { method: 'POST' }
+      ),
     model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),
     usage: () => fetchApi('/api/storage/usage'),
     archive: () => fetchApi('/api/storage/archive'),
@@ -662,7 +792,7 @@ export const api = {
       fetchApi<{ deleted: boolean }>(`/api/experiments/${experimentId}`, { method: 'DELETE' }),
     evaluations: (experimentId: string) =>
       fetchApi<ExperimentEvaluationListResponse>(`/api/experiments/${experimentId}/evaluations`),
-    replaceEvaluations: (experimentId: string, payload: Record<string, unknown>) =>
+    replaceEvaluations: (experimentId: string, payload: ExperimentEvaluationReplaceRequest) =>
       fetchApi<{ updated: boolean; count: number }>(`/api/experiments/${experimentId}/evaluations`, {
         method: 'PUT',
         body: JSON.stringify(payload)

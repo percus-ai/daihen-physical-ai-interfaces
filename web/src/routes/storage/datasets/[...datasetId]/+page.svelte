@@ -4,7 +4,17 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-  import { api, type DatasetPlaybackResponse } from '$lib/api/client';
+  import { connectStream } from '$lib/realtime/stream';
+	  import {
+	    api,
+	    type DatasetSyncJobStatus,
+	    type DatasetViewerEpisodeListResponse,
+	    type DatasetViewerResponse,
+	    type DatasetViewerSignalField,
+	    type DatasetViewerSignalFieldsResponse
+	  } from '$lib/api/client';
+  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
+  import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
   type DatasetInfo = {
@@ -64,6 +74,7 @@
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
+  let viewerModalOpen = $state(false);
 
   const mergeDefaultName = $derived(
     datasetId
@@ -72,16 +83,69 @@
   );
   const canMerge = $derived(!isArchived && mergeSelection.length > 0 && !actionLoading);
 
-  const playbackQuery = createQuery<DatasetPlaybackResponse>(
+  const openViewerModal = () => {
+    if (!datasetId) return;
+    viewerModalOpen = true;
+  };
+
+  const viewerQuery = createQuery<DatasetViewerResponse>(
     toStore(() => ({
-      queryKey: ['storage', 'dataset', datasetId, 'playback'],
-      queryFn: () => api.storage.datasetPlayback(datasetId),
+      queryKey: ['storage', 'dataset', datasetId, 'viewer'],
+      queryFn: () => api.storage.datasetViewer(datasetId),
+      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
+    }))
+  );
+
+  const episodesQuery = createQuery<DatasetViewerEpisodeListResponse>(
+    toStore(() => ({
+      queryKey: ['storage', 'dataset', datasetId, 'viewer', 'episodes'],
+      queryFn: () => api.storage.datasetViewerEpisodes(datasetId),
       enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
     }))
   );
 
   let selectedEpisode = $state(0);
-  const playbackEpisodes = $derived($playbackQuery.data?.total_episodes ?? 0);
+  const playbackEpisodes = $derived($episodesQuery.data?.total ?? $viewerQuery.data?.total_episodes ?? 0);
+  let selectedSignalField = $state('');
+  let datasetSyncJobId = $state('');
+  let datasetSyncAutoTriggered = $state(false);
+  let datasetSyncStarting = $state(false);
+  let lastDatasetIdForSync = $state('');
+  let datasetSyncHandledTerminalState = $state('');
+
+  const datasetSyncJobQuery = createQuery<DatasetSyncJobStatus>(
+    toStore(() => ({
+      queryKey: ['storage', 'dataset-sync', datasetSyncJobId],
+      queryFn: () => api.storage.datasetSyncJob(datasetSyncJobId),
+      enabled: Boolean(datasetSyncJobId)
+    }))
+  );
+
+  const signalFieldsQuery = createQuery<DatasetViewerSignalFieldsResponse>(
+    toStore(() => ({
+      queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals'],
+      queryFn: () => api.storage.datasetViewerSignalFields(datasetId),
+      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
+    }))
+  );
+
+  const signalFields = $derived($signalFieldsQuery.data?.fields ?? []);
+
+  $effect(() => {
+    if (!signalFields.length) {
+      selectedSignalField = '';
+      return;
+    }
+    if (!selectedSignalField || !signalFields.some((field) => field.key === selectedSignalField)) {
+      selectedSignalField = signalFields[0].key;
+    }
+  });
+
+  const selectedSignalMeta = $derived(
+    signalFields.find((field) => field.key === selectedSignalField) as DatasetViewerSignalField | undefined
+  );
+
+	  // JointStateView fetches signal series on demand.
 
   $effect(() => {
     if (playbackEpisodes <= 0) {
@@ -95,8 +159,100 @@
   const refetchDataset = async () => {
     if (!datasetId) return;
     await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId] });
-    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'playback'] });
+    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer'] });
+    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer', 'episodes'] });
+    await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'viewer', 'signals'] });
   };
+
+  const startDatasetSyncJob = async () => {
+    if (!datasetId || datasetSyncStarting) return;
+    datasetSyncStarting = true;
+    actionError = '';
+    try {
+      const accepted = await api.storage.syncDataset(datasetId);
+      datasetSyncJobId = accepted.job_id;
+      actionMessage = 'データセット同期を開始しました。';
+    } catch (err) {
+      const status =
+        typeof err === 'object' && err !== null && 'status' in err
+          ? Number((err as { status?: unknown }).status)
+          : 0;
+      if (status === 409) {
+        try {
+          const active = await api.storage.datasetSyncJobs(false);
+          const existing = (active.jobs ?? []).find(
+            (job) => job.dataset_id === datasetId && (job.state === 'queued' || job.state === 'running')
+          );
+          if (existing) {
+            datasetSyncJobId = existing.job_id;
+            actionMessage = '進行中の同期ジョブに接続しました。';
+            return;
+          }
+        } catch {
+          // fall through and show the original error
+        }
+      }
+      actionError = err instanceof Error ? err.message : 'データセット同期の開始に失敗しました。';
+    } finally {
+      datasetSyncStarting = false;
+    }
+  };
+
+  const cancelDatasetSyncJob = async () => {
+    if (!datasetSyncJobId) return;
+    actionError = '';
+    try {
+      await api.storage.cancelDatasetSyncJob(datasetSyncJobId);
+      await queryClient.invalidateQueries({ queryKey: ['storage', 'dataset-sync', datasetSyncJobId] });
+    } catch (err) {
+      actionError = err instanceof Error ? err.message : '同期中断に失敗しました。';
+    }
+  };
+
+  $effect(() => {
+    if (datasetId !== lastDatasetIdForSync) {
+      lastDatasetIdForSync = datasetId;
+      datasetSyncJobId = '';
+      datasetSyncAutoTriggered = false;
+      datasetSyncHandledTerminalState = '';
+    }
+  });
+
+  $effect(() => {
+    if (!datasetId) return;
+    if (dataset?.is_local) {
+      datasetSyncAutoTriggered = false;
+      return;
+    }
+    if (datasetSyncJobId || datasetSyncAutoTriggered) return;
+    datasetSyncAutoTriggered = true;
+    void startDatasetSyncJob();
+  });
+
+  $effect(() => {
+    const state = $datasetSyncJobQuery.data?.state ?? '';
+    if (!state) return;
+    if (state === datasetSyncHandledTerminalState) return;
+    if (state === 'completed') {
+      datasetSyncHandledTerminalState = state;
+      void refetchDataset();
+    }
+  });
+
+  $effect(() => {
+    if (!datasetSyncJobId) return;
+    const currentJobId = datasetSyncJobId;
+    const streamPath = `/api/stream/storage/dataset-sync/jobs/${encodeURIComponent(currentJobId)}`;
+    const stop = connectStream<DatasetSyncJobStatus>({
+      path: streamPath,
+      onMessage: (payload) => {
+        queryClient.setQueryData(['storage', 'dataset-sync', currentJobId], payload);
+      }
+    });
+    return () => {
+      stop();
+    };
+  });
 
   const refetchCandidates = async () => {
     if (!profileName) return;
@@ -302,20 +458,72 @@
 <section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">再生</h2>
-    <button class="btn-ghost" type="button" onclick={() => queryClient.invalidateQueries({ queryKey: ['storage', 'dataset', datasetId, 'playback'] })}>
-      再読み込み
-    </button>
+    <div class="flex gap-2">
+      <button class="btn-ghost" type="button" onclick={openViewerModal}>
+        ビューアで開く
+      </button>
+      <button class="btn-ghost" type="button" onclick={refetchDataset}>
+        再読み込み
+      </button>
+    </div>
   </div>
   <p class="mt-2 text-sm text-slate-600">収録済みエピソードをブラウザで確認できます。</p>
   {#if !dataset?.is_local}
-    <p class="mt-4 text-sm text-slate-600">ローカル未配置のため再生できません。</p>
-  {:else if $playbackQuery.isLoading}
+    <div class="mt-4 rounded-xl border border-slate-200/70 bg-white/70 p-4">
+      <p class="text-sm text-slate-700">ローカル未配置のため、データセット同期を実行中です。</p>
+      {#if $datasetSyncJobQuery.isLoading}
+        <p class="mt-2 text-xs text-slate-500">同期ジョブ情報を読み込み中...</p>
+      {:else if $datasetSyncJobQuery.error}
+        <p class="mt-2 text-xs text-rose-600">
+          {$datasetSyncJobQuery.error instanceof Error
+            ? $datasetSyncJobQuery.error.message
+            : '同期ジョブ情報の取得に失敗しました。'}
+        </p>
+      {:else if $datasetSyncJobQuery.data}
+        <p class="mt-2 text-xs text-slate-500">
+          状態: {$datasetSyncJobQuery.data.state}
+          {#if typeof $datasetSyncJobQuery.data.progress_percent === 'number'}
+            / {Math.round($datasetSyncJobQuery.data.progress_percent)}%
+          {/if}
+        </p>
+        {#if $datasetSyncJobQuery.data.message}
+          <p class="mt-1 text-xs text-slate-500">{$datasetSyncJobQuery.data.message}</p>
+        {/if}
+        {#if $datasetSyncJobQuery.data.error}
+          <p class="mt-1 text-xs text-rose-600">{$datasetSyncJobQuery.data.error}</p>
+        {/if}
+      {/if}
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button
+          class={`btn-ghost ${datasetSyncStarting ? 'opacity-50 cursor-not-allowed' : ''}`}
+          type="button"
+          disabled={datasetSyncStarting}
+          onclick={startDatasetSyncJob}
+        >
+          同期を再実行
+        </button>
+        {#if datasetSyncJobId}
+          <button
+            class="btn-ghost"
+            type="button"
+            onclick={cancelDatasetSyncJob}
+          >
+            同期を中断
+          </button>
+        {/if}
+      </div>
+    </div>
+  {:else if $viewerQuery.isLoading || $episodesQuery.isLoading}
     <p class="mt-4 text-sm text-slate-600">再生情報を読み込み中...</p>
-  {:else if $playbackQuery.error}
+  {:else if $viewerQuery.error || $episodesQuery.error}
     <p class="mt-4 text-sm text-rose-600">
-      {$playbackQuery.error instanceof Error ? $playbackQuery.error.message : '再生情報の取得に失敗しました。'}
+      {$viewerQuery.error instanceof Error
+        ? $viewerQuery.error.message
+        : $episodesQuery.error instanceof Error
+          ? $episodesQuery.error.message
+          : '再生情報の取得に失敗しました。'}
     </p>
-  {:else if $playbackQuery.data?.use_videos && ($playbackQuery.data?.cameras?.length ?? 0) > 0 && playbackEpisodes > 0}
+  {:else if playbackEpisodes > 0}
     <div class="mt-4 flex flex-wrap items-end gap-3">
       <div>
         <label class="label" for="episode-index">エピソード</label>
@@ -348,32 +556,75 @@
         {selectedEpisode + 1} / {playbackEpisodes} episodes
       </p>
     </div>
-    <div class="mt-4 grid gap-4 lg:grid-cols-2">
-      {#each $playbackQuery.data.cameras as camera}
-        <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-3">
-          <div class="mb-2 flex items-center justify-between">
-            <p class="text-sm font-semibold text-slate-800">{camera.label}</p>
-            <p class="text-xs text-slate-500">
-              {camera.width ?? '-'}x{camera.height ?? '-'} / {camera.codec ?? '-'} / {camera.fps ?? '-'}fps
-            </p>
+
+    {#if $viewerQuery.data?.use_videos && ($viewerQuery.data?.cameras?.length ?? 0) > 0}
+      <div class="mt-4 grid gap-4 lg:grid-cols-2">
+        {#each $viewerQuery.data.cameras as camera}
+          <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-3">
+            <div class="mb-2 flex items-center justify-between">
+              <p class="text-sm font-semibold text-slate-800">{camera.label}</p>
+              <p class="text-xs text-slate-500">
+                {camera.width ?? '-'}x{camera.height ?? '-'} / {camera.codec ?? '-'} / {camera.fps ?? '-'}fps
+              </p>
+            </div>
+            {#key `${camera.key}:${selectedEpisode}`}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video
+                class="w-full rounded-xl bg-slate-900"
+                controls
+                preload="metadata"
+                crossorigin="use-credentials"
+                src={api.storage.datasetViewerVideoUrl(datasetId, camera.key, selectedEpisode)}
+              ></video>
+            {/key}
           </div>
-          {#key `${camera.key}:${selectedEpisode}`}
-            <!-- svelte-ignore a11y_media_has_caption -->
-            <video
-              class="w-full rounded-xl bg-slate-900"
-              controls
-              preload="metadata"
-              crossorigin="use-credentials"
-              src={api.storage.datasetPlaybackVideoUrl(datasetId, camera.key, selectedEpisode)}
-            ></video>
-          {/key}
-        </div>
-      {/each}
-    </div>
+        {/each}
+      </div>
+    {:else}
+      <p class="mt-4 text-sm text-slate-600">動画再生可能なカメラはありません。</p>
+    {/if}
+
+	    <div class="mt-6 rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+	      <div class="flex flex-wrap items-end gap-3">
+	        <div class="min-w-64 flex-1">
+	          <label class="label" for="signal-field">トピック（保存フィールド）</label>
+	          <select id="signal-field" class="input mt-2" bind:value={selectedSignalField}>
+	            {#each signalFields as field}
+	              <option value={field.key}>{field.key}</option>
+	            {/each}
+	          </select>
+	        </div>
+	      </div>
+	      {#if $signalFieldsQuery.isLoading}
+	        <p class="mt-3 text-sm text-slate-600">表示可能フィールドを読み込み中...</p>
+	      {:else if $signalFieldsQuery.error}
+        <p class="mt-3 text-sm text-rose-600">
+          {$signalFieldsQuery.error instanceof Error
+            ? $signalFieldsQuery.error.message
+            : '表示可能フィールドの取得に失敗しました。'}
+        </p>
+	      {:else if !signalFields.length}
+	        <p class="mt-3 text-sm text-slate-600">可視化できる数値ベクトルフィールドがありません。</p>
+	      {:else}
+	        <div class="mt-4 h-[420px]">
+	          <JointStateView
+	            source="dataset"
+	            sourceLabel={selectedSignalMeta ? `${selectedSignalMeta.key} (${selectedSignalMeta.dtype})` : selectedSignalField}
+	            datasetId={datasetId}
+	            episodeIndex={selectedEpisode}
+	            topic={selectedSignalField}
+	            title="Joint State / Dataset"
+	            showVelocity={true}
+	          />
+	        </div>
+	      {/if}
+	    </div>
   {:else}
-    <p class="mt-4 text-sm text-slate-600">動画再生可能なエピソードが見つかりません。</p>
+    <p class="mt-4 text-sm text-slate-600">再生可能なエピソードがありません。</p>
   {/if}
 </section>
+
+<DatasetViewerModal bind:open={viewerModalOpen} datasetId={datasetId} title="Dataset Viewer" />
 
 <section class="card p-6">
   <div class="flex items-center justify-between">

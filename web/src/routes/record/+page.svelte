@@ -11,6 +11,7 @@
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
+  import DatasetViewerModal from '$lib/components/storage/DatasetViewerModal.svelte';
 
   type RecordingSummary = {
     recording_id: string;
@@ -80,6 +81,8 @@
   let reuploadBusy = $state<Record<string, boolean>>({});
   let archiveBusy = $state<Record<string, boolean>>({});
   let uploadStatusMap = $state<Record<string, RecordingUploadStatus>>({});
+  let viewerModalOpen = $state(false);
+  let viewerDatasetId = $state('');
   const uploadStreamStops = new Map<string, () => void>();
 
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
@@ -169,6 +172,13 @@
       return `${label} (${progress})`;
     }
     return label;
+  };
+
+  const openDatasetViewer = (datasetId: string) => {
+    const normalized = String(datasetId || '').trim();
+    if (!normalized) return;
+    viewerDatasetId = normalized;
+    viewerModalOpen = true;
   };
 
   const reuploadRecording = async (recording: RecordingSummary) => {
@@ -425,6 +435,15 @@
                       {uploadStatusMap[recording.recording_id]?.error}
                     </span>
                   {/if}
+                  {#if uploadStatusMap[recording.recording_id]?.status === 'completed'}
+                    <button
+                      class="btn-ghost w-fit px-2 py-1 text-[10px]"
+                      type="button"
+                      onclick={() => openDatasetViewer(recording.recording_id)}
+                    >
+                      ビューアで開く
+                    </button>
+                  {/if}
                 </div>
               </td>
               <td class="py-3">{formatBytes(recording.size_bytes ?? 0)}</td>
@@ -444,6 +463,12 @@
                       sideOffset={6}
                       align="end"
                     >
+                      <DropdownMenu.Item
+                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
+                        onSelect={() => openDatasetViewer(recording.recording_id)}
+                      >
+                        ビューアで開く
+                      </DropdownMenu.Item>
                       <DropdownMenu.Item
                         class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
                         disabled={!recording.is_local || isReuploadBusy(recording.recording_id)}
@@ -492,3 +517,4 @@
 </section>
 
 <OperateStatusCards status={$operateStatusQuery.data} />
+<DatasetViewerModal bind:open={viewerModalOpen} datasetId={viewerDatasetId} title="Dataset Viewer" />

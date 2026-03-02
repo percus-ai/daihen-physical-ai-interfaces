@@ -9,7 +9,7 @@
 
   type Experiment = {
     id: string;
-    model_id: string;
+    model_id?: string | null;
     profile_instance_id?: string | null;
     name?: string;
     purpose?: string | null;
@@ -234,7 +234,7 @@
     <div>
       <p class="label">モデル</p>
       <p class="mt-1 font-semibold text-slate-800">
-        {experiment?.model_id ? modelMap.get(experiment.model_id)?.name ?? experiment.model_id : '-'}
+        {experiment?.model_id ? modelMap.get(experiment.model_id)?.name ?? experiment.model_id : '未設定'}
       </p>
     </div>
     <div>
@@ -249,7 +249,7 @@
         {modelMap.get(experiment?.model_id ?? '')?.dataset_id
           ? datasetMap.get(modelMap.get(experiment?.model_id ?? '')?.dataset_id ?? '')?.name ??
             modelMap.get(experiment?.model_id ?? '')?.dataset_id
-          : '-'}
+          : '未設定'}
       </p>
     </div>
   </div>

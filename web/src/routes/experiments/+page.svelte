@@ -18,7 +18,7 @@
 
   type Experiment = {
     id: string;
-    model_id: string;
+    model_id?: string | null;
     profile_instance_id?: string | null;
     name?: string;
     evaluation_count?: number;
@@ -251,27 +251,31 @@
             <tr class="border-t border-slate-200/60">
               <td class="py-3">{exp.name ?? '-'}</td>
               <td class="py-3">
-                <Tooltip.Root>
-                  <Tooltip.Trigger type={null}>
-                    {#snippet child({ props })}
-                      <a
-                        {...props}
-                        class="text-xs font-semibold text-brand underline underline-offset-2"
-                        href={`/storage/models/${exp.model_id}`}
+                {#if exp.model_id}
+                  <Tooltip.Root>
+                    <Tooltip.Trigger type={null}>
+                      {#snippet child({ props })}
+                        <a
+                          {...props}
+                          class="text-xs font-semibold text-brand underline underline-offset-2"
+                          href={`/storage/models/${exp.model_id}`}
+                        >
+                          開く
+                        </a>
+                      {/snippet}
+                    </Tooltip.Trigger>
+                    <Tooltip.Portal>
+                      <Tooltip.Content
+                        class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
+                        sideOffset={6}
                       >
-                        開く
-                      </a>
-                    {/snippet}
-                  </Tooltip.Trigger>
-                  <Tooltip.Portal>
-                    <Tooltip.Content
-                      class="rounded-lg bg-slate-900/90 px-2 py-1 text-xs text-white shadow-lg"
-                      sideOffset={6}
-                    >
-                      {modelMap.get(exp.model_id)?.name ?? exp.model_id}
-                    </Tooltip.Content>
-                  </Tooltip.Portal>
-                </Tooltip.Root>
+                        {modelMap.get(exp.model_id)?.name ?? exp.model_id}
+                      </Tooltip.Content>
+                    </Tooltip.Portal>
+                  </Tooltip.Root>
+                {:else}
+                  <span class="text-xs text-slate-400">未設定</span>
+                {/if}
               </td>
               <td class="py-3">
                 {#if exp.profile_instance_id}
