@@ -3,7 +3,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
-  import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
+  import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import { formatBytes, formatDate } from '$lib/format';
 
   type DatasetSummary = {
@@ -37,8 +37,6 @@
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
-  let viewerModalOpen = $state(false);
-  let viewerDatasetId = $state('');
 
   const datasets = $derived($datasetsQuery.data?.datasets ?? []);
   const selectedDatasets = $derived(datasets.filter((dataset) => selectedIds.includes(dataset.id)));
@@ -65,8 +63,7 @@
   const displayDatasetLabel = (dataset: DatasetSummary) => dataset.name ?? dataset.id;
 
   const openViewer = (datasetId: string) => {
-    viewerDatasetId = datasetId;
-    viewerModalOpen = true;
+    sessionViewer.open({ datasetId });
   };
 
   async function handleMerge() {
@@ -321,5 +318,3 @@
     <p class="mt-2 text-sm text-rose-600">{actionError}</p>
   {/if}
 </section>
-
-<SessionViewerModal bind:open={viewerModalOpen} datasetId={viewerDatasetId} title="Session Viewer" />

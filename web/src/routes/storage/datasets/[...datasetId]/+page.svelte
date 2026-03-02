@@ -13,7 +13,7 @@
   import { qk } from '$lib/queryKeys';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import { VIEWER_RUNTIME, type ViewerRuntime, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
-  import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
+  import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import JointStateView from '$lib/components/recording/views/JointStateView.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
@@ -74,7 +74,6 @@
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
-  let viewerModalOpen = $state(false);
 
   const mergeDefaultName = $derived(
     datasetId
@@ -85,7 +84,7 @@
 
   const openViewerModal = () => {
     if (!datasetId) return;
-    viewerModalOpen = true;
+    sessionViewer.open({ datasetId });
   };
 
   const datasetAvailability = createDatasetAvailabilityController({
@@ -165,9 +164,7 @@
   const refetchDataset = async () => {
     if (!datasetId) return;
     await queryClient.invalidateQueries({ queryKey: qk.storage.dataset(datasetId) });
-    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewer(datasetId) });
-    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerEpisodes(datasetId) });
-    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetViewerSignalFields(datasetId) });
+    await datasetAvailability.refetch();
   };
 
   const cancelDatasetSyncJob = async () => {
@@ -548,8 +545,6 @@
     <p class="mt-4 text-sm text-slate-600">再生可能なエピソードがありません。</p>
   {/if}
 </section>
-
-<SessionViewerModal bind:open={viewerModalOpen} datasetId={datasetId} title="Session Viewer" />
 
 <section class="card p-6">
   <div class="flex items-center justify-between">

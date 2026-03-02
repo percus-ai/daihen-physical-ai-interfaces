@@ -6,6 +6,7 @@
   import { QueryClientProvider } from '@tanstack/svelte-query';
   import { Toaster } from 'svelte-french-toast';
   import { queryClient } from '$lib/queryClient';
+  import SessionViewerModalHost from '$lib/viewer/SessionViewerModalHost.svelte';
 
   let { children }: { children?: Snippet } = $props();
 </script>
@@ -14,6 +15,7 @@
   <Tooltip.Provider>
     <AppShell>
       {@render children?.()}
+      <SessionViewerModalHost />
     </AppShell>
     <Toaster
       position="top-right"

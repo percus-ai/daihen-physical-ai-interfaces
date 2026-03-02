@@ -11,7 +11,7 @@
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
-  import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
+  import { sessionViewer } from '$lib/viewer/sessionViewerStore';
 
   type RecordingSummary = {
     recording_id: string;
@@ -81,8 +81,6 @@
   let reuploadBusy = $state<Record<string, boolean>>({});
   let archiveBusy = $state<Record<string, boolean>>({});
   let uploadStatusMap = $state<Record<string, RecordingUploadStatus>>({});
-  let viewerModalOpen = $state(false);
-  let viewerDatasetId = $state('');
   const uploadStreamStops = new Map<string, () => void>();
 
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
@@ -177,8 +175,7 @@
   const openDatasetViewer = (datasetId: string) => {
     const normalized = String(datasetId || '').trim();
     if (!normalized) return;
-    viewerDatasetId = normalized;
-    viewerModalOpen = true;
+    sessionViewer.open({ datasetId: normalized });
   };
 
   const reuploadRecording = async (recording: RecordingSummary) => {
@@ -517,4 +514,3 @@
 </section>
 
 <OperateStatusCards status={$operateStatusQuery.data} />
-<SessionViewerModal bind:open={viewerModalOpen} datasetId={viewerDatasetId} title="Session Viewer" />

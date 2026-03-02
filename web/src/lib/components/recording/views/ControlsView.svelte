@@ -4,8 +4,8 @@
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
-  import SessionViewerModal from '$lib/components/recording/SessionViewerModal.svelte';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
+  import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -50,8 +50,6 @@
     updated_at?: string | null;
   } | null>(null);
   let stopUploadStream: (() => void) | null = null;
-  let datasetViewerOpen = $state(false);
-  let datasetViewerId = $state('');
 
   const runAction = async (
     label: string,
@@ -291,8 +289,7 @@
   const openDatasetViewer = () => {
     const targetDatasetId = String(uploadStatus?.dataset_id || datasetId || sessionId || '').trim();
     if (!targetDatasetId) return;
-    datasetViewerId = targetDatasetId;
-    datasetViewerOpen = true;
+    sessionViewer.open({ datasetId: targetDatasetId });
   };
 
   $effect(() => {
@@ -646,5 +643,3 @@
     </AlertDialog.Content>
   </AlertDialog.Portal>
 </AlertDialog.Root>
-
-<SessionViewerModal bind:open={datasetViewerOpen} datasetId={datasetViewerId} title="Session Viewer" />
