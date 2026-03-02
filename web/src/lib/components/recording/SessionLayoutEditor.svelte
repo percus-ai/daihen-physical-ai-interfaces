@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { toStore } from 'svelte/store';
-  import { Button, Tabs } from 'bits-ui';
+  import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api, type ExperimentEpisodeLink } from '$lib/api/client';
 
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import BlueprintTree from '$lib/components/recording/BlueprintTree.svelte';
   import BlueprintWorkspace from '$lib/components/recording/BlueprintWorkspace.svelte';
+  import InspectorTabs from '$lib/components/recording/InspectorTabs.svelte';
   import DatasetEpisodeSearchTab from '$lib/components/recording/DatasetEpisodeSearchTab.svelte';
   import {
     createDatasetPlaybackController,
@@ -525,37 +526,12 @@
           </div>
 
           <aside class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-3 lg:overflow-y-auto">
-            <Tabs.Root bind:value={editInspectorTab}>
-              <Tabs.List
-                class={`inline-grid ${showSearchTab ? 'grid-cols-3' : 'grid-cols-2'} gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1`}
-              >
-                <Tabs.Trigger
-                  value="blueprint"
-                  class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
-                >
-                  Blueprint
-                </Tabs.Trigger>
-                <Tabs.Trigger
-                  value="selection"
-                  class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
-                >
-                  Selection
-                </Tabs.Trigger>
-                {#if showSearchTab}
-                  <Tabs.Trigger
-                    value="search"
-                    class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
-                  >
-                    Search
-                  </Tabs.Trigger>
-                {/if}
-              </Tabs.List>
-
-              <Tabs.Content value="blueprint" class="mt-3">
+            <InspectorTabs bind:value={editInspectorTab} {showSearchTab}>
+              {#snippet blueprintPanel()}
                 <BlueprintTree node={blueprint} selectedId={selectedId} onSelect={updateSelection} />
-              </Tabs.Content>
+              {/snippet}
 
-              <Tabs.Content value="selection" class="mt-3">
+              {#snippet selectionPanel()}
                 {#if !selectedNode}
                   <p class="text-xs text-slate-500">選択されていません。</p>
                 {:else if selectedNode.type === 'view'}
@@ -709,10 +685,10 @@
                     </Button.Root>
                   </div>
                 {/if}
-              </Tabs.Content>
+              {/snippet}
 
               {#if showSearchTab}
-                <Tabs.Content value="search" class="mt-3">
+                {#snippet searchPanel()}
                   <DatasetEpisodeSearchTab
                     datasets={searchDatasets}
                     recommendedDatasetId={searchRecommendedDatasetId}
@@ -723,9 +699,9 @@
                     onAdd={onAddEpisodeLink}
                     onRemove={onRemoveEpisodeLink}
                   />
-                </Tabs.Content>
+                {/snippet}
               {/if}
-            </Tabs.Root>
+            </InspectorTabs>
           </aside>
         </div>
       </div>
