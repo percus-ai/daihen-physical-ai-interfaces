@@ -281,7 +281,7 @@
 	              {@const episodeValue = Math.max(0, Math.floor(Number(link.episode_index) || 0))}
 	              {@const isActive = `${datasetIdValue}:${episodeValue}` === previewKey}
 	              <div
-	                class={`flex items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 ${
+	                class={`flex h-[44px] items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 ${
 	                  isActive ? 'border-brand/50 shadow-sm' : 'border-slate-200/60'
 	                }`}
 	              >
@@ -291,14 +291,14 @@
 	                </div>
 	                <div class="flex shrink-0 gap-1">
 	                  <button
-	                    class="btn-ghost whitespace-nowrap"
+	                    class="btn-ghost whitespace-nowrap px-3 py-1.5 text-xs"
 	                    type="button"
 	                    onclick={() => handlePreview(datasetIdValue, episodeValue)}
 	                  >
 	                    プレビュー
 	                  </button>
 	                  <button
-	                    class="btn-ghost whitespace-nowrap border-rose-200/70 text-rose-600 hover:border-rose-300/80"
+	                    class="btn-ghost whitespace-nowrap border-rose-200/70 px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300/80"
 	                    type="button"
 	                    onclick={() => handleRemove(datasetIdValue, episodeValue)}
 	                  >
@@ -335,14 +335,14 @@
                     </div>
                     <div class="flex shrink-0 gap-1">
                       <button
-                        class="btn-ghost whitespace-nowrap"
+                        class="btn-ghost whitespace-nowrap px-3 py-1.5 text-xs"
                         type="button"
                         onclick={() => handlePreview(selectedDatasetId, episodeIndex)}
                       >
                         プレビュー
                       </button>
                       <button
-                        class="btn-ghost whitespace-nowrap"
+                        class="btn-ghost whitespace-nowrap px-3 py-1.5 text-xs"
                         type="button"
                         onclick={() => handleAdd(selectedDatasetId, episodeIndex)}
                       >
