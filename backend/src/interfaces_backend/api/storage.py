@@ -62,7 +62,7 @@ from percus_ai.storage.hash import compute_directory_hash, compute_directory_siz
 from percus_ai.storage.hub import download_model, ensure_hf_token, get_local_model_info, upload_model
 from percus_ai.storage.naming import validate_dataset_name, generate_dataset_id
 from percus_ai.storage.paths import get_datasets_dir, get_models_dir
-from percus_ai.storage.r2_db_sync import ModelSyncCancelledError, R2DBSyncService
+from percus_ai.storage.r2_db_sync import R2DBSyncService
 from lerobot.datasets.aggregate import aggregate_datasets
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
@@ -1022,50 +1022,6 @@ async def get_model(model_id: str):
     return _model_row_to_info(rows[0])
 
 
-async def _run_model_sync_job(*, job_id: str, model_id: str) -> None:
-    jobs = get_model_sync_jobs_service()
-    sync_service = R2DBSyncService()
-    progress_callback = jobs.build_progress_callback(job_id=job_id)
-    cancel_event = jobs.get_cancel_event(job_id=job_id)
-    try:
-        result = await sync_service.ensure_model_local(
-            model_id,
-            auto_download=True,
-            progress_callback=progress_callback,
-            cancel_event=cancel_event,
-        )
-    except ModelSyncCancelledError:
-        jobs.cancelled(job_id=job_id)
-        return
-    except asyncio.CancelledError:
-        jobs.cancelled(job_id=job_id)
-        return
-    except Exception as exc:
-        logger.exception("Model sync job failed unexpectedly: %s", job_id)
-        jobs.fail(
-            job_id=job_id,
-            message="モデル同期に失敗しました。",
-            error=str(exc),
-        )
-    else:
-        if result.success:
-            jobs.complete(
-                job_id=job_id,
-                message="ローカルキャッシュを利用しました。" if result.skipped else "モデル同期が完了しました。",
-            )
-            return
-        if result.cancelled:
-            jobs.cancelled(job_id=job_id)
-            return
-        jobs.fail(
-            job_id=job_id,
-            message="モデル同期に失敗しました。",
-            error=result.message,
-        )
-    finally:
-        jobs.release_runtime_handles(job_id=job_id)
-
-
 @router.post("/models/{model_id}/sync", response_model=ModelSyncJobAcceptedResponse, status_code=202)
 async def sync_model(model_id: str):
     """Start a background model sync job."""
@@ -1085,8 +1041,7 @@ async def sync_model(model_id: str):
 
     jobs = get_model_sync_jobs_service()
     accepted = jobs.create(user_id=user_id, model_id=model_id)
-    task = asyncio.create_task(_run_model_sync_job(job_id=accepted.job_id, model_id=model_id))
-    jobs.attach_task(user_id=user_id, job_id=accepted.job_id, task=task)
+    jobs.ensure_worker()
     return accepted
 
 

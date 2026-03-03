@@ -14,7 +14,6 @@
     dataset_id?: string;
     size_bytes?: number;
     is_local?: boolean;
-    status?: string;
     created_at?: string;
   };
 
@@ -23,35 +22,12 @@
     total?: number;
   };
 
-  type DatasetSummary = {
-    id: string;
-    name?: string;
-  };
-
-  type DatasetListResponse = {
-    datasets?: DatasetSummary[];
-    total?: number;
-  };
-
   const modelsQuery = createQuery<ModelListResponse>({
     queryKey: qk.storage.modelsManage(),
     queryFn: () => api.storage.models()
   });
 
-  const datasetsQuery = createQuery<DatasetListResponse>({
-    queryKey: qk.storage.datasetsLookup(),
-    queryFn: () => api.storage.datasets()
-  });
-
   const models = $derived($modelsQuery.data?.models ?? []);
-  const datasetMap = $derived(
-    new Map(
-      ($datasetsQuery.data?.datasets ?? []).map((dataset) => [
-        dataset.id,
-        dataset.name ?? dataset.id
-      ])
-    )
-  );
 
   const displayModelLabel = (model: ModelSummary) => model.name ?? model.id;
   const isActiveJobState = (state?: ModelSyncJobState) => state === 'queued' || state === 'running';
@@ -61,12 +37,15 @@
   let syncAllPending = $state(false);
   let syncMessage = $state('');
   let syncError = $state('');
+  let bulkMessage = $state('');
+  let bulkError = $state('');
+  let bulkPending = $state(false);
+  let selectedIds = $state<string[]>([]);
   let jobsById = $state<Record<string, ModelSyncJobStatus>>({});
   let activeJobsByModelId = $state<Record<string, ModelSyncJobStatus>>({});
   const streamStops = new Map<string, () => void>();
 
-  const anyActiveSync = $derived(Object.keys(activeJobsByModelId).length > 0);
-  const syncPending = $derived(syncAllPending || anyActiveSync);
+  const syncPending = $derived(syncAllPending);
 
   const activeJobOf = (modelId: string) => activeJobsByModelId[modelId] ?? null;
 
@@ -154,6 +133,11 @@
     await $modelsQuery?.refetch?.();
   };
 
+  const selectedModels = $derived(models.filter((model) => selectedIds.includes(model.id)));
+  const syncTargets = $derived(selectedModels.filter((model) => !model.is_local));
+  const canSyncSelected = $derived(syncTargets.length > 0 && !bulkPending && !syncAllPending);
+  const canArchiveSelected = $derived(selectedIds.length > 0 && !bulkPending && !syncAllPending);
+
   const loadActiveJobs = async () => {
     const response = await api.storage.modelSyncJobs(false);
     const activeJobs = (response.jobs ?? []).map(normalizeJob);
@@ -162,9 +146,18 @@
     const nextActive: Record<string, ModelSyncJobStatus> = {};
     const activeJobIds = new Set<string>();
 
+    const preferActiveJob = (next: ModelSyncJobStatus, prev: ModelSyncJobStatus | undefined) => {
+      if (!prev) return true;
+      if (prev.state === 'running' && next.state === 'queued') return false;
+      if (next.state === 'running' && prev.state === 'queued') return true;
+      return isNewerJobSnapshot(next, prev);
+    };
+
     for (const job of activeJobs) {
       nextJobsById[job.job_id] = job;
-      nextActive[job.model_id] = job;
+      if (preferActiveJob(job, nextActive[job.model_id])) {
+        nextActive[job.model_id] = job;
+      }
       activeJobIds.add(job.job_id);
       ensureJobStream(job.job_id);
     }
@@ -213,6 +206,8 @@
 
     syncMessage = '';
     syncError = '';
+    bulkMessage = '';
+    bulkError = '';
 
     if (activeJob) {
       try {
@@ -224,7 +219,7 @@
       return;
     }
 
-    if (model.is_local || syncAllPending || anyActiveSync) return;
+    if (model.is_local || syncAllPending || bulkPending) return;
 
     try {
       const started = await startModelSync(modelId);
@@ -235,7 +230,7 @@
   };
 
   const handleSyncAll = async () => {
-    if (syncPending) return;
+    if (syncPending || bulkPending) return;
 
     const targets = models.filter((model) => !model.is_local);
     if (!targets.length) {
@@ -247,36 +242,37 @@
     syncAllPending = true;
     syncMessage = '';
     syncError = '';
-
-    let completed = 0;
-    let cancelled = 0;
-    let failed = 0;
-    const failedIds: string[] = [];
+    bulkMessage = '';
+    bulkError = '';
 
     try {
+      let enqueued = 0;
+      let skipped = 0;
+      let failed = 0;
+      const failedIds: string[] = [];
+
       for (const model of targets) {
-        const started = await startModelSync(model.id);
-        const finished = await waitForTerminalJob(started.job_id);
-        if (finished.state === 'completed') {
-          completed += 1;
-          continue;
+        try {
+          await startModelSync(model.id);
+          enqueued += 1;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes('409') || message.includes('already in progress')) {
+            skipped += 1;
+            continue;
+          }
+          failed += 1;
+          failedIds.push(model.id);
         }
-        if (finished.state === 'cancelled') {
-          cancelled += 1;
-          continue;
-        }
-        failed += 1;
-        failedIds.push(model.id);
       }
 
-      const summary = [`成功 ${completed}`, `中断 ${cancelled}`, `失敗 ${failed}`].join(' / ');
-      syncMessage = `全モデル同期完了: ${summary}`;
+      const summary = [`登録 ${enqueued}`, `スキップ ${skipped}`, `失敗 ${failed}`].join(' / ');
+      syncMessage = `全モデル同期ジョブを登録しました: ${summary}`;
       if (failedIds.length) {
         const preview = failedIds.slice(0, 5).join(', ');
         const suffix = failedIds.length > 5 ? ' ...' : '';
         syncError = `失敗モデル: ${preview}${suffix}`;
       }
-      await refetchModels();
       await loadActiveJobs();
     } catch (err) {
       syncError = err instanceof Error ? err.message : '全モデル同期に失敗しました。';
@@ -287,6 +283,7 @@
 
   const handleRefresh = async () => {
     syncError = '';
+    bulkError = '';
     await refetchModels();
     await loadActiveJobs();
   };
@@ -303,9 +300,108 @@
     if (activeJob) return false;
     if (model.is_local) return true;
     if (syncAllPending) return true;
-    if (anyActiveSync) return true;
+    if (bulkPending) return true;
     return false;
   };
+
+  async function handleSyncSelected() {
+    bulkMessage = '';
+    bulkError = '';
+    syncMessage = '';
+    syncError = '';
+
+    if (!syncTargets.length) {
+      bulkError = '同期対象を選択してください。';
+      return;
+    }
+
+    const confirmed = confirm(`${syncTargets.length}件のモデル同期ジョブを登録しますか？`);
+    if (!confirmed) return;
+
+    bulkPending = true;
+    const ids = syncTargets.map((model) => model.id);
+
+    try {
+      let enqueued = 0;
+      let skipped = 0;
+      let failed = 0;
+
+      for (const modelId of ids) {
+        try {
+          await startModelSync(modelId);
+          enqueued += 1;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes('409') || message.includes('already in progress')) {
+            skipped += 1;
+            continue;
+          }
+          failed += 1;
+        }
+      }
+
+      const summary = [`登録 ${enqueued}`, `スキップ ${skipped}`, `失敗 ${failed}`].join(' / ');
+      bulkMessage = `同期ジョブを登録しました: ${summary}`;
+      await loadActiveJobs();
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : '同期ジョブ登録に失敗しました。';
+    } finally {
+      bulkPending = false;
+    }
+  }
+
+  async function handleArchiveSelected() {
+    bulkMessage = '';
+    bulkError = '';
+    syncMessage = '';
+    syncError = '';
+
+    if (!selectedIds.length) {
+      bulkError = 'アーカイブ対象を選択してください。';
+      return;
+    }
+
+    const confirmed = confirm(`${selectedIds.length}件をアーカイブしますか？（同期中は中断を要求します）`);
+    if (!confirmed) return;
+
+    bulkPending = true;
+    const ids = [...selectedIds];
+
+    let cancelled = 0;
+    let archived = 0;
+    let failed = 0;
+
+    try {
+      for (const modelId of ids) {
+        const activeJob = activeJobOf(modelId);
+        if (activeJob) {
+          try {
+            await cancelModelSync(activeJob.job_id);
+            cancelled += 1;
+          } catch {
+            // Best-effort: proceed to archive even if cancel fails.
+          }
+        }
+
+        try {
+          await api.storage.archiveModel(modelId);
+          archived += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+
+      const summary = [`中断要求 ${cancelled}`, `アーカイブ ${archived}`, `失敗 ${failed}`].join(' / ');
+      bulkMessage = `一括アーカイブを実行しました: ${summary}`;
+      selectedIds = [];
+      await refetchModels();
+      await loadActiveJobs();
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : 'アーカイブに失敗しました。';
+    } finally {
+      bulkPending = false;
+    }
+  }
 
   $effect(() => {
     let disposed = false;
@@ -340,7 +436,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage">ビューに戻る</Button.Root>
-      <button class="btn-ghost" type="button" onclick={handleSyncAll} disabled={syncPending || !models.length}>
+      <button class="btn-ghost" type="button" onclick={handleSyncAll} disabled={syncPending || bulkPending || !models.length}>
         {syncAllPending ? '全て同期中...' : '全て同期'}
       </button>
       <button class="btn-ghost" type="button" onclick={handleRefresh} disabled={syncAllPending}>
@@ -353,17 +449,18 @@
 <section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">モデル一覧</h2>
+    <p class="text-xs text-slate-500">選択して一括操作が可能です。</p>
   </div>
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">
         <tr>
+          <th class="pb-3"></th>
           <th class="pb-3">ID</th>
           <th class="pb-3">プロファイル</th>
           <th class="pb-3">ポリシー</th>
           <th class="pb-3">データセット</th>
           <th class="pb-3">サイズ</th>
-          <th class="pb-3">状態</th>
           <th class="pb-3">作成日時</th>
           <th class="pb-3">同期</th>
           <th class="pb-3">詳細</th>
@@ -377,6 +474,14 @@
             {@const activeJob = activeJobOf(model.id)}
             {@const progressPercent = Number(activeJob?.progress_percent ?? 0)}
             <tr class="border-t border-slate-200/60">
+              <td class="py-3">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/40"
+                  bind:group={selectedIds}
+                  value={model.id}
+                />
+              </td>
               <td class="py-3 font-semibold text-slate-800">
                 <span class="block max-w-[25ch] truncate" title={model.id}>
                   {displayModelLabel(model)}
@@ -389,16 +494,15 @@
                   <a
                     class="text-brand hover:underline"
                     href={`/storage/datasets/${model.dataset_id}`}
-                    title={datasetMap.get(model.dataset_id) ?? model.dataset_id}
+                    title={model.dataset_id}
                   >
-                    詳細
+                    開く
                   </a>
                 {:else}
                   -
                 {/if}
               </td>
               <td class="py-3">{formatBytes(model.size_bytes ?? 0)}</td>
-              <td class="py-3"><span class="chip">{model.status}</span></td>
               <td class="py-3">{formatDate(model.created_at)}</td>
               <td class="py-3">
                 <button
@@ -439,5 +543,50 @@
   {/if}
   {#if syncError}
     <p class="mt-2 text-sm text-rose-600">{syncError}</p>
+  {/if}
+</section>
+
+<section class="card p-6">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <h2 class="text-xl font-semibold text-slate-900">一括操作</h2>
+      <p class="text-xs text-slate-500">選択済み: {selectedIds.length} 件</p>
+    </div>
+  </div>
+  <div class="mt-4 grid gap-4 lg:grid-cols-2">
+    <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+      <p class="text-sm font-semibold text-slate-800">同期</p>
+      <p class="mt-1 text-xs text-slate-500">選択済みの未同期モデルをジョブキューへ登録します。</p>
+      <div class="mt-4">
+        <button
+          class={`btn-primary ${canSyncSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
+          type="button"
+          disabled={!canSyncSelected}
+          onclick={handleSyncSelected}
+        >
+          同期（選択）
+        </button>
+      </div>
+    </div>
+    <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+      <p class="text-sm font-semibold text-slate-800">アーカイブ</p>
+      <p class="mt-1 text-xs text-slate-500">選択済みモデルをアーカイブへ移動します。</p>
+      <div class="mt-4">
+        <button
+          class={`btn-ghost ${canArchiveSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
+          type="button"
+          disabled={!canArchiveSelected}
+          onclick={handleArchiveSelected}
+        >
+          アーカイブ（選択）
+        </button>
+      </div>
+    </div>
+  </div>
+  {#if bulkMessage}
+    <p class="mt-4 text-sm text-emerald-600">{bulkMessage}</p>
+  {/if}
+  {#if bulkError}
+    <p class="mt-2 text-sm text-rose-600">{bulkError}</p>
   {/if}
 </section>
