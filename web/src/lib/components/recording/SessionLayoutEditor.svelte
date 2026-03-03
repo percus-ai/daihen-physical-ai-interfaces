@@ -412,7 +412,7 @@
             />
           </div>
 
-          <aside class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-3 lg:overflow-y-auto">
+          <aside class="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/60 bg-white/70 p-3">
             <InspectorTabs bind:value={editInspectorTab} extraTabs={effectiveInspectorExtraTabs}>
               {#snippet blueprintPanel()}
                 <BlueprintTree node={blueprint} selectedId={selectedId} onSelect={updateSelection} />

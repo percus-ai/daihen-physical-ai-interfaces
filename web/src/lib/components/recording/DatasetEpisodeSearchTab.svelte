@@ -1,7 +1,12 @@
 <script lang="ts">
   import { toStore } from 'svelte/store';
   import { createQuery } from '@tanstack/svelte-query';
-  import { api, type ExperimentEpisodeLink, type DatasetViewerResponse } from '$lib/api/client';
+  import {
+    api,
+    type ExperimentEpisodeLink,
+    type DatasetViewerEpisodeListResponse,
+    type DatasetViewerResponse
+  } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import {
     kthUnselectedEpisodeIndex,
@@ -72,7 +77,37 @@
     }))
   );
 
+  const selectedDatasetEpisodesQuery = createQuery<DatasetViewerEpisodeListResponse>(
+    toStore(() => ({
+      queryKey: qk.storage.datasetViewerEpisodes(selectedDatasetId),
+      queryFn: () => api.storage.datasetViewerEpisodes(selectedDatasetId),
+      enabled: Boolean(selectedDatasetId)
+    }))
+  );
+
   const selectedTotalEpisodes = $derived(Number($selectedDatasetViewerQuery.data?.total_episodes ?? 0));
+  const selectedEpisodeMetaMap = $derived.by(() => {
+    const map = new Map<number, { frameCount: number; durationS: number; effectiveFps: number }>();
+    const episodes = $selectedDatasetEpisodesQuery.data?.episodes ?? [];
+    for (const episode of episodes) {
+      const episodeIndex = Math.max(0, Math.floor(Number(episode.episode_index) || 0));
+      const frameCount = Math.max(0, Math.floor(Number(episode.frame_count) || 0));
+      const durationS = Math.max(0, Number(episode.duration_s) || 0);
+      const effectiveFps = Math.max(0, Number(episode.effective_fps) || 0);
+      map.set(episodeIndex, { frameCount, durationS, effectiveFps });
+    }
+    return map;
+  });
+
+  const formatEpisodeMeta = (datasetId: string, episodeIndex: number) => {
+    if (!datasetId || datasetId !== selectedDatasetId) return '--s ・ --f ・ --FPS';
+    const value = selectedEpisodeMetaMap.get(episodeIndex);
+    if (!value) return '--s ・ --f ・ --FPS';
+    const durationLabel = value.durationS > 0 ? `${value.durationS.toFixed(1)}s` : '--s';
+    const frameLabel = value.frameCount > 0 ? `${value.frameCount}f` : '--f';
+    const fpsLabel = value.effectiveFps > 0 ? `${value.effectiveFps.toFixed(1)} FPS` : '--FPS';
+    return `${durationLabel} ・ ${frameLabel} ・ ${fpsLabel}`;
+  };
 
   const selectedIndicesSortedForDataset = $derived.by(() => {
     if (!selectedDatasetId) return [] as number[];
@@ -90,7 +125,10 @@
   let unselectedScrollEl = $state<HTMLDivElement | null>(null);
   let unselectedScrollTop = $state(0);
   let unselectedViewportHeight = $state(240);
-  const rowHeight = 44;
+  // Keep in sync with rendered row + gap (`h-[52px]` + `space-y-2`).
+  const rowItemHeight = 52;
+  const rowGap = 8;
+  const rowStride = rowItemHeight + rowGap;
   const overscan = 6;
 
   const unselectedTotalRows = $derived.by(() => {
@@ -100,10 +138,10 @@
     return getUnselectedTotalRows(total, selectedIndicesSortedForDataset);
   });
   const unselectedStartIndex = $derived(
-    Math.max(0, Math.floor((unselectedScrollTop || 0) / rowHeight) - overscan)
+    Math.max(0, Math.floor((unselectedScrollTop || 0) / rowStride) - overscan)
   );
   const unselectedVisibleCount = $derived(
-    Math.ceil((unselectedViewportHeight || 240) / rowHeight) + overscan * 2
+    Math.ceil((unselectedViewportHeight || 240) / rowStride) + overscan * 2
   );
   const unselectedEndIndex = $derived(
     Math.min(unselectedTotalRows, unselectedStartIndex + unselectedVisibleCount)
@@ -168,7 +206,7 @@
     if (!unselectedScrollEl) return;
     const rowIndex = unselectedRowForEpisodeIndex(total, selectedIndicesSortedForDataset, episodeIndex);
     if (rowIndex === null) return;
-    const nextTop = Math.max(0, rowIndex * rowHeight - rowHeight * 2);
+    const nextTop = Math.max(0, rowIndex * rowStride - rowStride * 2);
     if (Math.abs(unselectedScrollEl.scrollTop - nextTop) > 1) {
       unselectedScrollEl.scrollTop = nextTop;
       unselectedScrollTop = nextTop;
@@ -198,8 +236,9 @@
 
 </script>
 
+<div class="flex h-full min-h-0 flex-col">
 {#if step === 'dataset'}
-  <div class="space-y-3">
+  <div class="flex min-h-0 flex-1 flex-col gap-3">
     <div>
       <p class="label">Dataset</p>
       <input
@@ -222,29 +261,41 @@
             <p class="truncate text-xs text-slate-500">{recommendedDataset.id}</p>
           </div>
           <button
-            class="btn-ghost shrink-0"
+            class="btn-ghost inline-flex h-8 w-8 shrink-0 items-center justify-center p-0"
             type="button"
             onclick={() => handleDatasetPick(recommendedDataset.id)}
+            aria-label="このデータセットを選択"
+            title="選択"
           >
-            選ぶ
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5">
+              <path d="M5 10h9M10 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
           </button>
         </div>
       </div>
     {/if}
 
-    <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
+    <div class="flex min-h-0 flex-1 flex-col rounded-xl border border-slate-200/70 bg-white/80 p-3">
       <p class="text-xs font-semibold text-slate-700">すべて</p>
-      <div class="mt-2 max-h-72 overflow-y-auto pr-1">
+      <div class="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
         {#if filteredDatasets.length}
           <div class="space-y-2">
             {#each filteredDatasets as item (item.id)}
-              <div class="flex items-center justify-between gap-2 rounded-lg border border-slate-200/60 bg-white px-3 py-2">
+              <div class="flex h-[52px] items-center justify-between gap-2 rounded-lg border border-slate-200/60 bg-white px-3">
                 <div class="min-w-0">
                   <p class="truncate text-sm font-semibold text-slate-900">{item.name ?? item.id}</p>
                   <p class="truncate text-xs text-slate-500">{item.id}</p>
                 </div>
-                <button class="btn-ghost shrink-0" type="button" onclick={() => handleDatasetPick(item.id)}>
-                  選ぶ
+                <button
+                  class="btn-ghost inline-flex h-8 w-8 shrink-0 items-center justify-center p-0"
+                  type="button"
+                  onclick={() => handleDatasetPick(item.id)}
+                  aria-label="このデータセットを選択"
+                  title="選択"
+                >
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5">
+                    <path d="M5 10h9M10 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
                 </button>
               </div>
             {/each}
@@ -256,9 +307,9 @@
     </div>
   </div>
 {:else}
-  <div class="space-y-3">
+  <div class="flex min-h-0 flex-1 flex-col gap-3">
     <div class="flex flex-wrap items-center justify-between gap-2">
-      <button class="btn-ghost" type="button" onclick={() => (step = 'dataset')}>Back</button>
+      <button class="btn-ghost" type="button" onclick={() => (step = 'dataset')}>戻る</button>
       <div class="min-w-0 text-right">
         <p class="truncate text-xs font-semibold text-slate-700">{selectedDatasetId || 'dataset 未選択'}</p>
         <p class="truncate text-[10px] text-slate-500">
@@ -307,8 +358,8 @@
       </div>
     </div>
 
-    <div class="space-y-3">
-	      <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
+    <div class="flex min-h-0 flex-1 flex-col gap-3">
+	      <div class="shrink-0 rounded-xl border border-slate-200/70 bg-white/80 p-3">
 	        <p class="text-xs font-semibold text-slate-700">選択済</p>
 	        {#if activeEpisodeLinks.length}
 	          <div class="mt-2 space-y-2">
@@ -317,28 +368,37 @@
 	              {@const episodeValue = Math.max(0, Math.floor(Number(link.episode_index) || 0))}
 	              {@const isActive = `${datasetIdValue}:${episodeValue}` === previewKey}
 	              <div
-	                class={`flex h-[44px] items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 ${
+	                class={`flex h-[52px] items-center justify-between gap-2 rounded-lg border bg-white px-3 ${
 	                  isActive ? 'border-brand/50 shadow-sm' : 'border-slate-200/60'
 	                }`}
 	              >
 	                <div class="min-w-0 flex-1">
-	                  <p class="truncate text-xs font-semibold text-slate-900">{datasetIdValue}</p>
-	                  <p class="truncate text-[10px] text-slate-500">ep {episodeValue + 1}</p>
+	                  <p class="truncate text-sm font-semibold text-slate-900">エピソード {episodeValue + 1}</p>
+	                  <p class="truncate text-xs text-slate-500">{formatEpisodeMeta(datasetIdValue, episodeValue)}</p>
 	                </div>
 	                <div class="flex shrink-0 gap-1">
 	                  <button
-	                    class="btn-ghost whitespace-nowrap px-3 py-1.5 text-xs"
+	                    class="btn-ghost inline-flex h-8 w-8 items-center justify-center p-0"
 	                    type="button"
 	                    onclick={() => handlePreview(datasetIdValue, episodeValue)}
+	                    aria-label={`エピソード ${episodeValue + 1} をプレビュー`}
+	                    title="プレビュー"
 	                  >
-	                    プレビュー
+	                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5">
+	                      <path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z" stroke-linecap="round" stroke-linejoin="round" />
+	                      <circle cx="10" cy="10" r="2.5" />
+	                    </svg>
 	                  </button>
 	                  <button
-	                    class="btn-ghost whitespace-nowrap border-rose-200/70 px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300/80"
+	                    class="btn-ghost inline-flex h-8 w-8 items-center justify-center border-rose-200/70 p-0 text-rose-600 hover:border-rose-300/80"
 	                    type="button"
 	                    onclick={() => handleRemove(datasetIdValue, episodeValue)}
+	                    aria-label={`エピソード ${episodeValue + 1} の紐付けを削除`}
+	                    title="削除"
 	                  >
-	                    削除
+	                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5">
+	                      <path d="M4 6h12M8 6V4h4v2M7 6v10m6-10v10M6 16h8" stroke-linecap="round" stroke-linejoin="round" />
+	                    </svg>
 	                  </button>
 	                </div>
 	              </div>
@@ -349,9 +409,9 @@
 	        {/if}
 	      </div>
 
-      <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
+      <div class="flex min-h-0 flex-1 flex-col rounded-xl border border-slate-200/70 bg-white/80 p-3">
         <p class="text-xs font-semibold text-slate-700">未選択</p>
-        <div class="mt-2 h-80 overflow-y-auto pr-1" bind:this={unselectedScrollEl} onscroll={(event) => {
+        <div class="mt-2 min-h-0 flex-1 overflow-y-auto pr-1" bind:this={unselectedScrollEl} onscroll={(event) => {
           unselectedScrollTop = (event.currentTarget as HTMLDivElement).scrollTop;
         }}>
           {#if !selectedDatasetId}
@@ -361,28 +421,42 @@
           {:else if !unselectedTotalRows}
             <p class="text-xs text-slate-500">すべて選択済です。</p>
           {:else}
-            <div style={`height:${unselectedTotalRows * rowHeight}px; position:relative;`}>
-              <div style={`position:absolute; top:${unselectedStartIndex * rowHeight}px; left:0; right:0;`}>
+            <div
+              style={`height:${unselectedTotalRows > 0 ? unselectedTotalRows * rowItemHeight + (unselectedTotalRows - 1) * rowGap : 0}px; position:relative;`}
+            >
+              <div
+                class="space-y-2"
+                style={`position:absolute; top:${unselectedStartIndex * rowStride}px; left:0; right:0;`}
+              >
                 {#each unselectedVisibleEpisodes as episodeIndex (episodeIndex)}
-                  <div class="flex h-[44px] items-center justify-between gap-2 rounded-lg border border-slate-200/60 bg-white px-3 py-2">
+                  <div class="flex h-[52px] items-center justify-between gap-2 rounded-lg border border-slate-200/60 bg-white px-3">
                     <div class="min-w-0 flex-1">
-                      <p class="truncate text-xs font-semibold text-slate-900">{selectedDatasetId}</p>
-                      <p class="truncate text-[10px] text-slate-500">ep {episodeIndex + 1}</p>
+                      <p class="truncate text-sm font-semibold text-slate-900">エピソード {episodeIndex + 1}</p>
+                      <p class="truncate text-xs text-slate-500">{formatEpisodeMeta(selectedDatasetId, episodeIndex)}</p>
                     </div>
                     <div class="flex shrink-0 gap-1">
                       <button
-                        class="btn-ghost whitespace-nowrap px-3 py-1.5 text-xs"
+                        class="btn-ghost inline-flex h-8 w-8 items-center justify-center p-0"
                         type="button"
                         onclick={() => handlePreview(selectedDatasetId, episodeIndex)}
+                        aria-label={`エピソード ${episodeIndex + 1} をプレビュー`}
+                        title="プレビュー"
                       >
-                        プレビュー
+                        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5">
+                          <path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z" stroke-linecap="round" stroke-linejoin="round" />
+                          <circle cx="10" cy="10" r="2.5" />
+                        </svg>
                       </button>
                       <button
-                        class="btn-ghost whitespace-nowrap px-3 py-1.5 text-xs"
+                        class="btn-ghost inline-flex h-8 w-8 items-center justify-center p-0"
                         type="button"
                         onclick={() => handleAdd(selectedDatasetId, episodeIndex)}
+                        aria-label={`エピソード ${episodeIndex + 1} を追加`}
+                        title="追加"
                       >
-                        追加
+                        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5">
+                          <path d="M10 4v12M4 10h12" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
                       </button>
                     </div>
                   </div>
@@ -395,3 +469,4 @@
     </div>
   </div>
 {/if}
+</div>

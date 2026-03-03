@@ -208,6 +208,9 @@ class DatasetViewerEpisode(BaseModel):
     """Episode metadata for dataset viewer."""
 
     episode_index: int = Field(..., description="Episode index (0-based)")
+    frame_count: int = Field(0, description="Frame count for this episode")
+    duration_s: float = Field(0.0, description="Duration in seconds for this episode")
+    effective_fps: float = Field(0.0, description="Effective FPS for this episode")
 
 
 class DatasetViewerEpisodeListResponse(BaseModel):

@@ -198,6 +198,9 @@ export type DatasetViewerResponse = {
 
 export type DatasetViewerEpisode = {
   episode_index: number;
+  frame_count: number;
+  duration_s: number;
+  effective_fps: number;
 };
 
 export type DatasetViewerEpisodeListResponse = {

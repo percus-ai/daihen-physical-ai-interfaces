@@ -22,9 +22,9 @@
   );
 </script>
 
-<Tabs.Root bind:value={value}>
+<Tabs.Root bind:value={value} class="flex min-h-0 flex-1 flex-col">
   <Tabs.List
-    class="inline-grid gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1"
+    class="inline-grid shrink-0 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1"
     style={`grid-template-columns: repeat(${2 + resolvedExtraTabs.length}, minmax(0, 1fr));`}
   >
     <Tabs.Trigger
@@ -49,16 +49,16 @@
     {/each}
   </Tabs.List>
 
-  <Tabs.Content value="blueprint" class="mt-3">
+  <Tabs.Content value="blueprint" class="mt-3 min-h-0 flex-1 overflow-y-auto">
     {@render blueprintPanel?.()}
   </Tabs.Content>
 
-  <Tabs.Content value="selection" class="mt-3">
+  <Tabs.Content value="selection" class="mt-3 min-h-0 flex-1 overflow-y-auto">
     {@render selectionPanel?.()}
   </Tabs.Content>
 
   {#each resolvedExtraTabs as tab (tab.id)}
-    <Tabs.Content value={tab.id} class="mt-3">
+    <Tabs.Content value={tab.id} class="mt-3 min-h-0 flex-1 overflow-y-auto">
       {@render tab.panel?.()}
     </Tabs.Content>
   {/each}

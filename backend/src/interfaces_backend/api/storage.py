@@ -563,7 +563,17 @@ async def get_dataset_viewer_episodes(dataset_id: str):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load dataset metadata: {exc}") from exc
 
-    episodes = [DatasetViewerEpisode(episode_index=idx) for idx in range(metadata.total_episodes)]
+    episodes = []
+    for idx in range(metadata.total_episodes):
+        frame_count, duration_s, effective_fps = _episode_summary(metadata, idx)
+        episodes.append(
+            DatasetViewerEpisode(
+                episode_index=idx,
+                frame_count=frame_count,
+                duration_s=duration_s,
+                effective_fps=effective_fps,
+            )
+        )
     return DatasetViewerEpisodeListResponse(
         dataset_id=dataset_id,
         episodes=episodes,
@@ -696,6 +706,50 @@ def _coerce_float(value: object, default: float = 0.0) -> float:
         return parsed
     except Exception:
         return default
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:
+        return default
+
+
+def _episode_summary(metadata: LeRobotDatasetMetadata, episode_index: int) -> tuple[int, float, float]:
+    if episode_index < 0 or episode_index >= metadata.total_episodes:
+        return 0, 0.0, 0.0
+
+    ep = metadata.episodes[episode_index]
+    if not isinstance(ep, dict):
+        fallback_fps = max(0.0, _coerce_float(metadata.fps, 0.0))
+        return 0, 0.0, fallback_fps
+
+    frame_count = _coerce_int(ep.get("length"), 0)
+    if frame_count <= 0:
+        from_idx = _coerce_int(ep.get("dataset_from_index"), 0)
+        to_idx = _coerce_int(ep.get("dataset_to_index"), 0)
+        if to_idx > from_idx:
+            frame_count = to_idx - from_idx
+
+    duration_s = 0.0
+    for video_key in metadata.video_keys:
+        from_s = _coerce_float(ep.get(f"videos/{video_key}/from_timestamp"), -1.0)
+        to_s = _coerce_float(ep.get(f"videos/{video_key}/to_timestamp"), -1.0)
+        if from_s >= 0.0 and to_s > from_s:
+            duration_s = to_s - from_s
+            break
+
+    if duration_s <= 0.0:
+        dataset_fps = _coerce_float(metadata.fps, 0.0)
+        if dataset_fps > 0.0 and frame_count > 0:
+            duration_s = frame_count / dataset_fps
+
+    if duration_s <= 0.0 or frame_count <= 0:
+        fallback_fps = max(0.0, _coerce_float(metadata.fps, 0.0))
+        return max(0, frame_count), max(0.0, duration_s), fallback_fps
+
+    effective_fps = max(0.0, float(frame_count) / duration_s)
+    return max(0, frame_count), max(0.0, duration_s), effective_fps
 
 
 @router.get(
