@@ -1,8 +1,13 @@
-"""In-memory model sync job tracking for storage sync operations."""
+"""In-memory model sync job tracking for storage sync operations.
+
+This service allows enqueueing multiple model sync jobs while running them
+sequentially in a single background worker per backend environment.
+"""
 
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -10,6 +15,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import HTTPException
+
+from percus_ai.storage.r2_db_sync import ModelSyncCancelledError, R2DBSyncService
 
 from interfaces_backend.models.storage import (
     ModelSyncJobAcceptedResponse,
@@ -65,15 +72,24 @@ class ModelSyncJobsService:
         self._ttl_seconds = ttl_seconds
         self._lock = threading.RLock()
         self._jobs: dict[str, _JobRecord] = {}
-        self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel_events: dict[str, threading.Event] = {}
+        self._pending: deque[str] = deque()
+        self._worker_task: asyncio.Task[None] | None = None
+        self._pending_event: asyncio.Event | None = None
 
     def create(self, *, user_id: str, model_id: str) -> ModelSyncJobAcceptedResponse:
         with self._lock:
             self._cleanup_locked()
             for job in self._jobs.values():
-                if job.user_id == user_id and job.state in _ACTIVE_STATES:
-                    raise HTTPException(status_code=409, detail="A model sync job is already in progress")
+                if (
+                    job.user_id == user_id
+                    and job.model_id == model_id
+                    and job.state in _ACTIVE_STATES
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="A model sync job is already in progress",
+                    )
 
             job_id = uuid4().hex
             now = _utcnow()
@@ -87,6 +103,9 @@ class ModelSyncJobsService:
                 updated_at=now,
             )
             self._cancel_events[job_id] = threading.Event()
+            self._pending.append(job_id)
+            if self._pending_event is not None:
+                self._pending_event.set()
             snapshot = self._jobs[job_id].to_response()
         self._publish(snapshot)
         return ModelSyncJobAcceptedResponse(
@@ -96,19 +115,22 @@ class ModelSyncJobsService:
             message="accepted",
         )
 
-    def attach_task(self, *, user_id: str, job_id: str, task: asyncio.Task[None]) -> None:
-        with self._lock:
-            record = self._get_for_user_locked(user_id=user_id, job_id=job_id)
-            if record.state in _TERMINAL_STATES:
-                return
-            self._tasks[job_id] = task
+    def ensure_worker(self) -> None:
+        """Ensure the background worker is running (best-effort).
 
-    def release_runtime_handles(self, *, job_id: str) -> None:
+        Must be called from within an active asyncio event loop.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
         with self._lock:
-            self._tasks.pop(job_id, None)
-            record = self._jobs.get(job_id)
-            if record is not None and record.state in _TERMINAL_STATES:
-                self._cancel_events.pop(job_id, None)
+            if self._worker_task is not None and not self._worker_task.done():
+                return
+            if self._pending_event is None:
+                self._pending_event = asyncio.Event()
+            self._worker_task = loop.create_task(self._worker_loop(), name="model-sync-worker")
 
     def list(self, *, user_id: str, include_terminal: bool = False) -> ModelSyncJobListResponse:
         with self._lock:
@@ -163,6 +185,87 @@ class ModelSyncJobsService:
             accepted=True,
             state=snapshot.state,
             message=snapshot.message or "Cancel requested.",
+        )
+
+    async def _worker_loop(self) -> None:
+        """Process queued jobs sequentially."""
+        while True:
+            job_id: str | None = None
+            pending_event: asyncio.Event | None = None
+            with self._lock:
+                self._cleanup_locked()
+                while self._pending:
+                    candidate = self._pending.popleft()
+                    record = self._jobs.get(candidate)
+                    if record is None:
+                        continue
+                    if record.state in _TERMINAL_STATES:
+                        continue
+                    job_id = candidate
+                    break
+                if job_id is None:
+                    pending_event = self._pending_event
+
+            if job_id is None:
+                if pending_event is None:
+                    await asyncio.sleep(0.5)
+                    continue
+                await pending_event.wait()
+                pending_event.clear()
+                continue
+
+            await self._run_job(job_id)
+
+    async def _run_job(self, job_id: str) -> None:
+        jobs = self
+        record: _JobRecord | None = None
+        cancel_event: threading.Event | None = None
+        with self._lock:
+            record = self._jobs.get(job_id)
+            cancel_event = self._cancel_events.get(job_id)
+
+        if record is None:
+            return
+        if record.state in _TERMINAL_STATES:
+            return
+
+        sync_service = R2DBSyncService()
+        progress_callback = jobs.build_progress_callback(job_id=job_id)
+
+        # Mark as running (progress callback will update it further).
+        jobs.set_running(job_id=job_id, progress_percent=0.0, message="モデル同期を開始しました。")
+
+        try:
+            result = await sync_service.ensure_model_local(
+                record.model_id,
+                auto_download=True,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+            )
+        except ModelSyncCancelledError:
+            jobs.cancelled(job_id=job_id)
+            return
+        except Exception as exc:
+            jobs.fail(
+                job_id=job_id,
+                message="モデル同期に失敗しました。",
+                error=str(exc),
+            )
+            return
+
+        if result.success:
+            jobs.complete(
+                job_id=job_id,
+                message="ローカルキャッシュを利用しました。" if result.skipped else "モデル同期が完了しました。",
+            )
+            return
+        if result.cancelled:
+            jobs.cancelled(job_id=job_id)
+            return
+        jobs.fail(
+            job_id=job_id,
+            message="モデル同期に失敗しました。",
+            error=result.message,
         )
 
     def set_running(
@@ -282,7 +385,6 @@ class ModelSyncJobsService:
             record.updated_at = _utcnow()
             snapshot = record.to_response()
             if record.state in _TERMINAL_STATES:
-                self._tasks.pop(job_id, None)
                 self._cancel_events.pop(job_id, None)
         if snapshot is not None:
             self._publish(snapshot)
@@ -303,7 +405,6 @@ class ModelSyncJobsService:
         ]
         for job_id in stale_job_ids:
             self._jobs.pop(job_id, None)
-            self._tasks.pop(job_id, None)
             self._cancel_events.pop(job_id, None)
 
     def _get_for_user_locked(self, *, user_id: str, job_id: str) -> _JobRecord:
