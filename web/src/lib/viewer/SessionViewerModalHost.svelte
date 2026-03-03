@@ -75,10 +75,9 @@
 
 <SessionViewerModal
   bind:open={open}
+  bind:episodeIndex={episodeIndex}
   datasetId={datasetId}
-  episodeIndex={episodeIndex}
   title={title}
   initialInspectorTab={initialInspectorTab}
   startInEditMode={startInEditMode}
 />
-

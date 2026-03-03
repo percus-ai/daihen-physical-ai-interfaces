@@ -15,7 +15,7 @@
   let {
     open = $bindable(false),
     datasetId = '',
-    episodeIndex = 0,
+    episodeIndex = $bindable(0),
     title = 'Session Viewer',
     initialInspectorTab = 'selection',
     startInEditMode = false
@@ -42,7 +42,6 @@
   onDestroy(datasetAvailability.destroy);
 
   let viewerLayoutEditMode = $state(false);
-  let selectedEpisodeRaw = $state(0);
   let episodeInputText = $state('1');
 
   const close = () => {
@@ -52,8 +51,7 @@
   $effect(() => {
     if (!open) return;
     viewerLayoutEditMode = Boolean(startInEditMode);
-    selectedEpisodeRaw = Math.max(0, Math.floor(Number(episodeIndex) || 0));
-    episodeInputText = String(selectedEpisodeRaw + 1);
+    episodeInputText = String(viewerEpisodeIndex + 1);
   });
 
   const viewerDatasetQuery = datasetAvailability.datasetQuery;
@@ -61,12 +59,21 @@
   const viewerTotalEpisodes = datasetAvailability.totalEpisodes;
   const viewerIsLocalValue = $derived($viewerIsLocal);
   const viewerEpisodeIndex = $derived.by(() => {
-    const next = Math.max(0, Math.floor(Number(selectedEpisodeRaw) || 0));
+    const next = Math.max(0, Math.floor(Number(episodeIndex) || 0));
     if (!Number.isFinite(next)) return 0;
     const total = $viewerTotalEpisodes;
     if (total <= 0) return next;
     if (next >= total) return Math.max(0, total - 1);
     return next;
+  });
+
+  $effect(() => {
+    if (!open) return;
+    if (!datasetId) return;
+    // Clamp after total episodes becomes known.
+    if (viewerEpisodeIndex === episodeIndex) return;
+    episodeIndex = viewerEpisodeIndex;
+    episodeInputText = String(viewerEpisodeIndex + 1);
   });
   const viewerDatasetSignalKeys = datasetAvailability.signalKeys;
   const viewerCameraKeys = datasetAvailability.cameraKeys;
@@ -110,7 +117,7 @@
     }
     const clamped = clampEpisodeInput(parsed);
     episodeInputText = String(clamped);
-    selectedEpisodeRaw = Math.max(0, clamped - 1);
+    episodeIndex = Math.max(0, clamped - 1);
   };
 </script>
 
@@ -143,8 +150,8 @@
             type="button"
             disabled={viewerEpisodeIndex <= 0}
             onclick={() => {
-              selectedEpisodeRaw = Math.max(0, viewerEpisodeIndex - 1);
-              episodeInputText = String(selectedEpisodeRaw + 1);
+              episodeIndex = Math.max(0, viewerEpisodeIndex - 1);
+              episodeInputText = String(episodeIndex + 1);
             }}
           >
             前へ
@@ -169,8 +176,8 @@
             type="button"
             disabled={$viewerTotalEpisodes > 0 ? viewerEpisodeIndex >= $viewerTotalEpisodes - 1 : false}
             onclick={() => {
-              selectedEpisodeRaw = viewerEpisodeIndex + 1;
-              episodeInputText = String(selectedEpisodeRaw + 1);
+              episodeIndex = viewerEpisodeIndex + 1;
+              episodeInputText = String(episodeIndex + 1);
             }}
           >
             次へ
