@@ -751,50 +751,31 @@
           />
         {/snippet}
 
-        {#if viewerDatasetId}
-          <div class="min-h-0">
-            <SessionLayoutEditor
-              blueprintSessionId={viewerDatasetId}
-              blueprintSessionKind="recording"
-              layoutSessionId={viewerDatasetId}
-              layoutSessionKind="recording"
-              layoutMode="recording"
-              viewSource="dataset"
-              editMode={viewerLayoutEditMode}
-              initialInspectorTab={viewerInitialInspectorTab}
-              inspectorExtraTabs={viewerLayoutEditMode
-                ? [{ id: 'search', label: 'Search', panel: searchInspectorPanel }]
-                : []}
-              embedded={true}
-              datasetId={viewerDatasetId}
-              datasetEpisodeIndex={viewerEpisodeIndex}
-              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
-              datasetSignalKeys={$viewerDatasetSignalKeys}
-              datasetVideoWindows={viewerVideoWindows}
-              datasetAutoplayNonce={viewerDatasetAutoplayNonce}
-              {onPrevEpisode}
-              {onNextEpisode}
-            />
-          </div>
-        {:else}
-          <div class="card flex min-h-0 h-full flex-col gap-4 p-4">
-            <div class="rounded-xl border border-slate-200/70 bg-white/80 px-6 py-4 text-center">
-              {#if $datasetsQuery.isLoading}
-                <p class="text-sm text-slate-500">データセット一覧を読み込み中...</p>
-                <p class="mt-1 text-xs text-slate-500">少し待つと候補が表示されます。</p>
-              {:else if recommendedDatasetId || allDatasets.length}
-                <p class="text-sm text-slate-500">データセットが未選択です。</p>
-                <p class="mt-1 text-xs text-slate-500">下の Search からデータセットを選択してプレビューしてください。</p>
-              {:else}
-                <p class="text-sm text-slate-500">表示するデータセットがありません。</p>
-                <p class="mt-1 text-xs text-slate-500">データセットを作成/同期してから開いてください。</p>
-              {/if}
-            </div>
-            <div class="min-h-0 flex-1 overflow-auto rounded-xl border border-slate-200/70 bg-white/80 p-3">
-              {@render searchInspectorPanel()}
-            </div>
-          </div>
-        {/if}
+        <div class="min-h-0">
+          <SessionLayoutEditor
+            blueprintSessionId={viewerDatasetId || `experiment/${experiment?.id ?? ''}/trial/${activeTrialIndex}`}
+            blueprintSessionKind="recording"
+            layoutSessionId={viewerDatasetId || `experiment/${experiment?.id ?? ''}/trial/${activeTrialIndex}`}
+            layoutSessionKind="recording"
+            layoutMode="recording"
+            viewSource="dataset"
+            editMode={viewerLayoutEditMode}
+            initialInspectorTab={viewerInitialInspectorTab}
+            inspectorExtraTabs={viewerLayoutEditMode
+              ? [{ id: 'search', label: 'Search', panel: searchInspectorPanel }]
+              : []}
+            embedded={true}
+            persistBlueprintDraft={Boolean(viewerDatasetId)}
+            datasetId={viewerDatasetId}
+            datasetEpisodeIndex={viewerEpisodeIndex}
+            datasetCameraKeys={viewerDatasetId ? ($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key) : []}
+            datasetSignalKeys={viewerDatasetId ? $viewerDatasetSignalKeys : []}
+            datasetVideoWindows={viewerDatasetId ? viewerVideoWindows : {}}
+            datasetAutoplayNonce={viewerDatasetAutoplayNonce}
+            {onPrevEpisode}
+            {onNextEpisode}
+          />
+        </div>
       </div>
   {/snippet}
 </ViewerDialogShell>
