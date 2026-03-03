@@ -133,6 +133,7 @@
   let activeTrialIndex = $state(1);
   let modalDatasetId = $state('');
   let modalEpisodeIndex = $state(0);
+  let modalDatasetAutoSelect = $state(true);
   const queryClient = useQueryClient();
   let viewerLayoutEditMode = $state(false);
   let viewerInitialInspectorTab = $state<'blueprint' | 'selection' | 'search'>('blueprint');
@@ -156,6 +157,7 @@
 
   $effect(() => {
     if (!linkModalOpen) return;
+    if (!modalDatasetAutoSelect) return;
     if (modalDatasetId) return;
     const fallbackDatasetId = allDatasets[0]?.id ?? '';
     const nextDatasetId = recommendedDatasetId || fallbackDatasetId;
@@ -483,20 +485,29 @@
 
   const openViewerModal = (
     trialIndex: number,
-    options: { editMode?: boolean; inspectorTab?: 'blueprint' | 'selection' | 'search' } = {}
+    options: { editMode?: boolean; inspectorTab?: 'blueprint' | 'selection' | 'search'; autoSelectDataset?: boolean } = {}
   ) => {
     activeTrialIndex = trialIndex;
     viewerLayoutEditMode = Boolean(options.editMode);
     viewerInitialInspectorTab = options.inspectorTab ?? 'blueprint';
     viewerDatasetAutoplayNonce = 0;
+    modalDatasetAutoSelect = options.autoSelectDataset ?? true;
 
     const row = evaluationItems.find((item) => item.trial_index === trialIndex);
     const links = normalizeEpisodeLinks(row?.episode_links ?? []);
     const first = links[0];
 
     const fallbackDatasetId = allDatasets[0]?.id ?? '';
-    modalDatasetId = first?.dataset_id || recommendedDatasetId || fallbackDatasetId;
-    modalEpisodeIndex = first?.episode_index ?? 0;
+    if (first?.dataset_id) {
+      modalDatasetId = first.dataset_id;
+      modalEpisodeIndex = first.episode_index ?? 0;
+    } else if (modalDatasetAutoSelect) {
+      modalDatasetId = recommendedDatasetId || fallbackDatasetId;
+      modalEpisodeIndex = 0;
+    } else {
+      modalDatasetId = '';
+      modalEpisodeIndex = 0;
+    }
 
     linkModalOpen = true;
   };
@@ -505,12 +516,18 @@
     trialIndex: number,
     datasetId: string,
     episodeIndex: number,
-    options: { editMode?: boolean; inspectorTab?: 'blueprint' | 'selection' | 'search'; autoplay?: boolean } = {}
+    options: {
+      editMode?: boolean;
+      inspectorTab?: 'blueprint' | 'selection' | 'search';
+      autoplay?: boolean;
+      autoSelectDataset?: boolean;
+    } = {}
   ) => {
     activeTrialIndex = trialIndex;
     viewerLayoutEditMode = Boolean(options.editMode);
     viewerInitialInspectorTab = options.inspectorTab ?? 'blueprint';
     if (options.autoplay) viewerDatasetAutoplayNonce += 1;
+    modalDatasetAutoSelect = options.autoSelectDataset ?? true;
     modalDatasetId = datasetId;
     modalEpisodeIndex = Math.max(0, Math.floor(Number(episodeIndex) || 0));
     linkModalOpen = true;
@@ -595,7 +612,7 @@
   };
 
   const openLinkEditor = (trialIndex: number) => {
-    openViewerModal(trialIndex, { editMode: true, inspectorTab: 'search' });
+    openViewerModal(trialIndex, { editMode: true, inspectorTab: 'search', autoSelectDataset: false });
   };
 
   const openLinkViewer = (trialIndex: number) => {
@@ -607,6 +624,7 @@
     viewerLayoutEditMode = false;
     viewerInitialInspectorTab = 'blueprint';
     viewerDatasetAutoplayNonce = 0;
+    modalDatasetAutoSelect = true;
     modalDatasetId = '';
     modalEpisodeIndex = 0;
   };
@@ -720,40 +738,43 @@
           </div>
         </div>
 
+        {#snippet searchInspectorPanel()}
+          <DatasetEpisodeSearchTab
+            datasets={allDatasets}
+            recommendedDatasetId={recommendedDatasetId}
+            previewDatasetId={viewerDatasetId}
+            previewEpisodeIndex={viewerEpisodeIndex}
+            episodeLinks={activeEpisodeLinks}
+            onPreview={handlePreviewEpisode}
+            onAdd={handleAddEpisodeLink}
+            onRemove={handleRemoveEpisodeLink}
+          />
+        {/snippet}
+
         {#if viewerDatasetId}
           <div class="min-h-0">
-            {#snippet searchInspectorPanel()}
-              <DatasetEpisodeSearchTab
-                datasets={allDatasets}
-                recommendedDatasetId={recommendedDatasetId}
-                previewDatasetId={viewerDatasetId}
-                previewEpisodeIndex={viewerEpisodeIndex}
-                episodeLinks={activeEpisodeLinks}
-                onPreview={handlePreviewEpisode}
-                onAdd={handleAddEpisodeLink}
-                onRemove={handleRemoveEpisodeLink}
-              />
-            {/snippet}
-		            <SessionLayoutEditor
-		              blueprintSessionId={viewerDatasetId}
-		              blueprintSessionKind="recording"
-		              layoutSessionId={viewerDatasetId}
-		              layoutSessionKind="recording"
-		              layoutMode="recording"
-		              viewSource="dataset"
-		              editMode={viewerLayoutEditMode}
-	                initialInspectorTab={viewerInitialInspectorTab}
-                inspectorExtraTabs={viewerLayoutEditMode ? [{ id: 'search', label: 'Search', panel: searchInspectorPanel }] : []}
-		              embedded={true}
-		              datasetId={viewerDatasetId}
-			              datasetEpisodeIndex={viewerEpisodeIndex}
-			              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
-			              datasetSignalKeys={$viewerDatasetSignalKeys}
-			              datasetVideoWindows={viewerVideoWindows}
-			              datasetAutoplayNonce={viewerDatasetAutoplayNonce}
-	                {onPrevEpisode}
-	                {onNextEpisode}
-		            />
+            <SessionLayoutEditor
+              blueprintSessionId={viewerDatasetId}
+              blueprintSessionKind="recording"
+              layoutSessionId={viewerDatasetId}
+              layoutSessionKind="recording"
+              layoutMode="recording"
+              viewSource="dataset"
+              editMode={viewerLayoutEditMode}
+              initialInspectorTab={viewerInitialInspectorTab}
+              inspectorExtraTabs={viewerLayoutEditMode
+                ? [{ id: 'search', label: 'Search', panel: searchInspectorPanel }]
+                : []}
+              embedded={true}
+              datasetId={viewerDatasetId}
+              datasetEpisodeIndex={viewerEpisodeIndex}
+              datasetCameraKeys={($viewerDatasetQuery.data?.cameras ?? []).map((camera) => camera.key)}
+              datasetSignalKeys={$viewerDatasetSignalKeys}
+              datasetVideoWindows={viewerVideoWindows}
+              datasetAutoplayNonce={viewerDatasetAutoplayNonce}
+              {onPrevEpisode}
+              {onNextEpisode}
+            />
           </div>
         {:else}
           <div class="card p-4 min-h-0 h-full">
@@ -762,12 +783,15 @@
                 <p class="text-sm text-slate-500">データセット一覧を読み込み中...</p>
                 <p class="text-xs text-slate-500">少し待つと自動で表示が切り替わります。</p>
               {:else if recommendedDatasetId || allDatasets.length}
-                <p class="text-sm text-slate-500">表示準備中...</p>
-                <p class="text-xs text-slate-500">データセット選択を反映しています。</p>
+                <p class="text-sm text-slate-500">データセットが未選択です。</p>
+                <p class="text-xs text-slate-500">右の Search からデータセットを選択してプレビューしてください。</p>
               {:else}
                 <p class="text-sm text-slate-500">表示するデータセットがありません。</p>
                 <p class="text-xs text-slate-500">データセットを作成/同期してから開いてください。</p>
               {/if}
+            </div>
+            <div class="mt-4 rounded-xl border border-slate-200/70 bg-white/80 p-3">
+              {@render searchInspectorPanel()}
             </div>
           </div>
         {/if}
