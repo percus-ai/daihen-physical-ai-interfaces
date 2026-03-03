@@ -777,20 +777,20 @@
             />
           </div>
         {:else}
-          <div class="card p-4 min-h-0 h-full">
-            <div class="flex h-full flex-col items-center justify-center gap-3 rounded-xl border border-slate-200/70 bg-white/80 px-6 text-center">
+          <div class="card flex min-h-0 h-full flex-col gap-4 p-4">
+            <div class="rounded-xl border border-slate-200/70 bg-white/80 px-6 py-4 text-center">
               {#if $datasetsQuery.isLoading}
                 <p class="text-sm text-slate-500">データセット一覧を読み込み中...</p>
-                <p class="text-xs text-slate-500">少し待つと自動で表示が切り替わります。</p>
+                <p class="mt-1 text-xs text-slate-500">少し待つと候補が表示されます。</p>
               {:else if recommendedDatasetId || allDatasets.length}
                 <p class="text-sm text-slate-500">データセットが未選択です。</p>
-                <p class="text-xs text-slate-500">右の Search からデータセットを選択してプレビューしてください。</p>
+                <p class="mt-1 text-xs text-slate-500">下の Search からデータセットを選択してプレビューしてください。</p>
               {:else}
                 <p class="text-sm text-slate-500">表示するデータセットがありません。</p>
-                <p class="text-xs text-slate-500">データセットを作成/同期してから開いてください。</p>
+                <p class="mt-1 text-xs text-slate-500">データセットを作成/同期してから開いてください。</p>
               {/if}
             </div>
-            <div class="mt-4 rounded-xl border border-slate-200/70 bg-white/80 p-3">
+            <div class="min-h-0 flex-1 overflow-auto rounded-xl border border-slate-200/70 bg-white/80 p-3">
               {@render searchInspectorPanel()}
             </div>
           </div>
