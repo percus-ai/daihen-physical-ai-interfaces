@@ -38,6 +38,8 @@ from interfaces_backend.models.storage import (
     DatasetReuploadResponse,
     DatasetMergeRequest,
     DatasetMergeResponse,
+    DatasetMergeJobAcceptedResponse,
+    DatasetMergeJobStatus,
     DatasetInfo,
     DatasetListResponse,
     HuggingFaceDatasetImportRequest,
@@ -53,11 +55,18 @@ from interfaces_backend.models.storage import (
     StorageUsageResponse,
 )
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
+from interfaces_backend.services.dataset_merge_jobs import get_dataset_merge_jobs_service
 from interfaces_backend.services.dataset_sync_jobs import get_dataset_sync_jobs_service
 from interfaces_backend.services.model_sync_jobs import get_model_sync_jobs_service
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.vlabor_profiles import resolve_profile_spec
-from percus_ai.db import get_supabase_async_client, upsert_with_owner
+from percus_ai.db import (
+    get_supabase_async_client,
+    get_supabase_session,
+    reset_request_session,
+    set_request_session,
+    upsert_with_owner,
+)
 from percus_ai.storage.hash import compute_directory_hash, compute_directory_size
 from percus_ai.storage.hub import download_model, ensure_hf_token, get_local_model_info, upload_model
 from percus_ai.storage.naming import validate_dataset_name, generate_dataset_id
@@ -473,69 +482,53 @@ async def _merge_datasets(
         episode_count=episode_count,
     )
 
-
-@router.post("/datasets/merge", response_model=DatasetMergeResponse)
-async def merge_datasets(request: DatasetMergeRequest):
-    """Merge multiple datasets into a new dataset."""
-    return await _merge_datasets(request)
-
-
-@router.websocket("/ws/merge")
-async def websocket_merge_datasets(websocket: WebSocket):
-    """WebSocket endpoint for dataset merge with progress updates."""
-    await websocket.accept()
-
-    try:
-        data = await websocket.receive_json()
-        request = DatasetMergeRequest(**data)
-    except ValidationError as e:
-        await websocket.send_json({"type": "error", "error": str(e)})
-        await websocket.close()
-        return
-    except Exception:
-        await websocket.send_json({"type": "error", "error": "Invalid request"})
-        await websocket.close()
-        return
-
-    progress_queue: asyncio.Queue = asyncio.Queue()
+async def _run_dataset_merge_job(*, user_id: str, job_id: str, request: DatasetMergeRequest) -> None:
+    jobs = get_dataset_merge_jobs_service()
     main_loop = asyncio.get_running_loop()
+    session = get_supabase_session()
 
     def progress_callback(progress: dict) -> None:
-        asyncio.run_coroutine_threadsafe(progress_queue.put(progress), main_loop)
+        jobs.update_from_progress(job_id=job_id, progress=progress)
 
     def _merge_datasets_sync() -> DatasetMergeResponse:
-        return asyncio.run(_merge_datasets(request, progress_callback))
-
-    async def run_merge() -> None:
+        token = set_request_session(session)
         try:
-            result = await main_loop.run_in_executor(_executor, _merge_datasets_sync)
-            await progress_queue.put({"type": "complete", **result.model_dump()})
-        except HTTPException as e:
-            await progress_queue.put({"type": "error", "error": e.detail})
-        except Exception as e:
-            await progress_queue.put({"type": "error", "error": str(e)})
+            return asyncio.run(_merge_datasets(request, progress_callback))
+        finally:
+            reset_request_session(token)
 
-    merge_task = asyncio.create_task(run_merge())
-
+    jobs.set_running(
+        job_id=job_id,
+        progress_percent=1.0,
+        message="データセットマージを開始しました。",
+        step="validate",
+    )
     try:
-        while True:
-            try:
-                progress = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
-                await websocket.send_json(progress)
-                if progress.get("type") in ("complete", "error"):
-                    break
-            except asyncio.TimeoutError:
-                if merge_task.done():
-                    break
-                await websocket.send_json({"type": "heartbeat"})
-    except WebSocketDisconnect:
-        logger.info("WebSocket disconnected during dataset merge")
-    except Exception as e:
-        logger.error(f"WebSocket merge error: {e}")
-    finally:
-        if not merge_task.done():
-            merge_task.cancel()
-        await websocket.close()
+        result = await main_loop.run_in_executor(_executor, _merge_datasets_sync)
+    except HTTPException as exc:
+        jobs.fail(job_id=job_id, message="データセットマージに失敗しました。", error=str(exc.detail))
+    except Exception as exc:
+        logger.exception("Dataset merge job failed unexpectedly: %s", job_id)
+        jobs.fail(job_id=job_id, message="データセットマージに失敗しました。", error=str(exc))
+    else:
+        jobs.complete(job_id=job_id, result=result)
+
+
+@router.post("/dataset-merge/jobs", response_model=DatasetMergeJobAcceptedResponse, status_code=202)
+async def start_dataset_merge_job(request: DatasetMergeRequest):
+    """Start a background dataset merge job with SSE progress."""
+    user_id = require_user_id()
+    jobs = get_dataset_merge_jobs_service()
+    accepted = jobs.create(user_id=user_id, request=request)
+    asyncio.create_task(_run_dataset_merge_job(user_id=user_id, job_id=accepted.job_id, request=request))
+    return accepted
+
+
+@router.get("/dataset-merge/jobs/{job_id}", response_model=DatasetMergeJobStatus)
+async def get_dataset_merge_job(job_id: str):
+    user_id = require_user_id()
+    jobs = get_dataset_merge_jobs_service()
+    return jobs.get(user_id=user_id, job_id=job_id)
 
 
 @router.get("/datasets/{dataset_id:path}", response_model=DatasetInfo)

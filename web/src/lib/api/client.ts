@@ -286,6 +286,42 @@ export type DatasetSyncJobCancelResponse = {
   message?: string;
 };
 
+export type DatasetMergeJobState = 'queued' | 'running' | 'completed' | 'failed';
+
+export type DatasetMergeJobDetail = {
+  dataset_name?: string;
+  source_dataset_ids?: string[];
+  step?: string;
+  downloaded_dataset_ids?: string[];
+  current_dataset_id?: string | null;
+  current_file?: string | null;
+  files_done?: number;
+  total_files?: number;
+  total_size?: number;
+  transferred_bytes?: number;
+};
+
+export type DatasetMergeJobStatus = {
+  job_id: string;
+  state: DatasetMergeJobState;
+  progress_percent?: number;
+  message?: string | null;
+  error?: string | null;
+  detail?: DatasetMergeJobDetail;
+  result_dataset_id?: string | null;
+  result_size_bytes?: number;
+  result_episode_count?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type DatasetMergeJobAcceptedResponse = {
+  accepted: boolean;
+  job_id: string;
+  state: DatasetMergeJobState;
+  message?: string;
+};
+
 export type ModelSyncJobState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export type ModelSyncJobDetail = {
@@ -741,14 +777,16 @@ export const api = {
         `/api/storage/dataset-sync/jobs/${encodeURIComponent(jobId)}/cancel`,
         { method: 'POST' }
       ),
-    model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),
-    usage: () => fetchApi('/api/storage/usage'),
-    archive: () => fetchApi('/api/storage/archive'),
-    mergeDatasets: (payload: { dataset_name: string; source_dataset_ids: string[] }) =>
-      fetchApi('/api/storage/datasets/merge', {
+    startDatasetMergeJob: (payload: { dataset_name: string; source_dataset_ids: string[] }) =>
+      fetchApi<DatasetMergeJobAcceptedResponse>('/api/storage/dataset-merge/jobs', {
         method: 'POST',
         body: JSON.stringify(payload)
       }),
+    datasetMergeJob: (jobId: string) =>
+      fetchApi<DatasetMergeJobStatus>(`/api/storage/dataset-merge/jobs/${encodeURIComponent(jobId)}`),
+    model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),
+    usage: () => fetchApi('/api/storage/usage'),
+    archive: () => fetchApi('/api/storage/archive'),
     archiveDataset: (datasetId: string) =>
       fetchApi(`/api/storage/datasets/${datasetId}`, { method: 'DELETE' }),
     restoreDataset: (datasetId: string) =>

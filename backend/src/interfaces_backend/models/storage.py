@@ -49,6 +49,48 @@ class DatasetMergeResponse(BaseModel):
     episode_count: int = 0
 
 
+DatasetMergeJobState = Literal["queued", "running", "completed", "failed"]
+
+
+class DatasetMergeJobDetail(BaseModel):
+    dataset_name: str = ""
+    source_dataset_ids: List[str] = Field(default_factory=list)
+    step: str = ""
+
+    downloaded_dataset_ids: List[str] = Field(default_factory=list)
+
+    current_dataset_id: Optional[str] = None
+    current_file: Optional[str] = None
+
+    files_done: int = 0
+    total_files: int = 0
+    total_size: int = 0
+    transferred_bytes: int = 0
+
+
+class DatasetMergeJobStatus(BaseModel):
+    job_id: str
+    state: DatasetMergeJobState
+    progress_percent: float = 0.0
+    message: Optional[str] = None
+    error: Optional[str] = None
+    detail: DatasetMergeJobDetail = Field(default_factory=DatasetMergeJobDetail)
+
+    result_dataset_id: Optional[str] = None
+    result_size_bytes: int = 0
+    result_episode_count: int = 0
+
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class DatasetMergeJobAcceptedResponse(BaseModel):
+    accepted: bool = True
+    job_id: str
+    state: DatasetMergeJobState = "queued"
+    message: str = "accepted"
+
+
 class ModelInfo(BaseModel):
     """Model information for API responses."""
 

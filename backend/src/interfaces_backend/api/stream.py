@@ -13,6 +13,10 @@ from interfaces_backend.services.dataset_sync_jobs import (
     DATASET_SYNC_JOB_TOPIC,
     get_dataset_sync_jobs_service,
 )
+from interfaces_backend.services.dataset_merge_jobs import (
+    DATASET_MERGE_JOB_TOPIC,
+    get_dataset_merge_jobs_service,
+)
 from interfaces_backend.services.model_sync_jobs import (
     MODEL_SYNC_JOB_TOPIC,
     get_model_sync_jobs_service,
@@ -212,6 +216,21 @@ async def stream_dataset_sync_job(request: Request, job_id: str):
     bus = get_realtime_event_bus()
     subscription = bus.subscribe(DATASET_SYNC_JOB_TOPIC, job_id)
     await bus.publish(DATASET_SYNC_JOB_TOPIC, job_id, snapshot.model_dump(mode="json"))
+    return sse_queue_response(
+        request,
+        subscription.queue,
+        on_close=subscription.close,
+    )
+
+
+@router.get("/storage/dataset-merge/jobs/{job_id}")
+async def stream_dataset_merge_job(request: Request, job_id: str):
+    user_id = _require_user_id()
+    jobs = get_dataset_merge_jobs_service()
+    snapshot = jobs.get(user_id=user_id, job_id=job_id)
+    bus = get_realtime_event_bus()
+    subscription = bus.subscribe(DATASET_MERGE_JOB_TOPIC, job_id)
+    await bus.publish(DATASET_MERGE_JOB_TOPIC, job_id, snapshot.model_dump(mode="json"))
     return sse_queue_response(
         request,
         subscription.queue,

@@ -1,5 +1,6 @@
 """Storage menu - DB-backed data management operations."""
 
+import time
 from typing import Any, List, Optional
 
 from InquirerPy import inquirer
@@ -199,16 +200,10 @@ class DatasetsMenu(BaseMenu):
 
     def _merge_datasets_with_progress(self, payload: dict) -> None:
         console = Console()
-        status_info = {
-            "step": "merge",
-            "message": "",
-            "dataset_id": "",
-        }
-        upload_info = {
-            "active": False,
+        status_info = {"step": "queued", "message": "", "progress": 0.0}
+        detail = {
+            "current_dataset_id": "",
             "current_file": "",
-            "file_size": 0,
-            "bytes_transferred": 0,
             "files_done": 0,
             "total_files": 0,
             "total_size": 0,
@@ -217,123 +212,79 @@ class DatasetsMenu(BaseMenu):
         max_display_lines = 6
 
         def make_progress_panel() -> Panel:
-            if upload_info["active"]:
-                table = Table(show_header=False, box=None, padding=(0, 1))
-                table.add_column("Label", style="cyan")
-                table.add_column("Value")
+            table = Table(show_header=False, box=None, padding=(0, 1))
+            table.add_column("Label", style="cyan")
+            table.add_column("Value")
 
-                table.add_row("ステップ:", "upload")
-                if status_info["dataset_id"]:
-                    table.add_row("データセット:", status_info["dataset_id"])
-
-                if upload_info["current_file"]:
-                    if upload_info["file_size"] > 0:
-                        pct = (upload_info["bytes_transferred"] / upload_info["file_size"]) * 100
-                        transferred_str = format_size(upload_info["bytes_transferred"])
-                        size_str = format_size(upload_info["file_size"])
-                        progress_str = f"{transferred_str} / {size_str} ({pct:.1f}%)"
-                    else:
-                        progress_str = format_size(upload_info["file_size"]) if upload_info["file_size"] else "..."
-                    table.add_row("ファイル:", upload_info["current_file"])
-                    table.add_row("転送:", progress_str)
-
-                if upload_info["total_files"] > 0:
-                    table.add_row("ファイル数:", f"{upload_info['files_done']}/{upload_info['total_files']}")
-
-                if upload_info["total_size"] > 0:
-                    table.add_row("合計サイズ:", format_size(upload_info["total_size"]))
-
-                return Panel(table, title="📤 マージ結果をアップロード中", border_style="green")
-
-            text = Text()
-            step = status_info["step"].replace("_", " ")
-            text.append(f"Step: {step}\n", style="cyan")
+            table.add_row("ステップ:", str(status_info["step"]))
+            table.add_row("進捗:", f"{float(status_info['progress']):.1f}%")
             if status_info["message"]:
-                text.append(f"Status: {status_info['message']}\n", style="cyan")
-            if status_info["dataset_id"]:
-                text.append(f"Dataset: {status_info['dataset_id']}\n", style="dim")
-            text.append("\n")
+                table.add_row("状態:", str(status_info["message"]))
+            if detail["current_dataset_id"]:
+                table.add_row("dataset:", str(detail["current_dataset_id"]))
+            if detail["current_file"]:
+                table.add_row("file:", str(detail["current_file"]))
+            if detail["total_files"] > 0:
+                table.add_row("files:", f"{detail['files_done']}/{detail['total_files']}")
+            if detail["total_size"] > 0:
+                table.add_row("size:", format_size(detail["total_size"]))
 
             display_lines = output_lines[-max_display_lines:]
-            for line in display_lines:
-                lower = line.lower()
-                if lower.startswith("[error]") or "error" in lower:
-                    text.append(line + "\n", style="red")
-                elif lower.startswith("[upload]") or lower.startswith("[download]"):
-                    text.append(line + "\n", style="green")
-                elif lower.startswith("[info]"):
-                    text.append(line + "\n", style="dim")
-                else:
-                    text.append(line + "\n", style="dim")
+            if display_lines:
+                text = Text()
+                for line in display_lines:
+                    lower = line.lower()
+                    if lower.startswith("[error]") or "error" in lower:
+                        text.append(line + "\n", style="red")
+                    else:
+                        text.append(line + "\n", style="dim")
+                return Panel(table, title="🧩 データセットマージ中", border_style="cyan", subtitle=text)
 
-            return Panel(text, title="🧩 データセットマージ中", border_style="cyan")
+            return Panel(table, title="🧩 データセットマージ中", border_style="cyan")
 
-        def progress_callback(message: dict) -> None:
-            msg_type = message.get("type")
-            if msg_type == "heartbeat":
-                return
-            if msg_type in ("start", "step_complete"):
-                status_info["step"] = message.get("step", status_info["step"])
-                status_info["message"] = message.get("message", status_info["message"])
-                output_lines.append(f"[info] {status_info['step']}: {status_info['message']}")
-                return
-            if msg_type == "progress" and message.get("step") == "download":
-                status_info["step"] = "download"
-                status_info["dataset_id"] = message.get("dataset_id", "")
-                status_info["message"] = "Downloading"
-                output_lines.append(f"[download] {status_info['dataset_id']}")
-                return
-            if msg_type == "upload_start":
-                upload_info["active"] = True
-                upload_info["total_files"] = message.get("total_files", 0)
-                upload_info["total_size"] = message.get("total_size", 0)
-                upload_info["files_done"] = 0
-                output_lines.append("[upload] start")
-                return
-            if msg_type == "uploading":
-                upload_info["active"] = True
-                upload_info["current_file"] = message.get("current_file", "")
-                upload_info["file_size"] = message.get("file_size", 0)
-                upload_info["bytes_transferred"] = 0
-                upload_info["files_done"] = message.get("files_done", 0)
-                output_lines.append(f"[upload] {upload_info['current_file']}")
-                return
-            if msg_type == "upload_progress":
-                upload_info["current_file"] = message.get("current_file", "")
-                upload_info["file_size"] = message.get("file_size", 0)
-                upload_info["bytes_transferred"] = message.get("bytes_transferred", 0)
-                return
-            if msg_type == "upload_file_complete":
-                upload_info["files_done"] = message.get("files_done", 0)
-                upload_info["bytes_transferred"] = upload_info["file_size"]
-                output_lines.append(f"[upload] done {upload_info['current_file']}")
-                return
-            if msg_type == "upload_complete":
-                upload_info["active"] = False
-                status_info["message"] = "Upload complete"
-                output_lines.append("[upload] complete")
-                return
-            if msg_type == "error":
-                status_info["message"] = f"Error: {message.get('error', 'Unknown')}"
-                output_lines.append(f"[error] {message.get('error', 'Unknown')}")
-                return
-            if msg_type == "complete":
-                status_info["message"] = "Merge completed"
-                dataset_id = message.get("dataset_id", "N/A")
-                output_lines.append(f"[info] complete: {dataset_id}")
+        result: dict = {}
+        accepted = self.api.start_dataset_merge_job(payload)
+        job_id = str(accepted.get("job_id") or "")
+        output_lines.append(f"[info] job accepted: {job_id}")
 
         with Live(make_progress_panel(), refresh_per_second=4, console=console) as live:
-            def live_progress_callback(data: dict) -> None:
-                progress_callback(data)
+            while True:
+                try:
+                    job = self.api.get_dataset_merge_job(job_id)
+                except Exception as exc:
+                    output_lines.append(f"[error] {exc}")
+                    live.update(make_progress_panel())
+                    break
+
+                status_info["step"] = str((job.get("detail") or {}).get("step") or job.get("state") or "")
+                status_info["message"] = str(job.get("message") or "")
+                status_info["progress"] = float(job.get("progress_percent") or 0.0)
+
+                job_detail = job.get("detail") or {}
+                detail["current_dataset_id"] = str(job_detail.get("current_dataset_id") or "")
+                detail["current_file"] = str(job_detail.get("current_file") or "")
+                detail["files_done"] = int(job_detail.get("files_done") or 0)
+                detail["total_files"] = int(job_detail.get("total_files") or 0)
+                detail["total_size"] = int(job_detail.get("total_size") or 0)
+
+                if job.get("error"):
+                    output_lines.append(f"[error] {job.get('error')}")
+
                 live.update(make_progress_panel())
 
-            result = self.api.merge_datasets_ws(payload, live_progress_callback)
+                state = str(job.get("state") or "")
+                if state in ("completed", "failed"):
+                    result = job
+                    break
+                time.sleep(0.4)
 
-        if result.get("type") == "error":
+        if str(result.get("state") or "") == "failed":
             print(f"{Colors.error('Error:')} {result.get('error')}")
-        elif result.get("type") == "complete":
-            dataset_id = result.get("dataset_id", "N/A")
-            print(f"{Colors.success('Merged dataset created')}: {dataset_id}")
+            return
+
+        dataset_id = (result.get("result_dataset_id") or "") if isinstance(result, dict) else ""
+        dataset_id = str(dataset_id or "N/A")
+        print(f"{Colors.success('Merged dataset created')}: {dataset_id}")
 
     def _show_dataset_actions(self, dataset_id: str) -> MenuResult:
         """Show actions for a specific dataset."""

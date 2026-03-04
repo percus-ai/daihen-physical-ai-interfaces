@@ -343,50 +343,17 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
-    def merge_datasets(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/storage/datasets/merge - Merge datasets."""
-        response = self._client.post("/api/storage/datasets/merge", json=payload)
+    def start_dataset_merge_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/storage/dataset-merge/jobs - Start dataset merge job."""
+        response = self._client.post("/api/storage/dataset-merge/jobs", json=payload)
         response.raise_for_status()
         return response.json()
 
-    def merge_datasets_ws(
-        self,
-        payload: Dict[str, Any],
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Dict[str, Any]:
-        """Merge datasets with real-time progress via WebSocket."""
-        import websocket
-
-        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/storage/ws/merge"
-
-        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
-
-        try:
-            ws = websocket.create_connection(ws_url, timeout=None, enable_multithread=True)
-            ws.send(json.dumps(payload))
-
-            while True:
-                message = ws.recv()
-                data = json.loads(message)
-
-                if data.get("type") == "heartbeat":
-                    continue
-
-                if progress_callback:
-                    progress_callback(data)
-
-                if data.get("type") in ("complete", "error"):
-                    result = data
-                    break
-
-            ws.close()
-        except Exception as e:
-            if progress_callback:
-                progress_callback({"type": "error", "error": str(e)})
-            result = {"type": "error", "error": str(e)}
-
-        return result
+    def get_dataset_merge_job(self, job_id: str) -> Dict[str, Any]:
+        """GET /api/storage/dataset-merge/jobs/{job_id} - Get dataset merge job status."""
+        response = self._client.get(f"/api/storage/dataset-merge/jobs/{job_id}")
+        response.raise_for_status()
+        return response.json()
 
     def import_hf_dataset_ws(
         self,

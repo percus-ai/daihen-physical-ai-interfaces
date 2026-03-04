@@ -5,6 +5,7 @@
   import { qk } from '$lib/queryKeys';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import { formatBytes, formatDate } from '$lib/format';
+  import DatasetMergeProgressModal from '$lib/components/storage/DatasetMergeProgressModal.svelte';
 
   type DatasetSummary = {
     id: string;
@@ -21,10 +22,6 @@
     total?: number;
   };
 
-  type DatasetMergeResponse = {
-    dataset_id?: string;
-  };
-
   const datasetsQuery = createQuery<DatasetListResponse>({
     queryKey: qk.storage.datasetsManage(),
     queryFn: () => api.storage.datasets()
@@ -37,6 +34,10 @@
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
+
+  let mergeModalOpen = $state(false);
+  let mergeJobId = $state('');
+  let lastMergePayload = $state<null | { dataset_name: string; source_dataset_ids: string[] }>(null);
 
   const datasets = $derived($datasetsQuery.data?.datasets ?? []);
   const selectedDatasets = $derived(datasets.filter((dataset) => selectedIds.includes(dataset.id)));
@@ -66,6 +67,20 @@
     sessionViewer.open({ datasetId });
   };
 
+  const startMergeJob = async (payload: { dataset_name: string; source_dataset_ids: string[] }) => {
+    const accepted = await api.storage.startDatasetMergeJob(payload);
+    mergeJobId = accepted.job_id;
+    mergeModalOpen = true;
+  };
+
+  const handleMergeCompleted = async (datasetId: string) => {
+    actionMessage = `マージ完了: ${datasetId}`;
+    actionError = '';
+    mergeName = '';
+    selectedIds = [];
+    await refetchDatasets();
+  };
+
   async function handleMerge() {
     actionMessage = '';
     actionError = '';
@@ -92,14 +107,13 @@
     const sourceIds = [...selectedIds];
 
     try {
-      const result = await api.storage.mergeDatasets({
+      const payload = {
         dataset_name: datasetName,
         source_dataset_ids: sourceIds
-      }) as DatasetMergeResponse;
-      actionMessage = `マージ完了: ${result.dataset_id}`;
-      mergeName = '';
-      selectedIds = [];
-      await refetchDatasets();
+      };
+      lastMergePayload = payload;
+      await startMergeJob(payload);
+      actionMessage = 'マージを開始しました。進捗を表示します。';
     } catch (err) {
       actionError = err instanceof Error ? err.message : 'マージに失敗しました。';
     } finally {
@@ -170,6 +184,17 @@
     }
   }
 </script>
+
+<DatasetMergeProgressModal
+  bind:open={mergeModalOpen}
+  jobId={mergeJobId}
+  onCompleted={handleMergeCompleted}
+  onRetry={async () => {
+    if (!lastMergePayload) return;
+    actionError = '';
+    await startMergeJob(lastMergePayload);
+  }}
+/>
 
 <section class="card-strong p-8">
   <p class="section-title">Storage</p>
