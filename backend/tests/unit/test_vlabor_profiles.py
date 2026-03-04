@@ -1,7 +1,7 @@
 from interfaces_backend.services.vlabor_profiles import (
     build_inference_bridge_config,
     extract_camera_specs,
-    extract_recorder_topic_suffixes,
+    extract_recorder_arm_streams,
 )
 
 
@@ -66,19 +66,51 @@ def test_extract_camera_specs_resolves_lerobot_camera_fields() -> None:
     ]
 
 
-def test_extract_recorder_topic_suffixes_resolves_from_snapshot() -> None:
+def test_extract_recorder_arm_streams_resolves_from_snapshot() -> None:
     snapshot = {
         "profile": {
-            "teleop": {
-                "topic_mappings": [
-                    {"dst": "/follower_left/joint_ctrl_single"},
-                    {"dst": "/follower_right/joint_ctrl_single"},
-                ]
-            },
+            "teleop": {"follower_arms": [{"namespace": "follower_left"}, {"namespace": "follower_right"}]},
             "lerobot": {
                 "follower_left": {
                     "namespace": "follower_left",
                     "topic": "/follower_left/joint_states_single",
+                    "action_topic": "/follower_left/joint_ctrl_single",
+                },
+                "follower_right": {
+                    "namespace": "follower_right",
+                    "topic": "/follower_right/joint_states_single",
+                    "action_topic": "/follower_right/joint_ctrl_single",
+                },
+            },
+        }
+    }
+
+    assert extract_recorder_arm_streams(
+        snapshot,
+        arm_namespaces=["follower_left", "follower_right"],
+    ) == [
+        {
+            "namespace": "follower_left",
+            "state_topic": "/follower_left/joint_states_single",
+            "action_topic": "/follower_left/joint_ctrl_single",
+        },
+        {
+            "namespace": "follower_right",
+            "state_topic": "/follower_right/joint_states_single",
+            "action_topic": "/follower_right/joint_ctrl_single",
+        },
+    ]
+
+
+def test_extract_recorder_arm_streams_returns_empty_when_action_topic_missing() -> None:
+    snapshot = {
+        "profile": {
+            "teleop": {"follower_arms": [{"namespace": "follower_left"}, {"namespace": "follower_right"}]},
+            "lerobot": {
+                "follower_left": {
+                    "namespace": "follower_left",
+                    "topic": "/follower_left/joint_states_single",
+                    "action_topic": "/follower_left/joint_ctrl_single",
                 },
                 "follower_right": {
                     "namespace": "follower_right",
@@ -88,62 +120,63 @@ def test_extract_recorder_topic_suffixes_resolves_from_snapshot() -> None:
         }
     }
 
-    assert extract_recorder_topic_suffixes(
+    assert extract_recorder_arm_streams(
         snapshot,
         arm_namespaces=["follower_left", "follower_right"],
-    ) == {
-        "state_topic_suffix": "joint_states_single",
-        "action_topic_suffix": "joint_ctrl_single",
-    }
+    ) == []
 
 
-def test_extract_recorder_topic_suffixes_returns_empty_when_mixed_action_suffixes() -> None:
+def test_extract_recorder_arm_streams_returns_empty_when_topic_not_absolute() -> None:
     snapshot = {
         "profile": {
-            "teleop": {
-                "topic_mappings": [
-                    {"dst": "/follower_left/joint_ctrl_single"},
-                    {"dst": "/follower_right/ik/joint_angles"},
-                ]
-            },
+            "teleop": {"follower_arms": [{"namespace": "follower_left"}]},
             "lerobot": {
                 "follower_left": {
                     "namespace": "follower_left",
-                    "topic": "/follower_left/joint_states_single",
-                },
-                "follower_right": {
-                    "namespace": "follower_right",
-                    "topic": "/follower_right/joint_states_single",
+                    "topic": "follower_left/joint_states_single",
+                    "action_topic": "/follower_left/joint_ctrl_single",
                 },
             },
         }
     }
+    assert extract_recorder_arm_streams(snapshot, arm_namespaces=["follower_left"]) == []
 
-    assert extract_recorder_topic_suffixes(
-        snapshot,
-        arm_namespaces=["follower_left", "follower_right"],
-    ) == {
-        "state_topic_suffix": "joint_states_single",
+
+def test_extract_recorder_arm_streams_returns_empty_when_namespace_is_duplicated() -> None:
+    snapshot = {
+        "profile": {
+            "teleop": {"follower_arms": [{"namespace": "follower_left"}]},
+            "lerobot": {
+                "follower_left_a": {
+                    "namespace": "follower_left",
+                    "topic": "/follower_left/joint_states_single",
+                    "action_topic": "/follower_left/joint_ctrl_single",
+                },
+                "follower_left_b": {
+                    "namespace": "follower_left",
+                    "topic": "/follower_left/joint_states_single",
+                    "action_topic": "/follower_left/joint_ctrl_single",
+                },
+            },
+        }
     }
+    assert extract_recorder_arm_streams(snapshot, arm_namespaces=["follower_left"]) == []
 
 
 def test_build_inference_bridge_config_uses_profile_resolution() -> None:
     snapshot = {
         "profile": {
-            "teleop": {
-                "topic_mappings": [
-                    {"dst": "/follower_left/joint_ctrl_single"},
-                    {"dst": "/follower_right/joint_ctrl_single"},
-                ]
-            },
+            "teleop": {"follower_arms": [{"namespace": "follower_left"}, {"namespace": "follower_right"}]},
             "lerobot": {
                 "follower_left": {
                     "namespace": "follower_left",
                     "topic": "/follower_left/joint_states_single",
+                    "action_topic": "/follower_left/joint_ctrl_single",
                 },
                 "follower_right": {
                     "namespace": "follower_right",
                     "topic": "/follower_right/joint_states_single",
+                    "action_topic": "/follower_right/joint_ctrl_single",
                 },
                 "cameras": [
                     {
@@ -164,9 +197,18 @@ def test_build_inference_bridge_config_uses_profile_resolution() -> None:
     }
 
     assert build_inference_bridge_config(snapshot) == {
-        "arm_namespaces": ["follower_left", "follower_right"],
-        "state_topic_suffix": "joint_states_single",
-        "action_topic_suffix": "joint_ctrl_single",
+        "arm_streams": [
+            {
+                "namespace": "follower_left",
+                "state_topic": "/follower_left/joint_states_single",
+                "action_topic": "/follower_left/joint_ctrl_single",
+            },
+            {
+                "namespace": "follower_right",
+                "state_topic": "/follower_right/joint_states_single",
+                "action_topic": "/follower_right/joint_ctrl_single",
+            },
+        ],
         "camera_streams": [
             {"name": "top_camera", "topic": "/top_camera/image_raw/compressed"},
             {"name": "side_camera", "topic": "/side_camera/image_raw/compressed"},

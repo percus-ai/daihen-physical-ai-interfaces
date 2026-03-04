@@ -210,7 +210,7 @@ def test_start_handles_race_when_recorder_reports_already_active():
     assert dataset.upserts[-1]["status"] == "recording"
 
 
-def test_create_includes_profile_topic_suffixes(monkeypatch):
+def test_create_includes_profile_arm_streams(monkeypatch):
     async def fake_resolve_profile(self, _profile):
         return SimpleNamespace(name="profile-a", snapshot={"profile": {}})
 
@@ -227,11 +227,14 @@ def test_create_includes_profile_topic_suffixes(monkeypatch):
     monkeypatch.setattr(recording_session, "extract_arm_namespaces", lambda _snapshot: ["follower_arm"])
     monkeypatch.setattr(
         recording_session,
-        "extract_recorder_topic_suffixes",
-        lambda _snapshot, arm_namespaces: {
-            "state_topic_suffix": "joint_states_single",
-            "action_topic_suffix": "joint_ctrl_single",
-        },
+        "extract_recorder_arm_streams",
+        lambda _snapshot, arm_namespaces: [
+            {
+                "namespace": "follower_arm",
+                "state_topic": "/follower_arm/joint_states_single",
+                "action_topic": "/follower_arm/joint_ctrl_single",
+            }
+        ],
     )
 
     recorder = _FakeRecorder()
@@ -251,11 +254,16 @@ def test_create_includes_profile_topic_suffixes(monkeypatch):
     )
 
     payload = state.extras["recorder_payload"]
-    assert payload["state_topic_suffix"] == "joint_states_single"
-    assert payload["action_topic_suffix"] == "joint_ctrl_single"
+    assert payload["arm_streams"] == [
+        {
+            "namespace": "follower_arm",
+            "state_topic": "/follower_arm/joint_states_single",
+            "action_topic": "/follower_arm/joint_ctrl_single",
+        }
+    ]
 
 
-def test_create_raises_when_action_suffix_unresolved(monkeypatch):
+def test_create_raises_when_arm_streams_unresolved(monkeypatch):
     async def fake_resolve_profile(self, _profile):
         return SimpleNamespace(
             name="profile-a",
@@ -276,10 +284,8 @@ def test_create_raises_when_action_suffix_unresolved(monkeypatch):
     monkeypatch.setattr(recording_session, "extract_arm_namespaces", lambda _snapshot: ["follower_arm"])
     monkeypatch.setattr(
         recording_session,
-        "extract_recorder_topic_suffixes",
-        lambda _snapshot, arm_namespaces: {
-            "state_topic_suffix": "joint_states_single",
-        },
+        "extract_recorder_arm_streams",
+        lambda _snapshot, arm_namespaces: [],
     )
 
     recorder = _FakeRecorder()
@@ -301,7 +307,7 @@ def test_create_raises_when_action_suffix_unresolved(monkeypatch):
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 400
-        assert "action_topic_suffix unresolved" in str(exc.detail)
+        assert "arm_streams unresolved" in str(exc.detail)
 
 
 def test_register_external_session_tracks_inference_recording():
@@ -347,11 +353,14 @@ def test_create_raises_when_cameras_unresolved(monkeypatch):
     monkeypatch.setattr(recording_session, "extract_arm_namespaces", lambda _snapshot: ["follower_arm"])
     monkeypatch.setattr(
         recording_session,
-        "extract_recorder_topic_suffixes",
-        lambda _snapshot, arm_namespaces: {
-            "state_topic_suffix": "joint_states_single",
-            "action_topic_suffix": "joint_ctrl_single",
-        },
+        "extract_recorder_arm_streams",
+        lambda _snapshot, arm_namespaces: [
+            {
+                "namespace": "follower_arm",
+                "state_topic": "/follower_arm/joint_states_single",
+                "action_topic": "/follower_arm/joint_ctrl_single",
+            }
+        ],
     )
 
     recorder = _FakeRecorder()

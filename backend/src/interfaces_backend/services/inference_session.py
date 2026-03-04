@@ -33,7 +33,7 @@ from interfaces_backend.services.vlabor_profiles import (
     build_inference_camera_aliases,
     build_inference_joint_names,
     extract_arm_namespaces,
-    extract_recorder_topic_suffixes,
+    extract_recorder_arm_streams,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ class InferenceSessionManager(BaseSessionManager):
         profile_snapshot = state.profile.snapshot if state.profile else {}
         cameras = self._recorder.build_cameras(profile_snapshot)
         arm_namespaces = extract_arm_namespaces(profile_snapshot)
-        topic_suffixes = extract_recorder_topic_suffixes(
+        arm_streams = extract_recorder_arm_streams(
             profile_snapshot,
             arm_namespaces=arm_namespaces,
         )
@@ -124,9 +124,7 @@ class InferenceSessionManager(BaseSessionManager):
                 "inference_session_id": state.id,
             },
         }
-        if arm_namespaces:
-            payload["arm_namespaces"] = arm_namespaces
-        payload.update(topic_suffixes)
+        payload["arm_streams"] = arm_streams
         return payload
 
     @staticmethod
@@ -137,24 +135,32 @@ class InferenceSessionManager(BaseSessionManager):
         bridge_stream_config: dict[str, Any],
     ) -> None:
         errors: list[str] = []
-        arm_namespaces = bridge_stream_config.get("arm_namespaces")
-        state_topic_suffix = bridge_stream_config.get("state_topic_suffix")
-        action_topic_suffix = bridge_stream_config.get("action_topic_suffix")
+        arm_streams = bridge_stream_config.get("arm_streams")
         camera_streams = bridge_stream_config.get("camera_streams")
-        if not isinstance(arm_namespaces, list) or not arm_namespaces:
+        if not isinstance(arm_streams, list) or not arm_streams:
             errors.append(
-                "no arm namespaces resolved (expected profile.lerobot.<arm>.namespace "
-                "or profile.teleop.follower_arms[*].namespace)"
+                "arm_streams unresolved (expected profile.lerobot.<arm>.namespace/topic/action_topic "
+                "per target arm)"
             )
-        if not str(state_topic_suffix or "").strip():
-            errors.append(
-                "state_topic_suffix unresolved (expected profile.lerobot.<arm>.topic per target arm)"
-            )
-        if not str(action_topic_suffix or "").strip():
-            errors.append(
-                "action_topic_suffix unresolved (expected profile.lerobot.<arm>.action_topic "
-                "or profile.teleop.topic_mappings[*].dst per target arm)"
-            )
+        else:
+            seen_namespaces: set[str] = set()
+            for stream in arm_streams:
+                if not isinstance(stream, dict):
+                    errors.append("arm_streams contains invalid entry")
+                    break
+                namespace = str(stream.get("namespace") or "").strip()
+                state_topic = str(stream.get("state_topic") or "").strip()
+                action_topic = str(stream.get("action_topic") or "").strip()
+                if not namespace or not state_topic or not action_topic:
+                    errors.append(
+                        "arm_streams contains invalid entry "
+                        "(expected namespace/state_topic/action_topic)"
+                    )
+                    break
+                if namespace in seen_namespaces:
+                    errors.append("arm_streams contains duplicated namespace")
+                    break
+                seen_namespaces.add(namespace)
         if not isinstance(camera_streams, list) or not camera_streams:
             errors.append(
                 "no enabled cameras resolved (expected profile.lerobot.cameras[*].topic)"

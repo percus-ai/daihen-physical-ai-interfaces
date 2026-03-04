@@ -19,7 +19,7 @@ from interfaces_backend.services.session_manager import (
 )
 from interfaces_backend.services.vlabor_profiles import (
     extract_arm_namespaces,
-    extract_recorder_topic_suffixes,
+    extract_recorder_arm_streams,
 )
 from percus_ai.storage.naming import generate_dataset_id
 
@@ -94,7 +94,7 @@ class RecordingSessionManager(BaseSessionManager):
         profile_source: str,
         cameras: list[dict[str, Any]],
         arm_namespaces: list[str],
-        topic_suffixes: dict[str, str],
+        arm_streams: list[dict[str, str]],
     ) -> None:
         errors: list[str] = []
         if not cameras:
@@ -106,15 +106,26 @@ class RecordingSessionManager(BaseSessionManager):
                 "no arm namespaces resolved (expected profile.lerobot.<arm>.namespace "
                 "or profile.teleop.follower_arms[*].namespace)"
             )
-        if "state_topic_suffix" not in topic_suffixes:
+        if not arm_streams:
             errors.append(
-                "state_topic_suffix unresolved (expected profile.lerobot.<arm>.topic per target arm)"
+                "arm_streams unresolved (expected profile.lerobot.<arm>.namespace/topic/action_topic "
+                "per target arm)"
             )
-        if "action_topic_suffix" not in topic_suffixes:
-            errors.append(
-                "action_topic_suffix unresolved (expected profile.lerobot.<arm>.action_topic "
-                "or profile.teleop.topic_mappings[*].dst per target arm)"
-            )
+        else:
+            seen_namespaces: set[str] = set()
+            for stream in arm_streams:
+                namespace = str(stream.get("namespace") or "").strip()
+                state_topic = str(stream.get("state_topic") or "").strip()
+                action_topic = str(stream.get("action_topic") or "").strip()
+                if not namespace or not state_topic or not action_topic:
+                    errors.append(
+                        "arm_streams contains invalid entry (expected namespace/state_topic/action_topic)"
+                    )
+                    break
+                if namespace in seen_namespaces:
+                    errors.append("arm_streams contains duplicated namespace")
+                    break
+                seen_namespaces.add(namespace)
         if not errors:
             return
 
@@ -148,7 +159,7 @@ class RecordingSessionManager(BaseSessionManager):
 
         cameras = self._recorder.build_cameras(state.profile.snapshot)
         arm_namespaces = extract_arm_namespaces(state.profile.snapshot)
-        topic_suffixes = extract_recorder_topic_suffixes(
+        arm_streams = extract_recorder_arm_streams(
             state.profile.snapshot,
             arm_namespaces=arm_namespaces,
         )
@@ -157,7 +168,7 @@ class RecordingSessionManager(BaseSessionManager):
             profile_source=getattr(state.profile, "source_path", "unknown"),
             cameras=cameras,
             arm_namespaces=arm_namespaces,
-            topic_suffixes=topic_suffixes,
+            arm_streams=arm_streams,
         )
 
         recorder_payload: dict[str, Any] = {
@@ -177,9 +188,7 @@ class RecordingSessionManager(BaseSessionManager):
                 "profile_snapshot": state.profile.snapshot,
             },
         }
-        if arm_namespaces:
-            recorder_payload["arm_namespaces"] = arm_namespaces
-        recorder_payload.update(topic_suffixes)
+        recorder_payload["arm_streams"] = arm_streams
 
         state.extras["dataset_name"] = kwargs["dataset_name"]
         state.extras["task"] = kwargs["task"]

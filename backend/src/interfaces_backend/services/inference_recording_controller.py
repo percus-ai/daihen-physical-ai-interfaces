@@ -25,7 +25,7 @@ from interfaces_backend.services.vlabor_dashboard_bridge import (
 )
 from interfaces_backend.services.vlabor_profiles import (
     extract_arm_namespaces,
-    extract_recorder_topic_suffixes,
+    extract_recorder_arm_streams,
     save_session_profile_binding,
 )
 from percus_ai.storage.naming import generate_dataset_id
@@ -49,8 +49,7 @@ class InferenceRecordingState:
     batch_size: int
     target_total_episodes: int
     cameras: list[dict]
-    arm_namespaces: list[str]
-    topic_suffixes: dict[str, str]
+    arm_streams: list[dict[str, str]]
     awaiting_continue_confirmation: bool = False
     manual_paused: bool = False
     inference_paused: bool = False
@@ -142,9 +141,8 @@ class InferenceRecordingController:
                 "inference_session_id": state.inference_session_id,
                 "batch_size": state.batch_size,
             },
-            "arm_namespaces": state.arm_namespaces,
+            "arm_streams": state.arm_streams,
         }
-        payload.update(state.topic_suffixes)
         return payload
 
     @staticmethod
@@ -243,7 +241,7 @@ class InferenceRecordingController:
 
         cameras = self._recorder.build_cameras(session.profile.snapshot)
         arm_namespaces = extract_arm_namespaces(session.profile.snapshot)
-        topic_suffixes = extract_recorder_topic_suffixes(
+        arm_streams = extract_recorder_arm_streams(
             session.profile.snapshot,
             arm_namespaces=arm_namespaces,
         )
@@ -253,11 +251,11 @@ class InferenceRecordingController:
         if not arm_namespaces:
             logger.warning("Skip inference recording: no recorder arm namespaces resolved")
             return None
-        if "state_topic_suffix" not in topic_suffixes:
-            logger.warning("Skip inference recording: state_topic_suffix unresolved")
-            return None
-        if "action_topic_suffix" not in topic_suffixes:
-            logger.warning("Skip inference recording: action_topic_suffix unresolved")
+        if not arm_streams:
+            logger.warning(
+                "Skip inference recording: arm_streams unresolved "
+                "(expected profile.lerobot.<arm>.namespace/topic/action_topic)"
+            )
             return None
 
         dataset_id = generate_dataset_id()
@@ -274,8 +272,7 @@ class InferenceRecordingController:
             batch_size=self._batch_size,
             target_total_episodes=self._batch_size,
             cameras=cameras,
-            arm_namespaces=arm_namespaces,
-            topic_suffixes=topic_suffixes,
+            arm_streams=arm_streams,
         )
 
         await self._dashboard.set_teleop_enabled(enabled=False)

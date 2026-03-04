@@ -545,122 +545,73 @@ def extract_arm_namespaces(snapshot: dict[str, Any]) -> list[str]:
     return namespaces
 
 
-def _topic_suffix_for_namespace(topic: object, namespace: str, settings: dict[str, Any]) -> str | None:
-    resolved_topic = str(_render_setting(topic, settings) or "").strip()
-    if not resolved_topic:
-        return None
-    prefix = f"/{namespace}/"
-    if not resolved_topic.startswith(prefix):
-        return None
-    suffix = resolved_topic[len(prefix) :].strip("/")
-    return suffix or None
+def _resolved_topic(value: object, settings: dict[str, Any]) -> str:
+    return str(_render_setting(value, settings) or "").strip()
 
 
-def _pick_common_topic_suffix(
-    suffixes_by_namespace: dict[str, set[str]],
-    arm_namespaces: list[str],
-) -> str | None:
-    if not arm_namespaces:
-        return None
-
-    resolved_per_namespace: list[str] = []
-    for namespace in arm_namespaces:
-        candidates = suffixes_by_namespace.get(namespace) or set()
-        if len(candidates) != 1:
-            return None
-        resolved_per_namespace.append(next(iter(candidates)))
-
-    unique = set(resolved_per_namespace)
-    if len(unique) != 1:
-        return None
-    return resolved_per_namespace[0]
+def _is_absolute_ros_topic(topic: str) -> bool:
+    return bool(topic) and topic.startswith("/")
 
 
-def extract_recorder_topic_suffixes(
+def extract_recorder_arm_streams(
     snapshot: dict[str, Any],
     *,
     arm_namespaces: Optional[list[str]] = None,
-) -> dict[str, str]:
-    """Extract recorder topic suffixes from profile snapshot.
-
-    Recorder currently accepts one state/action suffix shared across all arms.
-    This helper returns suffixes only when all target arms can resolve to a
-    single common value.
-    """
+) -> list[dict[str, str]]:
+    """Extract recorder arm topic streams from profile snapshot."""
     profile = snapshot.get("profile")
     if not isinstance(profile, dict):
-        return {}
+        return []
+
+    settings = build_profile_settings(snapshot)
 
     target_namespaces: list[str] = []
     for namespace in arm_namespaces or extract_arm_namespaces(snapshot):
-        text = str(namespace or "").strip()
+        text = str(_render_setting(namespace, settings) or "").strip()
         if text and text not in target_namespaces:
             target_namespaces.append(text)
     if not target_namespaces:
-        return {}
-
-    settings = build_profile_settings(snapshot)
-    state_suffixes: dict[str, set[str]] = {namespace: set() for namespace in target_namespaces}
-    action_suffixes: dict[str, set[str]] = {namespace: set() for namespace in target_namespaces}
+        return []
+    target_namespace_set = set(target_namespaces)
 
     lerobot = profile.get("lerobot")
-    if isinstance(lerobot, dict):
-        for key, value in lerobot.items():
-            if key == "cameras" or not isinstance(value, dict):
-                continue
-            namespace = str(_render_setting(value.get("namespace"), settings) or "").strip()
-            if namespace not in state_suffixes:
-                continue
+    if not isinstance(lerobot, dict):
+        return []
 
-            state_suffix = _topic_suffix_for_namespace(value.get("topic"), namespace, settings)
-            if state_suffix:
-                state_suffixes[namespace].add(state_suffix)
+    streams_by_namespace: dict[str, dict[str, str]] = {}
+    for key, value in lerobot.items():
+        if key == "cameras" or not isinstance(value, dict):
+            continue
+        namespace = str(_render_setting(value.get("namespace"), settings) or "").strip()
+        if namespace not in target_namespace_set:
+            continue
+        if namespace in streams_by_namespace:
+            return []
 
-            action_suffix = _topic_suffix_for_namespace(value.get("action_topic"), namespace, settings)
-            if action_suffix:
-                action_suffixes[namespace].add(action_suffix)
+        state_topic = _resolved_topic(value.get("topic"), settings)
+        action_topic = _resolved_topic(value.get("action_topic"), settings)
+        if not _is_absolute_ros_topic(state_topic):
+            continue
+        if not _is_absolute_ros_topic(action_topic):
+            continue
+        streams_by_namespace[namespace] = {
+            "namespace": namespace,
+            "state_topic": state_topic,
+            "action_topic": action_topic,
+        }
 
-    teleop = profile.get("teleop")
-    if isinstance(teleop, dict):
-        mappings = teleop.get("topic_mappings")
-        if isinstance(mappings, list):
-            for mapping in mappings:
-                if not isinstance(mapping, dict):
-                    continue
-                dst = mapping.get("dst")
-                for namespace in target_namespaces:
-                    action_suffix = _topic_suffix_for_namespace(dst, namespace, settings)
-                    if action_suffix:
-                        action_suffixes[namespace].add(action_suffix)
-
-    result: dict[str, str] = {}
-    state_topic_suffix = _pick_common_topic_suffix(state_suffixes, target_namespaces)
-    if state_topic_suffix:
-        result["state_topic_suffix"] = state_topic_suffix
-
-    action_topic_suffix = _pick_common_topic_suffix(action_suffixes, target_namespaces)
-    if action_topic_suffix:
-        result["action_topic_suffix"] = action_topic_suffix
-
-    return result
+    if any(namespace not in streams_by_namespace for namespace in target_namespaces):
+        return []
+    return [streams_by_namespace[namespace] for namespace in target_namespaces]
 
 
 def build_inference_bridge_config(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Build inference bridge stream config from VLAbor profile snapshot.
 
     This uses the same profile-derived source of truth as recording:
-    arm namespaces, recorder topic suffixes, and lerobot camera definitions.
+    arm stream topics and lerobot camera definitions.
     """
-    arm_namespaces: list[str] = []
-    for namespace in extract_arm_namespaces(snapshot):
-        text = str(namespace or "").strip()
-        if text and text not in arm_namespaces:
-            arm_namespaces.append(text)
-
-    topic_suffixes = extract_recorder_topic_suffixes(
-        snapshot,
-        arm_namespaces=arm_namespaces,
-    )
+    arm_streams = extract_recorder_arm_streams(snapshot)
 
     camera_streams: list[dict[str, str]] = []
     seen_camera_names: set[str] = set()
@@ -677,9 +628,7 @@ def build_inference_bridge_config(snapshot: dict[str, Any]) -> dict[str, Any]:
         camera_streams.append({"name": name, "topic": topic})
 
     return {
-        "arm_namespaces": arm_namespaces,
-        "state_topic_suffix": str(topic_suffixes.get("state_topic_suffix") or "").strip(),
-        "action_topic_suffix": str(topic_suffixes.get("action_topic_suffix") or "").strip(),
+        "arm_streams": arm_streams,
         "camera_streams": camera_streams,
     }
 
