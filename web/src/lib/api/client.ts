@@ -1032,7 +1032,30 @@ export const api = {
           }
         };
       }),
-    gpuAvailability: () => fetchApi('/api/training/gpu-availability')
+    gpuAvailability: (provider: 'verda' | 'vast') =>
+      fetchApi(`/api/training/gpu-availability?provider=${encodeURIComponent(provider)}`),
+    verdaStorage: () => fetchApi('/api/training/verda/storage'),
+    verdaStorageDelete: (payload: { volume_ids: string[] }) =>
+      fetchApi('/api/training/verda/storage/delete', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    verdaStorageRestore: (payload: { volume_ids: string[] }) =>
+      fetchApi('/api/training/verda/storage/restore', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    verdaStoragePurge: (payload: { volume_ids: string[] }) =>
+      fetchApi('/api/training/verda/storage/purge', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    vastStorage: () => fetchApi('/api/training/vast/storage'),
+    vastStorageDelete: (payload: { volume_ids: string[] }) =>
+      fetchApi('/api/training/vast/storage/delete', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      })
   },
   operate: {
     status: () => fetchApi('/api/operate/status')

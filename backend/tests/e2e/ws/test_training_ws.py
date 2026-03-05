@@ -11,7 +11,7 @@ def test_training_ws_missing_job(client):
 def test_training_ws_gpu_availability_missing_creds(client, monkeypatch):
     monkeypatch.delenv("DATACRUNCH_CLIENT_ID", raising=False)
     monkeypatch.delenv("DATACRUNCH_CLIENT_SECRET", raising=False)
-    with client.websocket_connect("/api/training/ws/gpu-availability") as ws:
+    with client.websocket_connect("/api/training/ws/gpu-availability?provider=verda") as ws:
         message = ws.receive_json()
         assert message["type"] == "error"
 

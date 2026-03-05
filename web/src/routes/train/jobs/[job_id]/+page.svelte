@@ -114,6 +114,9 @@
   const trainingConfig = $derived($jobQuery.data?.training_config ?? {});
   const summary = $derived($jobQuery.data?.summary ?? {});
   const status = $derived(jobInfo?.status ?? '');
+  const provider = $derived(
+    String(trainingConfig?.cloud?.provider ?? 'verda').trim().toLowerCase()
+  );
   const datasetId = $derived(trainingConfig?.dataset?.id ?? '');
   const profileId = $derived(jobInfo?.profile_name ?? jobInfo?.profile_instance_id ?? '');
   const trainSeries = $derived(
@@ -129,7 +132,9 @@
 
   const isRunning = $derived(['running', 'starting', 'deploying'].includes(status));
   const canDelete = $derived(['completed', 'failed', 'stopped', 'terminated'].includes(status));
-  const canRevive = $derived(['completed', 'failed', 'stopped', 'terminated'].includes(status));
+  const canRevive = $derived(
+    provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
+  );
 
   const sshCommand = $derived(
     jobInfo?.ip

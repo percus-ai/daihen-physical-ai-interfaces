@@ -21,7 +21,7 @@ def test_training_jobs_missing(client):
 def test_training_gpu_availability_missing_creds(client, monkeypatch):
     monkeypatch.delenv("DATACRUNCH_CLIENT_ID", raising=False)
     monkeypatch.delenv("DATACRUNCH_CLIENT_SECRET", raising=False)
-    resp = client.get("/api/training/gpu-availability")
+    resp = client.get("/api/training/gpu-availability?provider=verda")
     assert resp.status_code == 503
 
 

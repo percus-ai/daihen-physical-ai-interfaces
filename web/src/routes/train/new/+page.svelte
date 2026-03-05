@@ -1,12 +1,13 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
-  import { Button } from 'bits-ui';
-  import { createQuery } from '@tanstack/svelte-query';
-  import { goto } from '$app/navigation';
-  import { api } from '$lib/api/client';
-  import HelpLabel from '$lib/components/HelpLabel.svelte';
-  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
-  import { getBackendUrl } from '$lib/config';
+	  import { onDestroy } from 'svelte';
+	  import { Button } from 'bits-ui';
+	  import { createQuery } from '@tanstack/svelte-query';
+	  import { get } from 'svelte/store';
+	  import { goto } from '$app/navigation';
+	  import { api } from '$lib/api/client';
+	  import HelpLabel from '$lib/components/HelpLabel.svelte';
+	  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
+	  import { getBackendUrl } from '$lib/config';
   import { formatBytes, formatDate } from '$lib/format';
   import { GPU_COUNTS, GPU_MODELS, POLICY_TYPES } from '$lib/policies';
   import type { GpuAvailabilityResponse } from '$lib/types/training';
@@ -31,10 +32,26 @@
     queryFn: () => api.storage.datasets()
   });
 
-  const gpuAvailabilityQuery = createQuery<GpuAvailabilityResponse>({
-    queryKey: ['training', 'gpu-availability'],
-    queryFn: api.training.gpuAvailability
-  });
+	  let cloudProvider = $state<'verda' | 'vast'>('verda');
+	  let vastInterruptible = $state(true);
+	  let vastMaxPrice = $state<number | null>(null);
+
+	  const gpuAvailabilityVerdaQuery = createQuery<GpuAvailabilityResponse>({
+	    queryKey: ['training', 'gpu-availability', 'verda'],
+	    queryFn: () => api.training.gpuAvailability('verda'),
+	    enabled: false
+	  });
+
+	  const gpuAvailabilityVastQuery = createQuery<GpuAvailabilityResponse>({
+	    queryKey: ['training', 'gpu-availability', 'vast'],
+	    queryFn: () => api.training.gpuAvailability('vast'),
+	    enabled: false
+	  });
+
+	  $effect(() => {
+	    const query = cloudProvider === 'verda' ? gpuAvailabilityVerdaQuery : gpuAvailabilityVastQuery;
+	    void get(query).refetch?.();
+	  });
 
   const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.name));
 
@@ -217,6 +234,8 @@
 
   const useAmpDisabled = $derived(policyDtype === 'bfloat16');
   const isSpot = $derived(instanceType === 'spot');
+  const isVast = $derived(cloudProvider === 'vast');
+  const isVerda = $derived(cloudProvider === 'verda');
 
   const wsUrl = (path: string) => getBackendUrl().replace(/^http/, 'ws') + path;
 
@@ -294,11 +313,23 @@
         mode: earlyStoppingMode
       },
       cloud: {
+        provider: cloudProvider,
         gpu_model: gpuModel,
         gpus_per_instance: gpuCount,
-        storage_size: storageSize,
-        is_spot: isSpot
-      },
+        ...(isVerda
+          ? {
+              storage_size: storageSize,
+              is_spot: isSpot
+            }
+		          : {
+		              storage_size: storageSize,
+		              interruptible: vastInterruptible,
+		              max_price:
+		                vastMaxPrice === null || Number.isNaN(vastMaxPrice)
+		                  ? null
+		                  : vastMaxPrice
+		            })
+		      },
       wandb_enable: false,
       sync_dataset: false
     };
@@ -425,7 +456,13 @@
     };
   };
 
-  const availability = $derived($gpuAvailabilityQuery.data?.available ?? []);
+	  const availability = $derived(
+	    (
+	      cloudProvider === 'verda'
+	        ? $gpuAvailabilityVerdaQuery.data?.available
+	        : $gpuAvailabilityVastQuery.data?.available
+	    ) ?? []
+	  );
 
   onDestroy(() => {
     createWs?.close();
@@ -736,6 +773,13 @@
       <h2 class="text-xl font-semibold text-slate-900">クラウド設定</h2>
       <div class="mt-4 grid gap-4">
         <label class="text-sm font-semibold text-slate-700">
+          <span class="label">Provider</span>
+          <select class="input mt-2" bind:value={cloudProvider}>
+            <option value="verda">Verda</option>
+            <option value="vast">Vast.ai</option>
+          </select>
+        </label>
+        <label class="text-sm font-semibold text-slate-700">
           <span class="label">GPUモデル</span>
           <select class="input mt-2" bind:value={gpuModel}>
             {#each GPU_MODELS as gpu}
@@ -752,33 +796,53 @@
           </select>
         </label>
         <label class="text-sm font-semibold text-slate-700">
-          <span class="label">ストレージ (GB)</span>
+          <span class="label">{isVerda ? 'ストレージ (GB)' : 'ディスク (GB)'}</span>
           <input class="input mt-2" type="number" min="1" bind:value={storageSize} />
+          {#if isVast}
+            <p class="mt-2 text-xs text-slate-500">小さすぎると依存インストールで容量不足になります。目安は 100GB 以上。</p>
+          {/if}
         </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">インスタンス種別</span>
-          <div class="mt-3 grid gap-2 text-sm text-slate-600">
-            <label class="flex items-center gap-2">
-              <input type="radio" name="instanceType" value="spot" bind:group={instanceType} />
-              <span>スポット</span>
-            </label>
-            <label class="flex items-center gap-2">
-              <input type="radio" name="instanceType" value="ondemand" bind:group={instanceType} />
-              <span>オンデマンド</span>
-            </label>
-          </div>
-        </label>
+        {#if isVerda}
+          <label class="text-sm font-semibold text-slate-700">
+            <span class="label">インスタンス種別</span>
+            <div class="mt-3 grid gap-2 text-sm text-slate-600">
+              <label class="flex items-center gap-2">
+                <input type="radio" name="instanceType" value="spot" bind:group={instanceType} />
+                <span>スポット</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <input type="radio" name="instanceType" value="ondemand" bind:group={instanceType} />
+                <span>オンデマンド</span>
+              </label>
+            </div>
+          </label>
+        {:else}
+          <label class="text-sm font-semibold text-slate-700">
+            <span class="label">Interruptible</span>
+            <div class="mt-3 grid gap-2 text-sm text-slate-600">
+              <label class="flex items-center gap-2">
+                <input type="checkbox" bind:checked={vastInterruptible} />
+                <span>有効（スポット相当）</span>
+              </label>
+            </div>
+          </label>
+          <label class="text-sm font-semibold text-slate-700">
+            <span class="label">Max price ($/h)</span>
+            <input class="input mt-2" type="number" min="0" step="0.001" bind:value={vastMaxPrice} placeholder="例: 1.000" />
+            <p class="mt-2 text-xs text-slate-500">空なら価格上限なし。</p>
+          </label>
+        {/if}
       </div>
       <div class="mt-4">
         <p class="label mb-2">空き状況</p>
-        <GpuAvailabilityBoard
-          items={availability}
-          loading={$gpuAvailabilityQuery.isLoading}
-          selectedGpuModel={gpuModel}
-          selectedGpuCount={gpuCount}
-          showOnlyAvailableDefault={true}
-          preferredModelOrder={gpuModelOrder}
-        />
+	        <GpuAvailabilityBoard
+	          items={availability}
+	          loading={cloudProvider === 'verda' ? $gpuAvailabilityVerdaQuery.isLoading : $gpuAvailabilityVastQuery.isLoading}
+	          selectedGpuModel={gpuModel}
+	          selectedGpuCount={gpuCount}
+	          showOnlyAvailableDefault={true}
+	          preferredModelOrder={gpuModelOrder}
+	        />
       </div>
     </section>
 

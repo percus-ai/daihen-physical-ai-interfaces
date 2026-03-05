@@ -217,11 +217,21 @@ class EarlyStoppingConfig(BaseModel):
 class CloudConfig(BaseModel):
     """Cloud instance configuration."""
 
+    provider: str = Field(
+        "verda",
+        description="Cloud provider: verda, vast",
+        pattern="^(verda|vast)$",
+    )
     gpu_model: str = Field("H100", description="GPU model: H100, A100, L40S")
     gpus_per_instance: int = Field(1, ge=1, le=8, description="Number of GPUs")
     storage_size: Optional[int] = Field(None, description="Storage size in GB")
     location: str = Field("auto", description="Location: auto, FIN-01, ICE-01, etc.")
     is_spot: bool = Field(True, description="Use spot instance")
+
+    # Vast.ai specific (v1)
+    interruptible: bool = Field(True, description="Vast interruptible (spot) instance")
+    max_price: Optional[float] = Field(None, ge=0, description="Max price ($/hour) for Vast interruptible")
+    ssh_port: Optional[int] = Field(None, ge=1, le=65535, description="SSH port (resolved after launch)")
 
 
 class JobCreateRequest(BaseModel):
@@ -376,6 +386,39 @@ class VerdaStorageActionResult(BaseModel):
     success_ids: list[str] = Field(default_factory=list)
     failed: list[VerdaStorageActionFailure] = Field(default_factory=list)
     skipped: list[VerdaStorageActionFailure] = Field(default_factory=list)
+
+
+# --- Vast Storage Models ---
+
+
+class VastStorageItem(BaseModel):
+    """Vast storage volume summary."""
+
+    id: str
+    label: str = ""
+    size_gb: Optional[int] = None
+    state: str = ""
+    instance_id: Optional[str] = None
+
+
+class VastStorageListResponse(BaseModel):
+    """Response for Vast storage list."""
+
+    items: list[VastStorageItem]
+    total: int
+
+
+class VastStorageActionRequest(BaseModel):
+    """Request for Vast storage actions."""
+
+    volume_ids: list[str]
+
+
+class VastStorageActionResult(BaseModel):
+    """Result for Vast storage actions."""
+
+    success_ids: list[str] = Field(default_factory=list)
+    failed: list[VerdaStorageActionFailure] = Field(default_factory=list)
 
 
 class JobReviveResponse(BaseModel):
