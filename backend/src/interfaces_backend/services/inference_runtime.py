@@ -98,6 +98,8 @@ class InferenceRuntimeManager:
         self._model_id: Optional[str] = None
         self._model_path: Optional[Path] = None
         self._policy_type: Optional[str] = None
+        self._device: Optional[str] = None
+        self._env_name: Optional[str] = None
         self._denoising_steps: Optional[int] = None
 
         self._runner_state = "idle"
@@ -205,6 +207,20 @@ class InferenceRuntimeManager:
             )
 
         return InferenceRunnerStatusResponse(runner_status=runner, gpu_host_status=gpu_host)
+
+    def get_runtime_context(self) -> dict[str, Any]:
+        self._refresh_state_from_worker()
+        with self._lock:
+            return {
+                "session_id": self._session_id,
+                "model_id": self._model_id,
+                "policy_type": self._policy_type,
+                "device": self._device,
+                "env_name": self._env_name,
+                "task": self._task,
+                "runner_state": self._runner_state,
+                "last_error": self._last_error,
+            }
 
     def get_diagnostics(self) -> dict[str, Any]:
         self._refresh_state_from_worker()
@@ -412,6 +428,8 @@ class InferenceRuntimeManager:
             self._model_id = model_id
             self._model_path = model_runtime_dir
             self._policy_type = policy_type
+            self._device = selected_device
+            self._env_name = env_name
             self._denoising_steps = denoising_steps_value
             self._ctrl_endpoint = ctrl_endpoint
             self._event_endpoint = event_endpoint
@@ -837,6 +855,8 @@ class InferenceRuntimeManager:
             self._model_id = None
             self._model_path = None
             self._policy_type = None
+            self._device = None
+            self._env_name = None
             self._denoising_steps = None
             self._ctrl_endpoint = None
             self._event_endpoint = None

@@ -4,7 +4,9 @@ import pytest
 import yaml
 
 from interfaces_backend.services.vlabor_profiles import (
+    build_profile_health_contract,
     build_inference_bridge_config,
+    classify_include_health_resolution,
     extract_camera_specs,
     extract_arm_namespaces,
     extract_recorder_arm_streams,
@@ -250,6 +252,118 @@ def test_build_inference_bridge_config_uses_profile_resolution() -> None:
             {"name": "side_camera", "topic": "/side_camera/image_raw/compressed"},
         ],
     }
+
+
+def test_build_profile_health_contract_uses_lerobot_required_inputs() -> None:
+    snapshot = {
+        "name": "test_profile",
+        "profile": {
+            "teleop": {"follower_arms": [{"namespace": "follower_arm"}]},
+            "lerobot": {
+                "follower_arm": {
+                    "namespace": "follower_arm",
+                    "topic": "/follower_arm/joint_states_single",
+                    "action_topic": "/follower_arm/joint_ctrl_single",
+                    "joints": ["joint1", "joint2"],
+                },
+                "cameras": [
+                    {
+                        "name": "cam_top",
+                        "source": "top_camera",
+                        "topic": "/top_camera/image_raw/compressed",
+                    }
+                ],
+            },
+            "actions": [
+                {
+                    "type": "node",
+                    "package": "unity_robot_control",
+                    "name": "so101_control_node",
+                    "namespace": "follower_arm",
+                },
+                {
+                    "type": "include",
+                    "package": "fv_camera",
+                    "args": {"node_name": "top_camera"},
+                },
+            ],
+        },
+    }
+
+    contract = build_profile_health_contract(snapshot)
+
+    assert contract.required_topics == (
+        "/follower_arm/joint_states_single",
+        "/top_camera/image_raw/compressed",
+    )
+    assert contract.required_robot_topics == ("/follower_arm/joint_states_single",)
+    assert contract.required_camera_topics == ("/top_camera/image_raw/compressed",)
+    assert len(contract.required_publishers) == 2
+    assert contract.required_publishers[0].node == "/follower_arm/so101_control_node"
+    assert contract.required_publishers[0].publishes == ("/follower_arm/joint_states_single",)
+    assert contract.required_publishers[1].node == "/top_camera"
+    assert contract.required_publishers[1].publishes_any == (
+        "/top_camera/image_raw/compressed",
+        "/top_camera/image_raw",
+    )
+
+
+def test_build_profile_health_contract_resolves_include_topics_from_config() -> None:
+    snapshot = {
+        "name": "test_profile",
+        "profile": {
+            "variables": {
+                "top_camera_config": "${share:vlabor_launch}/config/top_camera.yaml",
+            },
+            "lerobot": {
+                "cameras": [
+                    {
+                        "name": "cam_top",
+                        "source": "top_camera",
+                        "topic": "/top_camera/image_raw/compressed",
+                    }
+                ],
+            },
+            "actions": [
+                {
+                    "type": "include",
+                    "package": "fv_camera",
+                    "launch": "fv_camera_launch.py",
+                    "args": {
+                        "node_name": "top_camera",
+                        "config_file": "${top_camera_config}",
+                    },
+                }
+            ],
+        },
+    }
+
+    contract = build_profile_health_contract(snapshot)
+
+    assert contract.optional_topics == ()
+    assert len(contract.required_publishers) == 1
+    assert contract.required_publishers[0].node == "/top_camera"
+    assert "/top_camera/image_raw" in contract.required_publishers[0].publishes
+    assert "/top_camera/image_raw/compressed" in contract.required_publishers[0].publishes
+
+
+def test_profile_include_launches_are_all_classified() -> None:
+    unknown: list[str] = []
+    for path in _profiles_dir().glob("*.yaml"):
+        snapshot = _load_profile_snapshot(path)
+        profile = snapshot["profile"]
+        for action in profile.get("actions") or []:
+            if not isinstance(action, dict) or action.get("type") != "include":
+                continue
+            resolution = classify_include_health_resolution(
+                action.get("package"),
+                action.get("launch"),
+            )
+            if resolution == "unknown":
+                unknown.append(
+                    f"{path.stem}: {action.get('package')}::{action.get('launch')}"
+                )
+    assert unknown == []
 
 
 def _profiles_dir() -> Path:

@@ -92,6 +92,7 @@ from interfaces_backend.api import (
     webui_blueprints_router,
 )
 from interfaces_backend.services.lerobot_runtime import start_lerobot
+from interfaces_backend.services.system_status_monitor import get_system_status_monitor
 from interfaces_backend.core.request_auth import (
     build_session_from_request,
     is_session_expired,
@@ -136,6 +137,12 @@ async def start_vlabor_container() -> None:
         startup_logger.warning("Failed to start lerobot stack on backend startup: %s", detail)
     else:
         startup_logger.info("lerobot stack started on backend startup")
+    get_system_status_monitor().ensure_started()
+
+
+@app.on_event("shutdown")
+async def stop_background_monitors() -> None:
+    await get_system_status_monitor().shutdown()
 
 
 def _extract_request_session_id(request: Request) -> Optional[str]:

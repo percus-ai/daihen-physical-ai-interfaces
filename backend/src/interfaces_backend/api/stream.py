@@ -39,6 +39,11 @@ from interfaces_backend.services.startup_operations import (
     STARTUP_OPERATION_TOPIC,
     get_startup_operations_service,
 )
+from interfaces_backend.services.system_status_monitor import (
+    SYSTEM_STATUS_KEY,
+    SYSTEM_STATUS_TOPIC,
+    get_system_status_monitor,
+)
 from interfaces_backend.utils.sse import sse_queue_response
 from percus_ai.db import get_current_user_id
 
@@ -175,6 +180,21 @@ async def stream_operate_status(request: Request):
         build_payload=build_payload,
         interval=2.0,
         idle_ttl=45.0,
+    )
+
+
+@router.get("/system/status")
+async def stream_system_status(request: Request):
+    _require_user_id()
+    monitor = get_system_status_monitor()
+    monitor.ensure_started()
+    bus = get_realtime_event_bus()
+    subscription = bus.subscribe(SYSTEM_STATUS_TOPIC, SYSTEM_STATUS_KEY)
+    await monitor.publish_snapshot()
+    return sse_queue_response(
+        request,
+        subscription.queue,
+        on_close=subscription.close,
     )
 
 
