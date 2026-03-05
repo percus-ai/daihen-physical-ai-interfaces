@@ -6,7 +6,7 @@
 	  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
 	  import { formatDate } from '$lib/format';
 	  import { GPU_MODELS } from '$lib/policies';
-	  import type { GpuAvailabilityResponse } from '$lib/types/training';
+	  import type { GpuAvailabilityResponse, TrainingProviderCapabilityResponse } from '$lib/types/training';
 
   type StorageProvider = 'verda' | 'vast';
 
@@ -50,6 +50,14 @@
 	  let storageProvider = $state<StorageProvider>('verda');
 	  let selectedVolumeIds = $state<string[]>([]);
 
+	  const providerCapabilitiesQuery = createQuery<TrainingProviderCapabilityResponse>({
+	    queryKey: ['training', 'provider-capabilities'],
+	    queryFn: api.training.providerCapabilities
+	  });
+
+	  const isVerdaProviderEnabled = $derived($providerCapabilitiesQuery.data?.verda_enabled ?? true);
+	  const isVastProviderEnabled = $derived($providerCapabilitiesQuery.data?.vast_enabled ?? false);
+
 	  const gpuAvailabilityVerdaQuery = createQuery<GpuAvailabilityResponse>({
 	    queryKey: ['training', 'gpu-availability', 'verda'],
 	    queryFn: () => api.training.gpuAvailability('verda'),
@@ -84,6 +92,26 @@
 	        : $vastStorageQuery.data?.items
 	    ) ?? []
 	  );
+
+	  $effect(() => {
+	    if (provider === 'verda' && !isVerdaProviderEnabled && isVastProviderEnabled) {
+	      provider = 'vast';
+	      return;
+	    }
+	    if (provider === 'vast' && !isVastProviderEnabled) {
+	      provider = 'verda';
+	    }
+	  });
+
+	  $effect(() => {
+	    if (storageProvider === 'verda' && !isVerdaProviderEnabled && isVastProviderEnabled) {
+	      storageProvider = 'vast';
+	      return;
+	    }
+	    if (storageProvider === 'vast' && !isVastProviderEnabled) {
+	      storageProvider = 'verda';
+	    }
+	  });
 
 	  $effect(() => {
 	    if (activeTab !== 'availability') return;
@@ -190,8 +218,12 @@
             class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
             bind:value={provider}
           >
-            <option value="verda">Verda</option>
-            <option value="vast">Vast.ai</option>
+            <option value="verda" disabled={!isVerdaProviderEnabled}>
+              {isVerdaProviderEnabled ? 'Verda' : 'Verda (設定不足)'}
+            </option>
+            <option value="vast" disabled={!isVastProviderEnabled}>
+              {isVastProviderEnabled ? 'Vast.ai' : 'Vast.ai (設定不足)'}
+            </option>
           </select>
         </div>
       </div>
@@ -243,12 +275,15 @@
         <div class="flex items-center gap-2 text-sm">
           <span class="text-slate-500">Provider</span>
           <select class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" bind:value={storageProvider}>
-            <option value="verda">Verda</option>
-            <option value="vast">Vast.ai</option>
+            <option value="verda" disabled={!isVerdaProviderEnabled}>
+              {isVerdaProviderEnabled ? 'Verda' : 'Verda (設定不足)'}
+            </option>
+            <option value="vast" disabled={!isVastProviderEnabled}>
+              {isVastProviderEnabled ? 'Vast.ai' : 'Vast.ai (設定不足)'}
+            </option>
           </select>
         </div>
       </div>
-
       <div class="mt-4 flex flex-wrap items-center gap-2">
         <Button.Root class="btn-ghost" type="button" disabled={!selectedVolumeIds.length} onclick={() => runStorageAction('delete')}>
           削除

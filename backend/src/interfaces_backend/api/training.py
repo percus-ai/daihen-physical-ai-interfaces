@@ -65,6 +65,7 @@ from interfaces_backend.models.training import (
     # GPU availability
     GpuAvailabilityInfo,
     GpuAvailabilityResponse,
+    TrainingProviderCapabilityResponse,
     VerdaStorageActionFailure,
     VerdaStorageActionRequest,
     VerdaStorageActionResult,
@@ -155,6 +156,7 @@ DB_TABLE = "training_jobs"
 
 RUNNING_STATUSES = {"running", "starting", "deploying"}
 RUNNING_STATUSES_WITH_PENDING = {"running", "starting", "deploying", "pending"}
+_REQUIRED_VAST_ENV_VARS = ("VAST_API_KEY", "VAST_SSH_PRIVATE_KEY")
 
 
 def _first_dict(*values: object) -> Optional[dict]:
@@ -806,6 +808,28 @@ def _get_verda_client() -> Optional[VerdaClient]:
         return None
 
     return VerdaClient(client_id, client_secret)
+
+
+def _missing_vast_env_vars() -> list[str]:
+    missing: list[str] = []
+    for env_name in _REQUIRED_VAST_ENV_VARS:
+        if not str(os.environ.get(env_name) or "").strip():
+            missing.append(env_name)
+    return missing
+
+
+def _assert_provider_configured(provider: str) -> None:
+    provider_name = str(provider or "").strip().lower()
+    if provider_name != "vast":
+        return
+
+    missing = _missing_vast_env_vars()
+    if missing:
+        required = ", ".join(missing)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Vast.ai設定が不足しています: {required}",
+        )
 
 
 def _build_verda_storage_item(volume: object, state: str) -> VerdaStorageItem:
@@ -2548,6 +2572,17 @@ def _fetch_availability_sets(
     return spot_available_by_loc, ondemand_available_by_loc
 
 
+@router.get("/provider-capabilities", response_model=TrainingProviderCapabilityResponse)
+def get_training_provider_capabilities():
+    """Return cloud provider availability for training UI."""
+    missing_vast_env = _missing_vast_env_vars()
+    return TrainingProviderCapabilityResponse(
+        verda_enabled=_get_verda_client() is not None,
+        vast_enabled=len(missing_vast_env) == 0,
+        missing_vast_env=missing_vast_env,
+    )
+
+
 @router.get("/gpu-availability", response_model=GpuAvailabilityResponse)
 def get_gpu_availability(
     provider: str = Query(..., pattern="^(verda|vast)$"),
@@ -2633,6 +2668,7 @@ def get_gpu_availability(
             raise HTTPException(status_code=503, detail=f"GPU空き状況の確認に失敗: {e}")
 
     else:
+        _assert_provider_configured(provider)
         from percus_ai.training.providers.vast import search_offers_minimal
 
         gpu_models = ["B300", "B200", "H200", "H100", "A100", "L40S", "RTX6000ADA", "RTXA6000"]
@@ -2919,6 +2955,7 @@ async def purge_verda_storage(request: VerdaStorageActionRequest):
 @router.get("/vast/storage", response_model=VastStorageListResponse)
 async def list_vast_storage():
     """List Vast storage volumes."""
+    _assert_provider_configured("vast")
     from percus_ai.training.providers.vast import list_volumes
 
     try:
@@ -2943,6 +2980,7 @@ async def list_vast_storage():
 @router.post("/vast/storage/delete", response_model=VastStorageActionResult)
 async def delete_vast_storage(request: VastStorageActionRequest):
     """Delete Vast storage volumes."""
+    _assert_provider_configured("vast")
     from percus_ai.training.providers.vast import delete_volumes
 
     result = VastStorageActionResult()
@@ -2982,6 +3020,12 @@ async def websocket_gpu_availability(websocket: WebSocket):
         provider = websocket.query_params.get("provider", "").strip()
         if provider not in {"verda", "vast"}:
             await websocket.send_json({"type": "error", "error": "provider must be verda|vast"})
+            await websocket.close()
+            return
+        try:
+            _assert_provider_configured(provider)
+        except HTTPException as exc:
+            await websocket.send_json({"type": "error", "error": str(exc.detail)})
             await websocket.close()
             return
         scan = websocket.query_params.get("scan", "all")
@@ -4266,6 +4310,13 @@ async def websocket_create_job(websocket: WebSocket):
         await websocket.close()
         return
 
+    try:
+        _assert_provider_configured(request.cloud.provider)
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "error": str(exc.detail)})
+        await websocket.close()
+        return
+
     job_id = str(uuid.uuid4())
     request_data = request.model_dump()
     request_data["job_id"] = job_id
@@ -4364,6 +4415,8 @@ async def create_job(request: JobCreateRequest, background_tasks: BackgroundTask
             status_code=422,
             detail="policy must be provided",
         )
+    _assert_provider_configured(request.cloud.provider)
+
     job_id = str(uuid.uuid4())
     session = get_supabase_session() or {}
 

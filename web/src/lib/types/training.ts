@@ -12,3 +12,9 @@ export type GpuAvailabilityItem = {
 export type GpuAvailabilityResponse = {
   available?: GpuAvailabilityItem[];
 };
+
+export type TrainingProviderCapabilityResponse = {
+  verda_enabled?: boolean;
+  vast_enabled?: boolean;
+  missing_vast_env?: string[];
+};

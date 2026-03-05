@@ -10,7 +10,7 @@
 	  import { getBackendUrl } from '$lib/config';
   import { formatBytes, formatDate } from '$lib/format';
   import { GPU_COUNTS, GPU_MODELS, POLICY_TYPES } from '$lib/policies';
-  import type { GpuAvailabilityResponse } from '$lib/types/training';
+  import type { GpuAvailabilityResponse, TrainingProviderCapabilityResponse } from '$lib/types/training';
 
   type DatasetSummary = {
     id: string;
@@ -36,6 +36,14 @@
 	  let vastInterruptible = $state(true);
 	  let vastMaxPrice = $state<number | null>(null);
 
+	  const providerCapabilitiesQuery = createQuery<TrainingProviderCapabilityResponse>({
+	    queryKey: ['training', 'provider-capabilities'],
+	    queryFn: api.training.providerCapabilities
+	  });
+
+	  const isVerdaProviderEnabled = $derived($providerCapabilitiesQuery.data?.verda_enabled ?? true);
+	  const isVastProviderEnabled = $derived($providerCapabilitiesQuery.data?.vast_enabled ?? false);
+
 	  const gpuAvailabilityVerdaQuery = createQuery<GpuAvailabilityResponse>({
 	    queryKey: ['training', 'gpu-availability', 'verda'],
 	    queryFn: () => api.training.gpuAvailability('verda'),
@@ -51,6 +59,16 @@
 	  $effect(() => {
 	    const query = cloudProvider === 'verda' ? gpuAvailabilityVerdaQuery : gpuAvailabilityVastQuery;
 	    void get(query).refetch?.();
+	  });
+
+	  $effect(() => {
+	    if (cloudProvider === 'verda' && !isVerdaProviderEnabled && isVastProviderEnabled) {
+	      cloudProvider = 'vast';
+	      return;
+	    }
+	    if (cloudProvider === 'vast' && !isVastProviderEnabled) {
+	      cloudProvider = 'verda';
+	    }
 	  });
 
   const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.name));
@@ -375,6 +393,14 @@
   const submit = async () => {
     submitError = '';
     createStatus = 'idle';
+    if (cloudProvider === 'vast' && !isVastProviderEnabled) {
+      submitError = 'Vast.ai は現在選択できません。';
+      return;
+    }
+    if (cloudProvider === 'verda' && !isVerdaProviderEnabled) {
+      submitError = 'Verda認証情報が不足しています: DATACRUNCH_CLIENT_ID, DATACRUNCH_CLIENT_SECRET';
+      return;
+    }
     const payload = buildPayload();
     if (!payload) {
       submitError = 'データセットを選択してください。';
@@ -775,8 +801,12 @@
         <label class="text-sm font-semibold text-slate-700">
           <span class="label">Provider</span>
           <select class="input mt-2" bind:value={cloudProvider}>
-            <option value="verda">Verda</option>
-            <option value="vast">Vast.ai</option>
+            <option value="verda" disabled={!isVerdaProviderEnabled}>
+              {isVerdaProviderEnabled ? 'Verda' : 'Verda (設定不足)'}
+            </option>
+            <option value="vast" disabled={!isVastProviderEnabled}>
+              {isVastProviderEnabled ? 'Vast.ai' : 'Vast.ai (設定不足)'}
+            </option>
           </select>
         </label>
         <label class="text-sm font-semibold text-slate-700">

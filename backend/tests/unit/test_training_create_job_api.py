@@ -74,6 +74,8 @@ def test_create_job_function_preflights_without_fastapi_lifecycle(monkeypatch):
 
     monkeypatch.setattr(orchestrator, "create_job_with_progress", fake_create_job_with_progress)
     monkeypatch.setattr(training_api, "get_supabase_session", lambda: {"user_id": "user-1"})
+    monkeypatch.setenv("VAST_API_KEY", "test-api-key")
+    monkeypatch.setenv("VAST_SSH_PRIVATE_KEY", "/tmp/id_rsa_test")
 
     request = JobCreateRequest.model_validate(_valid_create_job_payload())
     background_tasks = BackgroundTasks()
@@ -91,6 +93,22 @@ def test_create_job_function_preflights_without_fastapi_lifecycle(monkeypatch):
     assert called["request_data"]["job_id"] == response.job_id
     assert called["request_data"]["cloud"]["provider"] == "vast"
     assert called["supabase_session"]["user_id"] == "user-1"
+
+
+def test_create_job_rejects_vast_when_required_env_missing(monkeypatch):
+    from interfaces_backend.models.training import JobCreateRequest
+    import interfaces_backend.api.training as training_api
+
+    monkeypatch.delenv("VAST_API_KEY", raising=False)
+    monkeypatch.delenv("VAST_SSH_PRIVATE_KEY", raising=False)
+
+    request = JobCreateRequest.model_validate(_valid_create_job_payload())
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(training_api.create_job(request, BackgroundTasks()))
+
+    assert exc.value.status_code == 400
+    assert "VAST_API_KEY" in str(exc.value.detail)
+    assert "VAST_SSH_PRIVATE_KEY" in str(exc.value.detail)
 
 
 def test_create_continue_job_rejects_non_verda_provider():

@@ -410,6 +410,12 @@ export type RemoteCheckpointUploadProgressMessage = {
   result?: RemoteCheckpointUploadResult;
 };
 
+export type TrainingProviderCapabilityResponse = {
+  verda_enabled?: boolean;
+  vast_enabled?: boolean;
+  missing_vast_env?: string[];
+};
+
 let refreshPromise: Promise<boolean> | null = null;
 
 async function baseFetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -884,6 +890,8 @@ export const api = {
     }
   },
   training: {
+    providerCapabilities: () =>
+      fetchApi<TrainingProviderCapabilityResponse>('/api/training/provider-capabilities'),
     jobs: () => fetchApi('/api/training/jobs'),
     job: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}`),
     createJob: (data: Record<string, unknown>) =>

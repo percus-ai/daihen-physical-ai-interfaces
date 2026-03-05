@@ -546,3 +546,14 @@ class GpuAvailabilityResponse(BaseModel):
 
     available: list[GpuAvailabilityInfo] = Field(default_factory=list)
     checked_at: datetime = Field(default_factory=datetime.now)
+
+
+class TrainingProviderCapabilityResponse(BaseModel):
+    """Provider capability flags for training UI."""
+
+    verda_enabled: bool = Field(True, description="Whether Verda provider can be selected")
+    vast_enabled: bool = Field(False, description="Whether Vast.ai provider can be selected")
+    missing_vast_env: list[str] = Field(
+        default_factory=list,
+        description="Missing required env vars for Vast.ai",
+    )
