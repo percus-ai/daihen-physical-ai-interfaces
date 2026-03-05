@@ -101,3 +101,48 @@ def test_evaluate_ros2_health_marks_required_inputs_as_healthy() -> None:
     assert state.cameras_ready is True
     assert state.robot_ready is True
     assert snapshot.last_error is None
+
+
+def test_evaluate_recorder_health_keeps_idle_storage_unknown_healthy() -> None:
+    monitor = SystemStatusMonitor()
+
+    snapshot = monitor._evaluate_recorder_health(
+        recorder_status={
+            "state": "idle",
+            "dataset_id": "",
+            "write_ok": None,
+            "disk_ok": None,
+        },
+        ros2_state=monitor._ros2_contract_state.__class__(
+            cameras_ready=True,
+            robot_ready=True,
+        ),
+        active_profile_name="so101_single_teleop",
+    )
+
+    assert snapshot.level == "healthy"
+    assert snapshot.dependencies.storage_ready is None
+    assert snapshot.last_error is None
+
+
+def test_evaluate_recorder_health_marks_recording_storage_unknown_degraded() -> None:
+    monitor = SystemStatusMonitor()
+
+    snapshot = monitor._evaluate_recorder_health(
+        recorder_status={
+            "state": "recording",
+            "dataset_id": "dataset-1",
+            "write_ok": None,
+            "disk_ok": None,
+            "last_frame_at": "2026-03-06T00:00:00Z",
+        },
+        ros2_state=monitor._ros2_contract_state.__class__(
+            cameras_ready=True,
+            robot_ready=True,
+        ),
+        active_profile_name="so101_single_teleop",
+    )
+
+    assert snapshot.level == "degraded"
+    assert snapshot.dependencies.storage_ready is None
+    assert snapshot.last_error == "recorder storage readiness is unknown"

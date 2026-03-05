@@ -61,9 +61,25 @@
     last_frame_at?: string | null;
   };
 
+  type OperateStatusResponse = {
+    network?: {
+      status?: string;
+      details?: {
+        zmq?: { status?: string };
+        zenoh?: { status?: string };
+        rosbridge?: { status?: string };
+      };
+    };
+  };
+
   const recordingsQuery = createQuery<RecordingListResponse>({
     queryKey: ['recording', 'recordings'],
     queryFn: () => api.recording.list()
+  });
+
+  const operateStatusQuery = createQuery<OperateStatusResponse>({
+    queryKey: ['operate', 'status'],
+    queryFn: api.operate.status
   });
 
   const recordings = $derived($recordingsQuery.data?.recordings ?? []);
@@ -515,4 +531,4 @@
   </div>
 </section>
 
-<OperateStatusCards snapshot={systemStatusSnapshot} />
+<OperateStatusCards snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />

@@ -223,9 +223,6 @@ class SystemStatusMonitor:
             try:
                 recorder_status = await asyncio.to_thread(self._recorder.status)
                 active_profile = await get_active_profile_spec()
-                state = str(recorder_status.get("state") or "unknown").strip().lower() or "unknown"
-                dataset_id = str(recorder_status.get("dataset_id") or "").strip() or None
-                last_error = str(recorder_status.get("error") or "").strip() or None
                 with self._lock:
                     ros2_state = _Ros2ContractState(
                         profile_name=self._ros2_contract_state.profile_name,
@@ -236,63 +233,10 @@ class SystemStatusMonitor:
                         missing_required_topics=list(self._ros2_contract_state.missing_required_topics),
                         missing_required_nodes=list(self._ros2_contract_state.missing_required_nodes),
                     )
-
-                write_ok = recorder_status.get("write_ok") if isinstance(recorder_status.get("write_ok"), bool) else None
-                disk_ok = recorder_status.get("disk_ok") if isinstance(recorder_status.get("disk_ok"), bool) else None
-                storage_ready: bool | None
-                if write_ok is False or disk_ok is False:
-                    storage_ready = False
-                elif write_ok is True or disk_ok is True:
-                    storage_ready = True
-                else:
-                    storage_ready = None
-
-                dependency_errors: list[str] = []
-                if ros2_state.cameras_ready is False:
-                    dependency_errors.append("required camera topics unavailable")
-                if ros2_state.robot_ready is False:
-                    dependency_errors.append("required robot state topics unavailable")
-                if storage_ready is False:
-                    dependency_errors.append("recorder storage is not writable")
-
-                degraded_reasons: list[str] = []
-                if ros2_state.optional_issue_summary:
-                    degraded_reasons.append(ros2_state.optional_issue_summary)
-                if state == "recording" and not recorder_status.get("last_frame_at"):
-                    degraded_reasons.append("recording session has no recent frame timestamp")
-                if storage_ready is None:
-                    degraded_reasons.append("recorder storage readiness is unknown")
-
-                if last_error:
-                    level = "error"
-                elif dependency_errors:
-                    level = "error"
-                    last_error = "; ".join(dependency_errors)
-                elif state in {"recording", "warming", "paused", "resetting", "resetting_paused", "idle", "completed"}:
-                    level = "degraded" if degraded_reasons else "healthy"
-                    if degraded_reasons:
-                        last_error = "; ".join(degraded_reasons)
-                else:
-                    level = "degraded"
-                    if not last_error:
-                        last_error = f"recorder state is {state}"
-                snapshot = RecorderStatusSnapshot(
-                    level=level,
-                    state=state,
-                    process_alive=True,
-                    session_id=dataset_id,
-                    active_profile=active_profile.name if active_profile else None,
-                    dataset_id=dataset_id,
-                    output_path=str(recorder_status.get("output_path") or "") or None,
-                    last_frame_at=str(recorder_status.get("last_frame_at") or "") or None,
-                    write_ok=write_ok,
-                    disk_ok=disk_ok,
-                    dependencies={
-                        "cameras_ready": ros2_state.cameras_ready,
-                        "robot_ready": ros2_state.robot_ready,
-                        "storage_ready": storage_ready,
-                    },
-                    last_error=last_error,
+                snapshot = self._evaluate_recorder_health(
+                    recorder_status=recorder_status,
+                    ros2_state=ros2_state,
+                    active_profile_name=active_profile.name if active_profile else None,
                 )
                 with self._lock:
                     self._services.recorder = snapshot
@@ -321,6 +265,76 @@ class SystemStatusMonitor:
                     self._refresh_snapshot_locked()
                 await self.publish_snapshot()
             await asyncio.sleep(_RECORDER_INTERVAL_S)
+
+    def _evaluate_recorder_health(
+        self,
+        *,
+        recorder_status: dict[str, object],
+        ros2_state: _Ros2ContractState,
+        active_profile_name: str | None,
+    ) -> RecorderStatusSnapshot:
+        state = str(recorder_status.get("state") or "unknown").strip().lower() or "unknown"
+        dataset_id = str(recorder_status.get("dataset_id") or "").strip() or None
+        last_error = str(recorder_status.get("error") or "").strip() or None
+        write_ok = recorder_status.get("write_ok") if isinstance(recorder_status.get("write_ok"), bool) else None
+        disk_ok = recorder_status.get("disk_ok") if isinstance(recorder_status.get("disk_ok"), bool) else None
+
+        storage_ready: bool | None
+        if write_ok is False or disk_ok is False:
+            storage_ready = False
+        elif write_ok is True or disk_ok is True:
+            storage_ready = True
+        else:
+            storage_ready = None
+
+        dependency_errors: list[str] = []
+        if ros2_state.cameras_ready is False:
+            dependency_errors.append("required camera topics unavailable")
+        if ros2_state.robot_ready is False:
+            dependency_errors.append("required robot state topics unavailable")
+        if storage_ready is False:
+            dependency_errors.append("recorder storage is not writable")
+
+        degraded_reasons: list[str] = []
+        if ros2_state.optional_issue_summary:
+            degraded_reasons.append(ros2_state.optional_issue_summary)
+        if state == "recording" and not recorder_status.get("last_frame_at"):
+            degraded_reasons.append("recording session has no recent frame timestamp")
+        if state == "recording" and storage_ready is None:
+            degraded_reasons.append("recorder storage readiness is unknown")
+
+        if last_error:
+            level = "error"
+        elif dependency_errors:
+            level = "error"
+            last_error = "; ".join(dependency_errors)
+        elif state in {"recording", "warming", "paused", "resetting", "resetting_paused", "idle", "completed"}:
+            level = "degraded" if degraded_reasons else "healthy"
+            if degraded_reasons:
+                last_error = "; ".join(degraded_reasons)
+        else:
+            level = "degraded"
+            if not last_error:
+                last_error = f"recorder state is {state}"
+
+        return RecorderStatusSnapshot(
+            level=level,
+            state=state,
+            process_alive=True,
+            session_id=dataset_id,
+            active_profile=active_profile_name,
+            dataset_id=dataset_id,
+            output_path=str(recorder_status.get("output_path") or "") or None,
+            last_frame_at=str(recorder_status.get("last_frame_at") or "") or None,
+            write_ok=write_ok,
+            disk_ok=disk_ok,
+            dependencies={
+                "cameras_ready": ros2_state.cameras_ready,
+                "robot_ready": ros2_state.robot_ready,
+                "storage_ready": storage_ready,
+            },
+            last_error=last_error,
+        )
 
     async def _inference_loop(self) -> None:
         while True:

@@ -60,6 +60,17 @@
     };
   };
 
+  type OperateStatusResponse = {
+    network?: {
+      status?: string;
+      details?: {
+        zmq?: { status?: string };
+        zenoh?: { status?: string };
+        rosbridge?: { status?: string };
+      };
+    };
+  };
+
   type OperateStatusStreamPayload = {
     vlabor_status?: Record<string, any>;
     inference_runner_status?: InferenceRunnerStatusResponse;
@@ -78,6 +89,11 @@
   const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
     queryKey: ['inference', 'runner', 'status'],
     queryFn: api.inference.runnerStatus
+  });
+
+  const operateStatusQuery = createQuery<OperateStatusResponse>({
+    queryKey: ['operate', 'status'],
+    queryFn: api.operate.status
   });
 
   const resolveModelId = (model: InferenceModel) => model.model_id ?? model.name ?? '';
@@ -507,4 +523,4 @@
   </div>
 </section>
 
-<OperateStatusCards snapshot={systemStatusSnapshot} />
+<OperateStatusCards snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />
