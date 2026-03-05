@@ -94,7 +94,7 @@ class RecordingSessionManager(BaseSessionManager):
         profile_source: str,
         cameras: list[dict[str, Any]],
         arm_namespaces: list[str],
-        arm_streams: list[dict[str, str]],
+        arm_streams: list[dict[str, Any]],
     ) -> None:
         errors: list[str] = []
         if not cameras:
@@ -108,7 +108,7 @@ class RecordingSessionManager(BaseSessionManager):
             )
         if not arm_streams:
             errors.append(
-                "arm_streams unresolved (expected profile.lerobot.<arm>.namespace/topic/action_topic "
+                "arm_streams unresolved (expected profile.lerobot.<arm>.namespace/topic/action_topic/joints "
                 "per target arm)"
             )
         else:
@@ -117,13 +117,18 @@ class RecordingSessionManager(BaseSessionManager):
                 namespace = str(stream.get("namespace") or "").strip()
                 state_topic = str(stream.get("state_topic") or "").strip()
                 action_topic = str(stream.get("action_topic") or "").strip()
+                joint_names = stream.get("joint_names")
                 if not namespace or not state_topic or not action_topic:
                     errors.append(
-                        "arm_streams contains invalid entry (expected namespace/state_topic/action_topic)"
+                        "arm_streams contains invalid entry "
+                        "(expected namespace/state_topic/action_topic/joint_names)"
                     )
                     break
                 if namespace in seen_namespaces:
                     errors.append("arm_streams contains duplicated namespace")
+                    break
+                if not isinstance(joint_names, list) or not [str(name).strip() for name in joint_names]:
+                    errors.append("arm_streams contains invalid joint_names")
                     break
                 seen_namespaces.add(namespace)
         if not errors:

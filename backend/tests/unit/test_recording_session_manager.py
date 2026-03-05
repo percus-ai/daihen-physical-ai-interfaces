@@ -233,6 +233,7 @@ def test_create_includes_profile_arm_streams(monkeypatch):
                 "namespace": "follower_arm",
                 "state_topic": "/follower_arm/joint_states_single",
                 "action_topic": "/follower_arm/joint_ctrl_single",
+                "joint_names": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"],
             }
         ],
     )
@@ -259,6 +260,7 @@ def test_create_includes_profile_arm_streams(monkeypatch):
             "namespace": "follower_arm",
             "state_topic": "/follower_arm/joint_states_single",
             "action_topic": "/follower_arm/joint_ctrl_single",
+            "joint_names": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"],
         }
     ]
 
@@ -359,6 +361,7 @@ def test_create_raises_when_cameras_unresolved(monkeypatch):
                 "namespace": "follower_arm",
                 "state_topic": "/follower_arm/joint_states_single",
                 "action_topic": "/follower_arm/joint_ctrl_single",
+                "joint_names": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"],
             }
         ],
     )

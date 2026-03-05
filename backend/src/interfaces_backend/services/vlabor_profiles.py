@@ -557,8 +557,15 @@ def extract_recorder_arm_streams(
     snapshot: dict[str, Any],
     *,
     arm_namespaces: Optional[list[str]] = None,
-) -> list[dict[str, str]]:
-    """Extract recorder arm topic streams from profile snapshot."""
+) -> list[dict[str, Any]]:
+    """Extract recorder arm stream config from profile snapshot.
+
+    Each entry contains:
+    - namespace
+    - state_topic
+    - action_topic
+    - joint_names
+    """
     profile = snapshot.get("profile")
     if not isinstance(profile, dict):
         return []
@@ -578,7 +585,7 @@ def extract_recorder_arm_streams(
     if not isinstance(lerobot, dict):
         return []
 
-    streams_by_namespace: dict[str, dict[str, str]] = {}
+    streams_by_namespace: dict[str, dict[str, Any]] = {}
     for key, value in lerobot.items():
         if key == "cameras" or not isinstance(value, dict):
             continue
@@ -590,14 +597,27 @@ def extract_recorder_arm_streams(
 
         state_topic = _resolved_topic(value.get("topic"), settings)
         action_topic = _resolved_topic(value.get("action_topic"), settings)
+        raw_joints = value.get("joints")
+        if not isinstance(raw_joints, list):
+            continue
+        joint_names = [
+            str(_render_setting(name, settings) or "").strip()
+            for name in raw_joints
+            if str(_render_setting(name, settings) or "").strip()
+        ]
         if not _is_absolute_ros_topic(state_topic):
             continue
         if not _is_absolute_ros_topic(action_topic):
             continue
+        if not joint_names:
+            continue
+        if len(joint_names) != len(set(joint_names)):
+            return []
         streams_by_namespace[namespace] = {
             "namespace": namespace,
             "state_topic": state_topic,
             "action_topic": action_topic,
+            "joint_names": joint_names,
         }
 
     if any(namespace not in streams_by_namespace for namespace in target_namespaces):

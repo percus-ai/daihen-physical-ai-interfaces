@@ -12,6 +12,7 @@ import asyncio
 import logging
 import threading
 from dataclasses import dataclass
+from typing import Any
 
 from fastapi import HTTPException
 
@@ -49,7 +50,7 @@ class InferenceRecordingState:
     batch_size: int
     target_total_episodes: int
     cameras: list[dict]
-    arm_streams: list[dict[str, str]]
+    arm_streams: list[dict[str, Any]]
     awaiting_continue_confirmation: bool = False
     manual_paused: bool = False
     inference_paused: bool = False
@@ -254,7 +255,7 @@ class InferenceRecordingController:
         if not arm_streams:
             logger.warning(
                 "Skip inference recording: arm_streams unresolved "
-                "(expected profile.lerobot.<arm>.namespace/topic/action_topic)"
+                "(expected profile.lerobot.<arm>.namespace/topic/action_topic/joints)"
             )
             return None
 

@@ -101,11 +101,13 @@ def _build_profile_snapshot() -> dict:
                     "namespace": "left_arm",
                     "topic": "/left_arm/joint_states",
                     "action_topic": "/left_arm/joint_actions",
+                    "joints": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"],
                 },
                 "right_arm": {
                     "namespace": "right_arm",
                     "topic": "/right_arm/joint_states",
                     "action_topic": "/right_arm/joint_actions",
+                    "joints": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"],
                 },
             }
         }
