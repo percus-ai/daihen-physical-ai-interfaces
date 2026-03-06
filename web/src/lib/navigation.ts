@@ -42,6 +42,13 @@ export const navItems = [
     description: 'データセット・モデル・アーカイブ'
   },
   {
+    id: 'system',
+    label: 'システム',
+    href: '/system',
+    icon: '🖥️',
+    description: '詳細ステータスとbundled-torch'
+  },
+  {
     id: 'profile',
     label: 'プロファイル',
     href: '/profile',

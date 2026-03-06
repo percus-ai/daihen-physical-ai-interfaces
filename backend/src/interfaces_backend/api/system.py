@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 import psutil
 
+from interfaces_backend.models.build import BundledTorchBuildRequest, BundledTorchBuildSnapshot
 from interfaces_backend.utils.torch_info import get_torch_info
 from interfaces_backend.models.system import (
     ServiceStatus,
@@ -24,6 +25,7 @@ from interfaces_backend.models.system import (
     GpuInfo,
     GpuResponse,
 )
+from interfaces_backend.services.bundled_torch_build_service import get_bundled_torch_build_service
 from percus_ai.storage import get_datasets_dir, get_features_path, get_storage_root
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -338,3 +340,28 @@ async def get_gpu_info():
         driver_version=driver_version,
         gpus=gpus,
     )
+
+
+@router.get("/bundled-torch/status", response_model=BundledTorchBuildSnapshot)
+async def get_bundled_torch_status():
+    service = get_bundled_torch_build_service()
+    await service.refresh_snapshot()
+    return service.get_snapshot()
+
+
+@router.post("/bundled-torch/build", response_model=BundledTorchBuildSnapshot)
+async def start_bundled_torch_build(
+    request: BundledTorchBuildRequest,
+):
+    service = get_bundled_torch_build_service()
+    return await service.start_build(
+        pytorch_version=request.pytorch_version,
+        torchvision_version=request.torchvision_version,
+        force=request.force,
+    )
+
+
+@router.post("/bundled-torch/clean", response_model=BundledTorchBuildSnapshot)
+async def clean_bundled_torch():
+    service = get_bundled_torch_build_service()
+    return await service.start_clean()

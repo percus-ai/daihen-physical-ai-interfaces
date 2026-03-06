@@ -39,37 +39,41 @@ class BuildMenu(BaseMenu):
 
         try:
             status = self.api.get_bundled_torch_status()
+            platform = status.get("platform") or {}
+            install = status.get("install") or {}
 
             table = Table(show_header=False, box=None)
             table.add_column("Key", style="cyan")
             table.add_column("Value")
 
-            table.add_row("Jetson:", "Yes" if status.get("is_jetson") else "No")
-            table.add_row("Exists:", "Yes" if status.get("exists") else "No")
+            table.add_row("Platform:", platform.get("platform_name") or "-")
+            table.add_row("Jetson:", "Yes" if platform.get("is_jetson") else "No")
+            table.add_row("Exists:", "Yes" if install.get("exists") else "No")
+            table.add_row("State:", status.get("state") or "-")
 
-            if status.get("exists"):
-                table.add_row("Valid:", "Yes" if status.get("is_valid") else "No (not built)")
-                if status.get("pytorch_version"):
-                    table.add_row("PyTorch:", status["pytorch_version"])
-                if status.get("torchvision_version"):
-                    table.add_row("torchvision:", status["torchvision_version"])
-                if status.get("numpy_version"):
-                    numpy_ver = status["numpy_version"]
+            if install.get("exists"):
+                table.add_row("Valid:", "Yes" if install.get("is_valid") else "No (not built)")
+                if install.get("pytorch_version"):
+                    table.add_row("PyTorch:", install["pytorch_version"])
+                if install.get("torchvision_version"):
+                    table.add_row("torchvision:", install["torchvision_version"])
+                if install.get("numpy_version"):
+                    numpy_ver = install["numpy_version"]
                     # Highlight if numpy 2.x (compatible with lerobot)
                     if numpy_ver.startswith("2."):
                         table.add_row("numpy:", f"{numpy_ver} (lerobot compatible)")
                     else:
                         table.add_row("numpy:", f"{numpy_ver} [bold red](needs rebuild for lerobot)[/bold red]")
-                if status.get("pytorch_path"):
-                    table.add_row("Path:", status["pytorch_path"])
+                if install.get("pytorch_path"):
+                    table.add_row("Path:", install["pytorch_path"])
 
             console = Console()
             console.print(table)
 
-            if status.get("is_valid"):
+            if install.get("is_valid"):
                 print(f"\n{Colors.success('Note:')} bundled-torch is automatically loaded via sys.path.")
                 print(f"{Colors.muted('No manual installation needed - just restart CLI/backend.')}")
-            elif not status.get("is_jetson"):
+            elif not platform.get("pytorch_build_required"):
                 print(f"\n{Colors.warning('Note:')} bundled-torch build is only needed on Jetson.")
                 print(f"{Colors.muted('On other platforms, use: pip install torch torchvision')}")
 
@@ -86,14 +90,16 @@ class BuildMenu(BaseMenu):
         try:
             # Check if Jetson
             status = self.api.get_bundled_torch_status()
+            platform = status.get("platform") or {}
+            install = status.get("install") or {}
 
-            if not status.get("is_jetson"):
+            if not platform.get("pytorch_build_required"):
                 print(f"{Colors.error('Error:')} This feature is only available on Jetson.")
                 print(f"{Colors.muted('On other platforms, use: pip install torch torchvision')}")
                 input(f"\n{Colors.muted('Press Enter to continue...')}")
                 return MenuResult.CONTINUE
 
-            if status.get("is_valid"):
+            if install.get("is_valid"):
                 print(f"{Colors.warning('Warning:')} bundled-torch already exists and is valid.")
                 confirm = inquirer.confirm(
                     message="Do you want to rebuild anyway?",
@@ -139,7 +145,7 @@ class BuildMenu(BaseMenu):
             print(f"\n{Colors.CYAN}Building...{Colors.RESET}\n")
 
             console = Console()
-            current_step = {"step": "", "percent": 0, "message": ""}
+            current_step = {"step": "", "state": "", "message": ""}
             log_lines: List[str] = []
 
             def make_progress_panel():
@@ -150,7 +156,7 @@ class BuildMenu(BaseMenu):
 
                 step_name = current_step["step"].replace("_", " ").title()
                 table.add_row("Step:", step_name or "Starting...")
-                table.add_row("Progress:", f"{current_step['percent']}%")
+                table.add_row("State:", current_step["state"] or "starting")
                 table.add_row("Status:", current_step["message"] or "...")
 
                 if log_lines:
@@ -164,36 +170,19 @@ class BuildMenu(BaseMenu):
 
             def progress_callback(data):
                 """Handle progress updates."""
-                msg_type = data.get("type", "")
-
-                if msg_type == "start":
-                    current_step["step"] = data.get("step", "")
-                    current_step["percent"] = 0
-                    current_step["message"] = data.get("message", "")
-                elif msg_type == "progress":
-                    current_step["step"] = data.get("step", current_step["step"])
-                    current_step["percent"] = data.get("percent", current_step["percent"])
-                    current_step["message"] = data.get("message", current_step["message"])
-                elif msg_type == "step_complete":
-                    current_step["percent"] = 100
-                    current_step["message"] = data.get("message", "Completed")
-                elif msg_type == "log":
-                    line = data.get("line", "")
+                current_step["step"] = data.get("current_step", "") or ""
+                current_step["state"] = data.get("state", "") or ""
+                current_step["message"] = data.get("message", "") or ""
+                log_lines.clear()
+                for entry in (data.get("logs") or [])[-3:]:
+                    line = entry.get("line") or entry.get("message") or ""
                     if line:
                         log_lines.append(line)
-                        # Keep only last 100 lines
-                        if len(log_lines) > 100:
-                            log_lines.pop(0)
-                elif msg_type == "complete":
-                    current_step["percent"] = 100
-                    current_step["message"] = "Build completed!"
-                elif msg_type == "error":
-                    current_step["message"] = f"Error: {data.get('error', 'Unknown')}"
 
             # Run build with live progress display
             from rich.live import Live
 
-            result = {"type": "error", "error": "Unknown"}
+            result = {"state": "failed", "last_error": "Unknown"}
 
             with Live(make_progress_panel(), refresh_per_second=2, console=console) as live:
                 def live_progress_callback(data):
@@ -207,14 +196,14 @@ class BuildMenu(BaseMenu):
                 )
 
             # Show result
-            if result.get("type") == "complete":
+            if result.get("state") == "completed":
                 print(f"\n{Colors.success('Build completed!')}")
-                if result.get("output_path"):
-                    print(f"  Output: {result['output_path']}")
+                if (result.get("install") or {}).get("pytorch_path"):
+                    print(f"  Output: {(result.get('install') or {})['pytorch_path']}")
             else:
                 print(f"\n{Colors.error('Build failed!')}")
-                if result.get("error"):
-                    print(f"  Error: {result['error']}")
+                if result.get("last_error"):
+                    print(f"  Error: {result['last_error']}")
 
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")
@@ -228,15 +217,16 @@ class BuildMenu(BaseMenu):
 
         try:
             status = self.api.get_bundled_torch_status()
+            install = status.get("install") or {}
 
-            if not status.get("exists"):
+            if not install.get("exists"):
                 print(f"{Colors.muted('bundled-torch does not exist. Nothing to clean.')}")
                 input(f"\n{Colors.muted('Press Enter to continue...')}")
                 return MenuResult.CONTINUE
 
             print(f"{Colors.warning('Warning:')} This will delete all bundled-torch files.")
-            if status.get("pytorch_path"):
-                print(f"  Path: {status['pytorch_path']}")
+            if install.get("pytorch_path"):
+                print(f"  Path: {install['pytorch_path']}")
 
             confirm = inquirer.confirm(
                 message="Are you sure?",
@@ -252,22 +242,18 @@ class BuildMenu(BaseMenu):
             print(f"\n{Colors.CYAN}Cleaning...{Colors.RESET}")
 
             def progress_callback(data):
-                msg_type = data.get("type", "")
-                if msg_type == "progress":
-                    print(f"  {data.get('message', '...')}")
-                elif msg_type == "complete":
-                    print(f"  {Colors.success('Done!')}")
-                elif msg_type == "error":
-                    print(f"  {Colors.error('Error:')} {data.get('error', 'Unknown')}")
+                message = data.get("message") or ""
+                if message:
+                    print(f"  {message}")
 
             result = self.api.clean_bundled_torch_ws(progress_callback=progress_callback)
 
-            if result.get("type") == "complete":
+            if result.get("state") == "completed":
                 print(f"\n{Colors.success('Cleaned successfully!')}")
             else:
                 print(f"\n{Colors.error('Clean failed!')}")
-                if result.get("error"):
-                    print(f"  Error: {result['error']}")
+                if result.get("last_error"):
+                    print(f"  Error: {result['last_error']}")
 
         except Exception as e:
             print(f"{Colors.error('Error:')} {e}")

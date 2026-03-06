@@ -44,6 +44,11 @@ from interfaces_backend.services.system_status_monitor import (
     SYSTEM_STATUS_TOPIC,
     get_system_status_monitor,
 )
+from interfaces_backend.services.bundled_torch_build_service import (
+    BUNDLED_TORCH_KEY,
+    BUNDLED_TORCH_TOPIC,
+    get_bundled_torch_build_service,
+)
 from interfaces_backend.utils.sse import sse_queue_response
 from percus_ai.db import get_current_user_id
 
@@ -191,6 +196,21 @@ async def stream_system_status(request: Request):
     bus = get_realtime_event_bus()
     subscription = bus.subscribe(SYSTEM_STATUS_TOPIC, SYSTEM_STATUS_KEY)
     await monitor.publish_snapshot()
+    return sse_queue_response(
+        request,
+        subscription.queue,
+        on_close=subscription.close,
+    )
+
+
+@router.get("/system/bundled-torch")
+async def stream_bundled_torch_status(request: Request):
+    _require_user_id()
+    service = get_bundled_torch_build_service()
+    await service.refresh_snapshot()
+    bus = get_realtime_event_bus()
+    subscription = bus.subscribe(BUNDLED_TORCH_TOPIC, BUNDLED_TORCH_KEY)
+    await service.publish_snapshot()
     return sse_queue_response(
         request,
         subscription.queue,

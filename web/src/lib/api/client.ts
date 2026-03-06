@@ -1,4 +1,5 @@
 import { getBackendUrl } from '$lib/config';
+import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
 
 class ApiError extends Error {
   status: number;
@@ -584,7 +585,21 @@ export const api = {
     resources: () => fetchApi('/api/system/resources'),
     logs: () => fetchApi('/api/system/logs'),
     info: () => fetchApi('/api/system/info'),
-    gpu: () => fetchApi('/api/system/gpu')
+    gpu: () => fetchApi('/api/system/gpu'),
+    bundledTorchStatus: () => fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/status'),
+    buildBundledTorch: (payload: {
+      pytorch_version?: string | null;
+      torchvision_version?: string | null;
+      force?: boolean;
+    }) =>
+      fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/build', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    cleanBundledTorch: () =>
+      fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/clean', {
+        method: 'POST'
+      })
   },
   config: {
     get: () => fetchApi('/api/config')
