@@ -45,7 +45,7 @@
   });
 </script>
 
-<section class="grid gap-6 xl:grid-cols-2">
+<section class="space-y-6">
   <div class="card p-6">
     <div class="flex items-start justify-between gap-4">
       <div>

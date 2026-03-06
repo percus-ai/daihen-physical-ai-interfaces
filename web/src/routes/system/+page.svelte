@@ -6,7 +6,6 @@
   import { Tabs } from 'bits-ui';
 
   import { api } from '$lib/api/client';
-  import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import BundledTorchTab from '$lib/components/system/BundledTorchTab.svelte';
   import ProfileTab from '$lib/components/system/ProfileTab.svelte';
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
@@ -288,8 +287,6 @@
     </div>
   </div>
 </section>
-
-<OperateStatusCards title="概要" snapshot={systemStatusSnapshot} network={networkStatus} />
 
 <section class="card p-6">
   <Tabs.Root bind:value={activeTab}>
