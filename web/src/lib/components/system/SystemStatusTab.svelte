@@ -84,6 +84,33 @@
 
     <div class="mt-5 grid gap-4 md:grid-cols-2">
       <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+        <p class="label">VLAbor / ROS2</p>
+        <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(vlabor?.level ?? vlabor?.state)}</p>
+        <div class="mt-3 space-y-1 text-sm text-slate-600">
+          <p>vlabor state: {vlabor?.state ?? '-'}</p>
+          <p>ros2 state: {ros2?.state ?? '-'}</p>
+          <p>required nodes: {String(ros2?.required_nodes_ok ?? '-')}</p>
+          <p>required topics: {String(ros2?.required_topics_ok ?? '-')}</p>
+          <p>containers: {(vlabor?.containers ?? []).map((item) => `${item.name}:${item.state}`).join(', ') || '-'}</p>
+          <p>missing nodes: {(ros2?.missing_nodes ?? []).join(', ') || '-'}</p>
+          <p>missing topics: {(ros2?.missing_topics ?? []).join(', ') || '-'}</p>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+        <p class="label">Network / GPU</p>
+        <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(network?.status ?? snapshot?.gpu?.level)}</p>
+        <div class="mt-3 space-y-1 text-sm text-slate-600">
+          <p>ZMQ: {network?.details?.zmq?.status ?? '-'}</p>
+          <p>Zenoh: {network?.details?.zenoh?.status ?? '-'}</p>
+          <p>rosbridge: {network?.details?.rosbridge?.status ?? '-'}</p>
+          <p>gpu: {snapshot?.gpu?.gpus?.[0]?.name ?? '-'}</p>
+          <p>cuda: {snapshot?.gpu?.cuda_version ?? '-'}</p>
+          <p>driver: {snapshot?.gpu?.driver_version ?? '-'}</p>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
         <p class="label">Recorder</p>
         <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(recorder?.level ?? recorder?.state)}</p>
         <div class="mt-3 space-y-1 text-sm text-slate-600">
@@ -111,33 +138,6 @@
           <p>error: {inference?.last_error ?? '-'}</p>
         </div>
       </div>
-
-      <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-        <p class="label">VLAbor / ROS2</p>
-        <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(vlabor?.level ?? vlabor?.state)}</p>
-        <div class="mt-3 space-y-1 text-sm text-slate-600">
-          <p>vlabor state: {vlabor?.state ?? '-'}</p>
-          <p>ros2 state: {ros2?.state ?? '-'}</p>
-          <p>required nodes: {String(ros2?.required_nodes_ok ?? '-')}</p>
-          <p>required topics: {String(ros2?.required_topics_ok ?? '-')}</p>
-          <p>containers: {(vlabor?.containers ?? []).map((item) => `${item.name}:${item.state}`).join(', ') || '-'}</p>
-          <p>missing nodes: {(ros2?.missing_nodes ?? []).join(', ') || '-'}</p>
-          <p>missing topics: {(ros2?.missing_topics ?? []).join(', ') || '-'}</p>
-        </div>
-      </div>
-
-      <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-        <p class="label">Network / GPU</p>
-        <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(network?.status ?? snapshot?.gpu?.level)}</p>
-        <div class="mt-3 space-y-1 text-sm text-slate-600">
-          <p>ZMQ: {network?.details?.zmq?.status ?? '-'}</p>
-          <p>Zenoh: {network?.details?.zenoh?.status ?? '-'}</p>
-          <p>rosbridge: {network?.details?.rosbridge?.status ?? '-'}</p>
-          <p>gpu: {snapshot?.gpu?.gpus?.[0]?.name ?? '-'}</p>
-          <p>cuda: {snapshot?.gpu?.cuda_version ?? '-'}</p>
-          <p>driver: {snapshot?.gpu?.driver_version ?? '-'}</p>
-        </div>
-      </div>
     </div>
 
     {#if alerts.length}
@@ -158,7 +158,7 @@
     <div class="flex items-center justify-between gap-4">
       <div>
         <p class="section-title">GPU</p>
-        <h2 class="mt-2 text-xl font-semibold text-slate-900">GPU詳細</h2>
+        <h2 class="mt-2 text-xl font-semibold text-slate-900">一覧</h2>
       </div>
       <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(snapshot?.gpu?.level)}`}>
         {renderStatusLabel(snapshot?.gpu?.level)}
