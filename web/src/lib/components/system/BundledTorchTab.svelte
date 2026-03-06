@@ -31,6 +31,43 @@
   const bundledSupported = $derived(Boolean(snapshot?.platform?.supported));
   const bundledRequired = $derived(Boolean(snapshot?.platform?.pytorch_build_required));
   const latestBundledLogs = $derived(bundledLogs.slice(-120));
+  const latestPercentEvent = $derived.by(() =>
+    [...bundledLogs].reverse().find((entry) => typeof entry.percent === 'number')
+  );
+  const estimatedStepPercent = (step?: string | null) => {
+    switch (step) {
+      case 'setup':
+        return 8;
+      case 'clean':
+        return 12;
+      case 'clone_pytorch':
+        return 20;
+      case 'clone_torchvision':
+        return 32;
+      case 'build_pytorch':
+        return 72;
+      case 'build_torchvision':
+        return 92;
+      case 'complete':
+        return 100;
+      default:
+        return 0;
+    }
+  };
+  const progressPercent = $derived.by(() => {
+    if (!snapshot) return 0;
+    if (snapshot.state === 'completed') return 100;
+    if (typeof latestPercentEvent?.percent === 'number') return latestPercentEvent.percent;
+    return estimatedStepPercent(snapshot.current_step);
+  });
+  const progressLabel = $derived.by(() => {
+    if (!snapshot) return 'progress unavailable';
+    if (snapshot.state === 'completed') return '100%';
+    if (snapshot.state === 'failed') return 'failed';
+    if (!bundledBusy) return 'standby';
+    if (typeof latestPercentEvent?.percent === 'number') return `${latestPercentEvent.percent}%`;
+    return snapshot.current_step ? `phase: ${snapshot.current_step}` : 'starting';
+  });
   const bundledTorchHint = $derived.by(() => {
     if (!snapshot) return '状態取得中です。';
     if (bundledRequired) return 'AGX Thor / Jetson 系では bundled-torch が実行ランタイムに使われます。';
@@ -147,6 +184,24 @@
             <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(snapshot?.state)}`}>
               {snapshot?.state ?? 'unknown'}
             </span>
+          </div>
+          <div class="mt-4">
+            <div class="flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+              <span>Progress</span>
+              <span>{progressLabel}</span>
+            </div>
+            <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
+              <div
+                class={`h-full rounded-full transition-[width] duration-500 ${
+                  snapshot?.state === 'failed'
+                    ? 'bg-rose-500'
+                    : snapshot?.state === 'completed'
+                      ? 'bg-emerald-500'
+                      : 'bg-sky-500'
+                }`}
+                style={`width: ${Math.max(0, Math.min(progressPercent, 100))}%;`}
+              ></div>
+            </div>
           </div>
           <div class="mt-4 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
             <p>step: {snapshot?.current_step ?? '-'}</p>
