@@ -130,7 +130,7 @@
       </div>
     {/if}
 
-    <div class="grid gap-4 lg:grid-cols-2">
+    <div class="space-y-4">
       {#if runtimeEnvs.length}
         {#each runtimeEnvs as env}
           {@const group = runtimeGroupMap.get(env.env_name)}
