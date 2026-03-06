@@ -1,6 +1,6 @@
 <script lang="ts">
   import { formatDate } from '$lib/format';
-  import type { HealthLevel, RuntimeGroupStatus, SystemStatusSnapshot } from '$lib/types/systemStatus';
+  import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
 
   type OperateNetworkStatus = {
     status?: string;
@@ -25,7 +25,6 @@
   const inference = $derived(snapshot?.services?.inference ?? null);
   const vlabor = $derived(snapshot?.services?.vlabor ?? null);
   const ros2 = $derived(snapshot?.services?.ros2 ?? null);
-  const runtimeGroups = $derived(snapshot?.runtime_groups ?? []);
   const gpuDevices = $derived(snapshot?.gpu?.gpus ?? []);
 
   const renderStatusLabel = (value?: string) => {
@@ -70,12 +69,6 @@
     }
   };
 
-  const renderRuntimeSummary = (group: RuntimeGroupStatus) => {
-    const torchVersion = group.torch?.version ?? 'torch unknown';
-    const cudaVersion = group.torch?.cuda_version ?? 'cuda unknown';
-    const source = group.torch?.source ?? 'unknown';
-    return `${torchVersion} / ${cudaVersion} / ${source}`;
-  };
 </script>
 
 <section class="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
@@ -195,47 +188,5 @@
         <p class="text-sm text-slate-500">GPU 情報を取得できていません。</p>
       {/if}
     </div>
-  </div>
-</section>
-
-<section class="card p-6">
-  <div class="flex items-center justify-between gap-4">
-    <div>
-      <p class="section-title">Runtime</p>
-      <h2 class="mt-2 text-xl font-semibold text-slate-900">Torch Runtime Groups</h2>
-      <p class="mt-2 text-sm text-slate-600">実行 env を実測したランタイム構成です。</p>
-    </div>
-    <span class="chip">{runtimeGroups.length} groups</span>
-  </div>
-
-  <div class="mt-5 grid gap-4 lg:grid-cols-2">
-    {#if runtimeGroups.length}
-      {#each runtimeGroups as group}
-        <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <p class="text-base font-semibold text-slate-900">{group.env_name}</p>
-              <p class="mt-1 text-sm text-slate-600">{renderRuntimeSummary(group)}</p>
-            </div>
-            <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(group.level)}`}>
-              {renderStatusLabel(group.level)}
-            </span>
-          </div>
-          <div class="mt-4 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
-            <p>policies: {(group.policies ?? []).join(', ') || '-'}</p>
-            <p>torchvision: {group.details?.torchvision_version ?? '-'}</p>
-            <p>torchaudio: {group.details?.torchaudio_version ?? '-'}</p>
-            <p>bundled: {group.details?.bundled_torch_present ? 'yes' : 'no'}</p>
-            <p>capability: {group.torch?.gpu_capability ?? '-'}</p>
-            <p>compatible: {group.torch?.cuda_compatible === true ? 'yes' : group.torch?.cuda_compatible === false ? 'no' : '-'}</p>
-          </div>
-          {#if group.details?.error}
-            <p class="mt-3 text-sm text-rose-600">{group.details.error}</p>
-          {/if}
-        </div>
-      {/each}
-    {:else}
-      <p class="text-sm text-slate-500">runtime 情報を取得できていません。</p>
-    {/if}
   </div>
 </section>

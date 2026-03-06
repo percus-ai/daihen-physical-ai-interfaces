@@ -6,8 +6,8 @@
   import { Tabs } from 'bits-ui';
 
   import { api } from '$lib/api/client';
-  import BundledTorchTab from '$lib/components/system/BundledTorchTab.svelte';
   import ProfileTab from '$lib/components/system/ProfileTab.svelte';
+  import RuntimeTab from '$lib/components/system/RuntimeTab.svelte';
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
   import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
   import { connectBundledTorchStream } from '$lib/realtime/bundledTorch';
@@ -17,7 +17,7 @@
   import type { SystemSettings, UserSettings } from '$lib/types/settings';
   import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
 
-  type SystemTab = 'status' | 'profile' | 'bundled-torch' | 'settings';
+  type SystemTab = 'status' | 'profile' | 'runtime' | 'settings';
 
   type OperateNetworkStatus = {
     status?: string;
@@ -39,7 +39,7 @@
     network?: OperateNetworkStatus;
   };
 
-  const TABS: SystemTab[] = ['status', 'profile', 'bundled-torch', 'settings'];
+  const TABS: SystemTab[] = ['status', 'profile', 'runtime', 'settings'];
 
   const normalizeTab = (value: string | null | undefined): SystemTab => {
     if (value && TABS.includes(value as SystemTab)) {
@@ -298,8 +298,8 @@
         <Tabs.Trigger value="profile" class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
           Profile
         </Tabs.Trigger>
-        <Tabs.Trigger value="bundled-torch" class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
-          Bundled Torch
+        <Tabs.Trigger value="runtime" class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+          Runtime
         </Tabs.Trigger>
         <Tabs.Trigger value="settings" class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
           Settings
@@ -315,12 +315,13 @@
       <ProfileTab />
     </Tabs.Content>
 
-    <Tabs.Content value="bundled-torch" class="mt-6 space-y-6">
-      <BundledTorchTab
-        snapshot={bundledTorchSnapshot}
+    <Tabs.Content value="runtime" class="mt-6 space-y-6">
+      <RuntimeTab
+        snapshot={systemStatusSnapshot}
+        bundledTorchSnapshot={bundledTorchSnapshot}
         systemSettings={systemSettings}
-        actionPending={bundledTorchActionPending}
-        actionError={bundledTorchActionError}
+        bundledTorchActionPending={bundledTorchActionPending}
+        bundledTorchActionError={bundledTorchActionError}
         onBuild={triggerBuild}
         onClean={triggerClean}
       />
