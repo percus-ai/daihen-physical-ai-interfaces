@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { toStore } from 'svelte/store';
   import { createQuery } from '@tanstack/svelte-query';
+
   import { api } from '$lib/api/client';
   import { getBackendUrl } from '$lib/config';
   import { connectStream } from '$lib/realtime/stream';
@@ -150,7 +151,7 @@
             operationError = String(data.message ?? '処理に失敗しました。');
           }
         } catch {
-          // ignore parse errors
+          return;
         }
       };
 
@@ -223,16 +224,6 @@
     restartWs?.close();
   });
 </script>
-
-<section class="card-strong p-8">
-  <p class="section-title">Profile</p>
-  <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
-    <div>
-      <h1 class="text-3xl font-semibold text-slate-900">プロファイル</h1>
-      <p class="mt-2 text-sm text-slate-600">VLAborプロファイルの選択と状態確認。</p>
-    </div>
-  </div>
-</section>
 
 <section class="card p-6">
   <div class="flex flex-wrap items-center justify-between gap-4">

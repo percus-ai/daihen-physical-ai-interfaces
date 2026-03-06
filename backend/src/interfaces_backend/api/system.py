@@ -12,6 +12,7 @@ from fastapi import APIRouter, Query
 import psutil
 
 from interfaces_backend.models.build import BundledTorchBuildRequest, BundledTorchBuildSnapshot
+from interfaces_backend.models.settings import SystemSettingsModel, SystemSettingsUpdateRequest
 from interfaces_backend.utils.torch_info import get_torch_info
 from interfaces_backend.models.system import (
     ServiceStatus,
@@ -26,6 +27,7 @@ from interfaces_backend.models.system import (
     GpuResponse,
 )
 from interfaces_backend.services.bundled_torch_build_service import get_bundled_torch_build_service
+from interfaces_backend.services.settings_service import get_system_settings_service
 from percus_ai.storage import get_datasets_dir, get_features_path, get_storage_root
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -365,3 +367,17 @@ async def start_bundled_torch_build(
 async def clean_bundled_torch():
     service = get_bundled_torch_build_service()
     return await service.start_clean()
+
+
+@router.get("/settings", response_model=SystemSettingsModel)
+async def get_system_settings():
+    return get_system_settings_service().get_settings()
+
+
+@router.put("/settings", response_model=SystemSettingsModel)
+async def update_system_settings(request: SystemSettingsUpdateRequest):
+    bundled = request.bundled_torch
+    return get_system_settings_service().update_settings(
+        pytorch_version=bundled.pytorch_version if bundled else None,
+        torchvision_version=bundled.torchvision_version if bundled else None,
+    )

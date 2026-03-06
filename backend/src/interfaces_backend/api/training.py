@@ -86,6 +86,7 @@ from percus_ai.db import (
 )
 from percus_ai.training.ssh.client import SSHConnection
 from percus_ai.training.ssh.executor import RemoteExecutor, run_remote_command
+from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -625,6 +626,7 @@ def _generate_env_file(
     job_id: str,
     instance_id: str,
     policy_type: Optional[str],
+    user_id: Optional[str] = None,
     auto_delete: bool = True,
     supabase_access_token: Optional[str] = None,
     supabase_refresh_token: Optional[str] = None,
@@ -635,7 +637,7 @@ def _generate_env_file(
     env_fallback = _load_env_file_vars()
 
     # HuggingFace token
-    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    hf_token = resolve_huggingface_token_for_user(user_id) if user_id else None
     if hf_token:
         lines.append(f"HF_TOKEN={hf_token}")
 
@@ -4755,6 +4757,7 @@ def _create_job_with_progress(
                     job_id,
                     instance_id,
                     policy.type if policy else None,
+                    user_id=supabase_user_id,
                     supabase_access_token=supabase_access_token,
                     supabase_refresh_token=supabase_refresh_token,
                     supabase_user_id=supabase_user_id,
@@ -5206,6 +5209,7 @@ async def _deploy_and_start_training(
                     job_id,
                     instance_id,
                     request.policy.type if request.policy else None,
+                    user_id=supabase_user_id,
                     supabase_access_token=supabase_access_token,
                     supabase_refresh_token=supabase_refresh_token,
                     supabase_user_id=supabase_user_id,

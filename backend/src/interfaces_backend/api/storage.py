@@ -59,6 +59,7 @@ from interfaces_backend.services.dataset_merge_jobs import get_dataset_merge_job
 from interfaces_backend.services.dataset_sync_jobs import get_dataset_sync_jobs_service
 from interfaces_backend.services.model_sync_jobs import get_model_sync_jobs_service
 from interfaces_backend.services.session_manager import require_user_id
+from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
 from interfaces_backend.services.vlabor_profiles import resolve_profile_spec
 from percus_ai.db import (
     get_supabase_async_client,
@@ -68,7 +69,7 @@ from percus_ai.db import (
     upsert_with_owner,
 )
 from percus_ai.storage.hash import compute_directory_hash, compute_directory_size
-from percus_ai.storage.hub import download_model, ensure_hf_token, get_local_model_info, upload_model
+from percus_ai.storage.hub import download_model, get_local_model_info, upload_model
 from percus_ai.storage.naming import validate_dataset_name, generate_dataset_id
 from percus_ai.storage.paths import get_datasets_dir, get_models_dir
 from percus_ai.storage.r2_db_sync import R2DBSyncService
@@ -78,6 +79,14 @@ from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/storage", tags=["storage"])
 _executor = ThreadPoolExecutor(max_workers=1)
+
+
+def _require_hf_token_for_current_user() -> str:
+    user_id = require_user_id()
+    token = resolve_huggingface_token_for_user(user_id)
+    if not token:
+        raise HTTPException(status_code=400, detail="HF_TOKEN is required")
+    return token
 
 
 def _dataset_is_local(dataset_id: str) -> bool:
@@ -1367,8 +1376,7 @@ async def _import_dataset_from_huggingface(
     request: HuggingFaceDatasetImportRequest,
     progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> HuggingFaceTransferResponse:
-    if not ensure_hf_token():
-        raise HTTPException(status_code=400, detail="HF_TOKEN is required")
+    hf_token = _require_hf_token_for_current_user()
     dataset_id = request.dataset_id or generate_dataset_id()
     local_path = get_datasets_dir() / dataset_id
     if local_path.exists():
@@ -1389,6 +1397,7 @@ async def _import_dataset_from_huggingface(
         repo_type="dataset",
         local_dir=str(local_path),
         local_dir_use_symlinks=False,
+        token=hf_token,
     )
     if progress_callback:
         progress_callback({
@@ -1434,8 +1443,7 @@ async def _import_model_from_huggingface(
     request: HuggingFaceModelImportRequest,
     progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> HuggingFaceTransferResponse:
-    if not ensure_hf_token():
-        raise HTTPException(status_code=400, detail="HF_TOKEN is required")
+    hf_token = _require_hf_token_for_current_user()
     model_id = request.model_id or str(uuid.uuid4())
     local_path = get_models_dir() / model_id
     if local_path.exists():
@@ -1450,7 +1458,12 @@ async def _import_model_from_huggingface(
             "step": "hf_download",
             "message": f"Downloading {request.repo_id}",
         })
-    download_model(repo_id=request.repo_id, output_dir=local_path, force=request.force)
+    download_model(
+        repo_id=request.repo_id,
+        output_dir=local_path,
+        force=request.force,
+        token=hf_token,
+    )
     if progress_callback:
         progress_callback({
             "type": "step_complete",
@@ -1501,8 +1514,7 @@ async def _export_dataset_to_huggingface(
     request: HuggingFaceExportRequest,
     progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> HuggingFaceTransferResponse:
-    if not ensure_hf_token():
-        raise HTTPException(status_code=400, detail="HF_TOKEN is required")
+    hf_token = _require_hf_token_for_current_user()
     if progress_callback:
         progress_callback({
             "type": "start",
@@ -1530,7 +1542,7 @@ async def _export_dataset_to_huggingface(
             "step": "hf_upload",
             "message": f"Uploading to {request.repo_id}",
         })
-    api = HfApi()
+    api = HfApi(token=hf_token)
     api.create_repo(
         repo_id=request.repo_id,
         repo_type="dataset",
@@ -1543,6 +1555,7 @@ async def _export_dataset_to_huggingface(
         repo_id=request.repo_id,
         repo_type="dataset",
         commit_message=commit_message,
+        token=hf_token,
     )
     if progress_callback:
         progress_callback({
@@ -1564,8 +1577,7 @@ async def _export_model_to_huggingface(
     request: HuggingFaceExportRequest,
     progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> HuggingFaceTransferResponse:
-    if not ensure_hf_token():
-        raise HTTPException(status_code=400, detail="HF_TOKEN is required")
+    hf_token = _require_hf_token_for_current_user()
     if progress_callback:
         progress_callback({
             "type": "start",
@@ -1598,6 +1610,7 @@ async def _export_model_to_huggingface(
         repo_id=request.repo_id,
         private=request.private,
         commit_message=request.commit_message,
+        token=hf_token,
     )
     if progress_callback:
         progress_callback({

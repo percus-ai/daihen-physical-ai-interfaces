@@ -203,7 +203,7 @@
         {/each}
         <Button.Root
           class="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white"
-          href="/profile"
+          href="/system?tab=profile"
           aria-label="プロファイル"
         >
           <Gear size={20} class="text-slate-700" />

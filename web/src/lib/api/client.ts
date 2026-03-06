@@ -1,5 +1,6 @@
 import { getBackendUrl } from '$lib/config';
 import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
+import type { SystemSettings, UserSettings } from '$lib/types/settings';
 
 class ApiError extends Error {
   status: number;
@@ -599,6 +600,14 @@ export const api = {
     cleanBundledTorch: () =>
       fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/clean', {
         method: 'POST'
+      }),
+    settings: () => fetchApi<SystemSettings>('/api/system/settings'),
+    updateSettings: (payload: {
+      bundled_torch?: { pytorch_version: string; torchvision_version: string };
+    }) =>
+      fetchApi<SystemSettings>('/api/system/settings', {
+        method: 'PUT',
+        body: JSON.stringify(payload)
       })
   },
   config: {
@@ -606,7 +615,16 @@ export const api = {
   },
   user: {
     config: () => fetchApi('/api/user/config'),
-    devices: () => fetchApi('/api/user/devices')
+    devices: () => fetchApi('/api/user/devices'),
+    settings: () => fetchApi<UserSettings>('/api/user/settings'),
+    updateSettings: (payload: {
+      huggingface_token?: string | null;
+      clear_huggingface_token?: boolean;
+    }) =>
+      fetchApi<UserSettings>('/api/user/settings', {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      })
   },
   hardware: {
     status: () => fetchApi('/api/hardware'),

@@ -46,14 +46,7 @@ export const navItems = [
     label: 'システム',
     href: '/system',
     icon: '🖥️',
-    description: '詳細ステータスとbundled-torch'
-  },
-  {
-    id: 'profile',
-    label: 'プロファイル',
-    href: '/profile',
-    icon: '🔧',
-    description: 'VLAborプロファイルの選択と状態確認'
+    description: '監視・プロファイル・設定の管理ハブ'
   }
 ];
 
