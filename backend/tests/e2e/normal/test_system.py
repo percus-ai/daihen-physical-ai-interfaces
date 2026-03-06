@@ -29,6 +29,26 @@ def test_system_info(client):
     assert resp.status_code == 200
     payload = resp.json()
     assert "info" in payload
+
+
+def test_system_settings(client):
+    resp = client.get("/api/system/settings")
+    assert resp.status_code == 200
+    assert resp.json()["bundled_torch"]["pytorch_version"] == "v2.8.0"
+
+    resp = client.put(
+        "/api/system/settings",
+        json={
+            "bundled_torch": {
+                "pytorch_version": "v2.9.0",
+                "torchvision_version": "v0.24.0",
+            }
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["bundled_torch"]["pytorch_version"] == "v2.9.0"
+    assert payload["bundled_torch"]["torchvision_version"] == "v0.24.0"
     assert "python_version" in payload["info"]
 
 

@@ -91,6 +91,7 @@ from percus_ai.db import (
 )
 from percus_ai.training.ssh.client import SSHConnection
 from percus_ai.training.ssh.executor import RemoteExecutor, run_remote_command
+from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -636,6 +637,7 @@ def _generate_env_file(
     job_id: str,
     instance_id: str,
     policy_type: Optional[str],
+    user_id: Optional[str] = None,
     auto_delete: bool = True,
     supabase_access_token: Optional[str] = None,
     supabase_refresh_token: Optional[str] = None,
@@ -646,7 +648,7 @@ def _generate_env_file(
     env_fallback = _load_env_file_vars()
 
     # HuggingFace token
-    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    hf_token = resolve_huggingface_token_for_user(user_id) if user_id else None
     if hf_token:
         lines.append(f"HF_TOKEN={hf_token}")
 
@@ -4580,29 +4582,7 @@ def _create_instance(
     return instance.id
 
 
-def _create_job_with_progress(
-    request_data: dict,
-    emit_progress: Callable[[dict], None],
-    supabase_session: Optional[dict] = None,
-) -> dict:
-    """Create a training job with progress callbacks (delegates to percus_ai)."""
-    from percus_ai.training.orchestrator import create_job_with_progress
 
-    try:
-        return create_job_with_progress(
-            request_data=request_data,
-            emit_progress=emit_progress,
-            supabase_session=supabase_session or {},
-        )
-    except Exception as exc:
-        try:
-            emit_progress({"type": "error", "error": str(exc)})
-        except Exception:
-            pass
-        return {"success": False, "error": str(exc)}
-
-
-# --- Checkpoint API ---
 
 _checkpoint_index_manager = None
 

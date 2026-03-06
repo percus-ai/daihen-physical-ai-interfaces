@@ -1,59 +1,62 @@
-"""Build data models for bundled-torch building."""
+"""Bundled-torch state models."""
 
-from enum import Enum
-from typing import List, Optional
+from __future__ import annotations
+
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
-# --- Enums ---
+BundledTorchState = Literal["idle", "building", "cleaning", "completed", "failed"]
 
 
-class BuildStatus(str, Enum):
-    """Build status."""
-
-    PENDING = "pending"
-    CLONING = "cloning"
-    BUILDING = "building"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class BuildStep(str, Enum):
-    """Build step identifiers."""
-
-    CLONE_PYTORCH = "clone_pytorch"
-    CLONE_TORCHVISION = "clone_torchvision"
-    BUILD_PYTORCH = "build_pytorch"
-    BUILD_TORCHVISION = "build_torchvision"
+class BundledTorchPlatformInfo(BaseModel):
+    platform_name: str
+    is_jetson: bool = False
+    pytorch_build_required: bool = False
+    supported: bool = False
+    gpu_name: str | None = None
+    cuda_version: str | None = None
 
 
-# --- Request/Response Models ---
+class BundledTorchInstallStatus(BaseModel):
+    exists: bool = False
+    pytorch_version: str | None = None
+    torchvision_version: str | None = None
+    numpy_version: str | None = None
+    pytorch_path: str | None = None
+    torchvision_path: str | None = None
+    is_valid: bool = False
 
 
-class BundledTorchStatusResponse(BaseModel):
-    """Response for bundled-torch status check."""
-
-    exists: bool = Field(..., description="Whether bundled-torch exists")
-    pytorch_version: Optional[str] = Field(None, description="PyTorch version")
-    torchvision_version: Optional[str] = Field(None, description="torchvision version")
-    numpy_version: Optional[str] = Field(None, description="numpy version used for build")
-    pytorch_path: Optional[str] = Field(None, description="PyTorch source path")
-    torchvision_path: Optional[str] = Field(None, description="torchvision source path")
-    is_valid: bool = Field(False, description="Whether build is valid (has .so files)")
-    is_jetson: bool = Field(False, description="Whether running on Jetson")
+class BundledTorchLogEntry(BaseModel):
+    at: str
+    type: str
+    step: str | None = None
+    message: str | None = None
+    line: str | None = None
+    percent: int | None = None
 
 
-# --- WebSocket Message Models ---
+class BundledTorchBuildSnapshot(BaseModel):
+    platform: BundledTorchPlatformInfo
+    install: BundledTorchInstallStatus = Field(default_factory=BundledTorchInstallStatus)
+    state: BundledTorchState = "idle"
+    current_step: str | None = None
+    message: str | None = None
+    started_at: str | None = None
+    updated_at: str
+    finished_at: str | None = None
+    requested_pytorch_version: str | None = None
+    requested_torchvision_version: str | None = None
+    last_error: str | None = None
+    logs: list[BundledTorchLogEntry] = Field(default_factory=list)
+    can_build: bool = False
+    can_clean: bool = False
+    can_rebuild: bool = False
 
 
-class BuildProgressMessage(BaseModel):
-    """WebSocket progress message."""
-
-    type: str = Field(..., description="Message type: start|progress|step_complete|log|complete|error")
-    step: Optional[str] = Field(None, description="Current build step")
-    percent: Optional[int] = Field(None, description="Progress percentage (0-100)")
-    message: Optional[str] = Field(None, description="Human-readable message")
-    line: Optional[str] = Field(None, description="Log line (for type=log)")
-    output_path: Optional[str] = Field(None, description="Output path (for type=complete)")
-    error: Optional[str] = Field(None, description="Error message (for type=error)")
+class BundledTorchBuildRequest(BaseModel):
+    pytorch_version: str | None = None
+    torchvision_version: str | None = None
+    force: bool = False

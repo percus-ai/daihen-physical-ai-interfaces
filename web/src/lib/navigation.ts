@@ -42,11 +42,11 @@ export const navItems = [
     description: 'データセット・モデル・アーカイブ'
   },
   {
-    id: 'profile',
-    label: 'プロファイル',
-    href: '/profile',
-    icon: '🔧',
-    description: 'VLAborプロファイルの選択と状態確認'
+    id: 'system',
+    label: 'システム',
+    href: '/system',
+    icon: '🛰️',
+    description: '監視・プロファイル・設定の管理ハブ'
   }
 ];
 

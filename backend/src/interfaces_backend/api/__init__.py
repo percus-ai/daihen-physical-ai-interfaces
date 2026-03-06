@@ -2,7 +2,6 @@
 
 from interfaces_backend.api.analytics import router as analytics_router
 from interfaces_backend.api.auth import router as auth_router
-from interfaces_backend.api.build import router as build_router
 from interfaces_backend.api.calibration import router as calibration_router
 from interfaces_backend.api.config import router as config_router
 from interfaces_backend.api.experiments import router as experiments_router
@@ -24,7 +23,6 @@ from interfaces_backend.api.webui_blueprints import router as webui_blueprints_r
 __all__ = [
     "analytics_router",
     "auth_router",
-    "build_router",
     "calibration_router",
     "config_router",
     "experiments_router",

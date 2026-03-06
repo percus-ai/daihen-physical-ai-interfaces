@@ -9,8 +9,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +35,22 @@ _SO101_DEFAULT_JOINT_SUFFIXES = [
     "wrist_roll",
     "gripper",
 ]
+_SHARE_REF_PATTERN = re.compile(r"\$\{share:([^}]+)\}")
+_INCLUDE_PUBLISHER_RESOLVER_KEYS = {
+    ("fv_camera", "fv_camera_launch.py"),
+    ("vlabor_launch", "fv_camera_wrapper.launch.py"),
+    ("fv_realsense", "fv_realsense_launch.py"),
+    ("unity_robot_control", "vr_dual_arm_teleop_direct.launch.py"),
+}
+_IGNORED_INCLUDE_KEYS = {
+    ("fluent_vision_system", "run.py"),
+    ("foxglove_bridge", "foxglove_bridge_launch.xml"),
+    ("piper_description", "display_urdf_follow.launch.py"),
+    ("ros_gz_sim", "gz_sim.launch.py"),
+    ("so101_description", "display.launch.py"),
+    ("so101_description", "display_robot.launch.py"),
+    ("so101_description", "rsp.launch.py"),
+}
 
 
 @dataclass(frozen=True)
@@ -42,6 +60,25 @@ class VlaborProfileSpec:
     snapshot: dict[str, Any]
     source_path: str
     updated_at: Optional[str]
+
+
+@dataclass(frozen=True)
+class ProfileHealthPublisherSpec:
+    node: str
+    publishes: tuple[str, ...] = ()
+    publishes_any: tuple[str, ...] = ()
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class ProfileHealthContract:
+    profile_name: str
+    required_topics: tuple[str, ...]
+    optional_topics: tuple[str, ...]
+    required_camera_topics: tuple[str, ...]
+    required_robot_topics: tuple[str, ...]
+    required_publishers: tuple[ProfileHealthPublisherSpec, ...]
+    optional_publishers: tuple[ProfileHealthPublisherSpec, ...]
 
 
 def _now_iso() -> str:
@@ -119,6 +156,37 @@ def _resolve_defaults_path() -> Optional[Path]:
         if candidate.is_file():
             return candidate
     return None
+
+
+@lru_cache(maxsize=64)
+def _resolve_package_share_dir(package_name: str) -> Optional[Path]:
+    normalized = str(package_name or "").strip()
+    if not normalized:
+        return None
+    search_roots = [
+        get_project_root() / "ros2_ws" / "src",
+        Path.home() / "ros2_ws" / "src",
+    ]
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        for package_xml in root.rglob("package.xml"):
+            package_dir = package_xml.parent
+            if package_dir.name == normalized:
+                return package_dir
+    return None
+
+
+def _resolve_share_references(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or "${share:" not in text:
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        package_dir = _resolve_package_share_dir(match.group(1))
+        return str(package_dir) if package_dir else match.group(0)
+
+    return _SHARE_REF_PATTERN.sub(replace, text)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -553,6 +621,256 @@ def _is_absolute_ros_topic(topic: str) -> bool:
     return bool(topic) and topic.startswith("/")
 
 
+def _normalize_node_name(name: object) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    if not text.startswith("/"):
+        text = f"/{text}"
+    return text.rstrip("/") or "/"
+
+
+def _compose_node_name(namespace: object, name: object) -> str:
+    namespace_text = str(namespace or "").strip().strip("/")
+    name_text = str(name or "").strip().strip("/")
+    if not name_text:
+        return ""
+    if namespace_text:
+        return f"/{namespace_text}/{name_text}"
+    return f"/{name_text}"
+
+
+def _extract_action_topic_values(value: object, sink: list[str], settings: dict[str, Any]) -> None:
+    if isinstance(value, dict):
+        for nested in value.values():
+            _extract_action_topic_values(nested, sink, settings)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _extract_action_topic_values(nested, sink, settings)
+        return
+    topic = _resolved_topic(value, settings)
+    if _is_absolute_ros_topic(topic):
+        _append_unique(sink, topic)
+
+
+def _enabled_actions(snapshot: dict[str, Any], settings: dict[str, Any]) -> list[dict[str, Any]]:
+    profile = snapshot.get("profile")
+    if not isinstance(profile, dict):
+        return []
+    actions = profile.get("actions")
+    if not isinstance(actions, list):
+        return []
+    enabled_actions: list[dict[str, Any]] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        enabled = _as_bool(_render_setting(action.get("enabled", True), settings))
+        if enabled:
+            enabled_actions.append(action)
+    return enabled_actions
+
+
+def _action_node_name(action: dict[str, Any], settings: dict[str, Any]) -> str:
+    action_type = str(action.get("type") or "").strip()
+    if action_type == "node":
+        namespace = _render_setting(action.get("namespace"), settings)
+        name = _render_setting(action.get("name"), settings)
+        return _compose_node_name(namespace, name)
+    if action_type == "include":
+        args = action.get("args")
+        if isinstance(args, dict):
+            return _normalize_node_name(_render_setting(args.get("node_name"), settings))
+    return ""
+
+
+def _action_published_topics(action: dict[str, Any], settings: dict[str, Any]) -> list[str]:
+    topics: list[str] = []
+    for key in ("parameters", "remappings"):
+        value = action.get(key)
+        _extract_action_topic_values(value, topics, settings)
+    return topics
+
+
+def _append_publisher_spec(
+    sink: list[ProfileHealthPublisherSpec],
+    *,
+    node: object,
+    publishes: list[str] | tuple[str, ...] | None = None,
+    publishes_any: list[str] | tuple[str, ...] | None = None,
+    required: bool = True,
+) -> None:
+    node_name = _normalize_node_name(node)
+    exact = tuple(dict.fromkeys(str(topic).strip() for topic in (publishes or []) if str(topic).strip()))
+    any_of = tuple(
+        dict.fromkeys(str(topic).strip() for topic in (publishes_any or []) if str(topic).strip())
+    )
+    if not node_name:
+        return
+    spec = ProfileHealthPublisherSpec(
+        node=node_name,
+        publishes=exact,
+        publishes_any=any_of,
+        required=required,
+    )
+    if spec not in sink:
+        sink.append(spec)
+
+
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_yaml_file(path: Path) -> dict[str, Any]:
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resolve_config_path(raw_value: object, settings: dict[str, Any]) -> Optional[Path]:
+    rendered = _resolve_share_references(_render_setting(raw_value, settings))
+    if not rendered:
+        return None
+    path = Path(rendered).expanduser()
+    return path if path.is_file() else None
+
+
+def _manifest_default_parameters(package_name: str) -> dict[str, Any]:
+    package_dir = _resolve_package_share_dir(package_name)
+    if not package_dir:
+        return {}
+    manifest_path = package_dir / "config" / "node_manifest.yaml"
+    if not manifest_path.is_file():
+        return {}
+    payload = _load_yaml_file(manifest_path)
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return {}
+    first = nodes[0]
+    if not isinstance(first, dict):
+        return {}
+    defaults = first.get("default_parameters")
+    return dict(defaults) if isinstance(defaults, dict) else {}
+
+
+def _config_parameters(config_path: Path, node_name: str) -> dict[str, Any]:
+    payload = _load_yaml_file(config_path)
+    candidates = [
+        node_name,
+        _normalize_node_name(node_name),
+        "/**",
+        "**",
+    ]
+    for key in candidates:
+        entry = payload.get(key)
+        if isinstance(entry, dict):
+            params = entry.get("ros__parameters")
+            if isinstance(params, dict):
+                return dict(params)
+    if len(payload) == 1:
+        only = next(iter(payload.values()))
+        if isinstance(only, dict):
+            params = only.get("ros__parameters")
+            if isinstance(params, dict):
+                return dict(params)
+    return {}
+
+
+def _node_topics_from_parameters(parameters: dict[str, Any]) -> list[str]:
+    topics = parameters.get("topics")
+    if not isinstance(topics, dict):
+        return []
+    results: list[str] = []
+    for value in topics.values():
+        topic = str(value or "").strip()
+        if not topic:
+            continue
+        results.append(topic)
+    return results
+
+
+def _qualify_private_topic(node_name: str, topic: str) -> str:
+    text = str(topic or "").strip()
+    if not text:
+        return ""
+    if text.startswith("/"):
+        return text
+    return f"{_normalize_node_name(node_name)}/{text.lstrip('/')}"
+
+
+def _resolve_include_publishers(
+    action: dict[str, Any],
+    settings: dict[str, Any],
+) -> list[ProfileHealthPublisherSpec]:
+    package = str(action.get("package") or "").strip()
+    launch_name = str(action.get("launch") or "").strip()
+    args = action.get("args")
+    if not isinstance(args, dict):
+        return []
+
+    if (package, launch_name) == ("unity_robot_control", "vr_dual_arm_teleop_direct.launch.py"):
+        return [
+            ProfileHealthPublisherSpec(
+                node="/follower_left/so101_control_node",
+                publishes=("/follower_left/joint_states_single",),
+            ),
+            ProfileHealthPublisherSpec(
+                node="/follower_right/so101_control_node",
+                publishes=("/follower_right/joint_states_single",),
+            ),
+        ]
+
+    node_name = _render_setting(args.get("node_name"), settings)
+    normalized_node_name = _normalize_node_name(node_name)
+    if not normalized_node_name:
+        return []
+
+    manifest_package: str | None = None
+    if (package, launch_name) in {
+        ("fv_camera", "fv_camera_launch.py"),
+        ("vlabor_launch", "fv_camera_wrapper.launch.py"),
+    }:
+        manifest_package = "fv_camera"
+    elif (package, launch_name) == ("fv_realsense", "fv_realsense_launch.py"):
+        manifest_package = "fv_realsense"
+
+    if not manifest_package:
+        return []
+
+    parameters = _manifest_default_parameters(manifest_package)
+    config_path = _resolve_config_path(args.get("config_file"), settings)
+    if config_path:
+        parameters = _deep_merge_dict(parameters, _config_parameters(config_path, str(node_name or "")))
+
+    topics = [
+        _qualify_private_topic(str(node_name or ""), topic)
+        for topic in _node_topics_from_parameters(parameters)
+    ]
+    resolved_topics = [topic for topic in topics if topic]
+    if not resolved_topics:
+        return []
+    return [
+        ProfileHealthPublisherSpec(
+            node=normalized_node_name,
+            publishes=tuple(dict.fromkeys(resolved_topics)),
+        )
+    ]
+
+
+def classify_include_health_resolution(package: object, launch_name: object) -> str:
+    key = (str(package or "").strip(), str(launch_name or "").strip())
+    if key in _INCLUDE_PUBLISHER_RESOLVER_KEYS:
+        return "supported"
+    if key in _IGNORED_INCLUDE_KEYS:
+        return "ignored"
+    return "unknown"
+
+
 def extract_recorder_arm_streams(
     snapshot: dict[str, Any],
     *,
@@ -692,6 +1010,153 @@ def build_inference_camera_aliases(snapshot: dict[str, Any]) -> dict[str, str]:
             continue
         aliases[source_name] = camera_name
     return aliases
+
+
+def build_profile_health_contract(snapshot: dict[str, Any]) -> ProfileHealthContract:
+    profile = snapshot.get("profile")
+    if not isinstance(profile, dict):
+        return ProfileHealthContract(
+            profile_name=str(snapshot.get("name") or "").strip(),
+            required_topics=(),
+            optional_topics=(),
+            required_camera_topics=(),
+            required_robot_topics=(),
+            required_publishers=(),
+            optional_publishers=(),
+        )
+
+    settings = build_profile_settings(snapshot)
+    enabled_actions = _enabled_actions(snapshot, settings)
+    include_publishers = [
+        publisher
+        for action in enabled_actions
+        if str(action.get("type") or "").strip() == "include"
+        for publisher in _resolve_include_publishers(action, settings)
+    ]
+
+    required_topics: list[str] = []
+    required_camera_topics: list[str] = []
+    required_robot_topics: list[str] = []
+    required_publishers: list[ProfileHealthPublisherSpec] = []
+    optional_topics: list[str] = []
+    optional_publishers: list[ProfileHealthPublisherSpec] = []
+
+    arm_streams = extract_recorder_arm_streams(snapshot)
+    for stream in arm_streams:
+        state_topic = str(stream.get("state_topic") or "").strip()
+        namespace = str(stream.get("namespace") or "").strip()
+        if not state_topic:
+            continue
+        _append_unique(required_topics, state_topic)
+        _append_unique(required_robot_topics, state_topic)
+
+        matched_node = ""
+        for action in enabled_actions:
+            action_type = str(action.get("type") or "").strip()
+            node_name = _action_node_name(action, settings)
+            if not node_name:
+                continue
+            action_namespace = str(_render_setting(action.get("namespace"), settings) or "").strip()
+            if action_type == "node" and action_namespace == namespace:
+                matched_node = node_name
+                break
+            published_topics = _action_published_topics(action, settings)
+            if state_topic in published_topics:
+                matched_node = node_name
+                break
+        if matched_node:
+            _append_publisher_spec(
+                required_publishers,
+                node=matched_node,
+                publishes=[state_topic],
+                required=True,
+            )
+            continue
+
+        for publisher in include_publishers:
+            if state_topic in publisher.publishes:
+                _append_publisher_spec(
+                    required_publishers,
+                    node=publisher.node,
+                    publishes=[state_topic],
+                    required=True,
+                )
+                break
+
+    for spec in extract_camera_specs(snapshot):
+        if not _as_bool(spec.get("enabled", True)):
+            continue
+        topic = str(spec.get("topic") or "").strip()
+        source = str(spec.get("source") or spec.get("name") or "").strip()
+        if not topic:
+            continue
+        _append_unique(required_topics, topic)
+        _append_unique(required_camera_topics, topic)
+
+        matched_node = ""
+        topic_candidates = _topic_candidates(topic)
+        for action in enabled_actions:
+            if str(action.get("type") or "").strip() == "include":
+                continue
+            node_name = _action_node_name(action, settings)
+            if not node_name:
+                continue
+            args = action.get("args")
+            action_source = ""
+            if isinstance(args, dict):
+                action_source = str(_render_setting(args.get("node_name"), settings) or "").strip()
+            if source and (
+                node_name == _normalize_node_name(source)
+                or action_source == source
+                or node_name.endswith(f"/{source}")
+            ):
+                matched_node = node_name
+                break
+        if matched_node:
+            _append_publisher_spec(
+                required_publishers,
+                node=matched_node,
+                publishes_any=topic_candidates,
+                required=True,
+            )
+            continue
+
+        for publisher in include_publishers:
+            published_topics = list(publisher.publishes)
+            if source and publisher.node == _normalize_node_name(source):
+                _append_publisher_spec(
+                    required_publishers,
+                    node=publisher.node,
+                    publishes=published_topics,
+                    required=True,
+                )
+                break
+            if any(candidate in published_topics for candidate in topic_candidates):
+                _append_publisher_spec(
+                    required_publishers,
+                    node=publisher.node,
+                    publishes=published_topics,
+                    required=True,
+                )
+                break
+        else:
+            if source:
+                _append_publisher_spec(
+                    required_publishers,
+                    node=_normalize_node_name(source),
+                    publishes_any=topic_candidates,
+                    required=True,
+                )
+
+    return ProfileHealthContract(
+        profile_name=str(snapshot.get("name") or profile.get("name") or "").strip(),
+        required_topics=tuple(required_topics),
+        optional_topics=tuple(optional_topics),
+        required_camera_topics=tuple(required_camera_topics),
+        required_robot_topics=tuple(required_robot_topics),
+        required_publishers=tuple(required_publishers),
+        optional_publishers=tuple(optional_publishers),
+    )
 
 
 async def get_active_profile_spec() -> VlaborProfileSpec:

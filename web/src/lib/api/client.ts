@@ -1,4 +1,7 @@
 import { getBackendUrl } from '$lib/config';
+import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
+import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
+import type { SystemSettings, UserSettings } from '$lib/types/settings';
 
 class ApiError extends Error {
   status: number;
@@ -590,14 +593,56 @@ export const api = {
     resources: () => fetchApi('/api/system/resources'),
     logs: () => fetchApi('/api/system/logs'),
     info: () => fetchApi('/api/system/info'),
-    gpu: () => fetchApi('/api/system/gpu')
+    gpu: () => fetchApi('/api/system/gpu'),
+    bundledTorchStatus: () => fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/status'),
+    buildBundledTorch: (payload: {
+      pytorch_version?: string | null;
+      torchvision_version?: string | null;
+      force?: boolean;
+    }) =>
+      fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/build', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    cleanBundledTorch: () =>
+      fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/clean', {
+        method: 'POST'
+      }),
+    runtimeEnvStatus: () => fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/status'),
+    buildRuntimeEnv: (payload: { env_name: string; force?: boolean }) =>
+      fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/build', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    deleteRuntimeEnv: (payload: { env_name: string }) =>
+      fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/delete', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    settings: () => fetchApi<SystemSettings>('/api/system/settings'),
+    updateSettings: (payload: {
+      bundled_torch?: { pytorch_version: string; torchvision_version: string };
+    }) =>
+      fetchApi<SystemSettings>('/api/system/settings', {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      })
   },
   config: {
     get: () => fetchApi('/api/config')
   },
   user: {
     config: () => fetchApi('/api/user/config'),
-    devices: () => fetchApi('/api/user/devices')
+    devices: () => fetchApi('/api/user/devices'),
+    settings: () => fetchApi<UserSettings>('/api/user/settings'),
+    updateSettings: (payload: {
+      huggingface_token?: string | null;
+      clear_huggingface_token?: boolean;
+    }) =>
+      fetchApi<UserSettings>('/api/user/settings', {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      })
   },
   hardware: {
     status: () => fetchApi('/api/hardware'),

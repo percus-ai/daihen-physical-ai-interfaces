@@ -74,10 +74,10 @@ h1, h2, h3, h4 {
     @apply h-px w-full bg-slate-200/70;
   }
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:translate-y-[-1px] hover:shadow-lg;
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:translate-y-[-1px] hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0 disabled:hover:shadow-glow;
   }
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-brand/40 hover:text-brand;
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-brand/40 hover:text-brand disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-slate-200 disabled:hover:text-slate-600;
   }
   .btn-card {
     @apply items-start justify-between rounded-2xl border border-slate-200/70 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-slate-700 shadow-sm transition hover:border-brand/40 hover:text-slate-900;

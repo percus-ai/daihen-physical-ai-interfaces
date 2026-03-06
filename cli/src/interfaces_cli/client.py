@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import sys
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -1401,10 +1402,27 @@ class PhiClient:
     # =========================================================================
 
     def get_bundled_torch_status(self) -> Dict[str, Any]:
-        """GET /api/build/bundled-torch/status - Get bundled-torch status."""
-        response = self._client.get("/api/build/bundled-torch/status")
+        """GET /api/system/bundled-torch/status - Get bundled-torch status."""
+        response = self._client.get("/api/system/bundled-torch/status")
         response.raise_for_status()
         return response.json()
+
+    def _wait_for_bundled_torch_snapshot(
+        self,
+        *,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        poll_interval: float = 2.0,
+    ) -> Dict[str, Any]:
+        last_updated_at: str | None = None
+        while True:
+            snapshot = self.get_bundled_torch_status()
+            updated_at = snapshot.get("updated_at")
+            if progress_callback and updated_at != last_updated_at:
+                progress_callback(snapshot)
+                last_updated_at = updated_at
+            if snapshot.get("state") in ("completed", "failed"):
+                return snapshot
+            time.sleep(poll_interval)
 
     def build_bundled_torch_ws(
         self,
@@ -1412,117 +1430,48 @@ class PhiClient:
         torchvision_version: Optional[str] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        """Build bundled-torch with real-time progress via WebSocket.
+        """Build bundled-torch and poll the latest snapshot.
 
         Args:
             pytorch_version: PyTorch version (git tag/branch, e.g., "v2.1.0")
             torchvision_version: torchvision version (git tag/branch, e.g., "v0.16.0")
-            progress_callback: Called with progress updates
+            progress_callback: Called with state snapshots
 
         Returns:
-            Final result with type='complete' or type='error'
+            Final bundled-torch snapshot
         """
-        import websocket
-
-        # Convert http URL to ws URL
-        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/build/ws/bundled-torch"
-
-        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
-
-        try:
-            # Create WebSocket with keepalive settings for long-running builds
-            ws = websocket.create_connection(
-                ws_url,
-                timeout=None,  # No recv timeout
-                skip_utf8_validation=True,
-                enable_multithread=True,
-            )
-            # Set socket keepalive to detect dead connections
-            import socket
-            sock = ws.sock
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            # Linux-specific keepalive settings
-            try:
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
-            except (AttributeError, OSError):
-                pass  # Not available on all platforms
-
-            # Send build request
-            ws.send(json.dumps({
-                "action": "build",
+        response = self._client.post(
+            "/api/system/bundled-torch/build",
+            json={
                 "pytorch_version": pytorch_version,
                 "torchvision_version": torchvision_version,
-            }))
-
-            # Receive progress updates until done
-            while True:
-                message = ws.recv()
-                data = json.loads(message)
-
-                # Skip heartbeat messages (keepalive from server)
-                if data.get("type") == "heartbeat":
-                    continue
-
-                if progress_callback:
-                    progress_callback(data)
-
-                if data.get("type") in ("complete", "error"):
-                    result = data
-                    break
-
-            ws.close()
-        except Exception as e:
-            if progress_callback:
-                progress_callback({"type": "error", "error": str(e)})
-            result = {"type": "error", "error": str(e)}
-
-        return result
+                "force": False,
+            },
+        )
+        response.raise_for_status()
+        snapshot = response.json()
+        if progress_callback:
+            progress_callback(snapshot)
+        return self._wait_for_bundled_torch_snapshot(progress_callback=progress_callback)
 
     def clean_bundled_torch_ws(
         self,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        """Clean bundled-torch with progress via WebSocket.
+        """Clean bundled-torch and poll the latest snapshot.
 
         Args:
-            progress_callback: Called with progress updates
+            progress_callback: Called with state snapshots
 
         Returns:
-            Final result with type='complete' or type='error'
+            Final bundled-torch snapshot
         """
-        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/build/ws/bundled-torch"
-
-        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
-
-        try:
-            ws = websocket.create_connection(ws_url, timeout=60)
-
-            # Send clean request
-            ws.send(json.dumps({"action": "clean"}))
-
-            # Receive progress until done
-            while True:
-                message = ws.recv()
-                data = json.loads(message)
-
-                if progress_callback:
-                    progress_callback(data)
-
-                if data.get("type") in ("complete", "error"):
-                    result = data
-                    break
-
-            ws.close()
-        except Exception as e:
-            if progress_callback:
-                progress_callback({"type": "error", "error": str(e)})
-            result = {"type": "error", "error": str(e)}
-
-        return result
+        response = self._client.post("/api/system/bundled-torch/clean")
+        response.raise_for_status()
+        snapshot = response.json()
+        if progress_callback:
+            progress_callback(snapshot)
+        return self._wait_for_bundled_torch_snapshot(progress_callback=progress_callback)
 
 
 class JobSessionWebSocket:

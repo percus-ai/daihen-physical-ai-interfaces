@@ -7,11 +7,13 @@
   import { api } from '$lib/api/client';
   import { formatBytes, formatDate } from '$lib/format';
   import { connectStream } from '$lib/realtime/stream';
+  import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
+  import type { SystemStatusSnapshot } from '$lib/types/systemStatus';
 
   type RecordingSummary = {
     recording_id: string;
@@ -48,14 +50,6 @@
     updated_at?: string | null;
   };
 
-  type OperateStatusResponse = {
-    backend?: { status?: string; message?: string };
-    vlabor?: { status?: string; message?: string };
-    lerobot?: { status?: string; message?: string };
-    network?: { status?: string; message?: string };
-    driver?: { status?: string; message?: string };
-  };
-
   type RecorderStatus = {
     state?: string;
     dataset_id?: string;
@@ -65,6 +59,17 @@
     frame_count?: number;
     episode_frame_count?: number;
     last_frame_at?: string | null;
+  };
+
+  type OperateStatusResponse = {
+    network?: {
+      status?: string;
+      details?: {
+        zmq?: { status?: string };
+        zenoh?: { status?: string };
+        rosbridge?: { status?: string };
+      };
+    };
   };
 
   const recordingsQuery = createQuery<RecordingListResponse>({
@@ -81,6 +86,7 @@
   let reuploadBusy = $state<Record<string, boolean>>({});
   let archiveBusy = $state<Record<string, boolean>>({});
   let uploadStatusMap = $state<Record<string, RecordingUploadStatus>>({});
+  let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   const uploadStreamStops = new Map<string, () => void>();
 
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
@@ -310,6 +316,18 @@
     }
   });
 
+  $effect(() => {
+    const stopSystemStatusStream = connectSystemStatusStream({
+      onMessage: (payload) => {
+        systemStatusSnapshot = payload;
+      }
+    });
+
+    return () => {
+      stopSystemStatusStream();
+    };
+  });
+
   onDestroy(() => {
     for (const stop of uploadStreamStops.values()) {
       stop();
@@ -513,4 +531,4 @@
   </div>
 </section>
 
-<OperateStatusCards status={$operateStatusQuery.data} />
+<OperateStatusCards snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />

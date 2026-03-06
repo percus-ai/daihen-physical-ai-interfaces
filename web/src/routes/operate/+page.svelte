@@ -8,11 +8,13 @@
     type StartupOperationStatusResponse
   } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
+  import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
   import { queryClient } from '$lib/queryClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
   import TaskCandidateCombobox from '$lib/components/TaskCandidateCombobox.svelte';
+  import type { SystemStatusSnapshot } from '$lib/types/systemStatus';
 
   type InferenceModel = {
     model_id?: string;
@@ -48,30 +50,30 @@
     last_error?: string;
   };
 
-  type GpuHostStatus = {
-    status?: string;
-    session_id?: string;
-    pid?: number;
-    last_error?: string;
-  };
-
   type InferenceRunnerStatusResponse = {
     runner_status?: RunnerStatus;
-    gpu_host_status?: GpuHostStatus;
+    gpu_host_status?: {
+      status?: string;
+      session_id?: string;
+      pid?: number;
+      last_error?: string;
+    };
   };
 
   type OperateStatusResponse = {
-    backend?: { status?: string; message?: string };
-    vlabor?: { status?: string; message?: string };
-    lerobot?: { status?: string; message?: string };
-    network?: { status?: string; message?: string; details?: Record<string, any> };
-    driver?: { status?: string; message?: string; details?: Record<string, any> };
+    network?: {
+      status?: string;
+      details?: {
+        zmq?: { status?: string };
+        zenoh?: { status?: string };
+        rosbridge?: { status?: string };
+      };
+    };
   };
 
   type OperateStatusStreamPayload = {
     vlabor_status?: Record<string, any>;
     inference_runner_status?: InferenceRunnerStatusResponse;
-    operate_status?: OperateStatusResponse;
   };
 
   const inferenceModelsQuery = createQuery<InferenceModelsResponse>({
@@ -95,21 +97,6 @@
   });
 
   const resolveModelId = (model: InferenceModel) => model.model_id ?? model.name ?? '';
-
-  const renderGpuStatus = (status?: string) => {
-    switch (status) {
-      case 'running':
-        return '稼働中';
-      case 'idle':
-        return '待機';
-      case 'stopped':
-        return '停止';
-      case 'error':
-        return 'エラー';
-      default:
-        return '不明';
-    }
-  };
 
   const formatBytes = (bytes?: number) => {
     const value = Number(bytes ?? 0);
@@ -138,6 +125,7 @@
   let startupStatus = $state<StartupOperationStatusResponse | null>(null);
   let startupStreamError = $state('');
   let stopStartupStream = () => {};
+  let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
 
   const START_PHASE_LABELS: Record<string, string> = {
     queued: 'キュー待機',
@@ -152,8 +140,6 @@
   };
 
   const emptyRunnerStatus: RunnerStatus = {};
-  const emptyGpuStatus: GpuHostStatus = {};
-
   $effect(() => {
     if (!selectedModelId && $inferenceModelsQuery.data?.models?.length) {
       selectedModelId = resolveModelId($inferenceModelsQuery.data.models[0]);
@@ -274,7 +260,6 @@
   };
 
   const runnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus);
-  const gpuStatus = $derived($inferenceRunnerStatusQuery.data?.gpu_host_status ?? emptyGpuStatus);
   const selectedModel = $derived(
     ($inferenceModelsQuery.data?.models ?? []).find((item) => resolveModelId(item) === selectedModelId)
   );
@@ -310,12 +295,23 @@
       path: '/api/stream/operate/status',
       onMessage: (payload) => {
         queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
-        queryClient.setQueryData(['operate', 'status'], payload.operate_status);
       }
     });
 
     return () => {
       stopOperateStream();
+    };
+  });
+
+  $effect(() => {
+    const stopSystemStatusStream = connectSystemStatusStream({
+      onMessage: (payload) => {
+        systemStatusSnapshot = payload;
+      }
+    });
+
+    return () => {
+      stopSystemStatusStream();
     };
   });
 
@@ -527,4 +523,4 @@
   </div>
 </section>
 
-<OperateStatusCards status={$operateStatusQuery.data} gpuLabel={renderGpuStatus(gpuStatus.status)} />
+<OperateStatusCards snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />

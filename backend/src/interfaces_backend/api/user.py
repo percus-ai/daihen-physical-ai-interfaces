@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 import cv2
 import lerobot
 from serial.tools import list_ports
@@ -22,6 +22,8 @@ from interfaces_backend.models.user import (
     EnvironmentCheckResult,
     EnvironmentValidationResponse,
 )
+from interfaces_backend.models.settings import UserSettingsModel, UserSettingsUpdateRequest
+from interfaces_backend.services.settings_service import get_user_secrets_service
 from percus_ai.db import get_supabase_session
 from percus_ai.storage import get_user_config_path, get_user_devices_path
 
@@ -295,6 +297,38 @@ async def update_user_config(request: UserConfigUpdateRequest):
         preview_window=config.get("preview_window", True),
         save_raw_video=config.get("save_raw_video", True),
         devices_file=config.get("devices_file", "user_devices.json"),
+    )
+
+
+@router.get("/settings", response_model=UserSettingsModel)
+async def get_user_settings():
+    session = get_supabase_session() or {}
+    user_id = str(session.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required")
+    return UserSettingsModel(
+        user_id=user_id,
+        huggingface=get_user_secrets_service().get_huggingface_status(user_id),
+    )
+
+
+@router.put("/settings", response_model=UserSettingsModel)
+async def update_user_settings(request: UserSettingsUpdateRequest):
+    session = get_supabase_session() or {}
+    user_id = str(session.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required")
+    if request.clear_huggingface_token:
+        status = get_user_secrets_service().set_huggingface_token(user_id, None, clear=True)
+    else:
+        status = get_user_secrets_service().set_huggingface_token(
+            user_id,
+            request.huggingface_token,
+            clear=False,
+        )
+    return UserSettingsModel(
+        user_id=user_id,
+        huggingface=status,
     )
 
 

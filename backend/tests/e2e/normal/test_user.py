@@ -1,3 +1,6 @@
+from percus_ai.db import clear_supabase_session, set_supabase_session
+
+
 def test_user_config(client):
     resp = client.get("/api/user/config")
     assert resp.status_code == 200
@@ -30,3 +33,30 @@ def test_user_validate_environment(client):
     assert resp.status_code == 200
     payload = resp.json()
     assert "checks" in payload
+
+
+def test_user_settings(client):
+    set_supabase_session({"user_id": "user-1"})
+    try:
+        resp = client.get("/api/user/settings")
+        assert resp.status_code == 200
+        assert resp.json()["huggingface"]["has_token"] is False
+
+        resp = client.put(
+            "/api/user/settings",
+            json={"huggingface_token": "hf_1234567890abcdef"},
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["user_id"] == "user-1"
+        assert payload["huggingface"]["has_token"] is True
+        assert payload["huggingface"]["token_preview"] == "hf_123...cdef"
+
+        resp = client.put(
+            "/api/user/settings",
+            json={"clear_huggingface_token": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["huggingface"]["has_token"] is False
+    finally:
+        clear_supabase_session()
