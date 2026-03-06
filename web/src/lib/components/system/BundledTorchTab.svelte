@@ -76,6 +76,42 @@
   const bundledTorchBanner = $derived(
     actionError || snapshot?.message || snapshot?.last_error || ''
   );
+  const bundledVisualState = $derived.by(() => {
+    if (!snapshot || !bundledRequired) {
+      return {
+        label: 'Not Required',
+        chip: 'border-slate-200 bg-slate-100 text-slate-600',
+        panel: 'border-slate-200/80 bg-slate-50/80',
+        accent: 'bg-slate-300',
+        progress: 'bg-slate-400'
+      };
+    }
+    if (snapshot.state === 'building' || snapshot.state === 'cleaning') {
+      return {
+        label: 'Building',
+        chip: 'border-amber-200 bg-amber-50 text-amber-700',
+        panel: 'border-amber-200/80 bg-amber-50/40',
+        accent: 'bg-amber-500',
+        progress: 'bg-amber-500'
+      };
+    }
+    if (snapshot.install?.is_valid) {
+      return {
+        label: 'Ready',
+        chip: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+        panel: 'border-emerald-200/80 bg-emerald-50/40',
+        accent: 'bg-emerald-500',
+        progress: 'bg-emerald-500'
+      };
+    }
+    return {
+      label: 'Build Required',
+      chip: 'border-rose-200 bg-rose-50 text-rose-700',
+      panel: 'border-rose-200/80 bg-rose-50/40',
+      accent: 'bg-rose-500',
+      progress: 'bg-rose-500'
+    };
+  });
 
   $effect(() => {
     const defaults = systemSettings?.bundled_torch;
@@ -87,57 +123,20 @@
     }
   });
 
-  const renderLevelClass = (level?: string) => {
-    switch (level) {
-      case 'completed':
-      case 'running':
-        return 'border-emerald-200 bg-emerald-50 text-emerald-700';
-      case 'degraded':
-      case 'building':
-      case 'cleaning':
-      case 'partial':
-        return 'border-amber-200 bg-amber-50 text-amber-700';
-      case 'error':
-      case 'failed':
-        return 'border-rose-200 bg-rose-50 text-rose-700';
-      default:
-        return 'border-slate-200 bg-slate-100 text-slate-600';
-    }
-  };
-
-  const renderStatusLabel = (value?: string) => {
-    switch (value) {
-      case 'running':
-      case 'healthy':
-      case 'available':
-      case 'completed':
-        return '正常';
-      case 'degraded':
-      case 'partial':
-      case 'cleaning':
-      case 'building':
-        return '注意';
-      case 'stopped':
-      case 'idle':
-        return '停止';
-      case 'error':
-      case 'failed':
-        return 'エラー';
-      default:
-        return '不明';
-    }
-  };
 </script>
 
-<section class="card p-6">
+<section class={`card border p-6 ${bundledVisualState.panel}`}>
   <div class="flex flex-wrap items-end justify-between gap-4">
-    <div>
+    <div class="flex min-w-0 items-start gap-3">
+      <div class={`mt-1 h-10 w-1.5 shrink-0 rounded-full ${bundledVisualState.accent}`}></div>
+      <div>
       <p class="section-title">Bundled Torch</p>
       <h2 class="mt-2 text-xl font-semibold text-slate-900">Bundled Torch Build</h2>
       <p class="mt-2 text-sm text-slate-600">{bundledTorchHint}</p>
+      </div>
     </div>
-    <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(snapshot?.state)}`}>
-      {renderStatusLabel(snapshot?.state)}
+    <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${bundledVisualState.chip}`}>
+      {bundledVisualState.label}
     </span>
   </div>
 
@@ -150,7 +149,7 @@
 
     <div class="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
       <div class="min-w-0 space-y-4">
-        <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
           <p class="label">Platform</p>
           <div class="mt-3 space-y-1 text-sm text-slate-600">
             <p>platform: {snapshot?.platform?.platform_name ?? '-'}</p>
@@ -161,7 +160,7 @@
           </div>
         </div>
 
-        <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
           <p class="label">Install</p>
           <div class="mt-3 space-y-1 text-sm text-slate-600">
             <p>exists: {snapshot?.install?.exists ? 'yes' : 'no'}</p>
@@ -175,14 +174,14 @@
       </div>
 
       <div class="min-w-0 space-y-4">
-        <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
           <div class="flex items-center justify-between gap-4">
             <div>
               <p class="label">Current State</p>
               <p class="mt-1 text-base font-semibold text-slate-900">{snapshot?.message ?? '-'}</p>
             </div>
-            <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(snapshot?.state)}`}>
-              {snapshot?.state ?? 'unknown'}
+            <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${bundledVisualState.chip}`}>
+              {bundledVisualState.label}
             </span>
           </div>
           <div class="mt-4">
@@ -192,13 +191,7 @@
             </div>
             <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
               <div
-                class={`h-full rounded-full transition-[width] duration-500 ${
-                  snapshot?.state === 'failed'
-                    ? 'bg-rose-500'
-                    : snapshot?.state === 'completed'
-                      ? 'bg-emerald-500'
-                      : 'bg-sky-500'
-                }`}
+                class={`h-full rounded-full transition-[width] duration-500 ${bundledVisualState.progress}`}
                 style={`width: ${Math.max(0, Math.min(progressPercent, 100))}%;`}
               ></div>
             </div>
@@ -216,7 +209,7 @@
           {/if}
         </div>
 
-        <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
           <p class="label">Action</p>
           <div class="mt-4 grid gap-3">
             <label class="text-sm text-slate-600">
