@@ -284,7 +284,7 @@ class RuntimeEnvService:
         current_snapshot = getattr(self, "_snapshot", None)
         previous = {item.env_name: item for item in current_snapshot.envs} if current_snapshot else {}
         envs: list[RuntimeEnvStatusSnapshot] = []
-        for item in self._env_manager.get_available_environments():
+        for item in self._env_manager.get_runtime_environments():
             env_name = str(item["venv"])
             venv_path = self._env_manager._get_venv_path(env_name)
             python_path = venv_path / "bin" / "python"
@@ -320,7 +320,7 @@ class RuntimeEnvService:
 
     def _normalize_known_env(self, env_name: str) -> str:
         normalized = self._env_manager._normalize_env_short_name(env_name)
-        available = {str(item["venv"]) for item in self._env_manager.get_available_environments()}
+        available = {str(item["venv"]) for item in self._env_manager.get_runtime_environments()}
         if normalized not in available:
             raise HTTPException(status_code=404, detail=f"Unknown runtime environment: {env_name}")
         return normalized

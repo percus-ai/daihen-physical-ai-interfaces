@@ -41,6 +41,14 @@ class _FakeEnvironmentManager:
         self._sync_files()
         return [
             {
+                "name": "framework",
+                "venv": "framework",
+                "description": "Framework runtime",
+                "policies": [],
+                "exists": False,
+                "gpu_required": False,
+            },
+            {
                 "name": "act",
                 "venv": "act",
                 "description": "ACT runtime",
@@ -57,6 +65,9 @@ class _FakeEnvironmentManager:
                 "gpu_required": False,
             },
         ]
+
+    def get_runtime_environments(self):
+        return [item for item in self.get_available_environments() if item["policies"]]
 
     def _get_venv_path(self, env_name: str) -> Path:
         return self._venv_dir / env_name
