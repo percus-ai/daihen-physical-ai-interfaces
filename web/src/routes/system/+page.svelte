@@ -107,6 +107,9 @@
     if (bundledRequired) return 'AGX Thor / Jetson 系では bundled-torch が実行ランタイムに使われます。';
     return 'この環境では bundled-torch build は不要です。';
   });
+  const bundledTorchBanner = $derived(
+    bundledTorchActionError || bundledTorchSnapshot?.message || bundledTorchSnapshot?.last_error || ''
+  );
 
   const loadInitialState = async () => {
     const [bundledResult, operateResult] = await Promise.allSettled([
@@ -381,6 +384,12 @@
   </summary>
 
   <div class="mt-6 grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+    {#if bundledTorchBanner}
+      <div class="xl:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+        {bundledTorchBanner}
+      </div>
+    {/if}
+
     <div class="space-y-4">
       <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
         <p class="label">Platform</p>
@@ -433,31 +442,30 @@
               type="button"
               onclick={() => triggerBuild(false)}
               disabled={bundledTorchActionPending || !(bundledTorchSnapshot?.can_build)}
+              aria-busy={bundledTorchActionPending && !bundledBusy}
             >
-              build
+              {bundledBusy ? 'building...' : 'build'}
             </button>
             <button
               class="btn-ghost"
               type="button"
               onclick={() => triggerBuild(true)}
               disabled={bundledTorchActionPending || !(bundledTorchSnapshot?.can_rebuild || bundledTorchSnapshot?.can_build)}
+              aria-busy={bundledTorchActionPending && !bundledBusy}
             >
-              rebuild
+              {bundledBusy ? 'building...' : 'rebuild'}
             </button>
             <button
               class="btn-ghost"
               type="button"
               onclick={triggerClean}
               disabled={bundledTorchActionPending || !(bundledTorchSnapshot?.can_clean)}
+              aria-busy={bundledTorchActionPending && !bundledBusy}
             >
-              clean
+              {bundledBusy ? 'cleaning...' : 'clean'}
             </button>
           </div>
         </div>
-
-        {#if bundledTorchActionError}
-          <p class="mt-3 text-sm text-rose-600">{bundledTorchActionError}</p>
-        {/if}
       </div>
     </div>
 

@@ -45,14 +45,19 @@ class BundledTorchBuildService:
             if self._snapshot.state in {"building", "cleaning"}:
                 return self._snapshot.model_copy(deep=True)
 
-        platform = await asyncio.to_thread(Platform.detect)
-        install = await asyncio.to_thread(self._install_status, TorchBuilder())
+        builder = TorchBuilder()
+        install = await asyncio.to_thread(self._install_status, builder)
+        platform = await asyncio.to_thread(
+            self._detect_platform_for_install_status,
+            install,
+            current_state=self.get_snapshot().state,
+        )
         with self._lock:
             snapshot = self._snapshot.model_copy(deep=True)
             snapshot.platform = self._platform_info(platform)
             snapshot.install = install
             snapshot.updated_at = _now_iso()
-            self._snapshot = self._with_capabilities(snapshot)
+            self._snapshot = self._with_capabilities(self._with_install_warning(snapshot))
         await self.publish_snapshot()
         return self.get_snapshot()
 
@@ -76,7 +81,7 @@ class BundledTorchBuildService:
         torchvision_version: str | None = None,
         force: bool = False,
     ) -> BundledTorchBuildSnapshot:
-        platform = await asyncio.to_thread(Platform.detect)
+        platform = await asyncio.to_thread(Platform.detect, False)
         if not platform.pytorch_build_required:
             raise HTTPException(status_code=400, detail="Bundled-torch build is not required on this platform")
 
@@ -109,7 +114,7 @@ class BundledTorchBuildService:
         return self.get_snapshot()
 
     async def start_clean(self) -> BundledTorchBuildSnapshot:
-        platform = await asyncio.to_thread(Platform.detect)
+        platform = await asyncio.to_thread(Platform.detect, False)
         if not platform.pytorch_build_required:
             raise HTTPException(status_code=400, detail="Bundled-torch clean is not required on this platform")
 
@@ -286,19 +291,44 @@ class BundledTorchBuildService:
         with self._lock:
             snapshot.logs = list(snapshot.logs or self._snapshot.logs)
             snapshot.updated_at = snapshot.updated_at or _now_iso()
-            self._snapshot = self._with_capabilities(snapshot)
+            self._snapshot = self._with_capabilities(self._with_install_warning(snapshot))
 
     def _snapshot_with_current_install(self) -> BundledTorchBuildSnapshot:
-        platform = Platform.detect()
+        builder = TorchBuilder()
+        install = self._install_status(builder)
+        platform = self._detect_platform_for_install_status(install, current_state="idle")
         return BundledTorchBuildSnapshot(
             platform=self._platform_info(platform),
-            install=self._install_status(TorchBuilder()),
+            install=install,
             state="idle",
             updated_at=_now_iso(),
         )
 
     def _build_initial_snapshot(self) -> BundledTorchBuildSnapshot:
-        return self._with_capabilities(self._snapshot_with_current_install())
+        return self._with_capabilities(self._with_install_warning(self._snapshot_with_current_install()))
+
+    @staticmethod
+    def _detect_platform_for_install_status(
+        install: BundledTorchInstallStatus,
+        *,
+        current_state: str,
+    ) -> Platform:
+        use_cache = not (
+            current_state in {"building", "cleaning"}
+            or not install.exists
+            or not install.is_valid
+        )
+        return Platform.detect(use_cache=use_cache)
+
+    @staticmethod
+    def _with_install_warning(snapshot: BundledTorchBuildSnapshot) -> BundledTorchBuildSnapshot:
+        if snapshot.state in {"building", "cleaning", "failed"}:
+            return snapshot
+        if snapshot.install.exists and not snapshot.install.is_valid:
+            snapshot.message = "bundled-torch exists but is invalid. rebuild or clean before retrying."
+        elif snapshot.message == "bundled-torch exists but is invalid. rebuild or clean before retrying.":
+            snapshot.message = None
+        return snapshot
 
     @staticmethod
     def _install_status(builder: TorchBuilder) -> BundledTorchInstallStatus:
