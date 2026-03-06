@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import { Tabs } from 'bits-ui';
 
   import { api } from '$lib/api/client';
@@ -48,7 +49,7 @@
     return 'status';
   };
 
-  let activeTab = $state<SystemTab>('status');
+  let activeTab = $state<SystemTab>(normalizeTab(page.url.searchParams.get('tab')));
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let networkStatus = $state<OperateNetworkStatus | null>(null);
   let bundledTorchSnapshot = $state<BundledTorchBuildSnapshot | null>(null);
@@ -107,7 +108,7 @@
 
   $effect(() => {
     const queryTab = normalizeTab(page.url.searchParams.get('tab'));
-    if (activeTab !== queryTab) {
+    if (untrack(() => activeTab) !== queryTab) {
       activeTab = queryTab;
     }
   });
