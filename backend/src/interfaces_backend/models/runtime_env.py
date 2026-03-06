@@ -16,6 +16,7 @@ class RuntimeEnvLogEntry(BaseModel):
     step: str | None = None
     message: str | None = None
     error: str | None = None
+    percent: int | None = None
 
 
 class RuntimeEnvStatusSnapshot(BaseModel):
@@ -27,6 +28,8 @@ class RuntimeEnvStatusSnapshot(BaseModel):
     python_path: str | None = None
     packages_hash: str | None = None
     state: RuntimeEnvState = "idle"
+    current_step: str | None = None
+    progress_percent: int | None = None
     message: str | None = None
     started_at: str | None = None
     updated_at: str

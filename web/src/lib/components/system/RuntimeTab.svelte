@@ -103,6 +103,14 @@
     if (env.last_error) return env.last_error;
     return env.message ?? '-';
   };
+
+  const renderProgressLabel = (env: RuntimeEnvStatusSnapshot) => {
+    if (env.state === 'failed') return 'failed';
+    if (env.state === 'completed') return '100%';
+    if (typeof env.progress_percent === 'number' && env.progress_percent > 0) return `${env.progress_percent}%`;
+    if (env.current_step) return `phase: ${env.current_step}`;
+    return 'standby';
+  };
 </script>
 
 <section class="card p-6">
@@ -158,6 +166,26 @@
             <p class={`mt-3 text-sm ${env.last_error ? 'text-rose-600' : 'text-slate-500'}`}>
               {latestMessage(env)}
             </p>
+
+            <div class="mt-4">
+              <div class="flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+                <span>Progress</span>
+                <span>{renderProgressLabel(env)}</span>
+              </div>
+              <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
+                <div
+                  class={`h-full rounded-full transition-[width] duration-500 ${
+                    env.state === 'failed'
+                      ? 'bg-rose-500'
+                      : env.state === 'completed'
+                        ? 'bg-emerald-500'
+                        : 'bg-sky-500'
+                  }`}
+                  style={`width: ${Math.max(0, Math.min(env.progress_percent ?? 0, 100))}%;`}
+                ></div>
+              </div>
+              <p class="mt-2 text-xs text-slate-400">step: {env.current_step ?? '-'}</p>
+            </div>
 
             <div class="mt-4 flex flex-wrap gap-2">
               <button

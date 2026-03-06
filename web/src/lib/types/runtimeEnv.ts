@@ -6,6 +6,7 @@ export type RuntimeEnvLogEntry = {
   step?: string | null;
   message?: string | null;
   error?: string | null;
+  percent?: number | null;
 };
 
 export type RuntimeEnvStatusSnapshot = {
@@ -17,6 +18,8 @@ export type RuntimeEnvStatusSnapshot = {
   python_path?: string | null;
   packages_hash?: string | null;
   state: RuntimeEnvState;
+  current_step?: string | null;
+  progress_percent?: number | null;
   message?: string | null;
   started_at?: string | null;
   updated_at: string;

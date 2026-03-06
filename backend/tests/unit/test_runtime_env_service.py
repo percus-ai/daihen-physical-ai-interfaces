@@ -74,21 +74,21 @@ class _FakeEnvironmentManager:
 
     def ensure_env(self, env_name: str, silent: bool = False, callback=None) -> bool:
         if callback:
-            callback({"type": "progress", "step": "create_venv", "message": f"creating {env_name}"})
-            callback({"type": "progress", "step": "install_packages", "message": f"installing {env_name}"})
+            callback({"type": "progress", "step": "create_venv", "message": f"creating {env_name}", "percent": 15})
+            callback({"type": "progress", "step": "install_packages", "message": f"installing {env_name}", "percent": 60})
         self._exists[env_name] = True
         self._sync_files()
         if callback:
-            callback({"type": "complete", "step": "complete", "message": f"{env_name} ready"})
+            callback({"type": "complete", "step": "complete", "message": f"{env_name} ready", "percent": 100})
         return True
 
     def delete_env(self, env_name: str, silent: bool = False, callback=None) -> bool:
         if callback:
-            callback({"type": "progress", "step": "delete", "message": f"deleting {env_name}"})
+            callback({"type": "progress", "step": "delete", "message": f"deleting {env_name}", "percent": 10})
         self._exists[env_name] = False
         self._sync_files()
         if callback:
-            callback({"type": "complete", "step": "delete", "message": f"{env_name} deleted"})
+            callback({"type": "complete", "step": "delete", "message": f"{env_name} deleted", "percent": 100})
         return True
 
 
@@ -109,8 +109,11 @@ async def test_runtime_env_build_updates_snapshot(monkeypatch, tmp_path):
     act = next(item for item in snapshot.envs if item.env_name == "act")
     assert act.exists is True
     assert act.state == "completed"
+    assert act.current_step == "complete"
+    assert act.progress_percent == 100
     assert act.can_delete is True
     assert any((entry.step or "") == "create_venv" for entry in act.logs)
+    assert any(entry.percent is not None for entry in act.logs)
     await service.shutdown()
 
 
@@ -131,6 +134,8 @@ async def test_runtime_env_delete_updates_snapshot(monkeypatch, tmp_path):
     pi0 = next(item for item in snapshot.envs if item.env_name == "pi0")
     assert pi0.exists is False
     assert pi0.state == "completed"
+    assert pi0.current_step == "complete"
+    assert pi0.progress_percent == 100
     assert pi0.can_delete is False
     await service.shutdown()
 

@@ -28,6 +28,30 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _estimate_progress_from_step(step: str | None, *, state: str) -> int | None:
+    if state == "completed":
+        return 100
+    if state == "failed":
+        return None
+    mapping = {
+        "prepare": 5,
+        "create_venv": 15,
+        "install_torch_runtime": 28,
+        "install_packages": 40,
+        "install_packages_stage_1": 55,
+        "install_packages_stage_2": 70,
+        "install_packages_stage_3": 80,
+        "reinstall_torch_runtime": 78,
+        "verify_torch_runtime": 96,
+        "create_bundled_torch_metadata": 90,
+        "save_packages_hash": 94,
+        "verify_flash_attn": 98,
+        "delete": 100 if state == "deleting" else 10,
+        "complete": 100,
+    }
+    return mapping.get(step or "")
+
+
 class RuntimeEnvService:
     def __init__(self, root_dir: Path | None = None) -> None:
         self._bus = get_realtime_event_bus()
@@ -69,6 +93,8 @@ class RuntimeEnvService:
             snapshot = self._snapshot.model_copy(deep=True)
             target = self._find_env(snapshot, normalized)
             target.state = "building"
+            target.current_step = "prepare"
+            target.progress_percent = 0
             target.message = (
                 f"Rebuilding environment '{normalized}'..."
                 if force
@@ -97,6 +123,8 @@ class RuntimeEnvService:
             snapshot = self._snapshot.model_copy(deep=True)
             target = self._find_env(snapshot, normalized)
             target.state = "deleting"
+            target.current_step = "delete"
+            target.progress_percent = 10
             target.message = f"Deleting environment '{normalized}'..."
             target.started_at = _now_iso()
             target.updated_at = target.started_at
@@ -150,6 +178,8 @@ class RuntimeEnvService:
             env_snapshot = self._find_env(snapshot, env_name)
             current = self._find_env(self.get_snapshot(), env_name)
             env_snapshot.state = "completed"
+            env_snapshot.current_step = "complete"
+            env_snapshot.progress_percent = 100
             env_snapshot.message = f"Environment '{env_name}' is ready"
             env_snapshot.started_at = current.started_at
             env_snapshot.finished_at = _now_iso()
@@ -184,6 +214,8 @@ class RuntimeEnvService:
             env_snapshot = self._find_env(snapshot, env_name)
             current = self._find_env(self.get_snapshot(), env_name)
             env_snapshot.state = "completed"
+            env_snapshot.current_step = "complete"
+            env_snapshot.progress_percent = 100
             env_snapshot.message = f"Environment '{env_name}' deleted"
             env_snapshot.started_at = current.started_at
             env_snapshot.finished_at = _now_iso()
@@ -212,6 +244,7 @@ class RuntimeEnvService:
             step=step,
             message=str(event.get("message") or "") or None,
             error=str(event.get("error") or "") or None,
+            percent=int(event["percent"]) if isinstance(event.get("percent"), int) else None,
         )
         with self._lock:
             snapshot = self._snapshot.model_copy(deep=True)
@@ -225,15 +258,22 @@ class RuntimeEnvService:
                 env_snapshot.state = "deleting"
             else:
                 env_snapshot.state = "building"
+            env_snapshot.current_step = step or env_snapshot.current_step
             if log_entry.message:
                 env_snapshot.message = log_entry.message
             if log_entry.error:
                 env_snapshot.last_error = log_entry.error
+            env_snapshot.progress_percent = (
+                log_entry.percent
+                if log_entry.percent is not None
+                else _estimate_progress_from_step(env_snapshot.current_step, state=env_snapshot.state)
+            )
             if event_type == "error":
                 env_snapshot.state = "failed"
                 env_snapshot.message = log_entry.error or log_entry.message or "Runtime environment operation failed"
                 env_snapshot.last_error = env_snapshot.message
                 env_snapshot.finished_at = now
+                env_snapshot.progress_percent = None
             env_snapshot.logs.append(log_entry)
             if len(env_snapshot.logs) > _LOG_LIMIT:
                 env_snapshot.logs = env_snapshot.logs[-_LOG_LIMIT:]
@@ -248,6 +288,8 @@ class RuntimeEnvService:
             snapshot = self._snapshot.model_copy(deep=True)
             env_snapshot = self._find_env(snapshot, env_name)
             env_snapshot.state = "failed"
+            env_snapshot.current_step = "failed"
+            env_snapshot.progress_percent = None
             env_snapshot.message = error
             env_snapshot.last_error = error
             env_snapshot.finished_at = now
@@ -274,6 +316,8 @@ class RuntimeEnvService:
                 env_snapshot.logs = list(prev.logs or env_snapshot.logs)
                 if not env_snapshot.message and prev.state in {"completed", "failed"}:
                     env_snapshot.state = prev.state
+                    env_snapshot.current_step = prev.current_step
+                    env_snapshot.progress_percent = prev.progress_percent
                     env_snapshot.message = prev.message
                     env_snapshot.started_at = prev.started_at
                     env_snapshot.finished_at = prev.finished_at
@@ -299,6 +343,8 @@ class RuntimeEnvService:
                 python_path=str(python_path) if python_path.exists() else None,
                 packages_hash=packages_hash_path.read_text().strip() if packages_hash_path.exists() else None,
                 state=previous_item.state if previous_item and previous_item.state in {"completed", "failed"} else "idle",
+                current_step=previous_item.current_step if previous_item and previous_item.state in {"completed", "failed"} else None,
+                progress_percent=previous_item.progress_percent if previous_item and previous_item.state in {"completed", "failed"} else None,
                 message=previous_item.message if previous_item and previous_item.state in {"completed", "failed"} else None,
                 started_at=previous_item.started_at if previous_item and previous_item.state in {"completed", "failed"} else None,
                 updated_at=_now_iso(),
@@ -339,6 +385,11 @@ class RuntimeEnvService:
             item.can_build = not busy
             item.can_rebuild = item.exists and not busy
             item.can_delete = item.exists and not busy
+            if item.state == "completed":
+                item.progress_percent = 100
+                item.current_step = item.current_step or "complete"
+            elif item.state == "idle" and item.progress_percent is None:
+                item.progress_percent = 0
         return snapshot
 
 
