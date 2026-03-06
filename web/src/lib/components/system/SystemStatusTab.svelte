@@ -69,6 +69,62 @@
     }
   };
 
+  const visualStatus = (level?: HealthLevel | string) => {
+    switch (level) {
+      case 'healthy':
+      case 'completed':
+      case 'running':
+        return {
+          label: 'Ready',
+          chip: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+          panel: 'border-emerald-200/80 bg-emerald-50/40',
+          accent: 'bg-emerald-500'
+        };
+      case 'degraded':
+      case 'building':
+      case 'cleaning':
+      case 'partial':
+        return {
+          label: 'Attention',
+          chip: 'border-amber-200 bg-amber-50 text-amber-700',
+          panel: 'border-amber-200/80 bg-amber-50/40',
+          accent: 'bg-amber-500'
+        };
+      case 'error':
+      case 'failed':
+        return {
+          label: 'Error',
+          chip: 'border-rose-200 bg-rose-50 text-rose-700',
+          panel: 'border-rose-200/80 bg-rose-50/40',
+          accent: 'bg-rose-500'
+        };
+      default:
+        return {
+          label: 'Unknown',
+          chip: 'border-slate-200 bg-slate-100 text-slate-600',
+          panel: 'border-slate-200/80 bg-slate-50/70',
+          accent: 'bg-slate-300'
+        };
+    }
+  };
+
+  const networkLevel = $derived.by(() => {
+    const statuses = [
+      network?.details?.zmq?.status,
+      network?.details?.zenoh?.status,
+      network?.details?.rosbridge?.status
+    ].filter(Boolean);
+    if (!statuses.length) return 'unknown';
+    if (statuses.some((status) => status === 'error')) return 'error';
+    if (statuses.some((status) => status === 'degraded' || status === 'partial')) return 'degraded';
+    if (statuses.every((status) => status === 'running' || status === 'healthy')) return 'healthy';
+    return 'unknown';
+  });
+  const vlaborVisual = $derived(visualStatus(vlabor?.level ?? ros2?.level ?? vlabor?.state));
+  const networkVisual = $derived(visualStatus(networkLevel === 'healthy' ? snapshot?.gpu?.level ?? 'healthy' : networkLevel));
+  const recorderVisual = $derived(visualStatus(recorder?.level ?? recorder?.state));
+  const inferenceVisual = $derived(visualStatus(inference?.level ?? inference?.state));
+
 </script>
 
 <section class="space-y-6">
@@ -83,59 +139,95 @@
     <p class="mt-3 text-sm text-slate-600">{snapshot?.overall?.summary ?? '監視スナップショットを待機中です。'}</p>
 
     <div class="mt-5 grid gap-4 md:grid-cols-2">
-      <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-        <p class="label">VLAbor / ROS2</p>
-        <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(vlabor?.level ?? vlabor?.state)}</p>
-        <div class="mt-3 space-y-1 text-sm text-slate-600">
-          <p>vlabor state: {vlabor?.state ?? '-'}</p>
-          <p>ros2 state: {ros2?.state ?? '-'}</p>
-          <p>required nodes: {String(ros2?.required_nodes_ok ?? '-')}</p>
-          <p>required topics: {String(ros2?.required_topics_ok ?? '-')}</p>
-          <p>containers: {(vlabor?.containers ?? []).map((item) => `${item.name}:${item.state}`).join(', ') || '-'}</p>
-          <p>missing nodes: {(ros2?.missing_nodes ?? []).join(', ') || '-'}</p>
-          <p>missing topics: {(ros2?.missing_topics ?? []).join(', ') || '-'}</p>
+      <div class={`overflow-hidden rounded-2xl border p-4 ${vlaborVisual.panel}`}>
+        <div class="flex gap-3">
+          <div class={`w-1.5 shrink-0 rounded-full ${vlaborVisual.accent}`}></div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="label">VLAbor / ROS2</p>
+                <p class="mt-1 text-base font-semibold text-slate-900">{vlabor?.state ?? 'unknown'}</p>
+              </div>
+              <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${vlaborVisual.chip}`}>
+                {vlaborVisual.label}
+              </span>
+            </div>
+            <div class="mt-3 grid gap-2 text-sm text-slate-600">
+              <p>vlabor: {vlabor?.state ?? '-'}</p>
+              <p>ros2: {ros2?.state ?? '-'}</p>
+              <p>required graph: {ros2?.required_nodes_ok === true && ros2?.required_topics_ok === true ? 'ok' : 'check'}</p>
+              <p>missing: {[...(ros2?.missing_nodes ?? []), ...(ros2?.missing_topics ?? [])].slice(0, 2).join(', ') || '-'}</p>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-        <p class="label">Network / GPU</p>
-        <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(network?.status ?? snapshot?.gpu?.level)}</p>
-        <div class="mt-3 space-y-1 text-sm text-slate-600">
-          <p>ZMQ: {network?.details?.zmq?.status ?? '-'}</p>
-          <p>Zenoh: {network?.details?.zenoh?.status ?? '-'}</p>
-          <p>rosbridge: {network?.details?.rosbridge?.status ?? '-'}</p>
-          <p>gpu: {snapshot?.gpu?.gpus?.[0]?.name ?? '-'}</p>
-          <p>cuda: {snapshot?.gpu?.cuda_version ?? '-'}</p>
-          <p>driver: {snapshot?.gpu?.driver_version ?? '-'}</p>
+      <div class={`overflow-hidden rounded-2xl border p-4 ${networkVisual.panel}`}>
+        <div class="flex gap-3">
+          <div class={`w-1.5 shrink-0 rounded-full ${networkVisual.accent}`}></div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="label">Network / GPU</p>
+                <p class="mt-1 text-base font-semibold text-slate-900">{snapshot?.gpu?.gpus?.[0]?.name ?? 'network/gpu'}</p>
+              </div>
+              <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${networkVisual.chip}`}>
+                {networkVisual.label}
+              </span>
+            </div>
+            <div class="mt-3 grid gap-2 text-sm text-slate-600">
+              <p>ZMQ / Zenoh / rosbridge: {network?.details?.zmq?.status ?? '-'} / {network?.details?.zenoh?.status ?? '-'} / {network?.details?.rosbridge?.status ?? '-'}</p>
+              <p>cuda: {snapshot?.gpu?.cuda_version ?? '-'}</p>
+              <p>driver: {snapshot?.gpu?.driver_version ?? '-'}</p>
+              <p>utilization: {snapshot?.gpu?.gpus?.[0]?.utilization_gpu_pct ?? '-'}%</p>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-        <p class="label">Recorder</p>
-        <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(recorder?.level ?? recorder?.state)}</p>
-        <div class="mt-3 space-y-1 text-sm text-slate-600">
-          <p>state: {recorder?.state ?? '-'}</p>
-          <p>dataset: {recorder?.dataset_id ?? '-'}</p>
-          <p>profile: {recorder?.active_profile ?? '-'}</p>
-          <p>camera ready: {String(recorder?.dependencies?.cameras_ready ?? '-')}</p>
-          <p>robot ready: {String(recorder?.dependencies?.robot_ready ?? '-')}</p>
-          <p>storage ready: {String(recorder?.dependencies?.storage_ready ?? '-')}</p>
-          <p>error: {recorder?.last_error ?? '-'}</p>
+      <div class={`overflow-hidden rounded-2xl border p-4 ${recorderVisual.panel}`}>
+        <div class="flex gap-3">
+          <div class={`w-1.5 shrink-0 rounded-full ${recorderVisual.accent}`}></div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="label">Recorder</p>
+                <p class="mt-1 text-base font-semibold text-slate-900">{recorder?.state ?? 'unknown'}</p>
+              </div>
+              <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${recorderVisual.chip}`}>
+                {recorderVisual.label}
+              </span>
+            </div>
+            <div class="mt-3 grid gap-2 text-sm text-slate-600">
+              <p>profile: {recorder?.active_profile ?? '-'}</p>
+              <p>dataset: {recorder?.dataset_id ?? '-'}</p>
+              <p>inputs: {recorder?.dependencies?.cameras_ready === true && recorder?.dependencies?.robot_ready === true ? 'ready' : 'check'}</p>
+              <p>storage: {String(recorder?.dependencies?.storage_ready ?? '-')}</p>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
-        <p class="label">Inference</p>
-        <p class="mt-1 text-base font-semibold text-slate-900">{renderStatusLabel(inference?.level ?? inference?.state)}</p>
-        <div class="mt-3 space-y-1 text-sm text-slate-600">
-          <p>state: {inference?.state ?? '-'}</p>
-          <p>policy: {inference?.policy_type ?? '-'}</p>
-          <p>model: {inference?.model_id ?? '-'}</p>
-          <p>device: {inference?.device ?? '-'}</p>
-          <p>env: {inference?.env_name ?? '-'}</p>
-          <p>runtime key: {inference?.runtime_key ?? '-'}</p>
-          <p>queue: {inference?.queue_length ?? 0}</p>
-          <p>error: {inference?.last_error ?? '-'}</p>
+      <div class={`overflow-hidden rounded-2xl border p-4 ${inferenceVisual.panel}`}>
+        <div class="flex gap-3">
+          <div class={`w-1.5 shrink-0 rounded-full ${inferenceVisual.accent}`}></div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="label">Inference</p>
+                <p class="mt-1 text-base font-semibold text-slate-900">{inference?.state ?? 'unknown'}</p>
+              </div>
+              <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${inferenceVisual.chip}`}>
+                {inferenceVisual.label}
+              </span>
+            </div>
+            <div class="mt-3 grid gap-2 text-sm text-slate-600">
+              <p>policy: {inference?.policy_type ?? '-'}</p>
+              <p>model: {inference?.model_id ?? '-'}</p>
+              <p>device: {inference?.device ?? '-'}</p>
+              <p>queue: {inference?.queue_length ?? 0}</p>
+            </div>
+          </div>
         </div>
       </div>
     </div>
