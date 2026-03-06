@@ -147,127 +147,125 @@
       </div>
     {/if}
 
-    <div class="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-      <div class="min-w-0 space-y-4">
-        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
-          <p class="label">Platform</p>
-          <div class="mt-3 space-y-1 text-sm text-slate-600">
-            <p>platform: {snapshot?.platform?.platform_name ?? '-'}</p>
-            <p>gpu: {snapshot?.platform?.gpu_name ?? '-'}</p>
-            <p>cuda: {snapshot?.platform?.cuda_version ?? '-'}</p>
-            <p>required: {bundledRequired ? 'yes' : 'no'}</p>
-            <p>supported: {bundledSupported ? 'yes' : 'no'}</p>
-          </div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
-          <p class="label">Install</p>
-          <div class="mt-3 space-y-1 text-sm text-slate-600">
-            <p>exists: {snapshot?.install?.exists ? 'yes' : 'no'}</p>
-            <p>valid: {snapshot?.install?.is_valid ? 'yes' : 'no'}</p>
-            <p>pytorch: {snapshot?.install?.pytorch_version ?? '-'}</p>
-            <p>torchvision: {snapshot?.install?.torchvision_version ?? '-'}</p>
-            <p>numpy: {snapshot?.install?.numpy_version ?? '-'}</p>
-            <p>path: {snapshot?.install?.pytorch_path ?? '-'}</p>
-          </div>
+    <div class="grid gap-4 md:grid-cols-2">
+      <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+        <p class="label">Platform</p>
+        <div class="mt-3 space-y-1 text-sm text-slate-600">
+          <p>platform: {snapshot?.platform?.platform_name ?? '-'}</p>
+          <p>gpu: {snapshot?.platform?.gpu_name ?? '-'}</p>
+          <p>cuda: {snapshot?.platform?.cuda_version ?? '-'}</p>
+          <p>required: {bundledRequired ? 'yes' : 'no'}</p>
+          <p>supported: {bundledSupported ? 'yes' : 'no'}</p>
         </div>
       </div>
 
-      <div class="min-w-0 space-y-4">
-        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="label">Current State</p>
-              <p class="mt-1 text-base font-semibold text-slate-900">{snapshot?.message ?? '-'}</p>
-            </div>
-            <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${bundledVisualState.chip}`}>
-              {bundledVisualState.label}
-            </span>
-          </div>
-          <div class="mt-4">
-            <div class="flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-              <span>Progress</span>
-              <span>{progressLabel}</span>
-            </div>
-            <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
-              <div
-                class={`h-full rounded-full transition-[width] duration-500 ${bundledVisualState.progress}`}
-                style={`width: ${Math.max(0, Math.min(progressPercent, 100))}%;`}
-              ></div>
-            </div>
-          </div>
-          <div class="mt-4 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
-            <p>step: {snapshot?.current_step ?? '-'}</p>
-            <p>started: {formatDate(snapshot?.started_at)}</p>
-            <p>updated: {formatDate(snapshot?.updated_at)}</p>
-            <p>finished: {formatDate(snapshot?.finished_at)}</p>
-            <p>requested torch: {snapshot?.requested_pytorch_version ?? '-'}</p>
-            <p>requested vision: {snapshot?.requested_torchvision_version ?? '-'}</p>
-          </div>
-          {#if snapshot?.last_error}
-            <p class="mt-3 text-sm text-rose-600">{snapshot.last_error}</p>
-          {/if}
+      <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+        <p class="label">Install</p>
+        <div class="mt-3 space-y-1 text-sm text-slate-600">
+          <p>exists: {snapshot?.install?.exists ? 'yes' : 'no'}</p>
+          <p>valid: {snapshot?.install?.is_valid ? 'yes' : 'no'}</p>
+          <p>pytorch: {snapshot?.install?.pytorch_version ?? '-'}</p>
+          <p>torchvision: {snapshot?.install?.torchvision_version ?? '-'}</p>
+          <p>numpy: {snapshot?.install?.numpy_version ?? '-'}</p>
+          <p>path: {snapshot?.install?.pytorch_path ?? '-'}</p>
         </div>
+      </div>
+    </div>
 
-        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
-          <p class="label">Action</p>
-          <div class="mt-4 grid gap-3">
-            <label class="text-sm text-slate-600">
-              <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">PyTorch version</span>
-              <input
-                bind:value={pytorchVersion}
-                class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
-                placeholder={systemSettings?.bundled_torch?.pytorch_version ?? 'v2.8.0'}
-                disabled={actionPending || bundledBusy}
-              />
-            </label>
-            <label class="text-sm text-slate-600">
-              <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">torchvision version</span>
-              <input
-                bind:value={torchvisionVersion}
-                class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
-                placeholder={systemSettings?.bundled_torch?.torchvision_version ?? 'v0.23.0'}
-                disabled={actionPending || bundledBusy}
-              />
-            </label>
+    <div class="grid gap-4 md:grid-cols-2">
+      <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <p class="label">Current State</p>
+            <p class="mt-1 text-base font-semibold text-slate-900">{snapshot?.message ?? '-'}</p>
+          </div>
+          <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${bundledVisualState.chip}`}>
+            {bundledVisualState.label}
+          </span>
+        </div>
+        <div class="mt-4">
+          <div class="flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+            <span>Progress</span>
+            <span>{progressLabel}</span>
+          </div>
+          <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
+            <div
+              class={`h-full rounded-full transition-[width] duration-500 ${bundledVisualState.progress}`}
+              style={`width: ${Math.max(0, Math.min(progressPercent, 100))}%;`}
+            ></div>
+          </div>
+        </div>
+        <div class="mt-4 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
+          <p>step: {snapshot?.current_step ?? '-'}</p>
+          <p>started: {formatDate(snapshot?.started_at)}</p>
+          <p>updated: {formatDate(snapshot?.updated_at)}</p>
+          <p>finished: {formatDate(snapshot?.finished_at)}</p>
+          <p>requested torch: {snapshot?.requested_pytorch_version ?? '-'}</p>
+          <p>requested vision: {snapshot?.requested_torchvision_version ?? '-'}</p>
+        </div>
+        {#if snapshot?.last_error}
+          <p class="mt-3 text-sm text-rose-600">{snapshot.last_error}</p>
+        {/if}
+      </div>
 
-            <div class="flex flex-wrap gap-2">
-              <button
-                class="btn-primary"
-                type="button"
-                onclick={() => onBuild({
-                  pytorchVersion,
-                  torchvisionVersion,
-                  force: false
-                })}
-                disabled={actionPending || !(snapshot?.can_build)}
-                aria-busy={actionPending && !bundledBusy}
-              >
-                {bundledBusy ? 'building...' : 'build'}
-              </button>
-              <button
-                class="btn-ghost"
-                type="button"
-                onclick={() => onBuild({
-                  pytorchVersion,
-                  torchvisionVersion,
-                  force: true
-                })}
-                disabled={actionPending || !(snapshot?.can_rebuild || snapshot?.can_build)}
-                aria-busy={actionPending && !bundledBusy}
-              >
-                {bundledBusy ? 'building...' : 'rebuild'}
-              </button>
-              <button
-                class="btn-ghost"
-                type="button"
-                onclick={onClean}
-                disabled={actionPending || !(snapshot?.can_clean)}
-                aria-busy={actionPending && !bundledBusy}
-              >
-                {bundledBusy ? 'cleaning...' : 'clean'}
-              </button>
-            </div>
+      <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+        <p class="label">Action</p>
+        <div class="mt-4 grid gap-3">
+          <label class="text-sm text-slate-600">
+            <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">PyTorch version</span>
+            <input
+              bind:value={pytorchVersion}
+              class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
+              placeholder={systemSettings?.bundled_torch?.pytorch_version ?? 'v2.8.0'}
+              disabled={actionPending || bundledBusy}
+            />
+          </label>
+          <label class="text-sm text-slate-600">
+            <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">torchvision version</span>
+            <input
+              bind:value={torchvisionVersion}
+              class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
+              placeholder={systemSettings?.bundled_torch?.torchvision_version ?? 'v0.23.0'}
+              disabled={actionPending || bundledBusy}
+            />
+          </label>
+
+          <div class="flex flex-wrap gap-2">
+            <button
+              class="btn-primary"
+              type="button"
+              onclick={() => onBuild({
+                pytorchVersion,
+                torchvisionVersion,
+                force: false
+              })}
+              disabled={actionPending || !(snapshot?.can_build)}
+              aria-busy={actionPending && !bundledBusy}
+            >
+              {bundledBusy ? 'building...' : 'build'}
+            </button>
+            <button
+              class="btn-ghost"
+              type="button"
+              onclick={() => onBuild({
+                pytorchVersion,
+                torchvisionVersion,
+                force: true
+              })}
+              disabled={actionPending || !(snapshot?.can_rebuild || snapshot?.can_build)}
+              aria-busy={actionPending && !bundledBusy}
+            >
+              {bundledBusy ? 'building...' : 'rebuild'}
+            </button>
+            <button
+              class="btn-ghost"
+              type="button"
+              onclick={onClean}
+              disabled={actionPending || !(snapshot?.can_clean)}
+              aria-busy={actionPending && !bundledBusy}
+            >
+              {bundledBusy ? 'cleaning...' : 'clean'}
+            </button>
           </div>
         </div>
       </div>
