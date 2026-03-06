@@ -71,7 +71,7 @@
 
 </script>
 
-<section class="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+<section class="space-y-6">
   <div class="card p-6">
     <div class="flex items-center justify-between gap-4">
       <div>

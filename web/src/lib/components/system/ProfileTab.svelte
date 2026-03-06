@@ -288,66 +288,69 @@
   {/if}
 </section>
 
-<section class="grid gap-6 lg:grid-cols-2">
-  <div class="card p-6">
-    <h2 class="text-lg font-semibold text-slate-900">プロファイルの生データ</h2>
-    <div class="mt-4 text-sm text-slate-600">
-      <pre class="max-h-[360px] overflow-auto rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-700">
-{JSON.stringify($activeProfileQuery.data?.profile_snapshot ?? {}, null, 2)}
-      </pre>
-    </div>
-  </div>
+<section class="space-y-6">
   <div class="card p-6">
     <h2 class="text-lg font-semibold text-slate-900">デバイス状態</h2>
     <div class="mt-4 space-y-4 text-sm text-slate-600">
       {#if $activeStatusQuery.isLoading}
         <p>読み込み中...</p>
       {:else}
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
-          <p class="label">カメラ</p>
-          <div class="mt-2 space-y-2">
-            {#each $activeStatusQuery.data?.cameras ?? [] as cam}
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <p class="truncate text-sm font-medium text-slate-700">{cam.label ?? cam.name}</p>
-                  <p class="truncate text-[11px] text-slate-400">{cam.name}</p>
-                  {#if cam.connected_topic}
-                    <p class="truncate text-[11px] text-emerald-600">{cam.connected_topic}</p>
-                  {:else if cam.topics?.length}
-                    <p class="truncate text-[11px] text-slate-400">期待: {cam.topics[0]}</p>
-                  {/if}
+        <div class="grid gap-4 lg:grid-cols-2">
+          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+            <p class="label">カメラ</p>
+            <div class="mt-2 space-y-2">
+              {#each $activeStatusQuery.data?.cameras ?? [] as cam}
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <p class="truncate text-sm font-medium text-slate-700">{cam.label ?? cam.name}</p>
+                    <p class="truncate text-[11px] text-slate-400">{cam.name}</p>
+                    {#if cam.connected_topic}
+                      <p class="truncate text-[11px] text-emerald-600">{cam.connected_topic}</p>
+                    {:else if cam.topics?.length}
+                      <p class="truncate text-[11px] text-slate-400">期待: {cam.topics[0]}</p>
+                    {/if}
+                  </div>
+                  <span class="shrink-0 text-xs text-slate-500">
+                    {cam.enabled ? (cam.connected ? '✅ 接続' : '⚠️ 未接続') : '⏸️ 無効'}
+                  </span>
                 </div>
-                <span class="shrink-0 text-xs text-slate-500">
-                  {cam.enabled ? (cam.connected ? '✅ 接続' : '⚠️ 未接続') : '⏸️ 無効'}
-                </span>
-              </div>
-            {/each}
+              {/each}
+            </div>
           </div>
-        </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
-          <p class="label">ロボット/アーム</p>
-          <div class="mt-2 space-y-2">
-            {#each $activeStatusQuery.data?.arms ?? [] as arm}
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <p class="truncate text-sm font-medium text-slate-700">{arm.label ?? arm.name}</p>
-                  <p class="truncate text-[11px] text-slate-400">
-                    {arm.name}{arm.role ? ` (${arm.role})` : ''}
-                  </p>
-                  {#if arm.connected_topic}
-                    <p class="truncate text-[11px] text-emerald-600">{arm.connected_topic}</p>
-                  {:else if arm.topics?.length}
-                    <p class="truncate text-[11px] text-slate-400">期待: {arm.topics[0]}</p>
-                  {/if}
+          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+            <p class="label">ロボット/アーム</p>
+            <div class="mt-2 space-y-2">
+              {#each $activeStatusQuery.data?.arms ?? [] as arm}
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <p class="truncate text-sm font-medium text-slate-700">{arm.label ?? arm.name}</p>
+                    <p class="truncate text-[11px] text-slate-400">
+                      {arm.name}{arm.role ? ` (${arm.role})` : ''}
+                    </p>
+                    {#if arm.connected_topic}
+                      <p class="truncate text-[11px] text-emerald-600">{arm.connected_topic}</p>
+                    {:else if arm.topics?.length}
+                      <p class="truncate text-[11px] text-slate-400">期待: {arm.topics[0]}</p>
+                    {/if}
+                  </div>
+                  <span class="shrink-0 text-xs text-slate-500">
+                    {arm.enabled ? (arm.connected ? '✅ 接続' : '⚠️ 未接続') : '⏸️ 無効'}
+                  </span>
                 </div>
-                <span class="shrink-0 text-xs text-slate-500">
-                  {arm.enabled ? (arm.connected ? '✅ 接続' : '⚠️ 未接続') : '⏸️ 無効'}
-                </span>
-              </div>
-            {/each}
+              {/each}
+            </div>
           </div>
         </div>
       {/if}
+    </div>
+  </div>
+
+  <div class="card p-6">
+    <h2 class="text-lg font-semibold text-slate-900">プロファイルの生データ</h2>
+    <div class="mt-4 text-sm text-slate-600">
+      <pre class="max-h-[360px] overflow-auto rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-700">
+{JSON.stringify($activeProfileQuery.data?.profile_snapshot ?? {}, null, 2)}
+      </pre>
     </div>
   </div>
 </section>
