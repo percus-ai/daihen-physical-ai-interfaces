@@ -43,6 +43,13 @@
       systemTorchvisionVersion = systemSettings.bundled_torch.torchvision_version;
     }
   });
+
+  const saveUserToken = async () => {
+    const token = userHuggingFaceToken.trim();
+    if (!token) return;
+    await onSaveUserSettings({ huggingfaceToken: token, clear: false });
+    userHuggingFaceToken = '';
+  };
 </script>
 
 <section class="space-y-6">
@@ -86,7 +93,7 @@
         <button
           class="btn-primary"
           type="button"
-          onclick={() => onSaveUserSettings({ huggingfaceToken: userHuggingFaceToken, clear: false })}
+          onclick={saveUserToken}
           disabled={userPending || !userHuggingFaceToken.trim()}
         >
           保存
