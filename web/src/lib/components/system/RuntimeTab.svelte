@@ -171,28 +171,28 @@
         {#each runtimeEnvs as env}
           {@const group = runtimeGroupMap.get(env.env_name)}
           {@const status = visualStatus(env)}
-          <div class={`overflow-hidden rounded-2xl border p-4 ${status.panel}`}>
-            <div class="flex gap-4">
-              <div class={`w-2 shrink-0 rounded-full ${status.accent}`}></div>
+          <div class={`overflow-hidden rounded-2xl border p-3 ${status.panel}`}>
+            <div class="flex gap-3">
+              <div class={`w-1.5 shrink-0 rounded-full ${status.accent}`}></div>
               <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="flex flex-wrap items-start justify-between gap-2">
                   <div class="min-w-0">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <p class="text-lg font-semibold text-slate-900">{env.env_name}</p>
+                    <div class="flex flex-wrap items-center gap-1.5">
+                      <p class="text-base font-semibold text-slate-900">{env.env_name}</p>
                       <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${status.chip}`}>
                         {status.label}
                       </span>
                     </div>
-                    <p class="mt-1 text-sm text-slate-600">{env.description ?? renderRuntimeSummary(group)}</p>
-                    <div class="mt-3 flex flex-wrap gap-2">
+                    <p class="mt-0.5 text-xs text-slate-500">{env.description ?? renderRuntimeSummary(group)}</p>
+                    <div class="mt-2 flex flex-wrap gap-1.5">
                       {#if (env.policies ?? []).length}
                         {#each env.policies ?? [] as policy}
-                          <span class="rounded-full border border-slate-200 bg-white/80 px-2.5 py-1 text-xs font-medium text-slate-700">
+                          <span class="rounded-full border border-slate-200 bg-white/80 px-2 py-0.5 text-[11px] font-medium text-slate-700">
                             {policy}
                           </span>
                         {/each}
                       {:else}
-                        <span class="rounded-full border border-slate-200 bg-white/80 px-2.5 py-1 text-xs font-medium text-slate-500">
+                        <span class="rounded-full border border-slate-200 bg-white/80 px-2 py-0.5 text-[11px] font-medium text-slate-500">
                           no policies
                         </span>
                       {/if}
@@ -204,12 +204,12 @@
                   </div>
                 </div>
 
-                <p class={`mt-4 text-sm ${env.last_error ? 'text-rose-600' : 'text-slate-600'}`}>
+                <p class={`mt-2 text-xs ${env.last_error ? 'text-rose-600' : 'text-slate-600'}`}>
                   {latestMessage(env)}
                 </p>
 
-                <div class="mt-4">
-                  <div class="h-2 overflow-hidden rounded-full bg-white/80">
+                <div class="mt-2">
+                  <div class="h-1.5 overflow-hidden rounded-full bg-white/80">
                     <div
                       class={`h-full rounded-full transition-[width] duration-500 ${
                         env.state === 'failed'
@@ -223,40 +223,51 @@
                   </div>
                 </div>
 
-                <div class="mt-4 flex flex-wrap gap-2">
-                  <button
-                    class="btn-primary"
-                    type="button"
-                    onclick={() => onRuntimeBuild({ envName: env.env_name, force: false })}
-                    disabled={runtimeEnvActionPending || !env.can_build}
-                  >
-                    build
-                  </button>
-                  <button
-                    class="btn-ghost"
-                    type="button"
-                    onclick={() => onRuntimeBuild({ envName: env.env_name, force: true })}
-                    disabled={runtimeEnvActionPending || !env.can_rebuild}
-                  >
-                    rebuild
-                  </button>
-                  <button
-                    class="btn-ghost"
-                    type="button"
-                    onclick={() => onRuntimeDelete(env.env_name)}
-                    disabled={runtimeEnvActionPending || !env.can_delete}
-                  >
-                    delete
-                  </button>
-                </div>
-
-                <details class="group mt-4 rounded-2xl border border-slate-200/80 bg-white/80 p-4">
-                  <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-700">
-                    <span>Technical Details</span>
+                <details class="group mt-2 rounded-xl border border-slate-200/80 bg-white/80 px-3 py-2">
+                  <summary class="flex cursor-pointer list-none items-center justify-between gap-3">
+                    <div class="flex flex-wrap gap-2">
+                      <button
+                        class="btn-primary"
+                        type="button"
+                        onclick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onRuntimeBuild({ envName: env.env_name, force: false });
+                        }}
+                        disabled={runtimeEnvActionPending || !env.can_build}
+                      >
+                        build
+                      </button>
+                      <button
+                        class="btn-ghost"
+                        type="button"
+                        onclick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onRuntimeBuild({ envName: env.env_name, force: true });
+                        }}
+                        disabled={runtimeEnvActionPending || !env.can_rebuild}
+                      >
+                        rebuild
+                      </button>
+                      <button
+                        class="btn-ghost"
+                        type="button"
+                        onclick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onRuntimeDelete(env.env_name);
+                        }}
+                        disabled={runtimeEnvActionPending || !env.can_delete}
+                      >
+                        delete
+                      </button>
+                    </div>
+                    <span class="text-sm font-semibold text-slate-700">Technical Details</span>
                     <span class="text-slate-400 transition group-open:rotate-180">⌄</span>
-                  </summary>
+                  </summary> 
 
-                  <div class="mt-4 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
+                  <div class="mt-3 grid gap-2 text-xs text-slate-600 md:grid-cols-2">
                     <p>exists: {env.exists ? 'yes' : 'no'}</p>
                     <p>gpu required: {env.gpu_required ? 'yes' : 'no'}</p>
                     <p>python: {env.python_path ?? '-'}</p>
@@ -266,7 +277,7 @@
                   </div>
 
                   {#if group}
-                    <div class="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
+                    <div class="mt-3 grid gap-2 text-xs text-slate-600 md:grid-cols-2">
                       <p>torchvision: {group.details?.torchvision_version ?? '-'}</p>
                       <p>torchaudio: {group.details?.torchaudio_version ?? '-'}</p>
                       <p>bundled: {group.details?.bundled_torch_present ? 'yes' : 'no'}</p>
