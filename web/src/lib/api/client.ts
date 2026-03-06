@@ -1,5 +1,6 @@
 import { getBackendUrl } from '$lib/config';
 import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
+import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
 import type { SystemSettings, UserSettings } from '$lib/types/settings';
 
 class ApiError extends Error {
@@ -600,6 +601,17 @@ export const api = {
     cleanBundledTorch: () =>
       fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/clean', {
         method: 'POST'
+      }),
+    runtimeEnvStatus: () => fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/status'),
+    buildRuntimeEnv: (payload: { env_name: string; force?: boolean }) =>
+      fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/build', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    deleteRuntimeEnv: (payload: { env_name: string }) =>
+      fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/delete', {
+        method: 'POST',
+        body: JSON.stringify(payload)
       }),
     settings: () => fetchApi<SystemSettings>('/api/system/settings'),
     updateSettings: (payload: {

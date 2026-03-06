@@ -12,6 +12,11 @@ from fastapi import APIRouter, Query
 import psutil
 
 from interfaces_backend.models.build import BundledTorchBuildRequest, BundledTorchBuildSnapshot
+from interfaces_backend.models.runtime_env import (
+    RuntimeEnvActionRequest,
+    RuntimeEnvDeleteRequest,
+    RuntimeEnvSnapshot,
+)
 from interfaces_backend.models.settings import SystemSettingsModel, SystemSettingsUpdateRequest
 from interfaces_backend.utils.torch_info import get_torch_info
 from interfaces_backend.models.system import (
@@ -27,6 +32,7 @@ from interfaces_backend.models.system import (
     GpuResponse,
 )
 from interfaces_backend.services.bundled_torch_build_service import get_bundled_torch_build_service
+from interfaces_backend.services.runtime_env_service import get_runtime_env_service
 from interfaces_backend.services.settings_service import get_system_settings_service
 from percus_ai.storage import get_datasets_dir, get_features_path, get_storage_root
 
@@ -367,6 +373,25 @@ async def start_bundled_torch_build(
 async def clean_bundled_torch():
     service = get_bundled_torch_build_service()
     return await service.start_clean()
+
+
+@router.get("/runtime-envs/status", response_model=RuntimeEnvSnapshot)
+async def get_runtime_env_status():
+    service = get_runtime_env_service()
+    await service.refresh_snapshot()
+    return service.get_snapshot()
+
+
+@router.post("/runtime-envs/build", response_model=RuntimeEnvSnapshot)
+async def start_runtime_env_build(request: RuntimeEnvActionRequest):
+    service = get_runtime_env_service()
+    return await service.start_build(request.env_name, force=request.force)
+
+
+@router.post("/runtime-envs/delete", response_model=RuntimeEnvSnapshot)
+async def delete_runtime_env(request: RuntimeEnvDeleteRequest):
+    service = get_runtime_env_service()
+    return await service.start_delete(request.env_name)
 
 
 @router.get("/settings", response_model=SystemSettingsModel)

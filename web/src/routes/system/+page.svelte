@@ -11,9 +11,11 @@
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
   import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
   import { connectBundledTorchStream } from '$lib/realtime/bundledTorch';
+  import { connectRuntimeEnvStream } from '$lib/realtime/runtimeEnv';
   import { connectStream } from '$lib/realtime/stream';
   import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
   import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
+  import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
   import type { SystemSettings, UserSettings } from '$lib/types/settings';
   import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
 
@@ -52,10 +54,13 @@
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let networkStatus = $state<OperateNetworkStatus | null>(null);
   let bundledTorchSnapshot = $state<BundledTorchBuildSnapshot | null>(null);
+  let runtimeEnvSnapshot = $state<RuntimeEnvSnapshot | null>(null);
   let systemSettings = $state<SystemSettings | null>(null);
   let userSettings = $state<UserSettings | null>(null);
   let bundledTorchActionPending = $state(false);
   let bundledTorchActionError = $state('');
+  let runtimeEnvActionPending = $state(false);
+  let runtimeEnvActionError = $state('');
   let systemSettingsPending = $state(false);
   let systemSettingsError = $state('');
   let systemSettingsSuccess = $state('');
@@ -129,8 +134,9 @@
   });
 
   const loadInitialState = async () => {
-    const [bundledResult, operateResult, systemSettingsResult, userSettingsResult] = await Promise.allSettled([
+    const [bundledResult, runtimeEnvResult, operateResult, systemSettingsResult, userSettingsResult] = await Promise.allSettled([
       api.system.bundledTorchStatus(),
+      api.system.runtimeEnvStatus(),
       api.operate.status(),
       api.system.settings(),
       api.user.settings()
@@ -141,6 +147,13 @@
     } else {
       bundledTorchActionError =
         bundledResult.reason instanceof Error ? bundledResult.reason.message : 'bundled-torch状態の取得に失敗しました。';
+    }
+
+    if (runtimeEnvResult.status === 'fulfilled') {
+      runtimeEnvSnapshot = runtimeEnvResult.value;
+    } else {
+      runtimeEnvActionError =
+        runtimeEnvResult.reason instanceof Error ? runtimeEnvResult.reason.message : 'runtime env 状態の取得に失敗しました。';
     }
 
     if (operateResult.status === 'fulfilled') {
@@ -193,6 +206,35 @@
         error instanceof Error ? error.message : 'bundled-torch clean の開始に失敗しました。';
     } finally {
       bundledTorchActionPending = false;
+    }
+  };
+
+  const triggerRuntimeBuild = async (payload: { envName: string; force: boolean }) => {
+    runtimeEnvActionPending = true;
+    runtimeEnvActionError = '';
+    try {
+      runtimeEnvSnapshot = await api.system.buildRuntimeEnv({
+        env_name: payload.envName,
+        force: payload.force
+      });
+    } catch (error) {
+      runtimeEnvActionError =
+        error instanceof Error ? error.message : 'runtime env build の開始に失敗しました。';
+    } finally {
+      runtimeEnvActionPending = false;
+    }
+  };
+
+  const triggerRuntimeDelete = async (envName: string) => {
+    runtimeEnvActionPending = true;
+    runtimeEnvActionError = '';
+    try {
+      runtimeEnvSnapshot = await api.system.deleteRuntimeEnv({ env_name: envName });
+    } catch (error) {
+      runtimeEnvActionError =
+        error instanceof Error ? error.message : 'runtime env delete の開始に失敗しました。';
+    } finally {
+      runtimeEnvActionPending = false;
     }
   };
 
@@ -259,11 +301,17 @@
         bundledTorchSnapshot = payload;
       }
     });
+    const stopRuntimeEnvStream = connectRuntimeEnvStream({
+      onMessage: (payload) => {
+        runtimeEnvSnapshot = payload;
+      }
+    });
 
     return () => {
       stopSystemStatusStream();
       stopOperateStream();
       stopBundledTorchStream();
+      stopRuntimeEnvStream();
     };
   });
 </script>
@@ -318,10 +366,15 @@
     <Tabs.Content value="runtime" class="mt-6 space-y-6">
       <RuntimeTab
         snapshot={systemStatusSnapshot}
+        runtimeEnvSnapshot={runtimeEnvSnapshot}
         bundledTorchSnapshot={bundledTorchSnapshot}
         systemSettings={systemSettings}
+        runtimeEnvActionPending={runtimeEnvActionPending}
+        runtimeEnvActionError={runtimeEnvActionError}
         bundledTorchActionPending={bundledTorchActionPending}
         bundledTorchActionError={bundledTorchActionError}
+        onRuntimeBuild={triggerRuntimeBuild}
+        onRuntimeDelete={triggerRuntimeDelete}
         onBuild={triggerBuild}
         onClean={triggerClean}
       />
