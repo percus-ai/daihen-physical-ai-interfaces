@@ -383,14 +383,14 @@
     </span>
   </summary>
 
-  <div class="mt-6 grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+  <div class="mt-6 grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
     {#if bundledTorchBanner}
       <div class="xl:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
         {bundledTorchBanner}
       </div>
     {/if}
 
-    <div class="space-y-4">
+    <div class="min-w-0 space-y-4">
       <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
         <p class="label">Platform</p>
         <div class="mt-3 space-y-1 text-sm text-slate-600">
@@ -469,7 +469,7 @@
       </div>
     </div>
 
-    <div class="space-y-4">
+    <div class="min-w-0 space-y-4">
       <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
         <div class="flex items-center justify-between gap-4">
           <div>
@@ -493,21 +493,21 @@
         {/if}
       </div>
 
-      <div class="rounded-2xl border border-slate-200/70 bg-slate-950 p-4 text-slate-100">
+      <div class="min-w-0 rounded-2xl border border-slate-200/70 bg-slate-950 p-4 text-slate-100">
         <div class="flex items-center justify-between gap-4">
           <p class="label !text-slate-400">Recent Logs</p>
           <span class="text-xs text-slate-400">{bundledLogs.length} entries</span>
         </div>
-        <div class="mt-4 max-h-[32rem] overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs leading-6">
+        <div class="mt-4 max-h-[32rem] min-w-0 overflow-x-auto overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs leading-6">
           {#if latestBundledLogs.length}
             {#each latestBundledLogs as entry}
-              <div class="border-b border-slate-900/80 py-1 last:border-b-0">
+              <div class="min-w-0 border-b border-slate-900/80 py-1 last:border-b-0">
                 <span class="text-slate-500">{formatDate(entry.at)}</span>
                 <span class="ml-2 text-slate-300">[{entry.type}]</span>
                 {#if entry.step}
                   <span class="ml-2 text-slate-500">{entry.step}</span>
                 {/if}
-                <span class="ml-2 text-slate-100">{entry.line ?? entry.message ?? '-'}</span>
+                <span class="ml-2 break-all text-slate-100">{entry.line ?? entry.message ?? '-'}</span>
               </div>
             {/each}
           {:else}
