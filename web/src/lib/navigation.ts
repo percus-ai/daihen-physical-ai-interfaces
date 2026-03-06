@@ -45,7 +45,7 @@ export const navItems = [
     id: 'system',
     label: 'システム',
     href: '/system',
-    icon: '🖥️',
+    icon: '🛰️',
     description: '監視・プロファイル・設定の管理ハブ'
   }
 ];
