@@ -54,6 +54,10 @@ from interfaces_backend.services.runtime_env_service import (
     RUNTIME_ENV_TOPIC,
     get_runtime_env_service,
 )
+from interfaces_backend.services.training_provision_operations import (
+    TRAINING_PROVISION_OPERATION_TOPIC,
+    get_training_provision_operations_service,
+)
 from interfaces_backend.utils.sse import sse_queue_response
 from percus_ai.db import get_current_user_id
 
@@ -246,6 +250,25 @@ async def stream_startup_operation(request: Request, operation_id: str):
     bus = get_realtime_event_bus()
     subscription = bus.subscribe(STARTUP_OPERATION_TOPIC, operation_id)
     await bus.publish(STARTUP_OPERATION_TOPIC, operation_id, snapshot.model_dump(mode="json"))
+    return sse_queue_response(
+        request,
+        subscription.queue,
+        on_close=subscription.close,
+    )
+
+
+@router.get("/training/provision-operations/{operation_id}")
+async def stream_training_provision_operation(request: Request, operation_id: str):
+    user_id = _require_user_id()
+    operations = get_training_provision_operations_service()
+    snapshot = await operations.get(user_id=user_id, operation_id=operation_id)
+    bus = get_realtime_event_bus()
+    subscription = bus.subscribe(TRAINING_PROVISION_OPERATION_TOPIC, operation_id)
+    await bus.publish(
+        TRAINING_PROVISION_OPERATION_TOPIC,
+        operation_id,
+        snapshot.model_dump(mode="json"),
+    )
     return sse_queue_response(
         request,
         subscription.queue,

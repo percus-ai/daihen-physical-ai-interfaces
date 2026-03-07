@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -285,6 +285,35 @@ class JobCreateResponse(BaseModel):
     status: str
     message: str
     ip: Optional[str] = None
+
+
+TrainingProvisionOperationState = Literal["queued", "running", "completed", "failed", "cancelled"]
+
+
+class TrainingProvisionOperationAcceptedResponse(BaseModel):
+    """Accepted response for training provision operation."""
+
+    accepted: bool = True
+    operation_id: str
+    state: TrainingProvisionOperationState = "queued"
+    message: str = "accepted"
+
+
+class TrainingProvisionOperationStatusResponse(BaseModel):
+    """Current status for a training provision operation."""
+
+    operation_id: str
+    state: TrainingProvisionOperationState
+    step: str = "queued"
+    message: Optional[str] = None
+    failure_reason: Optional[str] = None
+    provider: Literal["verda", "vast"]
+    instance_id: Optional[str] = None
+    job_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 class InstanceStatusResponse(BaseModel):

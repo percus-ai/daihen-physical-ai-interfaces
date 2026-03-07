@@ -2,6 +2,7 @@ import { getBackendUrl } from '$lib/config';
 import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
 import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
 import type { SystemSettings, UserSettings } from '$lib/types/settings';
+import type { FeaturesRepoSuggestions } from '$lib/types/settings';
 
 class ApiError extends Error {
   status: number;
@@ -443,6 +444,28 @@ export type TrainingInstanceCandidatesResponse = {
   checked_at?: string;
 };
 
+export type TrainingProvisionOperationAcceptedResponse = {
+  accepted?: boolean;
+  operation_id: string;
+  state?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  message?: string;
+};
+
+export type TrainingProvisionOperationStatusResponse = {
+  operation_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  step?: string;
+  message?: string | null;
+  failure_reason?: string | null;
+  provider?: 'verda' | 'vast';
+  instance_id?: string | null;
+  job_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
 let refreshPromise: Promise<boolean> | null = null;
 
 async function baseFetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -646,11 +669,24 @@ export const api = {
     settings: () => fetchApi<SystemSettings>('/api/system/settings'),
     updateSettings: (payload: {
       bundled_torch?: { pytorch_version: string; torchvision_version: string };
+      features_repo?: { repo_url: string; repo_ref: string; repo_commit?: string | null };
     }) =>
       fetchApi<SystemSettings>('/api/system/settings', {
         method: 'PUT',
         body: JSON.stringify(payload)
-      })
+      }),
+    featuresRepoSuggestions: (params: {
+      repo_url: string;
+      repo_ref?: string | null;
+      signal?: AbortSignal;
+    }) => {
+      const query = new URLSearchParams({ repo_url: params.repo_url });
+      if (params.repo_ref) query.set('repo_ref', params.repo_ref);
+      return fetchApi<FeaturesRepoSuggestions>(
+        `/api/system/settings/features-repo/suggestions?${query.toString()}`,
+        { signal: params.signal }
+      );
+    }
   },
   config: {
     get: () => fetchApi('/api/config')
@@ -963,11 +999,15 @@ export const api = {
       fetchApi<TrainingProviderCapabilityResponse>('/api/training/provider-capabilities'),
     jobs: () => fetchApi('/api/training/jobs'),
     job: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}`),
-    createJob: (data: Record<string, unknown>) =>
-      fetchApi('/api/training/jobs', {
+    startProvisionOperation: (data: Record<string, unknown>) =>
+      fetchApi<TrainingProvisionOperationAcceptedResponse>('/api/training/provision-operations', {
         method: 'POST',
         body: JSON.stringify(data)
       }),
+    provisionOperation: (operationId: string) =>
+      fetchApi<TrainingProvisionOperationStatusResponse>(
+        `/api/training/provision-operations/${encodeURIComponent(operationId)}`
+      ),
     stopJob: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/stop`, { method: 'POST' }),
     deleteJob: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}`, { method: 'DELETE' }),
     logs: (jobId: string, logType: string, lines: number = 30) =>

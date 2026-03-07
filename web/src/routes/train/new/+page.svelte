@@ -2,13 +2,17 @@
 	  import { onDestroy } from 'svelte';
 	  import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
+	  import { page } from '$app/state';
 	  import { goto } from '$app/navigation';
-	  import { api } from '$lib/api/client';
+	  import {
+      api,
+      type TrainingProvisionOperationStatusResponse
+    } from '$lib/api/client';
 	  import HelpLabel from '$lib/components/HelpLabel.svelte';
 	  import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
-	  import { getBackendUrl } from '$lib/config';
   import { formatBytes, formatDate } from '$lib/format';
   import { GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
+  import { connectStream } from '$lib/realtime/stream';
   import type { TrainingProviderCapabilityResponse } from '$lib/types/training';
 
   type DatasetSummary = {
@@ -102,7 +106,10 @@
   let createMessage = $state('');
   let createStatus = $state<'idle' | 'running' | 'complete' | 'error'>('idle');
   let createEvents = $state<Array<{ type: string; message: string; timestamp: string }>>([]);
-  let createWs = $state<WebSocket | null>(null);
+  let createProgressPercent = $state(0);
+  let provisionOperationId = $state('');
+  let createStreamCleanup = $state<(() => void) | null>(null);
+  let lastCreateEventKey = $state('');
 
   let selectedDataset = $state('');
 
@@ -238,29 +245,34 @@
   const isVast = $derived(cloudProvider === 'vast');
   const isVerda = $derived(cloudProvider === 'verda');
 
-  const wsUrl = (path: string) => getBackendUrl().replace(/^http/, 'ws') + path;
-
   const progressLabelMap: Record<string, string> = {
-    start: '開始',
-    validating: '設定検証',
-    validated: '設定検証',
-    selecting_instance: 'インスタンス選択',
-    instance_selected: 'インスタンス選択',
-    finding_location: 'ロケーション探索',
-    location_found: 'ロケーション探索',
-    creating_instance: 'インスタンス作成',
-    instance_created: 'インスタンス作成',
-    waiting_ip: 'IP割り当て待機',
-    ip_assigned: 'IP割り当て完了',
-    waiting_running: 'インスタンス起動待機',
-    instance_running: 'インスタンス起動完了',
-    connecting_ssh: 'SSH接続',
-    ssh_ready: 'SSH接続完了',
-    deploying: 'ファイル転送',
-    setting_up: '環境構築',
-    starting_training: '学習開始',
-    complete: '完了',
-    error: 'エラー'
+    queued: '開始待ち',
+    validate: '設定検証',
+    select_candidate: '候補確認',
+    create_instance: 'インスタンス作成',
+    wait_ip: 'IP割り当て待機',
+    connect_ssh: 'SSH接続',
+    deploy_files: 'ファイル転送',
+    setup_env: '環境構築',
+    start_training: '学習開始',
+    job_created: 'ジョブ作成',
+    completed: '完了',
+    failed: 'エラー'
+  };
+
+  const progressPercentMap: Record<string, number> = {
+    queued: 2,
+    validate: 10,
+    select_candidate: 20,
+    create_instance: 35,
+    wait_ip: 50,
+    connect_ssh: 65,
+    deploy_files: 78,
+    setup_env: 90,
+    start_training: 97,
+    job_created: 100,
+    completed: 100,
+    failed: 100
   };
 
   const buildJobName = (policy: string, shortId: string) => {
@@ -377,6 +389,70 @@
     return payload;
   };
 
+  const setProvisionOperationQuery = async (operationId: string | null) => {
+    const nextUrl = new URL(page.url);
+    if (operationId) {
+      nextUrl.searchParams.set('operation_id', operationId);
+    } else {
+      nextUrl.searchParams.delete('operation_id');
+    }
+    await goto(`${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true
+    });
+  };
+
+  const closeCreateStream = () => {
+    createStreamCleanup?.();
+    createStreamCleanup = null;
+  };
+
+  const appendCreateEvent = (type: string, message: string, eventKey: string) => {
+    if (!message || eventKey === lastCreateEventKey) return;
+    lastCreateEventKey = eventKey;
+    createEvents = [
+      ...createEvents,
+      { type, message, timestamp: new Date().toLocaleTimeString('ja-JP') }
+    ].slice(-12);
+  };
+
+  const applyProvisionSnapshot = async (snapshot: TrainingProvisionOperationStatusResponse) => {
+    const step = snapshot.step || 'queued';
+    const label = progressLabelMap[step] ?? step;
+    const message = snapshot.message || label;
+    createStage = label;
+    createMessage = message;
+    createProgressPercent = progressPercentMap[step] ?? 0;
+    provisionOperationId = snapshot.operation_id;
+
+    appendCreateEvent(step, message, `${snapshot.updated_at ?? ''}:${snapshot.state}:${step}:${message}`);
+
+    if (snapshot.job_id) {
+      closeCreateStream();
+      createStatus = 'complete';
+      submitting = false;
+      await goto(`/train/jobs/${snapshot.job_id}`);
+      return;
+    }
+
+    if (snapshot.state === 'failed') {
+      createStatus = 'error';
+      submitError = snapshot.message || snapshot.failure_reason || '学習ジョブの作成に失敗しました。';
+      submitting = false;
+      return;
+    }
+
+    if (snapshot.state === 'completed') {
+      createStatus = 'complete';
+      submitting = false;
+      return;
+    }
+
+    createStatus = 'running';
+    submitting = true;
+  };
+
   const submit = async () => {
     submitError = '';
     createStatus = 'idle';
@@ -406,78 +482,72 @@
     createStage = '開始';
     createMessage = '';
     createEvents = [];
-
-    if (createWs) {
-      createWs.close();
-    }
-
-    let accessToken = '';
     try {
-      const auth = await api.auth.token();
-      accessToken = auth.access_token;
+      closeCreateStream();
+      const accepted = await api.training.startProvisionOperation(payload);
+      provisionOperationId = accepted.operation_id;
+      createProgressPercent = progressPercentMap.queued;
+      await setProvisionOperationQuery(accepted.operation_id);
     } catch (error) {
       createStatus = 'error';
-      submitError = 'セッション情報を取得できませんでした。ログインし直してください。';
+      submitError = error instanceof Error ? error.message : '学習ジョブの作成に失敗しました。';
       submitting = false;
+    }
+  };
+
+  $effect(() => {
+    const operationId = page.url.searchParams.get('operation_id') ?? '';
+    if (!operationId) {
+      if (!submitting) {
+        closeCreateStream();
+        provisionOperationId = '';
+      }
       return;
     }
 
-    const ws = new WebSocket(
-      wsUrl(`/api/training/ws/create-job?access_token=${encodeURIComponent(accessToken)}`)
-    );
-    createWs = ws;
+    if (provisionOperationId === operationId && createStreamCleanup) {
+      return;
+    }
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify(payload));
-    };
+    provisionOperationId = operationId;
+    closeCreateStream();
 
-    ws.onmessage = async (event) => {
-      const data = JSON.parse(event.data as string) as { type?: string; message?: string; error?: string; job_id?: string };
-      if (data.type === 'heartbeat') return;
-      const type = data.type ?? 'status';
-      const label = progressLabelMap[type] ?? type;
-      const message = data.message || data.error || label;
-      createStage = label;
-      createMessage = message;
-      createEvents = [
-        ...createEvents,
-        { type, message, timestamp: new Date().toLocaleTimeString('ja-JP') }
-      ].slice(-12);
-
-      if (type === 'error') {
-        createStatus = 'error';
-        submitError = data.error || '学習ジョブの作成に失敗しました。';
-        submitting = false;
-        ws.close();
-      }
-
-      if (type === 'complete') {
-        createStatus = 'complete';
-        submitting = false;
-        ws.close();
-        if (data.job_id) {
-          await goto(`/train/jobs/${data.job_id}`);
+    let cancelled = false;
+    (async () => {
+      try {
+        const snapshot = await api.training.provisionOperation(operationId);
+        if (cancelled) return;
+        await applyProvisionSnapshot(snapshot);
+        if (snapshot.job_id || snapshot.state === 'failed' || snapshot.state === 'completed') {
+          return;
         }
-      }
-    };
-
-    ws.onerror = () => {
-      createStatus = 'error';
-      submitError = 'WebSocket接続に失敗しました。';
-      submitting = false;
-    };
-
-    ws.onclose = () => {
-      if (createStatus === 'running') {
+        createStreamCleanup = connectStream<TrainingProvisionOperationStatusResponse>({
+          path: `/api/stream/training/provision-operations/${encodeURIComponent(operationId)}`,
+          onMessage: (payload) => {
+            void applyProvisionSnapshot(payload);
+          },
+          onError: () => {
+            if (createStatus === 'running') {
+              submitError = '進行状況ストリームの接続に失敗しました。';
+            }
+          }
+        });
+      } catch (error) {
+        if (cancelled) return;
         createStatus = 'error';
-        submitError = '接続が切断されました。';
+        submitError = error instanceof Error ? error.message : '作成進行の取得に失敗しました。';
         submitting = false;
       }
-      createWs = null;
+    })();
+
+    return () => {
+      cancelled = true;
+      closeCreateStream();
     };
-  };
+  });
+
   onDestroy(() => {
-    createWs?.close();
+    closeCreateStream();
   });
 </script>
 
@@ -831,11 +901,17 @@
         <Button.Root class="btn-primary" type="button" onclick={submit} disabled={submitting}>
           {submitting ? '作成中...' : '学習を開始'}
         </Button.Root>
-        {#if submitting || createEvents.length}
+        {#if submitting || createEvents.length || provisionOperationId}
           <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
             <div class="flex items-center justify-between">
               <p class="label">作成進行</p>
               <span class="chip">{createStage}</span>
+            </div>
+            <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-200/80">
+              <div
+                class={`h-full rounded-full transition-[width] duration-300 ${createStatus === 'error' ? 'bg-rose-500' : 'bg-[linear-gradient(90deg,#5c7cff,#5f7cff,#7a8cff)]'}`}
+                style={`width: ${Math.max(0, Math.min(100, createProgressPercent))}%`}
+              ></div>
             </div>
             <p class="mt-2 text-sm text-slate-700">{createMessage || '進行状況を取得中...'}</p>
             <div class="mt-3 space-y-1">

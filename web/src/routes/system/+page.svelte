@@ -16,7 +16,7 @@
   import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
   import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
   import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
-  import type { SystemSettings, UserSettings } from '$lib/types/settings';
+  import type { FeaturesRepoSuggestions, SystemSettings, UserSettings } from '$lib/types/settings';
   import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
 
   type SystemTab = 'status' | 'profile' | 'runtime' | 'settings';
@@ -56,6 +56,8 @@
   let bundledTorchSnapshot = $state<BundledTorchBuildSnapshot | null>(null);
   let runtimeEnvSnapshot = $state<RuntimeEnvSnapshot | null>(null);
   let systemSettings = $state<SystemSettings | null>(null);
+  let featuresRepoSuggestions = $state<FeaturesRepoSuggestions | null>(null);
+  let featuresRepoSuggestionsPending = $state(false);
   let userSettings = $state<UserSettings | null>(null);
   let bundledTorchActionPending = $state(false);
   let bundledTorchActionError = $state('');
@@ -67,6 +69,7 @@
   let userSettingsPending = $state(false);
   let userSettingsError = $state('');
   let userSettingsSuccess = $state('');
+  let featuresRepoSuggestionsAbort = $state<AbortController | null>(null);
 
   const renderStatusLabel = (value?: string) => {
     switch (value) {
@@ -241,6 +244,9 @@
   const saveSystemSettings = async (payload: {
     pytorchVersion: string;
     torchvisionVersion: string;
+    repoUrl: string;
+    repoRef: string;
+    repoCommit?: string;
   }) => {
     systemSettingsPending = true;
     systemSettingsError = '';
@@ -250,6 +256,11 @@
         bundled_torch: {
           pytorch_version: payload.pytorchVersion.trim(),
           torchvision_version: payload.torchvisionVersion.trim()
+        },
+        features_repo: {
+          repo_url: payload.repoUrl.trim(),
+          repo_ref: payload.repoRef.trim(),
+          repo_commit: payload.repoCommit?.trim() || null
         }
       });
       systemSettingsSuccess = 'system settings を更新しました。';
@@ -260,6 +271,54 @@
       systemSettingsPending = false;
     }
   };
+
+  const refreshFeaturesRepoSuggestions = async (payload: { repoUrl: string; repoRef?: string }) => {
+    const repoUrl = payload.repoUrl.trim();
+    if (!repoUrl) {
+      featuresRepoSuggestionsAbort?.abort();
+      featuresRepoSuggestionsAbort = null;
+      featuresRepoSuggestionsPending = false;
+      featuresRepoSuggestions = null;
+      return;
+    }
+    featuresRepoSuggestionsAbort?.abort();
+    const controller = new AbortController();
+    featuresRepoSuggestionsAbort = controller;
+    featuresRepoSuggestionsPending = true;
+    try {
+      featuresRepoSuggestions = await api.system.featuresRepoSuggestions({
+        repo_url: repoUrl,
+        repo_ref: payload.repoRef?.trim() || undefined,
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      systemSettingsError =
+        error instanceof Error ? error.message : 'features repo 候補の取得に失敗しました。';
+    } finally {
+      if (featuresRepoSuggestionsAbort === controller) {
+        featuresRepoSuggestionsAbort = null;
+        featuresRepoSuggestionsPending = false;
+      }
+    }
+  };
+
+  $effect(() => {
+    if (
+      activeTab !== 'settings' ||
+      !systemSettings?.features_repo?.repo_url ||
+      featuresRepoSuggestionsPending ||
+      featuresRepoSuggestions
+    ) {
+      return;
+    }
+    void refreshFeaturesRepoSuggestions({
+      repoUrl: systemSettings.features_repo.repo_url,
+      repoRef: systemSettings.features_repo.repo_ref
+    });
+  });
 
   const saveUserSettings = async (payload: {
     huggingfaceToken?: string;
@@ -282,37 +341,60 @@
     }
   };
 
+  let stopActiveTabStreams: () => void = () => {};
+
   onMount(() => {
     void loadInitialState();
 
-    const stopSystemStatusStream = connectSystemStatusStream({
-      onMessage: (payload) => {
-        systemStatusSnapshot = payload;
-      }
-    });
-    const stopOperateStream = connectStream<OperateStatusStreamPayload>({
-      path: '/api/stream/operate/status',
-      onMessage: (payload) => {
-        networkStatus = payload.operate_status?.network ?? null;
-      }
-    });
-    const stopBundledTorchStream = connectBundledTorchStream({
-      onMessage: (payload) => {
-        bundledTorchSnapshot = payload;
-      }
-    });
-    const stopRuntimeEnvStream = connectRuntimeEnvStream({
-      onMessage: (payload) => {
-        runtimeEnvSnapshot = payload;
-      }
-    });
-
     return () => {
-      stopSystemStatusStream();
-      stopOperateStream();
-      stopBundledTorchStream();
-      stopRuntimeEnvStream();
+      stopActiveTabStreams();
+      featuresRepoSuggestionsAbort?.abort();
+      featuresRepoSuggestionsAbort = null;
+      featuresRepoSuggestionsPending = false;
     };
+  });
+
+  $effect(() => {
+    stopActiveTabStreams();
+
+    if (activeTab === 'status') {
+      const stopSystemStatusStream = connectSystemStatusStream({
+        onMessage: (payload) => {
+          systemStatusSnapshot = payload;
+        }
+      });
+      const stopOperateStream = connectStream<OperateStatusStreamPayload>({
+        path: '/api/stream/operate/status',
+        onMessage: (payload) => {
+          networkStatus = payload.operate_status?.network ?? null;
+        }
+      });
+      stopActiveTabStreams = () => {
+        stopSystemStatusStream();
+        stopOperateStream();
+      };
+      return;
+    }
+
+    if (activeTab === 'runtime') {
+      const stopBundledTorchStream = connectBundledTorchStream({
+        onMessage: (payload) => {
+          bundledTorchSnapshot = payload;
+        }
+      });
+      const stopRuntimeEnvStream = connectRuntimeEnvStream({
+        onMessage: (payload) => {
+          runtimeEnvSnapshot = payload;
+        }
+      });
+      stopActiveTabStreams = () => {
+        stopBundledTorchStream();
+        stopRuntimeEnvStream();
+      };
+      return;
+    }
+
+    stopActiveTabStreams = () => {};
   });
 </script>
 
@@ -356,43 +438,54 @@
     </div>
 
     <Tabs.Content value="status" class="mt-6 space-y-6">
-      <SystemStatusTab snapshot={systemStatusSnapshot} network={networkStatus} />
+      {#if activeTab === 'status'}
+        <SystemStatusTab snapshot={systemStatusSnapshot} network={networkStatus} />
+      {/if}
     </Tabs.Content>
 
     <Tabs.Content value="profile" class="mt-6 space-y-6">
-      <ProfileTab />
+      {#if activeTab === 'profile'}
+        <ProfileTab />
+      {/if}
     </Tabs.Content>
 
     <Tabs.Content value="runtime" class="mt-6 space-y-6">
-      <RuntimeTab
-        snapshot={systemStatusSnapshot}
-        runtimeEnvSnapshot={runtimeEnvSnapshot}
-        bundledTorchSnapshot={bundledTorchSnapshot}
-        systemSettings={systemSettings}
-        runtimeEnvActionPending={runtimeEnvActionPending}
-        runtimeEnvActionError={runtimeEnvActionError}
-        bundledTorchActionPending={bundledTorchActionPending}
-        bundledTorchActionError={bundledTorchActionError}
-        onRuntimeBuild={triggerRuntimeBuild}
-        onRuntimeDelete={triggerRuntimeDelete}
-        onBuild={triggerBuild}
-        onClean={triggerClean}
-      />
+      {#if activeTab === 'runtime'}
+        <RuntimeTab
+          snapshot={systemStatusSnapshot}
+          runtimeEnvSnapshot={runtimeEnvSnapshot}
+          bundledTorchSnapshot={bundledTorchSnapshot}
+          systemSettings={systemSettings}
+          runtimeEnvActionPending={runtimeEnvActionPending}
+          runtimeEnvActionError={runtimeEnvActionError}
+          bundledTorchActionPending={bundledTorchActionPending}
+          bundledTorchActionError={bundledTorchActionError}
+          onRuntimeBuild={triggerRuntimeBuild}
+          onRuntimeDelete={triggerRuntimeDelete}
+          onBuild={triggerBuild}
+          onClean={triggerClean}
+        />
+      {/if}
     </Tabs.Content>
 
     <Tabs.Content value="settings" class="mt-6 space-y-6">
-      <SettingsTab
-        systemSettings={systemSettings}
-        userSettings={userSettings}
-        systemPending={systemSettingsPending}
-        userPending={userSettingsPending}
-        systemError={systemSettingsError}
-        userError={userSettingsError}
-        systemSuccess={systemSettingsSuccess}
-        userSuccess={userSettingsSuccess}
-        onSaveSystemSettings={saveSystemSettings}
-        onSaveUserSettings={saveUserSettings}
-      />
+      {#if activeTab === 'settings'}
+        <SettingsTab
+          systemSettings={systemSettings}
+          userSettings={userSettings}
+          featuresRepoSuggestions={featuresRepoSuggestions}
+          featuresRepoSuggestionsPending={featuresRepoSuggestionsPending}
+          systemPending={systemSettingsPending}
+          userPending={userSettingsPending}
+          systemError={systemSettingsError}
+          userError={userSettingsError}
+          systemSuccess={systemSettingsSuccess}
+          userSuccess={userSettingsSuccess}
+          onSaveSystemSettings={saveSystemSettings}
+          onSaveUserSettings={saveUserSettings}
+          onRefreshFeaturesRepoSuggestions={refreshFeaturesRepoSuggestions}
+        />
+      {/if}
     </Tabs.Content>
   </Tabs.Root>
 </section>

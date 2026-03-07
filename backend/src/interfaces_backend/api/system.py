@@ -1,14 +1,20 @@
 """System API router."""
 
+import asyncio
+import json
+import os
 import platform
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 import psutil
 
 from interfaces_backend.models.build import BundledTorchBuildRequest, BundledTorchBuildSnapshot
@@ -17,7 +23,12 @@ from interfaces_backend.models.runtime_env import (
     RuntimeEnvDeleteRequest,
     RuntimeEnvSnapshot,
 )
-from interfaces_backend.models.settings import SystemSettingsModel, SystemSettingsUpdateRequest
+from interfaces_backend.models.settings import (
+    FeaturesRepoCommitSuggestionModel,
+    FeaturesRepoSuggestionsResponse,
+    SystemSettingsModel,
+    SystemSettingsUpdateRequest,
+)
 from interfaces_backend.utils.torch_info import get_torch_info
 from interfaces_backend.models.system import (
     ServiceStatus,
@@ -62,6 +73,74 @@ def _add_log(level: str, message: str, source: Optional[str] = None) -> None:
     # Trim buffer if too large
     if len(_log_buffer) > _max_log_entries:
         _log_buffer = _log_buffer[-_max_log_entries:]
+
+
+def _github_token() -> str | None:
+    return str(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip() or None
+
+
+def _parse_github_repo(repo_url: str) -> tuple[str, str]:
+    raw = str(repo_url or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="repo_url is required")
+    normalized = raw.removesuffix(".git")
+    if normalized.startswith("git@github.com:"):
+        path = normalized.removeprefix("git@github.com:")
+    else:
+        parsed = urllib.parse.urlparse(normalized)
+        if parsed.netloc != "github.com":
+            raise HTTPException(status_code=400, detail="GitHub repository URL is required")
+        path = parsed.path.lstrip("/")
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2:
+        raise HTTPException(status_code=400, detail="Invalid GitHub repository URL")
+    return parts[0], parts[1]
+
+
+def _github_request_json(path: str) -> dict | list:
+    token = _github_token()
+    if not token:
+        raise HTTPException(status_code=400, detail="GH_TOKEN or GITHUB_TOKEN is required")
+    req = urllib.request.Request(f"https://api.github.com{path}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {exc.code} {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub API unreachable: {exc.reason}") from exc
+
+
+def _load_features_repo_suggestions(repo_url: str, repo_ref: str | None) -> FeaturesRepoSuggestionsResponse:
+    owner, repo = _parse_github_repo(repo_url)
+    repo_meta = _github_request_json(f"/repos/{owner}/{repo}")
+    default_branch = str((repo_meta or {}).get("default_branch") or "").strip() or None
+    branches_payload = _github_request_json(f"/repos/{owner}/{repo}/branches?per_page=50")
+    branches = [str(item.get("name") or "").strip() for item in branches_payload if str(item.get("name") or "").strip()]
+    branch_ref = str(repo_ref or "").strip() or default_branch or "main"
+    commits_payload = _github_request_json(
+        f"/repos/{owner}/{repo}/commits?sha={urllib.parse.quote(branch_ref, safe='')}&per_page=20"
+    )
+    commits = [
+        FeaturesRepoCommitSuggestionModel(
+            sha=str(item.get("sha") or ""),
+            short_sha=str(item.get("sha") or "")[:7],
+            message=str((((item.get("commit") or {}).get("message")) or "").splitlines()[0]).strip(),
+        )
+        for item in commits_payload
+        if str(item.get("sha") or "").strip()
+    ]
+    return FeaturesRepoSuggestionsResponse(
+        repo_url=repo_url,
+        repo_ref=repo_ref or None,
+        default_branch=default_branch,
+        branches=branches,
+        commits=commits,
+    )
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -278,7 +357,7 @@ async def get_system_info():
 
 
 @router.get("/gpu", response_model=GpuResponse)
-async def get_gpu_info():
+def _collect_gpu_info() -> GpuResponse:
     """Get GPU information using nvidia-smi (no torch import needed)."""
     gpus = []
     cuda_version = None
@@ -350,6 +429,11 @@ async def get_gpu_info():
     )
 
 
+@router.get("/gpu", response_model=GpuResponse)
+async def get_gpu_info():
+    return await asyncio.to_thread(_collect_gpu_info)
+
+
 @router.get("/bundled-torch/status", response_model=BundledTorchBuildSnapshot)
 async def get_bundled_torch_status():
     service = get_bundled_torch_build_service()
@@ -396,13 +480,26 @@ async def delete_runtime_env(request: RuntimeEnvDeleteRequest):
 
 @router.get("/settings", response_model=SystemSettingsModel)
 async def get_system_settings():
-    return get_system_settings_service().get_settings()
+    return await asyncio.to_thread(get_system_settings_service().get_settings)
 
 
 @router.put("/settings", response_model=SystemSettingsModel)
 async def update_system_settings(request: SystemSettingsUpdateRequest):
     bundled = request.bundled_torch
-    return get_system_settings_service().update_settings(
+    features_repo = request.features_repo
+    return await asyncio.to_thread(
+        get_system_settings_service().update_settings,
         pytorch_version=bundled.pytorch_version if bundled else None,
         torchvision_version=bundled.torchvision_version if bundled else None,
+        features_repo_url=features_repo.repo_url.strip() if features_repo else None,
+        features_repo_ref=features_repo.repo_ref.strip() if features_repo else None,
+        features_repo_commit=(features_repo.repo_commit or "").strip() if features_repo else None,
     )
+
+
+@router.get("/settings/features-repo/suggestions", response_model=FeaturesRepoSuggestionsResponse)
+async def get_features_repo_suggestions(
+    repo_url: str = Query(..., description="GitHub repository URL"),
+    repo_ref: str | None = Query(None, description="Branch or tag for commit suggestions"),
+):
+    return await asyncio.to_thread(_load_features_repo_suggestions, repo_url=repo_url, repo_ref=repo_ref)

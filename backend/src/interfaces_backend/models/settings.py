@@ -12,10 +12,22 @@ class BundledTorchDefaultsModel(BaseModel):
     torchvision_version: str = Field("v0.23.0", description="Default torchvision version")
 
 
+class FeaturesRepoSettingsModel(BaseModel):
+    """Features repository checkout settings."""
+
+    repo_url: str = Field(
+        "https://github.com/percus-ai/physical-ai-features.git",
+        description="Features repository URL",
+    )
+    repo_ref: str = Field("main", description="Features repository branch or tag")
+    repo_commit: str | None = Field(None, description="Pinned features repository commit hash")
+
+
 class SystemSettingsModel(BaseModel):
     """Machine-scoped settings."""
 
     bundled_torch: BundledTorchDefaultsModel = Field(default_factory=BundledTorchDefaultsModel)
+    features_repo: FeaturesRepoSettingsModel = Field(default_factory=FeaturesRepoSettingsModel)
     updated_at: str | None = Field(None, description="Last update timestamp")
 
 
@@ -23,6 +35,25 @@ class SystemSettingsUpdateRequest(BaseModel):
     """Machine-scoped settings update request."""
 
     bundled_torch: BundledTorchDefaultsModel | None = None
+    features_repo: FeaturesRepoSettingsModel | None = None
+
+
+class FeaturesRepoCommitSuggestionModel(BaseModel):
+    """Commit suggestion for features repo selection."""
+
+    sha: str
+    short_sha: str
+    message: str
+
+
+class FeaturesRepoSuggestionsResponse(BaseModel):
+    """Autocomplete suggestions for features repo settings."""
+
+    repo_url: str
+    repo_ref: str | None = None
+    default_branch: str | None = None
+    branches: list[str] = Field(default_factory=list)
+    commits: list[FeaturesRepoCommitSuggestionModel] = Field(default_factory=list)
 
 
 class HuggingFaceSecretStatusModel(BaseModel):

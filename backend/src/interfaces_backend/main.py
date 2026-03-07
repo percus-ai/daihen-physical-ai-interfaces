@@ -94,6 +94,9 @@ from interfaces_backend.services.bundled_torch_build_service import get_bundled_
 from interfaces_backend.services.lerobot_runtime import start_lerobot
 from interfaces_backend.services.runtime_env_service import get_runtime_env_service
 from interfaces_backend.services.system_status_monitor import get_system_status_monitor
+from interfaces_backend.services.training_provision_operations import (
+    get_training_provision_operations_service,
+)
 from interfaces_backend.core.request_auth import (
     build_session_from_request,
     is_session_expired,
@@ -141,6 +144,12 @@ async def start_vlabor_container() -> None:
     get_system_status_monitor().ensure_started()
     await get_bundled_torch_build_service().refresh_snapshot()
     await get_runtime_env_service().refresh_snapshot()
+    cleaned = await get_training_provision_operations_service().cleanup_stale_operations()
+    if cleaned:
+        startup_logger.warning(
+            "Cleaned up %d stale training provision operations on backend startup",
+            len(cleaned),
+        )
 
 
 @app.on_event("shutdown")

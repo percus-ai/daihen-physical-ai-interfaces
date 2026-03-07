@@ -47,6 +47,8 @@ from interfaces_backend.models.training import (
     JobStatusUpdate,
     JobCreateRequest,
     JobCreateResponse,
+    TrainingProvisionOperationAcceptedResponse,
+    TrainingProvisionOperationStatusResponse,
     JobMetricsResponse,
     InstanceStatusResponse,
     # Checkpoint models
@@ -94,6 +96,10 @@ from percus_ai.db import (
 from percus_ai.training.ssh.client import SSHConnection
 from percus_ai.training.ssh.executor import RemoteExecutor, run_remote_command
 from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
+from interfaces_backend.services.training_provision_operations import (
+    cleanup_provision_instance,
+    get_training_provision_operations_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -4649,178 +4655,122 @@ async def check_all_jobs_status():
     return JobStatusCheckResponse(updates=updates, checked_count=checked)
 
 
-@router.websocket("/ws/create-job")
-async def websocket_create_job(websocket: WebSocket):
-    """WebSocket endpoint to create a training job with progress streaming.
+async def _run_training_provision_operation(
+    *,
+    operation_id: str,
+    request_data: dict,
+    supabase_session: dict,
+) -> None:
+    from percus_ai.training.orchestrator import create_job_with_progress
 
-    Client protocol:
-    - Connect with `?access_token=...` (or cookie auth)
-    - Send JSON body compatible with `JobCreateRequest`
-    - Receive progress messages, including final:
-      {"type":"complete","job_id": "...", ...} or {"type":"error","error":"..."}
-    """
-    await websocket.accept()
-
-    supabase_session = _resolve_websocket_supabase_session(websocket)
-    if not supabase_session:
-        await websocket.send_json(
-            {"type": "error", "error": "認証情報がありません。ログインし直してください。"}
-        )
-        await websocket.close()
-        return
-
-    try:
-        raw_payload = await websocket.receive_json()
-    except WebSocketDisconnect:
-        return
-    except Exception as exc:
-        await websocket.send_json(
-            {
-                "type": "error",
-                "error": f"リクエストの解析に失敗しました: {type(exc).__name__}: {exc}",
-            }
-        )
-        await websocket.close()
-        return
-
-    try:
-        request = JobCreateRequest.model_validate(raw_payload)
-    except Exception as exc:
-        await websocket.send_json(
-            {"type": "error", "error": f"リクエストが不正です: {type(exc).__name__}: {exc}"}
-        )
-        await websocket.close()
-        return
-
-    try:
-        _assert_provider_configured(request.cloud.provider)
-    except HTTPException as exc:
-        await websocket.send_json({"type": "error", "error": str(exc.detail)})
-        await websocket.close()
-        return
-
-    job_id = str(uuid.uuid4())
-    request_data = request.model_dump()
-    request_data["job_id"] = job_id
-
+    operations = get_training_provision_operations_service()
     loop = asyncio.get_running_loop()
-    progress_queue: "asyncio.Queue[dict]" = asyncio.Queue()
+    provider = str(((request_data.get("cloud") or {}).get("provider") or "")).strip().lower()
+    latest: dict[str, Optional[str]] = {"instance_id": None, "job_id": None}
+
+    await operations.set_running(
+        operation_id=operation_id,
+        step="validate",
+        message="設定検証",
+    )
 
     def emit_progress(message: dict) -> None:
-        # Called from worker thread; marshal into the event loop.
         payload = (
-            message
-            if isinstance(message, dict)
-            else {"type": "status", "message": str(message)}
+            message if isinstance(message, dict) else {"type": "status", "message": str(message)}
         )
-        loop.call_soon_threadsafe(progress_queue.put_nowait, payload)
+        if payload.get("instance_id") is not None:
+            latest["instance_id"] = str(payload.get("instance_id") or "").strip() or None
+        if payload.get("job_id") is not None:
+            latest["job_id"] = str(payload.get("job_id") or "").strip() or None
+        loop.call_soon_threadsafe(
+            asyncio.create_task,
+            operations.update_from_progress(operation_id=operation_id, progress=payload),
+        )
 
-    def worker() -> None:
-        from percus_ai.training.orchestrator import create_job_with_progress
-
-        create_job_with_progress(request_data, emit_progress, supabase_session)
-
-    worker_future = loop.run_in_executor(_executor, worker)
-    # If the websocket loop exits early (e.g. we receive {"type":"error"} first),
-    # we still need to consume the executor future's exception to avoid:
-    # "Future exception was never retrieved".
-    def _consume_future_result(fut: "asyncio.Future[object]") -> None:
-        try:
-            fut.exception()
-        except Exception:
-            pass
-
-    worker_future.add_done_callback(_consume_future_result)
-    last_heartbeat = loop.time()
+    def worker() -> dict:
+        return create_job_with_progress(request_data, emit_progress, supabase_session)
 
     try:
-        while True:
-            now = loop.time()
-            if now - last_heartbeat > 5:
-                await websocket.send_json({"type": "heartbeat"})
-                last_heartbeat = now
-
-            try:
-                message = await asyncio.wait_for(progress_queue.get(), timeout=0.2)
-            except asyncio.TimeoutError:
-                if worker_future.done() and progress_queue.empty():
-                    exc = worker_future.exception()
-                    if exc:
-                        await websocket.send_json({"type": "error", "error": str(exc)})
-                    else:
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "error": "Job creation finished without completion message",
-                            }
-                        )
-                    break
-                continue
-
-            await websocket.send_json(message)
-            if message.get("type") in {"complete", "error"}:
-                break
-    except WebSocketDisconnect:
-        logger.info("WebSocket create-job disconnected")
+        await loop.run_in_executor(_executor, worker)
+    except HTTPException as exc:
+        cleanup_note = ""
+        if latest["instance_id"] and not latest["job_id"]:
+            deleted, detail = await loop.run_in_executor(
+                None,
+                cleanup_provision_instance,
+                provider,
+                latest["instance_id"],
+            )
+            cleanup_note = (
+                " 作成中インスタンスは削除しました。"
+                if deleted
+                else f" 作成中インスタンスの削除に失敗しました: {detail}"
+            )
+        await operations.fail(
+            operation_id=operation_id,
+            message=f"学習インスタンス作成に失敗しました。{cleanup_note}".strip(),
+            failure_reason=str(exc.detail),
+        )
     except Exception as exc:
-        logger.exception("WebSocket create-job error")
-        try:
-            await websocket.send_json({"type": "error", "error": str(exc)})
-        except Exception:
-            pass
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+        cleanup_note = ""
+        if latest["instance_id"] and not latest["job_id"]:
+            deleted, detail = await loop.run_in_executor(
+                None,
+                cleanup_provision_instance,
+                provider,
+                latest["instance_id"],
+            )
+            cleanup_note = (
+                " 作成中インスタンスは削除しました。"
+                if deleted
+                else f" 作成中インスタンスの削除に失敗しました: {detail}"
+            )
+        await operations.fail(
+            operation_id=operation_id,
+            message=f"学習インスタンス作成に失敗しました。{cleanup_note}".strip(),
+            failure_reason=str(exc),
+        )
 
 
-@router.post("/jobs", response_model=JobCreateResponse)
-async def create_job(request: JobCreateRequest, background_tasks: BackgroundTasks):
-    """Create and launch a new training job.
-
-    This endpoint creates a cloud instance and starts training.
-    The job runs in the background by default.
-    """
+@router.post(
+    "/provision-operations",
+    response_model=TrainingProvisionOperationAcceptedResponse,
+    status_code=202,
+)
+async def start_training_provision_operation(request: JobCreateRequest):
+    """Start a background training provision operation."""
     if not request.job_name:
-        raise HTTPException(
-            status_code=422,
-            detail="job_name must be provided",
-        )
+        raise HTTPException(status_code=422, detail="job_name must be provided")
     if not request.dataset:
-        raise HTTPException(
-            status_code=422,
-            detail="dataset must be provided",
-        )
+        raise HTTPException(status_code=422, detail="dataset must be provided")
     if not request.policy:
-        raise HTTPException(
-            status_code=422,
-            detail="policy must be provided",
-        )
+        raise HTTPException(status_code=422, detail="policy must be provided")
     _assert_provider_configured(request.cloud.provider)
 
-    job_id = str(uuid.uuid4())
+    user_id = get_current_user_id()
     session = get_supabase_session() or {}
-
+    operations = get_training_provision_operations_service()
+    accepted = await operations.create(user_id=user_id, request=request)
     request_data = request.model_dump()
-    request_data["job_id"] = job_id
-
-    def emit_progress(_: dict) -> None:
-        return
-
-    def worker() -> None:
-        from percus_ai.training.orchestrator import create_job_with_progress
-
-        create_job_with_progress(request_data, emit_progress, session)
-
-    background_tasks.add_task(worker)
-
-    return JobCreateResponse(
-        job_id=job_id,
-        instance_id="",
-        status="starting",
-        message="Job accepted; provisioning will run in background",
+    request_data["job_id"] = str(uuid.uuid4())
+    asyncio.create_task(
+        _run_training_provision_operation(
+            operation_id=accepted.operation_id,
+            request_data=request_data,
+            supabase_session=session,
+        )
     )
+    return accepted
+
+
+@router.get(
+    "/provision-operations/{operation_id}",
+    response_model=TrainingProvisionOperationStatusResponse,
+)
+async def get_training_provision_operation(operation_id: str):
+    user_id = get_current_user_id()
+    operations = get_training_provision_operations_service()
+    return await operations.get(user_id=user_id, operation_id=operation_id)
 
 
 # --- Helper functions for job creation ---

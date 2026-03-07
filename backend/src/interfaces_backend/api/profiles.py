@@ -242,7 +242,7 @@ async def set_active_profile(request: VlaborProfileSelectRequest):
 async def get_active_profile_status():
     _require_user_id()
     active = await get_active_profile_spec()
-    topics = _fetch_ros2_topics()
+    topics = await asyncio.to_thread(_fetch_ros2_topics)
     topic_set = set(topics)
 
     cameras = []
@@ -297,7 +297,7 @@ async def get_active_profile_status():
 
 @router.get("/vlabor/status", response_model=VlaborStatusResponse)
 async def get_vlabor_status():
-    return VlaborStatusResponse(**_get_vlabor_status())
+    return VlaborStatusResponse(**(await asyncio.to_thread(_get_vlabor_status)))
 
 
 @router.websocket("/ws/vlabor/restart")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -179,8 +180,7 @@ def _build_driver_status() -> OperateServiceStatus:
     )
 
 
-@router.get("/status", response_model=OperateStatusResponse)
-async def get_operate_status():
+def _collect_operate_status() -> OperateStatusResponse:
     backend = OperateServiceStatus(name="backend", status="running", message="ok")
     vlabor = _get_compose_status("vlabor")
     lerobot = _get_compose_status("lerobot-ros2")
@@ -194,3 +194,8 @@ async def get_operate_status():
         network=network,
         driver=driver,
     )
+
+
+@router.get("/status", response_model=OperateStatusResponse)
+async def get_operate_status():
+    return await asyncio.to_thread(_collect_operate_status)
