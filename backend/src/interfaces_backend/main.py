@@ -91,7 +91,7 @@ from interfaces_backend.api import (
     webui_blueprints_router,
 )
 from interfaces_backend.services.bundled_torch_build_service import get_bundled_torch_build_service
-from interfaces_backend.services.lerobot_runtime import start_lerobot
+from interfaces_backend.services.lerobot_runtime import start_lerobot_on_backend_startup
 from interfaces_backend.services.runtime_env_service import get_runtime_env_service
 from interfaces_backend.services.system_status_monitor import get_system_status_monitor
 from interfaces_backend.services.training_provision_operations import (
@@ -135,12 +135,7 @@ async def start_vlabor_container() -> None:
         startup_logger.warning("Could not resolve active profile; starting VLAbor without profile")
         profile_name = None
     start_vlabor_on_backend_startup(profile=profile_name, logger=startup_logger)
-    lerobot_result = start_lerobot(strict=False)
-    if lerobot_result.returncode != 0:
-        detail = (lerobot_result.stderr or lerobot_result.stdout).strip()
-        startup_logger.warning("Failed to start lerobot stack on backend startup: %s", detail)
-    else:
-        startup_logger.info("lerobot stack started on backend startup")
+    start_lerobot_on_backend_startup(logger=startup_logger)
     get_system_status_monitor().ensure_started()
     await get_bundled_torch_build_service().refresh_snapshot()
     await get_runtime_env_service().refresh_snapshot()
