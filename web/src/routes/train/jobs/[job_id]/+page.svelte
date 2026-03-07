@@ -39,6 +39,17 @@
   type TrainingConfig = {
     dataset?: { id?: string; video_backend?: string };
     policy?: { type?: string; pretrained_path?: string };
+    cloud?: {
+      provider?: string;
+      gpu_model?: string;
+      gpus_per_instance?: number;
+      storage_size?: number;
+      location?: string;
+      selected_mode?: 'spot' | 'ondemand';
+      selected_instance_type?: string;
+      selected_offer_id?: number;
+      max_price?: number;
+    };
     training?: {
       steps?: number;
       batch_size?: number;
