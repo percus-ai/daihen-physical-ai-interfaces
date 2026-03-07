@@ -25,6 +25,8 @@
 
   let pytorchVersion = $state('');
   let torchvisionVersion = $state('');
+  let errorCopied = $state(false);
+  let errorCopyFailed = $state(false);
 
   const bundledLogs = $derived(snapshot?.logs ?? []);
   const bundledBusy = $derived(snapshot?.state === 'building' || snapshot?.state === 'cleaning');
@@ -74,9 +76,24 @@
     if (bundledRequired) return 'AGX Thor / Jetson 系では bundled-torch が実行ランタイムに使われます。';
     return 'この環境では bundled-torch build は不要です。';
   });
+  const bundledErrorLog = $derived(actionError || snapshot?.last_error || snapshot?.message || '');
+  const bundledHasError = $derived(Boolean(actionError || snapshot?.last_error || snapshot?.state === 'failed'));
   const bundledTorchBanner = $derived(
-    actionError || snapshot?.message || snapshot?.last_error || ''
+    bundledHasError ? '' : snapshot?.message || ''
   );
+  const bundledErrorSummary = $derived.by(() => {
+    if (!bundledHasError) return '';
+    if (snapshot?.state === 'failed') {
+      return 'bundled-torch の処理中に問題が発生しました。Recent Logs を確認するか、エラーログをコピーして共有してください。';
+    }
+    return 'bundled-torch の操作を開始できませんでした。エラーログをコピーして確認してください。';
+  });
+  const bundledStateMessage = $derived.by(() => {
+    if (bundledHasError) {
+      return '問題が発生しました。詳細は Recent Logs を確認してください。';
+    }
+    return snapshot?.message ?? '-';
+  });
   const buildButtonLabel = $derived(
     bundledBusy && currentBundledAction === 'build' ? 'building...' : 'build'
   );
@@ -133,6 +150,18 @@
     }
   });
 
+  const copyErrorLog = async () => {
+    if (!bundledErrorLog) return;
+    errorCopied = false;
+    errorCopyFailed = false;
+    try {
+      await navigator.clipboard.writeText(bundledErrorLog);
+      errorCopied = true;
+    } catch {
+      errorCopyFailed = true;
+    }
+  };
+
 </script>
 
 <section class={`card border p-6 ${bundledVisualState.panel}`}>
@@ -151,6 +180,24 @@
   </div>
 
   <div class="mt-6 space-y-6">
+    {#if bundledHasError}
+      <div class="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="font-medium">{bundledErrorSummary}</p>
+          <div class="flex items-center gap-2">
+            <button class="btn-ghost !border-rose-200 !text-rose-700" type="button" onclick={copyErrorLog}>
+              エラーログをコピー
+            </button>
+            {#if errorCopied}
+              <span class="text-xs font-semibold text-rose-700">コピーしました</span>
+            {/if}
+            {#if errorCopyFailed}
+              <span class="text-xs font-semibold text-rose-700">コピーに失敗しました</span>
+            {/if}
+          </div>
+        </div>
+      </div>
+    {/if}
     {#if bundledTorchBanner}
       <div class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
         {bundledTorchBanner}
@@ -187,7 +234,7 @@
         <div class="flex items-center justify-between gap-4">
           <div>
             <p class="label">Current State</p>
-            <p class="mt-1 text-base font-semibold text-slate-900">{snapshot?.message ?? '-'}</p>
+            <p class="mt-1 text-base font-semibold text-slate-900">{bundledStateMessage}</p>
           </div>
           <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${bundledVisualState.chip}`}>
             {bundledVisualState.label}
@@ -213,9 +260,6 @@
           <p>requested torch: {snapshot?.requested_pytorch_version ?? '-'}</p>
           <p>requested vision: {snapshot?.requested_torchvision_version ?? '-'}</p>
         </div>
-        {#if snapshot?.last_error}
-          <p class="mt-3 text-sm text-rose-600">{snapshot.last_error}</p>
-        {/if}
       </div>
 
       <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
