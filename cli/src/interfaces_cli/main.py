@@ -1,4 +1,4 @@
-"""Phi CLI - Hacker-style CLI for DPEX.
+"""DPEX CLI - Hacker-style interface for robot control.
 
 Usage:
     phi           # Launch interactive menu
