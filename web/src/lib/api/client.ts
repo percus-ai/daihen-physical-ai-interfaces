@@ -419,6 +419,30 @@ export type TrainingProviderCapabilityResponse = {
   missing_vast_env?: string[];
 };
 
+export type TrainingInstanceCandidate = {
+  provider: 'verda' | 'vast';
+  candidate_id: string;
+  title: string;
+  instance_type?: string | null;
+  offer_id?: number | null;
+  gpu_model: string;
+  gpu_count: number;
+  mode: 'spot' | 'ondemand';
+  route?: string;
+  location?: string | null;
+  price_per_hour?: number | null;
+  detail?: string;
+  storage_gb?: number | null;
+  gpu_memory_gb?: number | null;
+  cpu_cores?: number | null;
+  system_memory_gb?: number | null;
+};
+
+export type TrainingInstanceCandidatesResponse = {
+  candidates?: TrainingInstanceCandidate[];
+  checked_at?: string;
+};
+
 let refreshPromise: Promise<boolean> | null = null;
 
 async function baseFetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -1087,6 +1111,24 @@ export const api = {
       }),
     gpuAvailability: (provider: 'verda' | 'vast') =>
       fetchApi(`/api/training/gpu-availability?provider=${encodeURIComponent(provider)}`),
+    instanceCandidates: (params: {
+      provider: 'verda' | 'vast';
+      gpu_model?: string;
+      gpu_count?: number;
+      mode?: 'spot' | 'ondemand';
+      storage_size?: number;
+      max_price?: number | null;
+    }) => {
+      const query = new URLSearchParams({ provider: params.provider });
+      if (params.gpu_model) query.set('gpu_model', params.gpu_model);
+      if (typeof params.gpu_count === 'number') query.set('gpu_count', String(params.gpu_count));
+      if (params.mode) query.set('mode', params.mode);
+      if (typeof params.storage_size === 'number') query.set('storage_size', String(params.storage_size));
+      if (typeof params.max_price === 'number' && !Number.isNaN(params.max_price)) {
+        query.set('max_price', String(params.max_price));
+      }
+      return fetchApi<TrainingInstanceCandidatesResponse>(`/api/training/instance-candidates?${query.toString()}`);
+    },
     verdaStorage: () => fetchApi('/api/training/verda/storage'),
     verdaStorageDelete: (payload: { volume_ids: string[] }) =>
       fetchApi('/api/training/verda/storage/delete', {

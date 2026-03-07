@@ -1,16 +1,15 @@
 <script lang="ts">
 	  import { onDestroy } from 'svelte';
 	  import { Button } from 'bits-ui';
-	  import { createQuery } from '@tanstack/svelte-query';
-	  import { get } from 'svelte/store';
+  import { createQuery } from '@tanstack/svelte-query';
 	  import { goto } from '$app/navigation';
 	  import { api } from '$lib/api/client';
 	  import HelpLabel from '$lib/components/HelpLabel.svelte';
-	  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
+	  import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
 	  import { getBackendUrl } from '$lib/config';
   import { formatBytes, formatDate } from '$lib/format';
-  import { GPU_COUNTS, GPU_MODELS, POLICY_TYPES } from '$lib/policies';
-  import type { GpuAvailabilityResponse, TrainingProviderCapabilityResponse } from '$lib/types/training';
+  import { GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
+  import type { TrainingProviderCapabilityResponse } from '$lib/types/training';
 
   type DatasetSummary = {
     id: string;
@@ -33,7 +32,6 @@
   });
 
 	  let cloudProvider = $state<'verda' | 'vast'>('verda');
-	  let vastInterruptible = $state(true);
 	  let vastMaxPrice = $state<number | null>(null);
 
 	  const providerCapabilitiesQuery = createQuery<TrainingProviderCapabilityResponse>({
@@ -44,23 +42,6 @@
 	  const isVerdaProviderEnabled = $derived($providerCapabilitiesQuery.data?.verda_enabled ?? true);
 	  const isVastProviderEnabled = $derived($providerCapabilitiesQuery.data?.vast_enabled ?? false);
 
-	  const gpuAvailabilityVerdaQuery = createQuery<GpuAvailabilityResponse>({
-	    queryKey: ['training', 'gpu-availability', 'verda'],
-	    queryFn: () => api.training.gpuAvailability('verda'),
-	    enabled: false
-	  });
-
-	  const gpuAvailabilityVastQuery = createQuery<GpuAvailabilityResponse>({
-	    queryKey: ['training', 'gpu-availability', 'vast'],
-	    queryFn: () => api.training.gpuAvailability('vast'),
-	    enabled: false
-	  });
-
-	  $effect(() => {
-	    const query = cloudProvider === 'verda' ? gpuAvailabilityVerdaQuery : gpuAvailabilityVastQuery;
-	    void get(query).refetch?.();
-	  });
-
 	  $effect(() => {
 	    if (cloudProvider === 'verda' && !isVerdaProviderEnabled && isVastProviderEnabled) {
 	      cloudProvider = 'vast';
@@ -70,8 +51,6 @@
 	      cloudProvider = 'verda';
 	    }
 	  });
-
-  const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.name));
 
   const defaultPolicy = POLICY_TYPES[0];
   let policyType = $state(defaultPolicy?.id ?? '');
@@ -106,7 +85,14 @@
   let gpuModel = $state(defaultPolicy?.recommendedGpu ?? 'H100');
   let gpuCount = $state(GPU_COUNTS[0] ?? 1);
   let storageSize = $state(defaultPolicy?.recommendedStorage ?? 100);
-  let instanceType = $state<'spot' | 'ondemand'>('spot');
+  let selectedMode = $state<'spot' | 'ondemand'>('spot');
+  let selectedInstanceType = $state<string | null>(null);
+  let selectedOfferId = $state<number | null>(null);
+  let selectedLocation = $state('auto');
+  let selectedCandidateTitle = $state('');
+  let selectedCandidateDetail = $state('');
+  let selectedCandidateRoute = $state('');
+  let selectedCandidatePricePerHour = $state<number | null>(null);
 
   let jobName = $state('');
 
@@ -185,6 +171,15 @@
       validationEvalFreq = Math.min(500, steps);
       earlyStoppingMinDelta = 0.002;
     }
+    selectedMode = 'spot';
+    selectedInstanceType = null;
+    selectedOfferId = null;
+    selectedLocation = 'auto';
+    selectedCandidateTitle = '';
+    selectedCandidateDetail = '';
+    selectedCandidateRoute = '';
+    selectedCandidatePricePerHour = null;
+    vastMaxPrice = null;
   };
 
   const handlePolicyChange = (event: Event) => {
@@ -251,7 +246,6 @@
   });
 
   const useAmpDisabled = $derived(policyDtype === 'bfloat16');
-  const isSpot = $derived(instanceType === 'spot');
   const isVast = $derived(cloudProvider === 'vast');
   const isVerda = $derived(cloudProvider === 'verda');
 
@@ -334,14 +328,18 @@
         provider: cloudProvider,
         gpu_model: gpuModel,
         gpus_per_instance: gpuCount,
+        selected_mode: selectedMode,
+        selected_instance_type: cloudProvider === 'verda' ? selectedInstanceType : null,
+        selected_offer_id: cloudProvider === 'vast' ? selectedOfferId : null,
+        location: cloudProvider === 'verda' ? selectedLocation : 'auto',
         ...(isVerda
           ? {
               storage_size: storageSize,
-              is_spot: isSpot
+              is_spot: selectedMode === 'spot'
             }
 		          : {
 		              storage_size: storageSize,
-		              interruptible: vastInterruptible,
+		              interruptible: selectedMode === 'spot',
 		              max_price:
 		                vastMaxPrice === null || Number.isNaN(vastMaxPrice)
 		                  ? null
@@ -399,6 +397,14 @@
     }
     if (cloudProvider === 'verda' && !isVerdaProviderEnabled) {
       submitError = 'Verda認証情報が不足しています: DATACRUNCH_CLIENT_ID, DATACRUNCH_CLIENT_SECRET';
+      return;
+    }
+    if (cloudProvider === 'verda' && !selectedInstanceType) {
+      submitError = 'Verda のインスタンス候補を選択してください。';
+      return;
+    }
+    if (cloudProvider === 'vast' && selectedOfferId == null) {
+      submitError = 'Vast.ai のオファー候補を選択してください。';
       return;
     }
     const payload = buildPayload();
@@ -481,15 +487,6 @@
       createWs = null;
     };
   };
-
-	  const availability = $derived(
-	    (
-	      cloudProvider === 'verda'
-	        ? $gpuAvailabilityVerdaQuery.data?.available
-	        : $gpuAvailabilityVastQuery.data?.available
-	    ) ?? []
-	  );
-
   onDestroy(() => {
     createWs?.close();
   });
@@ -795,86 +792,38 @@
   </div>
 
   <div class="space-y-6">
-    <section class="card p-6">
-      <h2 class="text-xl font-semibold text-slate-900">クラウド設定</h2>
-      <div class="mt-4 grid gap-4">
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">Provider</span>
-          <select class="input mt-2" bind:value={cloudProvider}>
-            <option value="verda" disabled={!isVerdaProviderEnabled}>
-              {isVerdaProviderEnabled ? 'Verda' : 'Verda (設定不足)'}
-            </option>
-            <option value="vast" disabled={!isVastProviderEnabled}>
-              {isVastProviderEnabled ? 'Vast.ai' : 'Vast.ai (設定不足)'}
-            </option>
-          </select>
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">GPUモデル</span>
-          <select class="input mt-2" bind:value={gpuModel}>
-            {#each GPU_MODELS as gpu}
-              <option value={gpu.name}>{gpu.name} - {gpu.description}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">GPU数</span>
-          <select class="input mt-2" bind:value={gpuCount}>
-            {#each GPU_COUNTS as count}
-              <option value={count}>{count} GPU</option>
-            {/each}
-          </select>
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">{isVerda ? 'ストレージ (GB)' : 'ディスク (GB)'}</span>
-          <input class="input mt-2" type="number" min="1" bind:value={storageSize} />
-          {#if isVast}
-            <p class="mt-2 text-xs text-slate-500">小さすぎると依存インストールで容量不足になります。目安は 100GB 以上。</p>
-          {/if}
-        </label>
-        {#if isVerda}
-          <label class="text-sm font-semibold text-slate-700">
-            <span class="label">インスタンス種別</span>
-            <div class="mt-3 grid gap-2 text-sm text-slate-600">
-              <label class="flex items-center gap-2">
-                <input type="radio" name="instanceType" value="spot" bind:group={instanceType} />
-                <span>スポット</span>
-              </label>
-              <label class="flex items-center gap-2">
-                <input type="radio" name="instanceType" value="ondemand" bind:group={instanceType} />
-                <span>オンデマンド</span>
-              </label>
-            </div>
-          </label>
-        {:else}
-          <label class="text-sm font-semibold text-slate-700">
-            <span class="label">Interruptible</span>
-            <div class="mt-3 grid gap-2 text-sm text-slate-600">
-              <label class="flex items-center gap-2">
-                <input type="checkbox" bind:checked={vastInterruptible} />
-                <span>有効（スポット相当）</span>
-              </label>
-            </div>
-          </label>
-          <label class="text-sm font-semibold text-slate-700">
-            <span class="label">Max price ($/h)</span>
-            <input class="input mt-2" type="number" min="0" step="0.001" bind:value={vastMaxPrice} placeholder="例: 1.000" />
-            <p class="mt-2 text-xs text-slate-500">空なら価格上限なし。</p>
-          </label>
-        {/if}
-      </div>
-      <div class="mt-4">
-        <p class="label mb-2">空き状況</p>
-	        <GpuAvailabilityBoard
-	          items={availability}
-	          loading={cloudProvider === 'verda' ? $gpuAvailabilityVerdaQuery.isLoading : $gpuAvailabilityVastQuery.isLoading}
-	          selectedGpuModel={gpuModel}
-	          selectedGpuCount={gpuCount}
-	          showOnlyAvailableDefault={true}
-	          preferredModelOrder={gpuModelOrder}
-	        />
-      </div>
-    </section>
+    <CloudInstanceSelector
+      {cloudProvider}
+      {gpuModel}
+      {gpuCount}
+      {storageSize}
+      {selectedMode}
+      {selectedInstanceType}
+      {selectedOfferId}
+      {selectedLocation}
+      {selectedCandidateTitle}
+      {selectedCandidateDetail}
+      {selectedCandidateRoute}
+      {selectedCandidatePricePerHour}
+      {vastMaxPrice}
+      {isVerdaProviderEnabled}
+      {isVastProviderEnabled}
+      onApplySelection={({ cloudProvider: nextProvider, gpuModel: nextGpuModel, gpuCount: nextGpuCount, storageSize: nextStorageSize, selectedMode: nextSelectedMode, selectedInstanceType: nextSelectedInstanceType, selectedOfferId: nextSelectedOfferId, selectedLocation: nextSelectedLocation, vastMaxPrice: nextVastMaxPrice, candidateTitle: nextCandidateTitle, candidateDetail: nextCandidateDetail, candidateRoute: nextCandidateRoute, candidatePricePerHour: nextCandidatePricePerHour }) => {
+        cloudProvider = nextProvider;
+        gpuModel = nextGpuModel;
+        gpuCount = nextGpuCount;
+        storageSize = nextStorageSize;
+        selectedMode = nextSelectedMode;
+        selectedInstanceType = nextSelectedInstanceType;
+        selectedOfferId = nextSelectedOfferId;
+        selectedLocation = nextSelectedLocation;
+        vastMaxPrice = nextVastMaxPrice;
+        selectedCandidateTitle = nextCandidateTitle;
+        selectedCandidateDetail = nextCandidateDetail;
+        selectedCandidateRoute = nextCandidateRoute;
+        selectedCandidatePricePerHour = nextCandidatePricePerHour;
+      }}
+    />
 
     <section class="card p-6">
       <h2 class="text-xl font-semibold text-slate-900">ジョブ名と実行</h2>

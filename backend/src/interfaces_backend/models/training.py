@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class JobStatus(str, Enum):
@@ -222,16 +222,44 @@ class CloudConfig(BaseModel):
         description="Cloud provider: verda, vast",
         pattern="^(verda|vast)$",
     )
-    gpu_model: str = Field("H100", description="GPU model: H100, A100, L40S")
-    gpus_per_instance: int = Field(1, ge=1, le=8, description="Number of GPUs")
+    gpu_model: Optional[str] = Field(None, description="Selected candidate GPU model")
+    gpus_per_instance: Optional[int] = Field(None, ge=1, le=8, description="Selected candidate GPU count")
     storage_size: Optional[int] = Field(None, description="Storage size in GB")
     location: str = Field("auto", description="Location: auto, FIN-01, ICE-01, etc.")
-    is_spot: bool = Field(True, description="Use spot instance")
+    is_spot: Optional[bool] = Field(None, description="Selected candidate uses spot instance")
+    selected_mode: Optional[str] = Field(
+        None,
+        description="Selected candidate mode: spot or ondemand",
+        pattern="^(spot|ondemand)$",
+    )
+    selected_instance_type: Optional[str] = Field(
+        None,
+        description="Selected Verda instance type",
+    )
+    selected_offer_id: Optional[int] = Field(
+        None,
+        description="Selected Vast offer id",
+    )
 
     # Vast.ai specific (v1)
-    interruptible: bool = Field(True, description="Vast interruptible (spot) instance")
+    interruptible: Optional[bool] = Field(None, description="Selected Vast interruptible instance")
     max_price: Optional[float] = Field(None, ge=0, description="Max price ($/hour) for Vast interruptible")
     ssh_port: Optional[int] = Field(None, ge=1, le=65535, description="SSH port (resolved after launch)")
+
+    @model_validator(mode="after")
+    def validate_selected_target(self) -> "CloudConfig":
+        provider = str(self.provider or "").strip().lower()
+        if provider == "verda":
+            if not str(self.selected_instance_type or "").strip():
+                raise ValueError("cloud.selected_instance_type is required for verda")
+            if self.selected_mode not in {"spot", "ondemand"}:
+                raise ValueError("cloud.selected_mode is required for verda")
+        elif provider == "vast":
+            if self.selected_offer_id is None:
+                raise ValueError("cloud.selected_offer_id is required for vast")
+            if self.selected_mode not in {"spot", "ondemand"}:
+                raise ValueError("cloud.selected_mode is required for vast")
+        return self
 
 
 class JobCreateRequest(BaseModel):
@@ -545,6 +573,34 @@ class GpuAvailabilityResponse(BaseModel):
     """Response for GPU availability check."""
 
     available: list[GpuAvailabilityInfo] = Field(default_factory=list)
+    checked_at: datetime = Field(default_factory=datetime.now)
+
+
+class TrainingInstanceCandidate(BaseModel):
+    """Selectable cloud instance candidate."""
+
+    provider: str = Field(..., pattern="^(verda|vast)$")
+    candidate_id: str
+    title: str
+    instance_type: Optional[str] = None
+    offer_id: Optional[int] = None
+    gpu_model: str
+    gpu_count: int
+    mode: str = Field(..., pattern="^(spot|ondemand)$")
+    route: str = ""
+    location: Optional[str] = None
+    price_per_hour: Optional[float] = None
+    detail: str = ""
+    storage_gb: Optional[int] = None
+    gpu_memory_gb: Optional[float] = None
+    cpu_cores: Optional[float] = None
+    system_memory_gb: Optional[float] = None
+
+
+class TrainingInstanceCandidatesResponse(BaseModel):
+    """Response for selectable cloud instance candidates."""
+
+    candidates: list[TrainingInstanceCandidate] = Field(default_factory=list)
     checked_at: datetime = Field(default_factory=datetime.now)
 
 

@@ -4,6 +4,9 @@ export default {
   content: ['./src/**/*.{html,js,svelte,ts}'],
   theme: {
     extend: {
+      screens: {
+        modal: '1056px'
+      },
       colors: {
         ink: '#0c0d10',
         steel: '#1f232d',

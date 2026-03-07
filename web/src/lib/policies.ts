@@ -114,8 +114,9 @@ export const GPU_MODELS = [
   { name: 'H100', description: '80GB VRAM - Hopper 標準 (推奨)', torchNightly: false },
   { name: 'A100', description: '80GB VRAM - Ampere コスパ良', torchNightly: false },
   { name: 'L40S', description: '48GB VRAM - Ada Lovelace', torchNightly: false },
-  { name: 'RTX6000ADA', description: '48GB VRAM - RTX 6000 Ada', torchNightly: false },
-  { name: 'RTXA6000', description: '48GB VRAM - RTX A6000', torchNightly: false }
+  { name: 'RTX PRO 6000', description: 'RTX PRO 6000 クラス', torchNightly: false },
+  { name: 'RTX 6000ADA', description: '48GB VRAM - RTX 6000 Ada', torchNightly: false },
+  { name: 'RTX A6000', description: '48GB VRAM - RTX A6000', torchNightly: false }
 ];
 
 export const GPU_COUNTS = [1, 2, 4, 8];

@@ -65,6 +65,8 @@ from interfaces_backend.models.training import (
     # GPU availability
     GpuAvailabilityInfo,
     GpuAvailabilityResponse,
+    TrainingInstanceCandidate,
+    TrainingInstanceCandidatesResponse,
     TrainingProviderCapabilityResponse,
     VerdaStorageActionFailure,
     VerdaStorageActionRequest,
@@ -2420,6 +2422,9 @@ KNOWN_LOCATIONS = ["FIN-01", "FIN-02", "FIN-03", "ICE-01"]
 _gpu_availability_cache: dict = {}
 _gpu_availability_cache_time: dict[str, float] = {}
 _GPU_CACHE_TTL = 600  # 10 minutes
+_instance_candidates_cache: dict[str, list[TrainingInstanceCandidate]] = {}
+_instance_candidates_cache_time: dict[str, float] = {}
+_INSTANCE_CANDIDATES_CACHE_TTL = 60
 
 
 def _extract_availability_entry(item: object) -> tuple[Optional[str], list[str]]:
@@ -2574,6 +2579,323 @@ def _fetch_availability_sets(
     return spot_available_by_loc, ondemand_available_by_loc
 
 
+def _coerce_float(value: object) -> Optional[float]:
+    try:
+        parsed = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _extract_vast_offer_id(offer: dict) -> Optional[int]:
+    raw = offer.get("id") or offer.get("offer_id")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_vast_offer_price(offer: dict) -> Optional[float]:
+    for key in ("dph_total", "discounted_dph_total", "dph", "min_bid"):
+        value = _coerce_float(offer.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _format_verda_candidate_detail(instance_type: str, location: str) -> str:
+    del location
+    suffix = instance_type.split(".", 1)[1] if "." in instance_type else instance_type
+    suffix = suffix.replace(".", " ")
+    return suffix
+
+
+def _coerce_resource_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _read_mapping_value(container: object, key: str) -> object:
+    if isinstance(container, dict):
+        return container.get(key)
+    return getattr(container, key, None)
+
+
+def _extract_nested_number(container: object, keys: tuple[str, ...]) -> Optional[float]:
+    if container is None:
+        return None
+    if isinstance(container, (int, float, str)):
+        return _coerce_resource_float(container)
+    for key in keys:
+        value = _read_mapping_value(container, key)
+        coerced = _coerce_resource_float(value)
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def _normalize_gb_value(value: Optional[float]) -> Optional[float]:
+    if value is None or value <= 0:
+        return None
+    return round(value, 1)
+
+
+def _extract_verda_candidate_resources(instance_type_item: object) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    gpu_memory_total = _extract_nested_number(
+        getattr(instance_type_item, "gpu_memory", None),
+        ("size_in_gigabytes", "value", "size", "gb", "memory", "amount"),
+    )
+    gpu_count = _extract_nested_number(
+        getattr(instance_type_item, "gpu", None),
+        ("number_of_gpus", "count", "cores", "core_count", "vcpus", "value"),
+    )
+    cpu_cores = _extract_nested_number(
+        getattr(instance_type_item, "cpu", None),
+        ("number_of_cores", "count", "cores", "core_count", "vcpus", "value"),
+    )
+    system_memory = _extract_nested_number(
+        getattr(instance_type_item, "memory", None) or getattr(instance_type_item, "ram", None),
+        ("size_in_gigabytes", "value", "size", "gb", "memory", "amount"),
+    )
+    gpu_memory = gpu_memory_total
+    if gpu_memory_total is not None and gpu_count and gpu_count > 0:
+        gpu_memory = gpu_memory_total / gpu_count
+    return _normalize_gb_value(gpu_memory), cpu_cores, _normalize_gb_value(system_memory)
+
+
+def _extract_vast_candidate_resources(offer: dict, gpu_count: int) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    gpu_ram_total = _coerce_float(offer.get("gpu_ram"))
+    gpu_memory = None
+    if gpu_ram_total is not None and gpu_count > 0:
+        gpu_memory = _normalize_gb_value(gpu_ram_total / gpu_count)
+    cpu_cores = _coerce_float(offer.get("cpu_cores_effective")) or _coerce_float(offer.get("cpu_cores"))
+    system_memory = _normalize_gb_value(_coerce_float(offer.get("cpu_ram")) or _coerce_float(offer.get("ram")))
+    return gpu_memory, cpu_cores, system_memory
+
+
+def _format_candidate_resources(
+    gpu_memory_gb: Optional[float],
+    cpu_cores: Optional[float],
+    system_memory_gb: Optional[float],
+) -> str:
+    parts: list[str] = []
+    if gpu_memory_gb is not None:
+        gpu_memory_text = str(int(gpu_memory_gb)) if float(gpu_memory_gb).is_integer() else f"{gpu_memory_gb:.1f}"
+        parts.append(f"{gpu_memory_text}GB VRAM")
+    if cpu_cores is not None:
+        cpu_text = str(int(cpu_cores)) if float(cpu_cores).is_integer() else f"{cpu_cores:.1f}"
+        parts.append(f"{cpu_text} vCPU")
+    if system_memory_gb is not None:
+        memory_text = (
+            str(int(system_memory_gb))
+            if float(system_memory_gb).is_integer()
+            else f"{system_memory_gb:.1f}"
+        )
+        parts.append(f"{memory_text}GB RAM")
+    return " / ".join(parts)
+
+
+def _format_vast_candidate_title(offer: dict, gpu_model: str, gpu_count: int, offer_id: int) -> str:
+    machine_id = str(offer.get("machine_id") or "").strip()
+    host_id = str(offer.get("host_id") or "").strip()
+    base = f"{gpu_count}{gpu_model}" if gpu_count > 0 else gpu_model
+    if machine_id:
+        return f"{base} / M{machine_id}"
+    if host_id:
+        return f"{base} / H{host_id}"
+    return f"{base} / #{offer_id}"
+
+
+def _format_vast_candidate_detail(offer: dict) -> str:
+    region = str(
+        offer.get("geolocation")
+        or offer.get("region")
+        or offer.get("location")
+        or ""
+    ).strip()
+    parts: list[str] = []
+    if region:
+        parts.append(region)
+    return " / ".join(parts)
+
+
+def _build_verda_instance_candidates(
+    client: VerdaClient,
+    gpu_model: Optional[str],
+    gpu_count: Optional[int],
+    mode: Optional[str],
+    storage_size: Optional[int],
+) -> list[TrainingInstanceCandidate]:
+    instance_types = client.instance_types.get()
+    preferred_locations = _get_location_codes(client)
+    configs_to_check = _build_all_configs(instance_types)
+    spot_available_by_loc, ondemand_available_by_loc = _fetch_availability_sets(
+        client, preferred_locations
+    )
+    availability_locations = _ordered_availability_locations(
+        preferred_locations,
+        spot_available_by_loc,
+        ondemand_available_by_loc,
+    )
+
+    gpu_model_normalized = str(gpu_model or "").strip().upper()
+    requested_mode = str(mode or "").strip().lower() or None
+    candidates: list[TrainingInstanceCandidate] = []
+    seen_ids: set[str] = set()
+
+    for item_gpu_model, item_gpu_count, instance_type, spot_price in configs_to_check:
+        if gpu_model_normalized and item_gpu_model.upper() != gpu_model_normalized:
+            continue
+        if gpu_count is not None and item_gpu_count != gpu_count:
+            continue
+
+        for candidate_mode, available_map in (
+            ("spot", spot_available_by_loc),
+            ("ondemand", ondemand_available_by_loc),
+        ):
+            if requested_mode and candidate_mode != requested_mode:
+                continue
+            locations = [
+                loc
+                for loc in availability_locations
+                if instance_type in available_map.get(loc, set())
+            ]
+            if not locations:
+                continue
+            location = locations[0]
+            candidate_id = f"verda:{instance_type}:{candidate_mode}:{location}"
+            if candidate_id in seen_ids:
+                continue
+            seen_ids.add(candidate_id)
+
+            ondemand_price = None
+            matched_type = None
+            if candidate_mode == "ondemand":
+                matched_type = next(
+                    (t for t in instance_types if getattr(t, "instance_type", None) == instance_type),
+                    None,
+                )
+                ondemand_price = _coerce_float(getattr(matched_type, "price_per_hour", None))
+            else:
+                matched_type = next(
+                    (t for t in instance_types if getattr(t, "instance_type", None) == instance_type),
+                    None,
+                )
+
+            gpu_memory_gb, cpu_cores, system_memory_gb = _extract_verda_candidate_resources(matched_type)
+            detail = _format_candidate_resources(gpu_memory_gb, cpu_cores, system_memory_gb)
+
+            candidates.append(
+                TrainingInstanceCandidate(
+                    provider="verda",
+                    candidate_id=candidate_id,
+                    title=instance_type,
+                    instance_type=instance_type,
+                    gpu_model=item_gpu_model,
+                    gpu_count=item_gpu_count,
+                    mode=candidate_mode,
+                    route=location,
+                    location=location,
+                    price_per_hour=spot_price if candidate_mode == "spot" else ondemand_price,
+                    detail=detail or _format_verda_candidate_detail(instance_type, location),
+                    storage_gb=storage_size,
+                    gpu_memory_gb=gpu_memory_gb,
+                    cpu_cores=cpu_cores,
+                    system_memory_gb=system_memory_gb,
+                )
+            )
+
+    return candidates
+
+
+def _build_vast_instance_candidates(
+    gpu_model: Optional[str],
+    gpu_count: Optional[int],
+    mode: Optional[str],
+    storage_size: Optional[int],
+    max_price: Optional[float],
+) -> list[TrainingInstanceCandidate]:
+    from percus_ai.training.providers.vast import search_offers_minimal
+
+    requested_mode = str(mode or "").strip().lower() or "spot"
+    if requested_mode not in {"spot", "ondemand"}:
+        requested_mode = "spot"
+
+    models = [str(gpu_model).strip()] if str(gpu_model or "").strip() else [
+        "B300",
+        "B200",
+        "H200",
+        "H100",
+        "A100",
+        "L40S",
+        "RTX6000ADA",
+        "RTXA6000",
+    ]
+    counts = [gpu_count] if gpu_count is not None else [1, 2, 4, 8]
+    disk_gb = max(10, int(storage_size or 120))
+
+    ranked: list[tuple[float, TrainingInstanceCandidate]] = []
+    for model_name in models:
+        for count_value in counts:
+            offers = search_offers_minimal(
+                gpu_model=model_name,
+                gpu_count=count_value,
+                interruptible=requested_mode == "spot",
+                max_price=max_price,
+                min_disk_gb=disk_gb,
+                limit=40,
+            )
+            for offer in offers:
+                if not isinstance(offer, dict):
+                    continue
+                offer_id = _extract_vast_offer_id(offer)
+                if offer_id is None:
+                    continue
+                disk_space = _coerce_float(offer.get("disk_space"))
+                if disk_space is not None and disk_space < disk_gb:
+                    continue
+                price = _extract_vast_offer_price(offer)
+                gpu_memory_gb, cpu_cores, system_memory_gb = _extract_vast_candidate_resources(offer, count_value)
+                detail = _format_candidate_resources(gpu_memory_gb, cpu_cores, system_memory_gb)
+                route = _format_vast_candidate_detail(offer)
+                candidate = TrainingInstanceCandidate(
+                    provider="vast",
+                    candidate_id=f"vast:{offer_id}",
+                    title=_format_vast_candidate_title(offer, model_name, count_value, offer_id),
+                    offer_id=offer_id,
+                    gpu_model=model_name,
+                    gpu_count=count_value,
+                    mode=requested_mode,
+                    route=route or ("Interruptible" if requested_mode == "spot" else "オンデマンド"),
+                    location=None,
+                    price_per_hour=price,
+                    detail=detail,
+                    storage_gb=disk_gb,
+                    gpu_memory_gb=gpu_memory_gb,
+                    cpu_cores=cpu_cores,
+                    system_memory_gb=system_memory_gb,
+                )
+                ranked.append((price if price is not None else float("inf"), candidate))
+
+    ranked.sort(key=lambda item: (item[0], item[1].offer_id or 0))
+    return [candidate for _, candidate in ranked]
+
+
 @router.get("/provider-capabilities", response_model=TrainingProviderCapabilityResponse)
 def get_training_provider_capabilities():
     """Return cloud provider availability for training UI."""
@@ -2583,6 +2905,68 @@ def get_training_provider_capabilities():
         vast_enabled=len(missing_vast_env) == 0,
         missing_vast_env=missing_vast_env,
     )
+
+
+@router.get("/instance-candidates", response_model=TrainingInstanceCandidatesResponse)
+def get_instance_candidates(
+    provider: str = Query(..., pattern="^(verda|vast)$"),
+    gpu_model: Optional[str] = None,
+    gpu_count: Optional[int] = Query(None, ge=1, le=8),
+    mode: Optional[str] = Query(None, pattern="^(spot|ondemand)$"),
+    storage_size: Optional[int] = Query(None, ge=10, le=5000),
+    max_price: Optional[float] = Query(None, ge=0),
+):
+    """Return selectable concrete instance candidates for the training UI."""
+    global _instance_candidates_cache, _instance_candidates_cache_time
+
+    gpu_model_key = str(gpu_model or "").strip().upper()
+    cache_key = (
+        f"instance_candidates:{provider}:"
+        f"{gpu_model_key or 'any'}:{gpu_count or 'any'}:{mode or 'any'}:{storage_size or 'any'}:{max_price or 'any'}"
+    )
+    cache_time = _instance_candidates_cache_time.get(cache_key, 0.0)
+    if (
+        time.time() - cache_time < _INSTANCE_CANDIDATES_CACHE_TTL
+        and cache_key in _instance_candidates_cache
+    ):
+        return TrainingInstanceCandidatesResponse(
+            candidates=_instance_candidates_cache[cache_key],
+            checked_at=datetime.fromtimestamp(cache_time),
+        )
+
+    try:
+        if provider == "verda":
+            client = _get_verda_client()
+            if not client:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)",
+                )
+            candidates = _build_verda_instance_candidates(
+                client=client,
+                gpu_model=gpu_model_key or None,
+                gpu_count=gpu_count,
+                mode=mode,
+                storage_size=storage_size,
+            )
+        else:
+            _assert_provider_configured(provider)
+            candidates = _build_vast_instance_candidates(
+                gpu_model=gpu_model_key or None,
+                gpu_count=gpu_count,
+                mode=mode,
+                storage_size=storage_size,
+                max_price=max_price,
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to build %s instance candidates", provider)
+        raise HTTPException(status_code=503, detail=f"候補取得に失敗: {exc}") from exc
+
+    _instance_candidates_cache[cache_key] = candidates
+    _instance_candidates_cache_time[cache_key] = time.time()
+    return TrainingInstanceCandidatesResponse(candidates=candidates)
 
 
 @router.get("/gpu-availability", response_model=GpuAvailabilityResponse)
@@ -5000,12 +5384,18 @@ async def create_continue_job(
 
         now = datetime.now().isoformat()
 
-        # Select instance type
-        instance_type = _select_instance_type(
-            client,
-            request.cloud.gpu_model,
-            request.cloud.gpus_per_instance,
-        )
+        if request.cloud.provider != "verda":
+            raise HTTPException(status_code=400, detail="Continue training は現在 Verda のみ対応です。")
+
+        instance_type = str(request.cloud.selected_instance_type or "").strip()
+        if not instance_type:
+            raise HTTPException(status_code=400, detail="cloud.selected_instance_type is required")
+        selected_mode = str(request.cloud.selected_mode or "").strip().lower()
+        if selected_mode not in {"spot", "ondemand"}:
+            raise HTTPException(status_code=400, detail="cloud.selected_mode is required")
+        is_spot = selected_mode == "spot"
+        gpu_model = str(request.cloud.gpu_model or "").strip() or _extract_gpu_model(instance_type)
+        gpus_per_instance = request.cloud.gpus_per_instance or _extract_gpu_count(instance_type)
 
         # Get SSH key
         ssh_key_name = os.environ.get("VERDA_SSH_KEY_NAME", "")
@@ -5032,7 +5422,7 @@ async def create_continue_job(
             client,
             instance_type,
             request.cloud.location,
-            request.cloud.is_spot,
+            is_spot,
         )
 
         # Create instance
@@ -5041,7 +5431,7 @@ async def create_continue_job(
             instance_type=instance_type,
             ssh_key_id=ssh_key_id,
             location=location,
-            is_spot=request.cloud.is_spot,
+            is_spot=is_spot,
             storage_size=request.cloud.storage_size,
             hostname=f"train-{job_id[:16]}",
         )
@@ -5068,8 +5458,8 @@ async def create_continue_job(
             "remote_base_dir": "/root/.physical-ai",
             "created_at": now,
             "updated_at": now,
-            "gpu_model": request.cloud.gpu_model,
-            "gpus_per_instance": request.cloud.gpus_per_instance,
+            "gpu_model": gpu_model,
+            "gpus_per_instance": gpus_per_instance,
             "total_steps": total_steps,
             "additional_steps": training_config.additional_steps,
             "author": author,

@@ -6,7 +6,10 @@ import { getBackendUrl } from '$lib/config';
 export const ssr = false;
 
 export const load: LayoutLoad = async ({ url, fetch }) => {
-  if (url.pathname.startsWith('/auth')) {
+  if (
+    url.pathname.startsWith('/auth') ||
+    url.pathname === '/train/instance-selector-mock'
+  ) {
     return {};
   }
   try {
