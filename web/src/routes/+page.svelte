@@ -56,9 +56,9 @@
   <div class="flex flex-wrap items-start justify-between gap-6">
     <div class="space-y-3">
       <p class="section-title">Overview</p>
-      <h1 class="text-3xl font-semibold text-slate-900">DPEX Console</h1>
+      <h1 class="text-3xl font-semibold text-slate-900">ダッシュボード</h1>
       <p class="max-w-xl text-sm text-slate-600">
-        DAIHEN PhysicalAI EXecution の運用フローをブラウザでまとめて扱う統合コンソールです。各メニューの状態確認と、
+        運用フローをブラウザでまとめて扱う統合コンソールです。各メニューの状態確認と、
         よく使う操作へのショートカットを用意しています。
       </p>
       <div class="flex flex-wrap gap-3">
