@@ -5,9 +5,9 @@ from textual.widgets import Header, Footer, Static
 
 
 class PhiTUI(App):
-    """Physical AI TUI Application."""
+    """DPEX TUI Application."""
 
-    TITLE = "Physical AI"
+    TITLE = "DPEX"
     CSS = """
     Screen {
         background: $surface;
@@ -27,7 +27,7 @@ class PhiTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("Welcome to Physical AI TUI", id="welcome")
+        yield Static("Welcome to DPEX TUI", id="welcome")
         yield Footer()
 
     def action_toggle_dark(self) -> None:

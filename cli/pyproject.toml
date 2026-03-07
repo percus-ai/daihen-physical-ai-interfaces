@@ -1,7 +1,7 @@
 [project]
 name = "interfaces-cli"
 version = "0.1.0"
-description = "Hacker-style CLI for Physical AI Framework"
+description = "Hacker-style CLI for DPEX"
 requires-python = ">=3.10,<3.13"
 license = { text = "Proprietary" }
 

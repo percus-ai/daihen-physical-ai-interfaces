@@ -1,6 +1,6 @@
-# Percus Physical AI Interfaces
+# Percus DPEX Interfaces
 
-User interfaces for the Percus Physical AI Framework.
+User interfaces for DPEX.
 
 **Owner:** Percus AI (fork source for customers)
 

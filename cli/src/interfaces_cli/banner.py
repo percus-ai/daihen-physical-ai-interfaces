@@ -32,7 +32,7 @@ def show_banner() -> None:
 ║   ██║     ██║  ██║██║   ╚██████╗███████╗██║                      ║
 ║   ╚═╝     ╚═╝  ╚═╝╚═╝    ╚═════╝╚══════╝╚═╝                      ║
 ║                                                                  ║
-║   {Colors.CYAN}Physical AI Control System{Colors.GREEN}                                     ║
+║   {Colors.CYAN}DPEX Control System{Colors.GREEN}                                            ║
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}
 """

@@ -1,3 +1,3 @@
-"""Phi CLI - Hacker-style CLI for Physical AI Framework."""
+"""Phi CLI - Hacker-style CLI for DPEX."""
 
 __version__ = "0.1.0"

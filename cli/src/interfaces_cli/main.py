@@ -1,4 +1,4 @@
-"""Phi CLI - Hacker-style CLI for Physical AI Framework.
+"""Phi CLI - Hacker-style CLI for DPEX.
 
 Usage:
     phi           # Launch interactive menu
@@ -28,7 +28,7 @@ from interfaces_cli.client import PhiClient
 
 # Typer app for direct commands
 cli = typer.Typer(
-    help="Physical AI CLI - Hacker-style interface for robot control",
+    help="DPEX CLI - Hacker-style interface for robot control",
     invoke_without_command=True,
     no_args_is_help=False,
 )

@@ -115,7 +115,7 @@ from percus_ai.observability import (
 from percus_ai.db import reset_request_session, set_request_session
 
 app = FastAPI(
-    title="Physical AI API",
+    title="DPEX API",
     version="0.1.0",
 )
 SLOW_REQUEST_THRESHOLD_MS = int(os.environ.get("PHI_SLOW_REQUEST_THRESHOLD_MS", "1000"))
@@ -301,7 +301,7 @@ async def health():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Physical AI Backend Server")
+    parser = argparse.ArgumentParser(description="DPEX Backend Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
     parser.add_argument("--port", "-p", type=int, default=8000, help="Port to bind")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
