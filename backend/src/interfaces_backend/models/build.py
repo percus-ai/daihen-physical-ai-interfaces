@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 BundledTorchState = Literal["idle", "building", "cleaning", "completed", "failed"]
+BundledTorchAction = Literal["build", "rebuild", "clean"]
 
 
 class BundledTorchPlatformInfo(BaseModel):
@@ -42,6 +43,7 @@ class BundledTorchBuildSnapshot(BaseModel):
     platform: BundledTorchPlatformInfo
     install: BundledTorchInstallStatus = Field(default_factory=BundledTorchInstallStatus)
     state: BundledTorchState = "idle"
+    current_action: BundledTorchAction | None = None
     current_step: str | None = None
     message: str | None = None
     started_at: str | None = None

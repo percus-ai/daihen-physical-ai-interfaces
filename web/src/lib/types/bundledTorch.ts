@@ -1,4 +1,5 @@
 export type BundledTorchState = 'idle' | 'building' | 'cleaning' | 'completed' | 'failed';
+export type BundledTorchAction = 'build' | 'rebuild' | 'clean';
 
 export type BundledTorchPlatformInfo = {
   platform_name: string;
@@ -32,6 +33,7 @@ export type BundledTorchBuildSnapshot = {
   platform: BundledTorchPlatformInfo;
   install: BundledTorchInstallStatus;
   state: BundledTorchState;
+  current_action?: BundledTorchAction | null;
   current_step?: string | null;
   message?: string | null;
   started_at?: string | null;

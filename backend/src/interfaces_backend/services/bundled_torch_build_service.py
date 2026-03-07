@@ -92,6 +92,7 @@ class BundledTorchBuildService:
             snapshot = self._snapshot.model_copy(deep=True)
             snapshot.platform = self._platform_info(platform)
             snapshot.state = "building"
+            snapshot.current_action = "rebuild" if force else "build"
             snapshot.current_step = "clean" if force else "clone_pytorch"
             snapshot.message = "Starting bundled-torch build..."
             snapshot.started_at = _now_iso()
@@ -125,6 +126,7 @@ class BundledTorchBuildService:
             snapshot = self._snapshot.model_copy(deep=True)
             snapshot.platform = self._platform_info(platform)
             snapshot.state = "cleaning"
+            snapshot.current_action = "clean"
             snapshot.current_step = "clean"
             snapshot.message = "Cleaning bundled-torch..."
             snapshot.started_at = _now_iso()
@@ -189,6 +191,7 @@ class BundledTorchBuildService:
             await loop.run_in_executor(self._executor, run)
             snapshot = await asyncio.to_thread(self._snapshot_with_current_install)
             snapshot.state = "completed"
+            snapshot.current_action = None
             snapshot.message = "Bundled-torch build completed"
             snapshot.current_step = "complete"
             snapshot.started_at = self.get_snapshot().started_at
@@ -218,6 +221,7 @@ class BundledTorchBuildService:
             await loop.run_in_executor(self._executor, lambda: builder.clean(callback=clean_callback))
             snapshot = await asyncio.to_thread(self._snapshot_with_current_install)
             snapshot.state = "completed"
+            snapshot.current_action = None
             snapshot.message = "Bundled-torch clean completed"
             snapshot.current_step = "complete"
             snapshot.started_at = self.get_snapshot().started_at
@@ -253,13 +257,16 @@ class BundledTorchBuildService:
                 snapshot.message = log_entry.message
             if log_entry.type == "error":
                 snapshot.state = "failed"
+                snapshot.current_action = None
                 snapshot.last_error = str(event.get("error") or log_entry.message or "Bundled-torch operation failed")
                 snapshot.finished_at = now
             elif log_entry.type == "complete" and final_operation == "build":
                 snapshot.state = "completed"
+                snapshot.current_action = None
                 snapshot.finished_at = now
             elif log_entry.type == "complete" and final_operation == "clean":
                 snapshot.state = "completed"
+                snapshot.current_action = None
                 snapshot.finished_at = now
             snapshot.logs.append(log_entry)
             if len(snapshot.logs) > _LOG_LIMIT:
@@ -275,6 +282,7 @@ class BundledTorchBuildService:
         with self._lock:
             snapshot = self._snapshot.model_copy(deep=True)
             snapshot.state = "failed"
+            snapshot.current_action = None
             snapshot.message = error
             snapshot.last_error = error
             snapshot.finished_at = now

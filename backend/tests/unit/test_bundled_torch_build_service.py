@@ -142,6 +142,7 @@ async def test_start_build_updates_completed_snapshot(monkeypatch):
 
     snapshot = service.get_snapshot()
     assert snapshot.state == "completed"
+    assert snapshot.current_action is None
     assert snapshot.install.exists is True
     assert snapshot.install.is_valid is True
     assert snapshot.requested_pytorch_version == "v2.8.0"
@@ -150,6 +151,64 @@ async def test_start_build_updates_completed_snapshot(monkeypatch):
     assert snapshot.can_clean is True
     assert any(entry.type == "log" for entry in snapshot.logs)
     await service.shutdown()
+
+
+@pytest.mark.anyio
+async def test_start_build_force_marks_rebuild_action(monkeypatch):
+    monkeypatch.setattr(
+        "interfaces_backend.services.bundled_torch_build_service.Platform.detect",
+        lambda *args, **kwargs: _FakePlatform(required=True),
+    )
+
+    service = BundledTorchBuildService()
+
+    async def fake_run_build(**kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(service, "_run_build", fake_run_build)
+
+    await service.start_build(force=True)
+
+    try:
+        snapshot = service.get_snapshot()
+        assert snapshot.state == "building"
+        assert snapshot.current_action == "rebuild"
+    finally:
+        task = service._active_task
+        assert task is not None
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await service.shutdown()
+
+
+@pytest.mark.anyio
+async def test_start_clean_marks_clean_action(monkeypatch):
+    monkeypatch.setattr(
+        "interfaces_backend.services.bundled_torch_build_service.Platform.detect",
+        lambda *args, **kwargs: _FakePlatform(required=True),
+    )
+
+    service = BundledTorchBuildService()
+
+    async def fake_run_clean():
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(service, "_run_clean", fake_run_clean)
+
+    await service.start_clean()
+
+    try:
+        snapshot = service.get_snapshot()
+        assert snapshot.state == "cleaning"
+        assert snapshot.current_action == "clean"
+    finally:
+        task = service._active_task
+        assert task is not None
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await service.shutdown()
 
 
 def test_detect_platform_uses_fresh_probe_for_missing_or_invalid_install():

@@ -28,6 +28,7 @@
 
   const bundledLogs = $derived(snapshot?.logs ?? []);
   const bundledBusy = $derived(snapshot?.state === 'building' || snapshot?.state === 'cleaning');
+  const currentBundledAction = $derived(snapshot?.current_action ?? null);
   const bundledSupported = $derived(Boolean(snapshot?.platform?.supported));
   const bundledRequired = $derived(Boolean(snapshot?.platform?.pytorch_build_required));
   const latestBundledLogs = $derived(bundledLogs.slice(-120));
@@ -75,6 +76,15 @@
   });
   const bundledTorchBanner = $derived(
     actionError || snapshot?.message || snapshot?.last_error || ''
+  );
+  const buildButtonLabel = $derived(
+    bundledBusy && currentBundledAction === 'build' ? 'building...' : 'build'
+  );
+  const rebuildButtonLabel = $derived(
+    bundledBusy && currentBundledAction === 'rebuild' ? 'rebuilding...' : 'rebuild'
+  );
+  const cleanButtonLabel = $derived(
+    bundledBusy && currentBundledAction === 'clean' ? 'cleaning...' : 'clean'
   );
   const bundledVisualState = $derived.by(() => {
     if (!snapshot || !bundledRequired) {
@@ -242,7 +252,7 @@
               disabled={actionPending || !(snapshot?.can_build)}
               aria-busy={actionPending && !bundledBusy}
             >
-              {bundledBusy ? 'building...' : 'build'}
+              {buildButtonLabel}
             </button>
             <button
               class="btn-ghost"
@@ -255,7 +265,7 @@
               disabled={actionPending || !(snapshot?.can_rebuild)}
               aria-busy={actionPending && !bundledBusy}
             >
-              {bundledBusy ? 'building...' : 'rebuild'}
+              {rebuildButtonLabel}
             </button>
             <button
               class="btn-ghost"
@@ -264,7 +274,7 @@
               disabled={actionPending || !(snapshot?.can_clean)}
               aria-busy={actionPending && !bundledBusy}
             >
-              {bundledBusy ? 'cleaning...' : 'clean'}
+              {cleanButtonLabel}
             </button>
           </div>
         </div>
