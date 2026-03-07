@@ -14,7 +14,7 @@
   type Provider = 'verda' | 'vast';
   type GpuCountFilter = 'any' | 1 | 2 | 4 | 8;
   type VerdaModeFilter = 'any' | 'spot' | 'ondemand';
-  type VastInterruptibleFilter = 'any' | 'enabled' | 'disabled';
+  type VastModeFilter = 'any' | 'spot' | 'ondemand';
   type SelectionPayload = {
     cloudProvider: Provider;
     gpuModel: string;
@@ -80,9 +80,9 @@
   let draftProvider = $state<Provider>('verda');
   let draftGpuModel = $state<'any' | string>('any');
   let draftGpuCount = $state<GpuCountFilter>('any');
-  let draftStorageSize = $state('');
+  let draftStorageSize = $state('200');
   let draftVerdaMode = $state<VerdaModeFilter>('any');
-  let draftVastInterruptible = $state<VastInterruptibleFilter>('any');
+  let draftVastMode = $state<VastModeFilter>('any');
   let draftVastMaxPrice = $state('');
   let modalOpen = $state(false);
   let pendingCandidateId = $state<string | null>(null);
@@ -206,8 +206,8 @@
     if (draftProvider === 'verda') {
       return draftVerdaMode === 'any' ? null : draftVerdaMode;
     }
-    if (draftVastInterruptible === 'enabled') return 'spot';
-    if (draftVastInterruptible === 'disabled') return 'ondemand';
+    if (draftVastMode === 'spot') return 'spot';
+    if (draftVastMode === 'ondemand') return 'ondemand';
     return null;
   };
 
@@ -228,18 +228,16 @@
         'verda',
         draftGpuModel,
         draftGpuCount,
-        currentRequestedMode,
-        parsedStorageSize
+        currentRequestedMode
       ],
       queryFn: () =>
         api.training.instanceCandidates({
           provider: 'verda',
           gpu_model: draftGpuModel !== 'any' ? draftGpuModel : undefined,
           gpu_count: draftGpuCount !== 'any' ? draftGpuCount : undefined,
-          mode: currentRequestedMode ?? undefined,
-          storage_size: parsedStorageSize ?? undefined
+          mode: currentRequestedMode ?? undefined
         }),
-      enabled: modalOpen && draftProvider === 'verda' && isVerdaProviderEnabled && hasValidStorageSetting
+      enabled: modalOpen && draftProvider === 'verda' && isVerdaProviderEnabled
     }))
   );
 
@@ -258,7 +256,6 @@
         draftGpuModel,
         draftGpuCount,
         currentRequestedMode,
-        parsedStorageSize,
         parsedMaxPrice
       ],
       queryFn: () =>
@@ -267,10 +264,9 @@
           gpu_model: draftGpuModel !== 'any' ? draftGpuModel : undefined,
           gpu_count: draftGpuCount !== 'any' ? draftGpuCount : undefined,
           mode: currentRequestedMode ?? undefined,
-          storage_size: parsedStorageSize ?? undefined,
           max_price: parsedMaxPrice
         }),
-      enabled: modalOpen && draftProvider === 'vast' && isVastProviderEnabled && hasValidStorageSetting
+      enabled: modalOpen && draftProvider === 'vast' && isVastProviderEnabled
     }))
   );
 
@@ -325,10 +321,10 @@
       (cloudProvider === 'vast' && selectedOfferId != null);
     draftGpuModel = hasSelectedTarget && gpuModel ? gpuModel : 'any';
     draftGpuCount = hasSelectedTarget ? ((gpuCount || 'any') as GpuCountFilter) : 'any';
-    draftStorageSize = String(storageSize);
+    draftStorageSize = String(storageSize || 200);
     draftVerdaMode = cloudProvider === 'verda' && hasSelectedTarget ? selectedMode : 'any';
-    draftVastInterruptible = cloudProvider === 'vast'
-      ? (hasSelectedTarget ? (selectedMode === 'spot' ? 'enabled' : 'disabled') : 'any')
+    draftVastMode = cloudProvider === 'vast'
+      ? (hasSelectedTarget ? selectedMode : 'any')
       : 'any';
     draftVastMaxPrice = vastMaxPrice == null ? '' : String(vastMaxPrice);
     pendingCandidateId = hasSelectedTarget ? selectedCandidateKey : null;
@@ -512,10 +508,6 @@
                   <div class="mt-3 flex h-[106px] w-full items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/70 px-4 text-sm text-slate-500 modal:w-[250px]">
                     候補を読み込み中...
                   </div>
-                {:else if !hasValidStorageSetting}
-                  <div class="mt-3 flex h-[106px] w-full items-center rounded-xl border border-dashed border-rose-200 bg-rose-50/70 px-4 text-sm text-rose-500 modal:w-[250px]">
-                    ストレージは200GB以上を設定してください。
-                  </div>
                 {:else if draftCandidates.length > 0}
                   <div class="preview-query mt-3 pb-1">
                   <div class="preview-grid">
@@ -662,15 +654,15 @@
                         </div>
                       {:else}
                         <div>
-                          <span class="label">Interruptible</span>
+                          <span class="label">インスタンス種別</span>
                           <div class="mt-1 grid grid-cols-3 gap-1">
-                            {#each ['any', 'enabled', 'disabled'] as option}
+                            {#each ['any', 'spot', 'ondemand'] as option}
                               <button
                                 type="button"
-                                class={`${chipButtonClass} ${chipClass(draftVastInterruptible === option)}`}
-                                onclick={() => (draftVastInterruptible = option as VastInterruptibleFilter)}
+                                class={`max-w-[130px] overflow-hidden text-ellipsis ${compactChipButtonClass} ${chipClass(draftVastMode === option)}`}
+                                onclick={() => (draftVastMode = option as VastModeFilter)}
                               >
-                                {option === 'any' ? '任意' : option === 'enabled' ? '有効' : '無効'}
+                                {option === 'any' ? '任意' : option === 'spot' ? 'スポット' : 'オンデマンド'}
                               </button>
                             {/each}
                           </div>

@@ -82,9 +82,9 @@
   let policyGradientCheckpointing = $state<'auto' | 'true' | 'false'>('auto');
   let policyCompileModel = $state<'auto' | 'true' | 'false'>('auto');
 
-  let gpuModel = $state(defaultPolicy?.recommendedGpu ?? 'H100');
+  let gpuModel = $state('H100');
   let gpuCount = $state(GPU_COUNTS[0] ?? 1);
-  let storageSize = $state(defaultPolicy?.recommendedStorage ?? 100);
+  let storageSize = $state(200);
   let selectedMode = $state<'spot' | 'ondemand'>('spot');
   let selectedInstanceType = $state<string | null>(null);
   let selectedOfferId = $state<number | null>(null);
@@ -141,8 +141,6 @@
     steps = info.defaultSteps;
     batchSize = info.defaultBatchSize;
     saveFreq = info.defaultSaveFreq;
-    storageSize = info.recommendedStorage;
-    gpuModel = info.recommendedGpu;
     logFreq = info.defaultLogFreq;
     numWorkers = info.defaultNumWorkers;
     saveCheckpoint = true;
@@ -171,15 +169,6 @@
       validationEvalFreq = Math.min(500, steps);
       earlyStoppingMinDelta = 0.002;
     }
-    selectedMode = 'spot';
-    selectedInstanceType = null;
-    selectedOfferId = null;
-    selectedLocation = 'auto';
-    selectedCandidateTitle = '';
-    selectedCandidateDetail = '';
-    selectedCandidateRoute = '';
-    selectedCandidatePricePerHour = null;
-    vastMaxPrice = null;
   };
 
   const handlePolicyChange = (event: Event) => {
