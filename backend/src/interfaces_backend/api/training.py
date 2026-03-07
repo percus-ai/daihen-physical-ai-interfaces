@@ -4668,12 +4668,6 @@ async def _run_training_provision_operation(
     provider = str(((request_data.get("cloud") or {}).get("provider") or "")).strip().lower()
     latest: dict[str, Optional[str]] = {"instance_id": None, "job_id": None}
 
-    await operations.set_running(
-        operation_id=operation_id,
-        step="validate",
-        message="設定検証",
-    )
-
     def emit_progress(message: dict) -> None:
         payload = (
             message if isinstance(message, dict) else {"type": "status", "message": str(message)}

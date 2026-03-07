@@ -40,7 +40,7 @@
 
   const profileListQuery = createQuery<{ profiles?: VlaborProfile[]; active_profile_name?: string }>(
     toStore(() => ({
-      queryKey: ['profiles', 'list'],
+      queryKey: ['app-shell', 'profiles', 'list'],
       queryFn: api.profiles.list,
       enabled: authenticated && profilesReady
     }))
@@ -48,7 +48,7 @@
 
   const activeProfileQuery = createQuery<{ profile_name?: string }>(
     toStore(() => ({
-      queryKey: ['profiles', 'active'],
+      queryKey: ['app-shell', 'profiles', 'active'],
       queryFn: api.profiles.active,
       enabled: authenticated && profilesReady
     }))
@@ -137,6 +137,11 @@
       await api.profiles.setActive({ profile_name: nextName });
       await $activeProfileQuery?.refetch?.();
       await $profileListQuery?.refetch?.();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['profiles', 'list'] }),
+        queryClient.invalidateQueries({ queryKey: ['profiles', 'active'] }),
+        queryClient.invalidateQueries({ queryKey: ['profiles', 'active', 'status'] })
+      ]);
     } catch (err) {
       console.error(err);
       profileError = '切り替えに失敗しました';

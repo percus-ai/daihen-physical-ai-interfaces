@@ -108,8 +108,9 @@
   let createEvents = $state<Array<{ type: string; message: string; timestamp: string }>>([]);
   let createProgressPercent = $state(0);
   let provisionOperationId = $state('');
-  let createStreamCleanup = $state<(() => void) | null>(null);
-  let lastCreateEventKey = $state('');
+  let createStreamCleanup: (() => void) | null = null;
+  let createStreamOperationId = '';
+  let lastCreateEventKey = '';
 
   let selectedDataset = $state('');
 
@@ -406,6 +407,7 @@
   const closeCreateStream = () => {
     createStreamCleanup?.();
     createStreamCleanup = null;
+    createStreamOperationId = '';
   };
 
   const appendCreateEvent = (type: string, message: string, eventKey: string) => {
@@ -426,7 +428,7 @@
     createProgressPercent = progressPercentMap[step] ?? 0;
     provisionOperationId = snapshot.operation_id;
 
-    appendCreateEvent(step, message, `${snapshot.updated_at ?? ''}:${snapshot.state}:${step}:${message}`);
+    appendCreateEvent(step, message, `${snapshot.state}:${step}:${message}`);
 
     if (snapshot.job_id) {
       closeCreateStream();
@@ -505,7 +507,7 @@
       return;
     }
 
-    if (provisionOperationId === operationId && createStreamCleanup) {
+    if (createStreamOperationId === operationId && createStreamCleanup) {
       return;
     }
 
@@ -521,6 +523,7 @@
         if (snapshot.job_id || snapshot.state === 'failed' || snapshot.state === 'completed') {
           return;
         }
+        createStreamOperationId = operationId;
         createStreamCleanup = connectStream<TrainingProvisionOperationStatusResponse>({
           path: `/api/stream/training/provision-operations/${encodeURIComponent(operationId)}`,
           onMessage: (payload) => {
