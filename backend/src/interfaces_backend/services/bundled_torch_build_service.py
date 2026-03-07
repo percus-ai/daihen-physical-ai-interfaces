@@ -352,8 +352,8 @@ class BundledTorchBuildService:
         busy = snapshot.state in {"building", "cleaning"}
         required = snapshot.platform.pytorch_build_required and snapshot.platform.supported
         snapshot.can_build = required and not busy
-        snapshot.can_rebuild = required and not busy and snapshot.install.exists
-        snapshot.can_clean = required and not busy and snapshot.install.exists
+        snapshot.can_rebuild = required and not busy
+        snapshot.can_clean = required and not busy
         return snapshot
 
 

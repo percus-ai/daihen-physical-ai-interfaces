@@ -212,3 +212,26 @@ def test_invalid_install_sets_warning_message():
     )
     assert snapshot.message == "bundled-torch exists but is invalid. rebuild or clean before retrying."
     asyncio.run(service.shutdown())
+
+
+def test_capabilities_allow_rebuild_and_clean_without_existing_install():
+    service = BundledTorchBuildService()
+    snapshot = BundledTorchBuildService._with_capabilities(  # type: ignore[attr-defined]
+        service.get_snapshot().model_copy(
+            update={
+                "platform": service.get_snapshot().platform.model_copy(
+                    update={
+                        "pytorch_build_required": True,
+                        "supported": True,
+                    }
+                ),
+                "install": BundledTorchInstallStatus(exists=False, is_valid=False),
+                "state": "idle",
+            }
+        )
+    )
+
+    assert snapshot.can_build is True
+    assert snapshot.can_rebuild is True
+    assert snapshot.can_clean is True
+    asyncio.run(service.shutdown())

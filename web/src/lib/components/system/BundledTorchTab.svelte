@@ -252,7 +252,7 @@
                 torchvisionVersion,
                 force: true
               })}
-              disabled={actionPending || !(snapshot?.can_rebuild || snapshot?.can_build)}
+              disabled={actionPending || !(snapshot?.can_rebuild)}
               aria-busy={actionPending && !bundledBusy}
             >
               {bundledBusy ? 'building...' : 'rebuild'}
