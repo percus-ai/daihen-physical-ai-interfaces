@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from interfaces_backend.core.request_auth import (
+    is_session_expired,
+    refresh_session_from_refresh_token,
+)
 from interfaces_backend.api.inference import get_inference_runner_status
 from interfaces_backend.api.operate import get_operate_status
 from interfaces_backend.api.profiles import get_active_profile_status, get_vlabor_status
@@ -59,7 +63,7 @@ from interfaces_backend.services.training_provision_operations import (
     get_training_provision_operations_service,
 )
 from interfaces_backend.utils.sse import sse_queue_response
-from percus_ai.db import get_current_user_id
+from percus_ai.db import get_current_user_id, get_supabase_session, set_request_session
 
 router = APIRouter(prefix="/api/stream", tags=["stream"])
 
@@ -76,6 +80,16 @@ def _require_user_id() -> str:
         raise HTTPException(status_code=401, detail="Login required") from exc
 
 
+def _refresh_stream_session_if_needed() -> None:
+    session = get_supabase_session()
+    if not session or not is_session_expired(session):
+        return
+    refreshed_session = refresh_session_from_refresh_token(session.get("refresh_token"))
+    if refreshed_session is None:
+        return
+    set_request_session(refreshed_session)
+
+
 async def _stream_with_shared_producer(
     request: Request,
     *,
@@ -88,11 +102,16 @@ async def _stream_with_shared_producer(
     bus = get_realtime_event_bus()
     hub = get_realtime_producer_hub()
     subscription = bus.subscribe(topic, key)
-    await hub.publish_once(topic=topic, key=key, build_payload=build_payload)
+
+    async def build_payload_with_fresh_session() -> dict:
+        _refresh_stream_session_if_needed()
+        return await build_payload()
+
+    await hub.publish_once(topic=topic, key=key, build_payload=build_payload_with_fresh_session)
     hub.ensure_polling(
         topic=topic,
         key=key,
-        build_payload=build_payload,
+        build_payload=build_payload_with_fresh_session,
         interval=interval,
         idle_ttl=idle_ttl,
     )

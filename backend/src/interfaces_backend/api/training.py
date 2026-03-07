@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Literal, Optional
+from typing import Awaitable, Callable, Literal, Optional, TypeVar
 
 from verda import VerdaClient
 from fastapi import (
@@ -105,6 +105,7 @@ logger = logging.getLogger(__name__)
 
 _service_client: Optional[AsyncClient] = None
 _service_client_lock = asyncio.Lock()
+_T = TypeVar("_T")
 
 
 def _is_jwt_expired_error(exc: Exception) -> bool:
@@ -126,6 +127,25 @@ async def _get_service_db_client() -> Optional[AsyncClient]:
         if _service_client is None:
             _service_client = await create_async_client(supabase_url, service_key)
         return _service_client
+
+
+async def _with_training_service_role_retry(
+    *,
+    action: str,
+    target: str,
+    operation: Callable[[AsyncClient], Awaitable[_T]],
+) -> _T:
+    client = await get_supabase_async_client()
+    try:
+        return await operation(client)
+    except Exception as exc:
+        if not _is_jwt_expired_error(exc):
+            raise
+        service_client = await _get_service_db_client()
+        if service_client is None:
+            raise
+        logger.warning("JWT expired while %s %s; retrying with service key", action, target)
+        return await operation(service_client)
 
 
 def _default_author_user_id() -> str:
@@ -2337,17 +2357,23 @@ def _check_logs_in_r2(job_data: dict, log_type: str) -> dict:
 
 async def _get_remote_progress(job_id: str) -> Optional[dict]:
     """Get training progress from Supabase metrics."""
-    client = await get_supabase_async_client()
-    response = (
-        await client.table("training_job_metrics")
-        .select("step,loss,metrics")
-        .eq("job_id", job_id)
-        .eq("split", "train")
-        .order("step", desc=True)
-        .limit(1)
-        .execute()
+    async def _fetch_with(client: AsyncClient) -> list[dict]:
+        response = (
+            await client.table("training_job_metrics")
+            .select("step,loss,metrics")
+            .eq("job_id", job_id)
+            .eq("split", "train")
+            .order("step", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return response.data or []
+
+    data = await _with_training_service_role_retry(
+        action="loading remote progress for training job",
+        target=job_id,
+        operation=_fetch_with,
     )
-    data = response.data or []
     if not data:
         return None
     latest = data[0]
@@ -2360,17 +2386,23 @@ async def _get_remote_progress(job_id: str) -> Optional[dict]:
 
 
 async def _get_latest_metric(job_id: str, split: str) -> Optional[dict]:
-    client = await get_supabase_async_client()
-    response = (
-        await client.table("training_job_metrics")
-        .select("step,loss,ts,metrics")
-        .eq("job_id", job_id)
-        .eq("split", split)
-        .order("step", desc=True)
-        .limit(1)
-        .execute()
+    async def _fetch_with(client: AsyncClient) -> list[dict]:
+        response = (
+            await client.table("training_job_metrics")
+            .select("step,loss,ts,metrics")
+            .eq("job_id", job_id)
+            .eq("split", split)
+            .order("step", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return response.data or []
+
+    data = await _with_training_service_role_retry(
+        action=f"loading latest {split} metrics for training job",
+        target=job_id,
+        operation=_fetch_with,
     )
-    data = response.data or []
     if not data:
         return None
     return data[0]
@@ -2383,17 +2415,23 @@ async def _get_latest_metrics(job_id: str) -> tuple[Optional[dict], Optional[dic
 
 
 async def _get_metrics_series(job_id: str, split: str, limit: int) -> list[dict]:
-    client = await get_supabase_async_client()
-    response = (
-        await client.table("training_job_metrics")
-        .select("step,loss,ts")
-        .eq("job_id", job_id)
-        .eq("split", split)
-        .order("step", desc=False)
-        .limit(limit)
-        .execute()
+    async def _fetch_with(client: AsyncClient) -> list[dict]:
+        response = (
+            await client.table("training_job_metrics")
+            .select("step,loss,ts")
+            .eq("job_id", job_id)
+            .eq("split", split)
+            .order("step", desc=False)
+            .limit(limit)
+            .execute()
+        )
+        return response.data or []
+
+    return await _with_training_service_role_retry(
+        action=f"loading {split} metric series for training job",
+        target=job_id,
+        operation=_fetch_with,
     )
-    return response.data or []
 
 
 def _stop_remote_job(job_data: dict) -> bool:
