@@ -2682,9 +2682,10 @@ def _extract_vast_candidate_resources(offer: dict, gpu_count: int) -> tuple[Opti
     gpu_ram_total = _coerce_float(offer.get("gpu_ram"))
     gpu_memory = None
     if gpu_ram_total is not None and gpu_count > 0:
-        gpu_memory = _normalize_gb_value(gpu_ram_total / gpu_count)
+        gpu_memory = _normalize_gb_value((gpu_ram_total / 1024.0) / gpu_count)
     cpu_cores = _coerce_float(offer.get("cpu_cores_effective")) or _coerce_float(offer.get("cpu_cores"))
-    system_memory = _normalize_gb_value(_coerce_float(offer.get("cpu_ram")) or _coerce_float(offer.get("ram")))
+    system_memory_raw = _coerce_float(offer.get("cpu_ram")) or _coerce_float(offer.get("ram"))
+    system_memory = _normalize_gb_value((system_memory_raw / 1024.0) if system_memory_raw is not None else None)
     return gpu_memory, cpu_cores, system_memory
 
 
@@ -2711,14 +2712,9 @@ def _format_candidate_resources(
 
 
 def _format_vast_candidate_title(offer: dict, gpu_model: str, gpu_count: int, offer_id: int) -> str:
-    machine_id = str(offer.get("machine_id") or "").strip()
-    host_id = str(offer.get("host_id") or "").strip()
-    base = f"{gpu_count}{gpu_model}" if gpu_count > 0 else gpu_model
-    if machine_id:
-        return f"{base} / M{machine_id}"
-    if host_id:
-        return f"{base} / H{host_id}"
-    return f"{base} / #{offer_id}"
+    del offer
+    del offer_id
+    return f"{gpu_model} x{gpu_count}" if gpu_count > 0 else gpu_model
 
 
 def _format_vast_candidate_detail(offer: dict) -> str:
