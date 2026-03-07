@@ -168,7 +168,7 @@
           ☰
         </Button.Root>
         <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.3em] text-slate-400">DAIHEN PhysicalAI EXecution</p>
+          <p class="text-xs font-semibold tracking-[0.3em] text-slate-400">DAIHEN PhysicalAI EXecution</p>
           <p class="text-lg font-semibold text-slate-900">DPEX Console</p>
         </div>
       </div>
