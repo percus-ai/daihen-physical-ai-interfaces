@@ -1,8 +1,6 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
-  import { untrack } from 'svelte';
   import { Tabs } from 'bits-ui';
 
   import { api } from '$lib/api/client';
@@ -112,29 +110,6 @@
         return 'border-slate-200 bg-slate-100 text-slate-600';
     }
   };
-
-  $effect(() => {
-    const queryTab = normalizeTab(page.url.searchParams.get('tab'));
-    if (untrack(() => activeTab) !== queryTab) {
-      activeTab = queryTab;
-    }
-  });
-
-  $effect(() => {
-    const rawTab = page.url.searchParams.get('tab');
-    const queryTab = normalizeTab(rawTab);
-    const expectedTab = activeTab === 'status' ? null : activeTab;
-    if (rawTab === expectedTab || (rawTab === null && activeTab === queryTab)) {
-      return;
-    }
-    const nextUrl = new URL(page.url);
-    if (activeTab === 'status') {
-      nextUrl.searchParams.delete('tab');
-    } else {
-      nextUrl.searchParams.set('tab', activeTab);
-    }
-    void goto(nextUrl, { replaceState: true, noScroll: true, keepFocus: true });
-  });
 
   const loadInitialState = async () => {
     const [bundledResult, runtimeEnvResult, operateResult, systemSettingsResult, userSettingsResult] = await Promise.allSettled([

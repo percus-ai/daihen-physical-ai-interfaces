@@ -45,29 +45,24 @@ def test_get_active_profile_status_fetches_topics_in_thread(monkeypatch):
     async def fake_active_profile():
         return _FakeActiveProfile()
 
-    def fake_topics():
-        captured["topics_called"] = True
-        return ["/cam/image_raw"]
+    class _FakeMonitor:
+        def ensure_started(self):
+            captured["ensure_started"] = True
 
-    async def fake_to_thread(func, /, *args, **kwargs):
-        captured["func"] = func
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return func(*args, **kwargs)
+        def get_cached_ros2_topics(self):
+            captured["topics_called"] = True
+            return ["/cam/image_raw"]
 
     monkeypatch.setattr(profiles_api, "_require_user_id", lambda: "user-1")
     monkeypatch.setattr(profiles_api, "get_active_profile_spec", fake_active_profile)
-    monkeypatch.setattr(profiles_api, "_fetch_ros2_topics", fake_topics)
+    monkeypatch.setattr(profiles_api, "get_system_status_monitor", lambda: _FakeMonitor())
     monkeypatch.setattr(profiles_api, "extract_status_camera_specs", lambda snapshot: [])
     monkeypatch.setattr(profiles_api, "extract_status_arm_specs", lambda snapshot: [])
-    monkeypatch.setattr(profiles_api.asyncio, "to_thread", fake_to_thread)
 
     response = asyncio.run(profiles_api.get_active_profile_status())
 
     assert isinstance(response, VlaborActiveProfileStatusResponse)
     assert response.profile_name == "so101_single_teleop"
     assert response.topics == ["/cam/image_raw"]
-    assert captured["func"] is fake_topics
-    assert captured["args"] == ()
-    assert captured["kwargs"] == {}
+    assert captured["ensure_started"] is True
     assert captured["topics_called"] is True

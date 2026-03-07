@@ -3,22 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import socket
-import subprocess
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter
 
 from interfaces_backend.models.operate import OperateServiceStatus, OperateStatusResponse
 from interfaces_backend.utils.docker_compose import (
-    build_compose_command,
     get_lerobot_compose_file,
     get_vlabor_compose_file,
-    get_vlabor_env_file,
 )
+from interfaces_backend.utils.docker_services import get_docker_service_summary
 from interfaces_backend.utils.torch_info import get_torch_info
 
 router = APIRouter(prefix="/api/operate", tags=["operate"])
@@ -57,42 +53,22 @@ def _parse_tcp_endpoint(endpoint: str) -> Optional[tuple[str, int]]:
     return host, port
 
 
-def _resolve_compose_for_service(service: str) -> tuple[list[str], Path]:
+def _get_compose_file_for_service(service: str):
     if service == "vlabor":
-        compose_file = get_vlabor_compose_file()
-        return build_compose_command(compose_file, get_vlabor_env_file()), compose_file
-    compose_file = get_lerobot_compose_file()
-    return build_compose_command(compose_file), compose_file
+        return get_vlabor_compose_file()
+    return get_lerobot_compose_file()
 
 
 def _get_compose_status(service: str) -> OperateServiceStatus:
-    compose_cmd, compose_file = _resolve_compose_for_service(service)
+    compose_file = _get_compose_file_for_service(service)
     if not compose_file.exists():
         return OperateServiceStatus(name=service, status="unknown", message=f"{compose_file} not found")
 
-    result = subprocess.run(
-        [*compose_cmd, "ps", "--format", "json", service],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return OperateServiceStatus(name=service, status="unknown", message=result.stderr.strip() or "compose error")
-
-    try:
-        data = json.loads(result.stdout)
-    except Exception:
-        return OperateServiceStatus(name=service, status="unknown", message="compose parse failed")
-
-    entry = None
-    if isinstance(data, list):
-        entry = data[0] if data else None
-    elif isinstance(data, dict):
-        entry = data
-
+    entry = get_docker_service_summary(service)
     if not entry:
         return OperateServiceStatus(name=service, status="stopped", message="service not running")
 
-    state_raw = (entry.get("State") or "").lower()
+    state_raw = str(entry.get("state") or "").lower()
     if "running" in state_raw:
         status = "running"
     elif "restarting" in state_raw:
@@ -105,11 +81,11 @@ def _get_compose_status(service: str) -> OperateServiceStatus:
     return OperateServiceStatus(
         name=service,
         status=status,
-        message=entry.get("Status") or entry.get("State") or "",
+        message=str(entry.get("status_detail") or entry.get("state") or ""),
         details={
-            "state": entry.get("State"),
-            "running_for": entry.get("RunningFor"),
-            "container_id": entry.get("ID"),
+            "state": entry.get("state"),
+            "running_for": entry.get("running_for"),
+            "container_id": entry.get("container_id"),
         },
     )
 
