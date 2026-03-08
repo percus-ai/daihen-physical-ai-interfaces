@@ -2,6 +2,7 @@ export type PolicyInfo = {
   id: string;
   displayName: string;
   skipPretrained?: boolean;
+  supportsScratchInitialization?: boolean;
   pretrainedModels?: Array<{
     id: string;
     path: string;
@@ -63,6 +64,7 @@ export const POLICY_TYPES: PolicyInfo[] = [
   {
     id: 'pi0',
     displayName: 'π0 (Physical Intelligence)',
+    supportsScratchInitialization: true,
     pretrainedModels: [
       {
         id: 'pi0_base',
@@ -86,6 +88,7 @@ export const POLICY_TYPES: PolicyInfo[] = [
   {
     id: 'pi05',
     displayName: 'π0.5 (Open-World VLA Model)',
+    supportsScratchInitialization: true,
     pretrainedModels: [
       {
         id: 'pi05_base',

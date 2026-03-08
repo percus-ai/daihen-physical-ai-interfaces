@@ -48,6 +48,66 @@ def test_job_create_request_rejects_cloud_when_omitted():
         JobCreateRequest.model_validate(without_cloud)
 
 
+def test_job_create_request_allows_scratch_initialization_without_pretrained_path():
+    from interfaces_backend.models.training import JobCreateRequest
+
+    payload = _valid_create_job_payload()
+    payload["policy"] = {
+        "type": "pi05",
+        "initialization": "scratch",
+    }
+
+    request = JobCreateRequest.model_validate(payload)
+
+    assert request.policy is not None
+    assert request.policy.initialization == "scratch"
+    assert request.policy.pretrained_path is None
+
+
+def test_job_create_request_rejects_scratch_initialization_with_pretrained_path():
+    from interfaces_backend.models.training import JobCreateRequest
+
+    payload = _valid_create_job_payload()
+    payload["policy"] = {
+        "type": "pi05",
+        "initialization": "scratch",
+        "pretrained_path": "lerobot/pi05_base",
+    }
+
+    with pytest.raises(ValidationError, match="initialization=scratch"):
+        JobCreateRequest.model_validate(payload)
+
+
+def test_job_create_request_rejects_pretrained_initialization_without_pretrained_path():
+    from interfaces_backend.models.training import JobCreateRequest
+
+    payload = _valid_create_job_payload()
+    payload["policy"] = {
+        "type": "pi05",
+        "initialization": "pretrained",
+    }
+
+    with pytest.raises(ValidationError, match="initialization=pretrained"):
+        JobCreateRequest.model_validate(payload)
+
+
+def test_build_pipeline_config_preserves_explicit_scratch_initialization():
+    from interfaces_backend.models.training import JobCreateRequest
+    import interfaces_backend.api.training as training_api
+
+    payload = _valid_create_job_payload()
+    payload["policy"] = {
+        "type": "pi05",
+        "initialization": "scratch",
+    }
+
+    request = JobCreateRequest.model_validate(payload)
+    config = training_api._build_pipeline_config(request, job_id="job-1")
+
+    assert config["policy"]["initialization"] == "scratch"
+    assert "pretrained_path" not in config["policy"]
+
+
 def test_start_provision_operation_preflights_without_fastapi_lifecycle(monkeypatch):
     from interfaces_backend.models.training import JobCreateRequest
     import interfaces_backend.api.training as training_api

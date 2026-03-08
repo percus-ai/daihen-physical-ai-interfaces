@@ -653,6 +653,8 @@ def _build_pipeline_config(request: "JobCreateRequest", job_id: str) -> dict:
         "seed": 1000,
     }
 
+    if policy.initialization:
+        config["policy"]["initialization"] = policy.initialization
     if policy.pretrained_path:
         config["policy"]["pretrained_path"] = policy.pretrained_path
     if policy.dtype:

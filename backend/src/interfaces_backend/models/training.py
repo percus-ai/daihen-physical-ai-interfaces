@@ -182,11 +182,25 @@ class PolicyConfig(BaseModel):
     """Policy configuration for training."""
 
     type: str = Field("act", description="Policy type: act, pi0, groot, smolvla, etc.")
+    initialization: Optional[Literal["pretrained", "scratch"]] = Field(
+        None,
+        description="Policy initialization mode: pretrained or scratch",
+    )
     pretrained_path: Optional[str] = Field(None, description="Pretrained model path")
     compile_model: Optional[bool] = Field(None, description="Enable torch.compile")
     gradient_checkpointing: Optional[bool] = Field(None, description="Enable gradient checkpointing")
     dtype: Optional[str] = Field(None, description="Model dtype: float32, float16, bfloat16")
     use_amp: Optional[bool] = Field(None, description="Enable AMP (mixed precision)")
+
+    @model_validator(mode="after")
+    def validate_initialization(self) -> "PolicyConfig":
+        if self.initialization == "scratch":
+            if self.pretrained_path:
+                raise ValueError("policy.pretrained_path must not be set when initialization=scratch")
+            return self
+        if self.initialization == "pretrained" and not self.pretrained_path:
+            raise ValueError("policy.pretrained_path is required when initialization=pretrained")
+        return self
 
 
 class TrainingParams(BaseModel):

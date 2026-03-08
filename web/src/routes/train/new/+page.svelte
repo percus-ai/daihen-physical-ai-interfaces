@@ -143,6 +143,8 @@
     torch_compile: 'モデル実行を最適化して高速化を狙う設定です。環境によって効果は変わります。'
   } as const;
 
+  const SCRATCH_PRETRAINED_ID = '__scratch__';
+
   const applyPolicyDefaults = (policyId: string) => {
     const info = POLICY_TYPES.find((policy) => policy.id === policyId);
     if (!info) return;
@@ -194,7 +196,23 @@
   };
 
   const policyInfo = $derived(POLICY_TYPES.find((policy) => policy.id === policyType) ?? null);
-  const pretrainedOptions = $derived(policyInfo?.pretrainedModels ?? []);
+  const pretrainedOptions = $derived.by(() => {
+    const baseOptions = [...(policyInfo?.pretrainedModels ?? [])];
+    if (policyInfo?.supportsScratchInitialization) {
+      return [
+        ...baseOptions,
+        {
+          id: SCRATCH_PRETRAINED_ID,
+          path: '',
+          name: 'フルスクラッチ',
+          description: '事前学習済み重みを使わず、新規初期化で学習を開始'
+        }
+      ];
+    }
+    return baseOptions;
+  });
+  const supportsScratchInitialization = $derived(policyInfo?.supportsScratchInitialization ?? false);
+  const usesScratchInitialization = $derived(selectedPretrainedId === SCRATCH_PRETRAINED_ID);
 
   $effect(() => {
     if (policyInfo?.skipPretrained || pretrainedOptions.length === 0) {
@@ -352,8 +370,12 @@
       sync_dataset: false
     };
 
-    if (selectedPretrained?.path) {
-      (payload.policy as Record<string, unknown>).pretrained_path = selectedPretrained.path;
+    const policyPayload = payload.policy as Record<string, unknown>;
+    if (supportsScratchInitialization) {
+      policyPayload.initialization = usesScratchInitialization ? 'scratch' : 'pretrained';
+    }
+    if (selectedPretrained?.path && !usesScratchInitialization) {
+      policyPayload.pretrained_path = selectedPretrained.path;
     }
     if (datasetVideoBackend !== 'auto') {
       (payload.dataset as Record<string, unknown>).video_backend = datasetVideoBackend;
@@ -375,7 +397,6 @@
       validationPayload.batch_size = validationBatchSize > 0 ? validationBatchSize : null;
     }
 
-    const policyPayload = payload.policy as Record<string, unknown>;
     if (policyDtype !== 'auto') policyPayload.dtype = policyDtype;
 
     const ampSetting = useAmpDisabled ? 'false' : policyUseAmp;
@@ -598,7 +619,9 @@
               {/each}
             {/if}
           </select>
-          {#if selectedPretrained?.description}
+          {#if usesScratchInitialization}
+            <p class="mt-2 text-xs text-slate-500">事前学習済み重みを使わず、新規初期化で学習を開始します。</p>
+          {:else if selectedPretrained?.description}
             <p class="mt-2 text-xs text-slate-500">{selectedPretrained.description}</p>
           {/if}
         </label>
