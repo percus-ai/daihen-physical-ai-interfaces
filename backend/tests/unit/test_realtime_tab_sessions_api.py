@@ -15,6 +15,7 @@ from interfaces_backend.services.tab_realtime_sources import (
     RealtimeSourcePollResult,
     TabRealtimeSourceRegistry,
 )
+from percus_ai.db import get_current_user_id
 
 
 def _make_state_payload(*, revision: int = 1, visibility: str = "foreground") -> dict:
@@ -89,6 +90,16 @@ class _FakeAppendSourceRegistry(_FakeSourceRegistry):
                 next_state={"count": count},
             )
         return await super().poll(subscription, state=state)
+
+
+class _FakeAuthCheckingSourceRegistry(_FakeSourceRegistry):
+    async def poll(self, subscription, state=None) -> RealtimeSourcePollResult:
+        return RealtimeSourcePollResult(
+            payload={
+                "subscription_id": subscription.subscription_id,
+                "user_id": get_current_user_id(),
+            }
+        )
 
 
 def test_tab_session_subscription_schema_is_typed():
@@ -355,6 +366,31 @@ def test_tab_session_registry_forwards_append_events_without_payload_dedup():
         second_append = next(event for event in second_events if event["op"] == "append")
         assert second_append["payload"]["lines"] == ["log-line-2"]
         assert second_append["cursor"] == "2"
+
+    asyncio.run(_run())
+    stream.close()
+
+
+def test_tab_session_registry_restores_user_context_for_polling():
+    registry = TabRealtimeRegistry()
+    source_registry = _FakeAuthCheckingSourceRegistry()
+    state = TabSessionStateRequest.model_validate(_make_state_payload(revision=1))
+    registry.apply_state(user_id="user-1", tab_session_id="tab-1", state=state)
+
+    stream = registry.open_stream(
+        user_id="user-1",
+        tab_session_id="tab-1",
+        last_event_id=None,
+        source_registry=source_registry,
+    )
+
+    async def _run():
+        last_event_id = max(event["stream_seq"] for event in stream.replay_events)
+        status, events = await stream.poll(after_seq=last_event_id)
+        assert status == "events"
+        payloads = [event["payload"] for event in events if event["op"] == "snapshot"]
+        assert payloads
+        assert all(payload["user_id"] == "user-1" for payload in payloads)
 
     asyncio.run(_run())
     stream.close()

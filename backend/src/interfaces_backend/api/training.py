@@ -3105,9 +3105,8 @@ def _build_vast_instance_candidates(
 ) -> list[TrainingInstanceCandidate]:
     from percus_ai.training.providers.vast import search_offers_minimal
 
-    requested_mode = str(mode or "").strip().lower() or "spot"
-    if requested_mode not in {"spot", "ondemand"}:
-        requested_mode = "spot"
+    requested_mode = str(mode or "").strip().lower()
+    mode_filters = [requested_mode] if requested_mode in {"spot", "ondemand"} else ["spot", "ondemand"]
 
     models = [str(gpu_model).strip()] if str(gpu_model or "").strip() else [
         "B300",
@@ -3125,45 +3124,46 @@ def _build_vast_instance_candidates(
     ranked: list[tuple[float, TrainingInstanceCandidate]] = []
     for model_name in models:
         for count_value in counts:
-            offers = search_offers_minimal(
-                gpu_model=model_name,
-                gpu_count=count_value,
-                interruptible=requested_mode == "spot",
-                max_price=max_price,
-                min_disk_gb=disk_gb,
-                limit=40,
-            )
-            for offer in offers:
-                if not isinstance(offer, dict):
-                    continue
-                offer_id = _extract_vast_offer_id(offer)
-                if offer_id is None:
-                    continue
-                disk_space = _coerce_float(offer.get("disk_space"))
-                if disk_space is not None and disk_space < disk_gb:
-                    continue
-                price = _extract_vast_offer_price(offer)
-                gpu_memory_gb, cpu_cores, system_memory_gb = _extract_vast_candidate_resources(offer, count_value)
-                detail = _format_candidate_resources(gpu_memory_gb, cpu_cores, system_memory_gb)
-                route = _format_vast_candidate_detail(offer)
-                candidate = TrainingInstanceCandidate(
-                    provider="vast",
-                    candidate_id=f"vast:{offer_id}",
-                    title=_format_vast_candidate_title(offer, model_name, count_value, offer_id),
-                    offer_id=offer_id,
+            for mode_filter in mode_filters:
+                offers = search_offers_minimal(
                     gpu_model=model_name,
                     gpu_count=count_value,
-                    mode=requested_mode,
-                    route=route or ("Interruptible" if requested_mode == "spot" else "オンデマンド"),
-                    location=None,
-                    price_per_hour=price,
-                    detail=detail,
-                    storage_gb=disk_gb,
-                    gpu_memory_gb=gpu_memory_gb,
-                    cpu_cores=cpu_cores,
-                    system_memory_gb=system_memory_gb,
+                    interruptible=mode_filter == "spot",
+                    max_price=max_price,
+                    min_disk_gb=disk_gb,
+                    limit=40,
                 )
-                ranked.append((price if price is not None else float("inf"), candidate))
+                for offer in offers:
+                    if not isinstance(offer, dict):
+                        continue
+                    offer_id = _extract_vast_offer_id(offer)
+                    if offer_id is None:
+                        continue
+                    disk_space = _coerce_float(offer.get("disk_space"))
+                    if disk_space is not None and disk_space < disk_gb:
+                        continue
+                    price = _extract_vast_offer_price(offer)
+                    gpu_memory_gb, cpu_cores, system_memory_gb = _extract_vast_candidate_resources(offer, count_value)
+                    detail = _format_candidate_resources(gpu_memory_gb, cpu_cores, system_memory_gb)
+                    route = _format_vast_candidate_detail(offer)
+                    candidate = TrainingInstanceCandidate(
+                        provider="vast",
+                        candidate_id=f"vast:{offer_id}",
+                        title=_format_vast_candidate_title(offer, model_name, count_value, offer_id),
+                        offer_id=offer_id,
+                        gpu_model=model_name,
+                        gpu_count=count_value,
+                        mode=mode_filter,
+                        route=route or ("Interruptible" if mode_filter == "spot" else "オンデマンド"),
+                        location=None,
+                        price_per_hour=price,
+                        detail=detail,
+                        storage_gb=disk_gb,
+                        gpu_memory_gb=gpu_memory_gb,
+                        cpu_cores=cpu_cores,
+                        system_memory_gb=system_memory_gb,
+                    )
+                    ranked.append((price if price is not None else float("inf"), candidate))
 
     ranked.sort(key=lambda item: (item[0], item[1].offer_id or 0))
     return [candidate for _, candidate in ranked]

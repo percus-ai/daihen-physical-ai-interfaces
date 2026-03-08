@@ -17,6 +17,7 @@ from interfaces_backend.models.realtime import (
     TabSessionStateRequest,
     TabSessionStateResponse,
 )
+from percus_ai.db import reset_request_session, set_request_session
 
 _ReplayEvent = dict[str, Any]
 _PollStatus = Literal["events", "idle", "deleted", "superseded"]
@@ -345,7 +346,11 @@ class _TabSession:
                     )
 
         for subscription_id, generation, subscription, source_state in pending:
-            result = await source_registry.poll(subscription, source_state)
+            token = set_request_session({"user_id": self.user_id})
+            try:
+                result = await source_registry.poll(subscription, source_state)
+            finally:
+                reset_request_session(token)
             with self._lock:
                 current_runtime = self._subscriptions.get(subscription_id)
                 if current_runtime is None or current_runtime.generation != generation:

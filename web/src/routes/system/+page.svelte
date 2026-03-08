@@ -1,5 +1,6 @@
 <script lang="ts">
   import { browser } from '$app/environment';
+  import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { Tabs } from 'bits-ui';
@@ -66,6 +67,17 @@
   let userSettingsError = $state('');
   let userSettingsSuccess = $state('');
   let featuresRepoSuggestionsAbort = $state<AbortController | null>(null);
+  let pendingTabNavigation = $state<SystemTab | null>(null);
+
+  afterNavigate(() => {
+    const nextTab = normalizeTab(page.url.searchParams.get('tab'));
+    if (pendingTabNavigation !== null && nextTab === pendingTabNavigation) {
+      pendingTabNavigation = null;
+    }
+    if (nextTab !== activeTab) {
+      activeTab = nextTab;
+    }
+  });
 
   const renderStatusLabel = (value?: string) => {
     switch (value) {
@@ -362,6 +374,33 @@
       featuresRepoSuggestionsAbort = null;
       featuresRepoSuggestionsPending = false;
     };
+  });
+
+  $effect(() => {
+    if (!browser) {
+      return;
+    }
+    if (pendingTabNavigation === activeTab) {
+      return;
+    }
+    const currentUrl = new URL(page.url);
+    const targetUrl = new URL(page.url);
+    if (activeTab === 'status') {
+      targetUrl.searchParams.delete('tab');
+    } else {
+      targetUrl.searchParams.set('tab', activeTab);
+    }
+    if (`${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}` === `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`) {
+      return;
+    }
+    pendingTabNavigation = activeTab;
+    void goto(`${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`, {
+      keepFocus: true,
+      noScroll: true,
+      invalidateAll: false,
+    }).catch(() => {
+      pendingTabNavigation = null;
+    });
   });
 
   $effect(() => {
