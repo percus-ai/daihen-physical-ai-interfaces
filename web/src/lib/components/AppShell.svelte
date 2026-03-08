@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { beforeNavigate } from '$app/navigation';
+  import { browser } from '$app/environment';
   import { onDestroy } from 'svelte';
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
@@ -10,7 +10,7 @@
   import { toStore } from 'svelte/store';
 
   import { api } from '$lib/api/client';
-  import { closeRouteScopedStreams, connectStream } from '$lib/realtime/stream';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   let { children }: { children?: Snippet } = $props();
@@ -76,15 +76,6 @@
     mobileOpen = false;
   };
 
-  beforeNavigate((navigation) => {
-    const from = navigation.from?.url;
-    const to = navigation.to?.url;
-    if (from && to && from.pathname === to.pathname && from.search === to.search) {
-      return;
-    }
-    closeRouteScopedStreams();
-  });
-
   const refreshAuth = async () => {
     try {
       const status = await api.auth.status();
@@ -107,31 +98,72 @@
       mobileOpen = false;
     }
   });
-  let stopProfileStream = () => {};
-  let profileStreamActive = false;
+  let profileContributor: TabRealtimeContributorHandle | null = null;
 
   $effect(() => {
-    if (authenticated && profilesReady && !profileStreamActive) {
-      stopProfileStream();
-      stopProfileStream = connectStream({
-        path: '/api/stream/profiles/active',
-        scope: 'persistent',
-        onMessage: (payload) => {
-          queryClient.setQueryData(['profiles', 'active', 'status'], payload);
-        }
-      });
-      profileStreamActive = true;
+    if (!browser || !authenticated) {
       return;
     }
-    if ((!authenticated || !profilesReady) && profileStreamActive) {
-      stopProfileStream();
-      stopProfileStream = () => {};
-      profileStreamActive = false;
+    const client = getTabRealtimeClient();
+    if (!client) {
+      return;
     }
+    client.setRoute({
+      id: page.url.pathname,
+      url: `${page.url.pathname}${page.url.search}`,
+      params: page.params
+    });
+  });
+
+  const handleProfileRealtimeEvent = (event: TabRealtimeEvent) => {
+    if (event.op !== 'snapshot') return;
+    queryClient.setQueryData(['profiles', 'active', 'status'], event.payload);
+  };
+
+  $effect(() => {
+    if (!browser) {
+      return;
+    }
+
+    if (!authenticated || !profilesReady) {
+      profileContributor?.dispose();
+      profileContributor = null;
+      return;
+    }
+
+    const client = getTabRealtimeClient();
+    if (!client) {
+      return;
+    }
+
+    if (profileContributor === null) {
+      profileContributor = client.registerContributor({
+        contributorId: 'app-shell.profiles.active',
+        subscriptions: [
+          {
+            subscription_id: 'app-shell.profiles.active',
+            kind: 'profiles.active',
+            params: {}
+          }
+        ],
+        onEvent: handleProfileRealtimeEvent
+      });
+      return;
+    }
+
+    profileContributor.setEventHandler(handleProfileRealtimeEvent);
+    profileContributor.setSubscriptions([
+      {
+        subscription_id: 'app-shell.profiles.active',
+        kind: 'profiles.active',
+        params: {}
+      }
+    ]);
   });
 
   onDestroy(() => {
-    stopProfileStream();
+    profileContributor?.dispose();
+    profileContributor = null;
   });
 
   const formatProfileLabel = (profile: VlaborProfile) => {

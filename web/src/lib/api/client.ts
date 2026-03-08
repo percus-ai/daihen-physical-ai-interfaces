@@ -112,6 +112,86 @@ export type StartupOperationAcceptedResponse = {
   message?: string;
 };
 
+export type TabSessionLifecycle = {
+  visibility: 'foreground' | 'background' | 'closing';
+  reason?: string | null;
+};
+
+export type TabSessionRoute = {
+  id: string;
+  url: string;
+  params: Record<string, string>;
+};
+
+type RealtimeSubscriptionBase = {
+  subscription_id: string;
+};
+
+export type ProfilesActiveSubscription = RealtimeSubscriptionBase & {
+  kind: 'profiles.active';
+  params?: Record<string, never>;
+};
+
+export type TrainingJobCoreSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.core';
+  params: {
+    job_id: string;
+  };
+};
+
+export type TrainingJobProvisionSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.provision';
+  params: {
+    job_id: string;
+  };
+};
+
+export type TrainingJobMetricsSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.metrics';
+  params: {
+    job_id: string;
+    limit?: number | null;
+  };
+};
+
+export type TrainingJobLogsSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.logs';
+  params: {
+    job_id: string;
+    log_type?: 'training' | 'setup';
+    tail_lines?: number | null;
+  };
+};
+
+export type TabSessionSubscription =
+  | ProfilesActiveSubscription
+  | TrainingJobCoreSubscription
+  | TrainingJobProvisionSubscription
+  | TrainingJobMetricsSubscription
+  | TrainingJobLogsSubscription;
+
+export type TabSessionStateRequest = {
+  revision: number;
+  lifecycle: TabSessionLifecycle;
+  route: TabSessionRoute;
+  subscriptions: TabSessionSubscription[];
+};
+
+export type TabSessionStateResponse = {
+  tab_session_id: string;
+  revision: number;
+  lifecycle: TabSessionLifecycle;
+  route: TabSessionRoute;
+  subscriptions: TabSessionSubscription[];
+};
+
+export type TabSessionStatePutResponse = {
+  tab_session_id: string;
+  revision: number;
+  applied_at: string;
+  subscription_count: number;
+};
+
 export type StartupOperationStatusResponse = {
   operation_id: string;
   kind: 'inference_start' | 'recording_create';
@@ -761,6 +841,24 @@ export const api = {
     activeStatus: () => fetchApi('/api/profiles/active/status'),
     vlaborStatus: () => fetchApi('/api/profiles/vlabor/status'),
     restartVlabor: () => fetchApi('/api/profiles/vlabor/restart', { method: 'POST' })
+  },
+  realtime: {
+    tabSessionState: (tabSessionId: string) =>
+      fetchApi<TabSessionStateResponse>(
+        `/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}/state`
+      ),
+    putTabSessionState: (tabSessionId: string, payload: TabSessionStateRequest) =>
+      fetchApi<TabSessionStatePutResponse>(
+        `/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}/state`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(payload)
+        }
+      ),
+    deleteTabSession: (tabSessionId: string) =>
+      fetchText(`/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}`, {
+        method: 'DELETE'
+      }).then(() => undefined)
   },
   teleop: {
     createSession: (payload: {
