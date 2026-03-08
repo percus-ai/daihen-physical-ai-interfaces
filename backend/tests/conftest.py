@@ -1,12 +1,53 @@
 import os
 import sys
 import hashlib
+import importlib.util
 import logging
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+def _install_test_module_stubs() -> None:
+    if importlib.util.find_spec("cv2") is None and "cv2" not in sys.modules:
+        class _FakeCapture:
+            def isOpened(self) -> bool:
+                return False
+
+            def get(self, _prop: int) -> float:
+                return 0.0
+
+            def getBackendName(self) -> str:
+                return "stub"
+
+            def read(self) -> tuple[bool, None]:
+                return False, None
+
+            def release(self) -> None:
+                return None
+
+        cv2_stub = ModuleType("cv2")
+        cv2_stub.CAP_PROP_FRAME_WIDTH = 3
+        cv2_stub.CAP_PROP_FRAME_HEIGHT = 4
+        cv2_stub.CAP_PROP_FPS = 5
+        cv2_stub.VideoCapture = lambda *_args, **_kwargs: _FakeCapture()
+        sys.modules["cv2"] = cv2_stub
+
+    if importlib.util.find_spec("serial") is None and "serial" not in sys.modules:
+        serial_stub = ModuleType("serial")
+        serial_tools_stub = ModuleType("serial.tools")
+        serial_tools_stub.list_ports = ModuleType("serial.tools.list_ports")
+        serial_tools_stub.list_ports.comports = lambda: []
+        serial_stub.tools = serial_tools_stub
+        sys.modules["serial"] = serial_stub
+        sys.modules["serial.tools"] = serial_tools_stub
+        sys.modules["serial.tools.list_ports"] = serial_tools_stub.list_ports
+
+
+_install_test_module_stubs()
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -83,6 +124,7 @@ def _isolate_env(tmp_path_factory):
     os.environ["HOME"] = str(home_dir)
     os.environ["PHYSICAL_AI_DATA_DIR"] = str(workspace)
     os.environ["PHYSICAL_AI_PROJECT_ROOT"] = str(REPO_ROOT)
+    os.environ["PHI_DISABLE_TRAINING_PROVISION_RECOVERY"] = "1"
 
     yield
 
@@ -97,6 +139,7 @@ def _reset_backend_state() -> None:
     import interfaces_backend.services.inference_runtime as inference_runtime
     import interfaces_backend.services.startup_operations as startup_operations
     import interfaces_backend.services.tab_realtime as tab_realtime
+    import interfaces_backend.services.training_provision_recovery as training_provision_recovery
 
     calibration._sessions.clear()
     calibration._motor_buses.clear()
@@ -110,6 +153,7 @@ def _reset_backend_state() -> None:
 
     startup_operations.reset_startup_operations_service()
     tab_realtime.reset_tab_realtime_registry()
+    training_provision_recovery.reset_training_provision_recovery_service()
 
 
 

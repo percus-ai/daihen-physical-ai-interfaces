@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -258,66 +258,6 @@ class TrainingProvisionOperationsService:
 
         await self._update(operation_id=operation_id, **patch)
 
-    async def cleanup_stale_operations(self) -> list[str]:
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            logger.warning("SUPABASE_SECRET_KEY is not configured; skip stale training provision cleanup")
-            return []
-
-        cutoff = (_utcnow() - timedelta(minutes=_STALE_TIMEOUT_MINUTES)).isoformat()
-        rows = (
-            await service_client.table(TRAINING_PROVISION_OPERATION_TABLE)
-            .select("*")
-            .in_("state", list(_ACTIVE_STATES))
-            .lt("updated_at", cutoff)
-            .execute()
-        ).data or []
-
-        cleaned: list[str] = []
-        for row in rows:
-            operation_id = str(row.get("operation_id") or "").strip()
-            if not operation_id:
-                continue
-            provider = str(row.get("provider") or "").strip().lower()
-            instance_id = str(row.get("instance_id") or "").strip()
-            job_id = str(row.get("job_id") or "").strip()
-            message = "バックエンド再起動によりプロビジョニングが中断されました。"
-            if instance_id and not job_id:
-                deleted, detail = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    cleanup_provision_instance,
-                    provider,
-                    instance_id,
-                )
-                if deleted:
-                    message = "バックエンド再起動により中断されたため、作成中インスタンスをクリーンアップしました。"
-                else:
-                    message = (
-                        "バックエンド再起動により中断され、作成中インスタンスのクリーンアップに失敗しました。 "
-                        f"({detail})"
-                    )
-            elif job_id:
-                message = (
-                    "バックエンド再起動により作成進行の追跡が中断されました。"
-                    " ジョブ詳細画面から状態を確認してください。"
-                )
-            await self._update_with_client(
-                service_client,
-                operation_id=operation_id,
-                patch={
-                    "state": "failed",
-                    "step": "failed",
-                    "message": message,
-                    "failure_reason": "backend_restart_cleanup",
-                    "finished_at": _utcnow_iso(),
-                },
-            )
-            snapshot = await self.get_system(operation_id=operation_id)
-            if snapshot is not None:
-                await self._publish(snapshot)
-            cleaned.append(operation_id)
-        return cleaned
-
     async def _load(self, operation_id: str, *, owner_user_id: str | None) -> Optional[dict[str, Any]]:
         async def _fetch_with(client: AsyncClient) -> list[dict[str, Any]]:
             query = client.table(TRAINING_PROVISION_OPERATION_TABLE).select("*").eq("operation_id", operation_id)
@@ -456,3 +396,8 @@ def get_training_provision_operations_service() -> TrainingProvisionOperationsSe
     if _service is None:
         _service = TrainingProvisionOperationsService()
     return _service
+
+
+def reset_training_provision_operations_service() -> None:
+    global _service
+    _service = None
