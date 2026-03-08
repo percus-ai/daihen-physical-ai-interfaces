@@ -79,7 +79,6 @@
     const client = getTabRealtimeClient();
     if (!client) return;
     contributor = client.registerContributor({
-      contributorId: `storage.dataset-merge.${jobId}`,
       subscriptions: [
         {
           subscription_id: `storage.dataset-merge.${jobId}`,

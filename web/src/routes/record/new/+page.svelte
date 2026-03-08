@@ -180,7 +180,6 @@
     const currentOperationId = startupOperationId;
     disposeStartupContributor();
     startupContributor = client.registerContributor({
-      contributorId: `record.new.startup.${currentOperationId}`,
       subscriptions: [
         {
           subscription_id: `record.new.startup.${currentOperationId}`,

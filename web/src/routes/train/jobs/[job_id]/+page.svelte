@@ -677,7 +677,6 @@
 
     streamStatus = 'connecting';
     realtimeContributor = client.registerContributor({
-      contributorId: `train.job.${currentJobId}.${currentLogsType}`,
       subscriptions: buildRealtimeSubscriptions(currentJobId, currentLogsType, logLines),
       onEvent: (event) => handleRealtimeEvent(currentJobId, registrationKey, event)
     });

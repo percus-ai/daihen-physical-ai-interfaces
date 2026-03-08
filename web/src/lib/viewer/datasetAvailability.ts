@@ -171,7 +171,6 @@ export const createDatasetAvailabilityController = (opts: {
     if (!client) return;
     const currentJobId = $jobId;
     contributor = client.registerContributor({
-      contributorId: `viewer.dataset-sync.${currentJobId}`,
       subscriptions: [
         {
           subscription_id: `viewer.dataset-sync.${currentJobId}`,

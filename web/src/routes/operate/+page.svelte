@@ -304,7 +304,6 @@
     const currentOperationId = startupOperationId;
     disposeStartupContributor();
     startupContributor = client.registerContributor({
-      contributorId: `operate.startup.${currentOperationId}`,
       subscriptions: [
         {
           subscription_id: `operate.startup.${currentOperationId}`,
@@ -334,7 +333,6 @@
     }
     if (realtimeContributor === null) {
       realtimeContributor = client.registerContributor({
-        contributorId: 'operate.page',
         subscriptions: operateRealtimeSubscriptions,
         onEvent: (event: TabRealtimeEvent) => {
           if (event.op !== 'snapshot') return;

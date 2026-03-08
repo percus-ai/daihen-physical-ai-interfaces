@@ -450,7 +450,6 @@
     }
     disposeUploadContributor();
     uploadContributor = client.registerContributor({
-      contributorId: `recording.controls.upload.${targetDatasetId}`,
       subscriptions: [
         {
           subscription_id: `recording.controls.upload.${targetDatasetId}`,

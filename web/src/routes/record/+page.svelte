@@ -294,7 +294,6 @@
     }
     if (realtimeContributor === null) {
       realtimeContributor = client.registerContributor({
-        contributorId: 'record.page',
         subscriptions: [],
         onEvent: (event: TabRealtimeEvent) => {
           if (event.op !== 'snapshot') return;

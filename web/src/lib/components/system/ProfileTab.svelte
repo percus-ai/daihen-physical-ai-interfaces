@@ -216,7 +216,6 @@
     const client = getTabRealtimeClient();
     if (!client) return;
     vlaborContributor = client.registerContributor({
-      contributorId: 'system.profile.vlabor',
       subscriptions: [
         {
           subscription_id: 'system.profile.vlabor',

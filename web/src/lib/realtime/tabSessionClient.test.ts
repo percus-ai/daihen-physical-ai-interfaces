@@ -1,0 +1,335 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const realtimeApi = {
+  tabSessionState: vi.fn(),
+  putTabSessionState: vi.fn(),
+  deleteTabSession: vi.fn()
+};
+
+vi.mock('$app/environment', () => ({
+  browser: true
+}));
+
+vi.mock('$lib/config', () => ({
+  getBackendUrl: () => 'http://backend.test'
+}));
+
+vi.mock('$lib/api/client', () => ({
+  api: {
+    realtime: realtimeApi
+  }
+}));
+
+type ListenerMap = Map<string, Set<(...args: unknown[]) => void>>;
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+
+  static readonly CLOSED = 2;
+
+  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onerror: (() => void) | null = null;
+  readyState = 1;
+
+  constructor(
+    readonly url: string,
+    readonly options?: { withCredentials?: boolean }
+  ) {
+    FakeEventSource.instances.push(this);
+  }
+
+  close() {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
+
+class FakeBroadcastChannel {
+  static channels = new Map<string, Set<FakeBroadcastChannel>>();
+
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+
+  constructor(readonly name: string) {
+    const channelSet = FakeBroadcastChannel.channels.get(name) ?? new Set<FakeBroadcastChannel>();
+    channelSet.add(this);
+    FakeBroadcastChannel.channels.set(name, channelSet);
+  }
+
+  postMessage(message: unknown) {
+    const channelSet = FakeBroadcastChannel.channels.get(this.name) ?? new Set<FakeBroadcastChannel>();
+    for (const channel of channelSet) {
+      if (channel === this) continue;
+      channel.onmessage?.({ data: message } as MessageEvent<unknown>);
+    }
+  }
+
+  close() {
+    const channelSet = FakeBroadcastChannel.channels.get(this.name);
+    if (!channelSet) return;
+    channelSet.delete(this);
+    if (channelSet.size === 0) {
+      FakeBroadcastChannel.channels.delete(this.name);
+    }
+  }
+}
+
+const createStorage = () => {
+  const storage = new Map<string, string>();
+  return {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      storage.set(key, value);
+    },
+    removeItem: (key: string) => {
+      storage.delete(key);
+    },
+    clear: () => {
+      storage.clear();
+    }
+  };
+};
+
+const createEventTarget = () => {
+  const listeners: ListenerMap = new Map();
+  return {
+    listeners,
+    addEventListener: (type: string, callback: (...args: unknown[]) => void) => {
+      const callbacks = listeners.get(type) ?? new Set<(...args: unknown[]) => void>();
+      callbacks.add(callback);
+      listeners.set(type, callbacks);
+    },
+    removeEventListener: (type: string, callback: (...args: unknown[]) => void) => {
+      listeners.get(type)?.delete(callback);
+    },
+    dispatch: (type: string, event?: unknown) => {
+      for (const callback of listeners.get(type) ?? []) {
+        callback(event);
+      }
+    }
+  };
+};
+
+const buildStateResponse = (overrides: Partial<{
+  tab_session_id: string;
+  revision: number;
+  lifecycle: { visibility: 'foreground' | 'background' | 'closing'; reason?: string | null };
+  route: { id: string; url: string; params: Record<string, string> };
+  subscriptions: Array<{
+    subscription_id: string;
+    kind: 'profiles.active';
+    params: Record<string, never>;
+  }>;
+}> = {}) => ({
+  tab_session_id: overrides.tab_session_id ?? 'tab-test',
+  revision: overrides.revision ?? 1,
+  lifecycle: overrides.lifecycle ?? { visibility: 'foreground' as const },
+  route: overrides.route ?? { id: 'unknown', url: '/', params: {} },
+  subscriptions:
+    overrides.subscriptions ??
+    [
+      {
+        subscription_id: 'profiles.active',
+        kind: 'profiles.active' as const,
+        params: {}
+      }
+    ]
+});
+
+const flushClient = async (client: { syncInFlight?: Promise<void> | null }) => {
+  for (let attempts = 0; attempts < 10; attempts += 1) {
+    const inFlight = client.syncInFlight;
+    if (!inFlight) {
+      await Promise.resolve();
+      return;
+    }
+    await inFlight;
+  }
+  throw new Error('sync did not settle');
+};
+
+describe('tabSessionClient', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    FakeEventSource.instances = [];
+    FakeBroadcastChannel.channels.clear();
+
+    const documentTarget = createEventTarget();
+    const windowTarget = createEventTarget();
+
+    vi.stubGlobal('sessionStorage', createStorage());
+    vi.stubGlobal('document', {
+      ...documentTarget,
+      visibilityState: 'visible'
+    });
+    vi.stubGlobal('window', {
+      ...windowTarget,
+      setTimeout,
+      clearTimeout
+    });
+    vi.stubGlobal('EventSource', FakeEventSource);
+    vi.stubGlobal('BroadcastChannel', FakeBroadcastChannel);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ revision: 2 }),
+        text: async () => ''
+      }))
+    );
+  });
+
+  it('adopts server state after 409 when desired already matches', async () => {
+    realtimeApi.putTabSessionState.mockRejectedValueOnce({ status: 409 });
+    realtimeApi.tabSessionState.mockResolvedValueOnce(
+      buildStateResponse({
+        revision: 7
+      })
+    );
+
+    const { getTabRealtimeClient } = await import('./tabSessionClient');
+    const client = getTabRealtimeClient() as unknown as {
+      registerContributor: (input: {
+        contributorId?: string;
+        subscriptions: Array<{
+          subscription_id: string;
+          kind: 'profiles.active';
+          params: Record<string, never>;
+        }>;
+      }) => unknown;
+      appliedRevision?: number;
+      syncInFlight?: Promise<void> | null;
+    };
+
+    client.registerContributor({
+      contributorId: 'profiles',
+      subscriptions: [
+        {
+          subscription_id: 'profiles.active',
+          kind: 'profiles.active',
+          params: {}
+        }
+      ]
+    });
+
+    await flushClient(client);
+
+    expect(realtimeApi.putTabSessionState).toHaveBeenCalledTimes(1);
+    expect(realtimeApi.tabSessionState).toHaveBeenCalledTimes(1);
+    expect(client.appliedRevision).toBe(7);
+  });
+
+  it('canonicalizes subscription order to avoid redundant PUTs', async () => {
+    realtimeApi.putTabSessionState.mockResolvedValue({ revision: 1 });
+
+    const { getTabRealtimeClient } = await import('./tabSessionClient');
+    const client = getTabRealtimeClient() as unknown as {
+      registerContributor: (input: {
+        contributorId?: string;
+        subscriptions: Array<{
+          subscription_id: string;
+          kind: 'profiles.active';
+          params: Record<string, never>;
+        }>;
+      }) => {
+        setSubscriptions: (subscriptions: Array<{
+          subscription_id: string;
+          kind: 'profiles.active';
+          params: Record<string, never>;
+        }>) => void;
+      };
+      syncInFlight?: Promise<void> | null;
+    };
+
+    const handle = client.registerContributor({
+      contributorId: 'profiles',
+      subscriptions: [
+        { subscription_id: 'b', kind: 'profiles.active', params: {} },
+        { subscription_id: 'a', kind: 'profiles.active', params: {} }
+      ]
+    });
+    await flushClient(client);
+
+    handle.setSubscriptions([
+      { subscription_id: 'a', kind: 'profiles.active', params: {} },
+      { subscription_id: 'b', kind: 'profiles.active', params: {} }
+    ]);
+    await flushClient(client);
+
+    expect(realtimeApi.putTabSessionState).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses keepalive fetch for pagehide close path', async () => {
+    realtimeApi.putTabSessionState.mockResolvedValueOnce({ revision: 1 });
+    const fetchMock = vi
+      .mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ revision: 2 }),
+        text: async () => ''
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 204,
+        json: async () => ({}),
+        text: async () => ''
+      } as Response);
+
+    const { getTabRealtimeClient } = await import('./tabSessionClient');
+    const client = getTabRealtimeClient() as unknown as {
+      registerContributor: (input: {
+        contributorId?: string;
+        subscriptions: Array<{
+          subscription_id: string;
+          kind: 'profiles.active';
+          params: Record<string, never>;
+        }>;
+      }) => unknown;
+      syncInFlight?: Promise<void> | null;
+    };
+
+    client.registerContributor({
+      contributorId: 'profiles',
+      subscriptions: [
+        {
+          subscription_id: 'profiles.active',
+          kind: 'profiles.active',
+          params: {}
+        }
+      ]
+    });
+    await flushClient(client);
+
+    (window as unknown as { dispatch: (type: string) => void }).dispatch('pagehide');
+    await flushClient(client);
+
+    expect(realtimeApi.putTabSessionState).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT', keepalive: true });
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'DELETE', keepalive: true });
+  });
+
+  it('resets session identity when another tab announces the same tab_session_id', async () => {
+    const { getTabRealtimeClient } = await import('./tabSessionClient');
+    const client = getTabRealtimeClient() as unknown as {
+      tabSessionId?: string;
+      instanceId?: string;
+      handlePresenceMessage?: (message: {
+        type: 'announce' | 'ack';
+        tabSessionId: string;
+        instanceId: string;
+      }) => void;
+    };
+
+    const previousTabSessionId = client.tabSessionId;
+    client.handlePresenceMessage?.({
+      type: 'announce',
+      tabSessionId: previousTabSessionId ?? '',
+      instanceId: ''
+    });
+
+    expect(client.tabSessionId).toBeTruthy();
+    expect(client.tabSessionId).not.toBe(previousTabSessionId);
+  });
+});

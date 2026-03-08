@@ -79,7 +79,6 @@
     const client = getTabRealtimeClient();
     if (!client) return;
     realtimeContributor = client.registerContributor({
-      contributorId: `operate.session.${sessionId}`,
       subscriptions: [
         {
           subscription_id: `operate.session.${sessionId}`,

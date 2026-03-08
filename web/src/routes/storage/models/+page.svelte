@@ -406,7 +406,6 @@
     if (!client) return;
     if (realtimeContributor === null) {
       realtimeContributor = client.registerContributor({
-        contributorId: 'storage.models',
         subscriptions: activeJobSubscriptions,
         onEvent: (event: TabRealtimeEvent) => {
           if (event.op !== 'snapshot' || event.source?.kind !== 'storage.model-sync') return;

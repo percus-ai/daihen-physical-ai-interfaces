@@ -50,7 +50,7 @@ type InFlightState = {
 };
 
 export type TabRealtimeContributor = {
-  contributorId: string;
+  contributorId?: string;
   subscriptions?: TabSessionSubscription[];
   onEvent?: (event: TabRealtimeEvent) => void;
 };
@@ -154,6 +154,7 @@ class TabRealtimeClient {
   private appliedStateKey = '';
   private inFlightState: InFlightState | null = null;
   private presenceChannel: BroadcastChannel | null = null;
+  private nextContributorSequence = 0;
 
   constructor() {
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
@@ -163,28 +164,29 @@ class TabRealtimeClient {
   }
 
   registerContributor(input: TabRealtimeContributor): TabRealtimeContributorHandle {
+    const contributorId = input.contributorId?.trim() || `contributor-${++this.nextContributorSequence}`;
     const contributor: ContributorState = {
-      id: input.contributorId,
+      id: contributorId,
       subscriptions: input.subscriptions ? [...input.subscriptions] : [],
       onEvent: input.onEvent
     };
-    this.contributors.set(input.contributorId, contributor);
+    this.contributors.set(contributorId, contributor);
     this.scheduleSync();
 
     return {
       setSubscriptions: (subscriptions) => {
-        const current = this.contributors.get(input.contributorId);
+        const current = this.contributors.get(contributorId);
         if (!current) return;
         current.subscriptions = [...subscriptions];
         this.scheduleSync();
       },
       setEventHandler: (onEvent) => {
-        const current = this.contributors.get(input.contributorId);
+        const current = this.contributors.get(contributorId);
         if (!current) return;
         current.onEvent = onEvent;
       },
       dispose: () => {
-        if (!this.contributors.delete(input.contributorId)) return;
+        if (!this.contributors.delete(contributorId)) return;
         this.scheduleSync();
       }
     };

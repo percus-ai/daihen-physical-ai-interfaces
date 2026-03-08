@@ -545,7 +545,6 @@
         const currentOperationId = operationId;
         closeCreateStream();
         createOperationContributor = client.registerContributor({
-          contributorId: `train.new.provision.${currentOperationId}`,
           subscriptions: [
             {
               subscription_id: `train.new.provision.${currentOperationId}`,

@@ -376,7 +376,6 @@
 
     if (realtimeContributor === null) {
       realtimeContributor = client.registerContributor({
-        contributorId: 'system.page',
         subscriptions: buildRealtimeSubscriptions(activeTab),
         onEvent: handleRealtimeEvent
       });
