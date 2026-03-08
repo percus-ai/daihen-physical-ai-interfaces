@@ -39,6 +39,8 @@ body {
   font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   background: var(--app-bg);
   color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
 }
 
 html::-webkit-scrollbar,

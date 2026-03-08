@@ -1,10 +1,12 @@
 """Training job models."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class JobStatus(str, Enum):
@@ -55,6 +57,7 @@ class JobInfo(BaseModel):
     # SSH connection info
     ssh_user: str = "root"
     ssh_private_key: str = "~/.ssh/id_rsa"
+    ssh_port: Optional[int] = Field(None, ge=1, le=65535, description="SSH port")
     remote_base_dir: str = "/root"
 
     # Checkpoint
@@ -88,6 +91,7 @@ class JobDetailResponse(BaseModel):
     """Response for job detail endpoint."""
 
     job: JobInfo
+    provision_operation: Optional["TrainingProvisionOperationStatusResponse"] = None
     remote_status: Optional[str] = None
     progress: Optional[dict] = None
     latest_train_metrics: Optional[dict] = None
@@ -178,11 +182,25 @@ class PolicyConfig(BaseModel):
     """Policy configuration for training."""
 
     type: str = Field("act", description="Policy type: act, pi0, groot, smolvla, etc.")
+    initialization: Optional[Literal["pretrained", "scratch"]] = Field(
+        None,
+        description="Policy initialization mode: pretrained or scratch",
+    )
     pretrained_path: Optional[str] = Field(None, description="Pretrained model path")
     compile_model: Optional[bool] = Field(None, description="Enable torch.compile")
     gradient_checkpointing: Optional[bool] = Field(None, description="Enable gradient checkpointing")
     dtype: Optional[str] = Field(None, description="Model dtype: float32, float16, bfloat16")
     use_amp: Optional[bool] = Field(None, description="Enable AMP (mixed precision)")
+
+    @model_validator(mode="after")
+    def validate_initialization(self) -> "PolicyConfig":
+        if self.initialization == "scratch":
+            if self.pretrained_path:
+                raise ValueError("policy.pretrained_path must not be set when initialization=scratch")
+            return self
+        if self.initialization == "pretrained" and not self.pretrained_path:
+            raise ValueError("policy.pretrained_path is required when initialization=pretrained")
+        return self
 
 
 class TrainingParams(BaseModel):
@@ -217,11 +235,54 @@ class EarlyStoppingConfig(BaseModel):
 class CloudConfig(BaseModel):
     """Cloud instance configuration."""
 
-    gpu_model: str = Field("H100", description="GPU model: H100, A100, L40S")
-    gpus_per_instance: int = Field(1, ge=1, le=8, description="Number of GPUs")
+    provider: str = Field(
+        "verda",
+        description="Cloud provider: verda, vast",
+        pattern="^(verda|vast)$",
+    )
+    gpu_model: Optional[str] = Field(None, description="Selected candidate GPU model")
+    gpus_per_instance: Optional[int] = Field(None, ge=1, le=8, description="Selected candidate GPU count")
     storage_size: Optional[int] = Field(None, description="Storage size in GB")
     location: str = Field("auto", description="Location: auto, FIN-01, ICE-01, etc.")
-    is_spot: bool = Field(True, description="Use spot instance")
+    is_spot: Optional[bool] = Field(None, description="Selected candidate uses spot instance")
+    selected_mode: Optional[str] = Field(
+        None,
+        description="Selected candidate mode: spot or ondemand",
+        pattern="^(spot|ondemand)$",
+    )
+    selected_instance_type: Optional[str] = Field(
+        None,
+        description="Selected Verda instance type",
+    )
+    selected_offer_id: Optional[int] = Field(
+        None,
+        description="Selected Vast offer id",
+    )
+    selected_price_per_hour: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Selected candidate hourly price from the UI",
+    )
+
+    # Vast.ai specific (v1)
+    interruptible: Optional[bool] = Field(None, description="Selected Vast interruptible instance")
+    max_price: Optional[float] = Field(None, ge=0, description="Max price ($/hour) for Vast interruptible")
+    ssh_port: Optional[int] = Field(None, ge=1, le=65535, description="SSH port (resolved after launch)")
+
+    @model_validator(mode="after")
+    def validate_selected_target(self) -> "CloudConfig":
+        provider = str(self.provider or "").strip().lower()
+        if provider == "verda":
+            if not str(self.selected_instance_type or "").strip():
+                raise ValueError("cloud.selected_instance_type is required for verda")
+            if self.selected_mode not in {"spot", "ondemand"}:
+                raise ValueError("cloud.selected_mode is required for verda")
+        elif provider == "vast":
+            if self.selected_offer_id is None:
+                raise ValueError("cloud.selected_offer_id is required for vast")
+            if self.selected_mode not in {"spot", "ondemand"}:
+                raise ValueError("cloud.selected_mode is required for vast")
+        return self
 
 
 class JobCreateRequest(BaseModel):
@@ -247,6 +308,35 @@ class JobCreateResponse(BaseModel):
     status: str
     message: str
     ip: Optional[str] = None
+
+
+TrainingProvisionOperationState = Literal["queued", "running", "completed", "failed", "cancelled"]
+
+
+class TrainingProvisionOperationAcceptedResponse(BaseModel):
+    """Accepted response for training provision operation."""
+
+    accepted: bool = True
+    operation_id: str
+    state: TrainingProvisionOperationState = "queued"
+    message: str = "accepted"
+
+
+class TrainingProvisionOperationStatusResponse(BaseModel):
+    """Current status for a training provision operation."""
+
+    operation_id: str
+    state: TrainingProvisionOperationState
+    step: str = "queued"
+    message: Optional[str] = None
+    failure_reason: Optional[str] = None
+    provider: Literal["verda", "vast"]
+    instance_id: Optional[str] = None
+    job_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 class InstanceStatusResponse(BaseModel):
@@ -378,6 +468,39 @@ class VerdaStorageActionResult(BaseModel):
     skipped: list[VerdaStorageActionFailure] = Field(default_factory=list)
 
 
+# --- Vast Storage Models ---
+
+
+class VastStorageItem(BaseModel):
+    """Vast storage volume summary."""
+
+    id: str
+    label: str = ""
+    size_gb: Optional[int] = None
+    state: str = ""
+    instance_id: Optional[str] = None
+
+
+class VastStorageListResponse(BaseModel):
+    """Response for Vast storage list."""
+
+    items: list[VastStorageItem]
+    total: int
+
+
+class VastStorageActionRequest(BaseModel):
+    """Request for Vast storage actions."""
+
+    volume_ids: list[str]
+
+
+class VastStorageActionResult(BaseModel):
+    """Result for Vast storage actions."""
+
+    success_ids: list[str] = Field(default_factory=list)
+    failed: list[VerdaStorageActionFailure] = Field(default_factory=list)
+
+
 class JobReviveResponse(BaseModel):
     """Response for reviving a terminated instance with restored storage."""
 
@@ -389,6 +512,7 @@ class JobReviveResponse(BaseModel):
     ip: str
     ssh_user: str = "root"
     ssh_private_key: str
+    ssh_port: Optional[int] = Field(None, ge=1, le=65535, description="SSH port")
     location: str
     message: str
 
@@ -503,3 +627,42 @@ class GpuAvailabilityResponse(BaseModel):
 
     available: list[GpuAvailabilityInfo] = Field(default_factory=list)
     checked_at: datetime = Field(default_factory=datetime.now)
+
+
+class TrainingInstanceCandidate(BaseModel):
+    """Selectable cloud instance candidate."""
+
+    provider: str = Field(..., pattern="^(verda|vast)$")
+    candidate_id: str
+    title: str
+    instance_type: Optional[str] = None
+    offer_id: Optional[int] = None
+    gpu_model: str
+    gpu_count: int
+    mode: str = Field(..., pattern="^(spot|ondemand)$")
+    route: str = ""
+    location: Optional[str] = None
+    price_per_hour: Optional[float] = None
+    detail: str = ""
+    storage_gb: Optional[int] = None
+    gpu_memory_gb: Optional[float] = None
+    cpu_cores: Optional[float] = None
+    system_memory_gb: Optional[float] = None
+
+
+class TrainingInstanceCandidatesResponse(BaseModel):
+    """Response for selectable cloud instance candidates."""
+
+    candidates: list[TrainingInstanceCandidate] = Field(default_factory=list)
+    checked_at: datetime = Field(default_factory=datetime.now)
+
+
+class TrainingProviderCapabilityResponse(BaseModel):
+    """Provider capability flags for training UI."""
+
+    verda_enabled: bool = Field(True, description="Whether Verda provider can be selected")
+    vast_enabled: bool = Field(False, description="Whether Vast.ai provider can be selected")
+    missing_vast_env: list[str] = Field(
+        default_factory=list,
+        description="Missing required env vars for Vast.ai",
+    )

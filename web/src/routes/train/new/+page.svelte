@@ -1,15 +1,20 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { onDestroy } from 'svelte';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
+  import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { api } from '$lib/api/client';
+  import {
+    api,
+    type TrainingProvisionOperationStatusResponse
+  } from '$lib/api/client';
   import HelpLabel from '$lib/components/HelpLabel.svelte';
-  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
-  import { getBackendUrl } from '$lib/config';
+  import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
   import { formatBytes, formatDate } from '$lib/format';
-  import { GPU_COUNTS, GPU_MODELS, POLICY_TYPES } from '$lib/policies';
-  import type { GpuAvailabilityResponse } from '$lib/types/training';
+  import { GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import type { TrainingProviderCapabilityResponse } from '$lib/types/training';
 
   type DatasetSummary = {
     id: string;
@@ -31,12 +36,26 @@
     queryFn: () => api.storage.datasets()
   });
 
-  const gpuAvailabilityQuery = createQuery<GpuAvailabilityResponse>({
-    queryKey: ['training', 'gpu-availability'],
-    queryFn: api.training.gpuAvailability
-  });
+  let cloudProvider = $state<'verda' | 'vast'>('verda');
+  let vastMaxPrice = $state<number | null>(null);
 
-  const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.name));
+	  const providerCapabilitiesQuery = createQuery<TrainingProviderCapabilityResponse>({
+	    queryKey: ['training', 'provider-capabilities'],
+	    queryFn: api.training.providerCapabilities
+	  });
+
+	  const isVerdaProviderEnabled = $derived($providerCapabilitiesQuery.data?.verda_enabled ?? true);
+	  const isVastProviderEnabled = $derived($providerCapabilitiesQuery.data?.vast_enabled ?? false);
+
+	  $effect(() => {
+	    if (cloudProvider === 'verda' && !isVerdaProviderEnabled && isVastProviderEnabled) {
+	      cloudProvider = 'vast';
+	      return;
+	    }
+	    if (cloudProvider === 'vast' && !isVastProviderEnabled) {
+	      cloudProvider = 'verda';
+	    }
+	  });
 
   const defaultPolicy = POLICY_TYPES[0];
   let policyType = $state(defaultPolicy?.id ?? '');
@@ -68,10 +87,17 @@
   let policyGradientCheckpointing = $state<'auto' | 'true' | 'false'>('auto');
   let policyCompileModel = $state<'auto' | 'true' | 'false'>('auto');
 
-  let gpuModel = $state(defaultPolicy?.recommendedGpu ?? 'H100');
+  let gpuModel = $state('H100');
   let gpuCount = $state(GPU_COUNTS[0] ?? 1);
-  let storageSize = $state(defaultPolicy?.recommendedStorage ?? 100);
-  let instanceType = $state<'spot' | 'ondemand'>('spot');
+  let storageSize = $state(200);
+  let selectedMode = $state<'spot' | 'ondemand'>('spot');
+  let selectedInstanceType = $state<string | null>(null);
+  let selectedOfferId = $state<number | null>(null);
+  let selectedLocation = $state('auto');
+  let selectedCandidateTitle = $state('');
+  let selectedCandidateDetail = $state('');
+  let selectedCandidateRoute = $state('');
+  let selectedCandidatePricePerHour = $state<number | null>(null);
 
   let jobName = $state('');
 
@@ -81,7 +107,10 @@
   let createMessage = $state('');
   let createStatus = $state<'idle' | 'running' | 'complete' | 'error'>('idle');
   let createEvents = $state<Array<{ type: string; message: string; timestamp: string }>>([]);
-  let createWs = $state<WebSocket | null>(null);
+  let createProgressPercent = $state(0);
+  let provisionOperationId = $state('');
+  let createOperationContributor: TabRealtimeContributorHandle | null = null;
+  let lastCreateEventKey = '';
 
   let selectedDataset = $state('');
 
@@ -114,14 +143,14 @@
     torch_compile: 'モデル実行を最適化して高速化を狙う設定です。環境によって効果は変わります。'
   } as const;
 
+  const SCRATCH_PRETRAINED_ID = '__scratch__';
+
   const applyPolicyDefaults = (policyId: string) => {
     const info = POLICY_TYPES.find((policy) => policy.id === policyId);
     if (!info) return;
     steps = info.defaultSteps;
     batchSize = info.defaultBatchSize;
     saveFreq = info.defaultSaveFreq;
-    storageSize = info.recommendedStorage;
-    gpuModel = info.recommendedGpu;
     logFreq = info.defaultLogFreq;
     numWorkers = info.defaultNumWorkers;
     saveCheckpoint = true;
@@ -167,7 +196,23 @@
   };
 
   const policyInfo = $derived(POLICY_TYPES.find((policy) => policy.id === policyType) ?? null);
-  const pretrainedOptions = $derived(policyInfo?.pretrainedModels ?? []);
+  const pretrainedOptions = $derived.by(() => {
+    const baseOptions = [...(policyInfo?.pretrainedModels ?? [])];
+    if (policyInfo?.supportsScratchInitialization) {
+      return [
+        ...baseOptions,
+        {
+          id: SCRATCH_PRETRAINED_ID,
+          path: '',
+          name: 'フルスクラッチ',
+          description: '事前学習済み重みを使わず、新規初期化で学習を開始'
+        }
+      ];
+    }
+    return baseOptions;
+  });
+  const supportsScratchInitialization = $derived(policyInfo?.supportsScratchInitialization ?? false);
+  const usesScratchInitialization = $derived(selectedPretrainedId === SCRATCH_PRETRAINED_ID);
 
   $effect(() => {
     if (policyInfo?.skipPretrained || pretrainedOptions.length === 0) {
@@ -216,31 +261,37 @@
   });
 
   const useAmpDisabled = $derived(policyDtype === 'bfloat16');
-  const isSpot = $derived(instanceType === 'spot');
-
-  const wsUrl = (path: string) => getBackendUrl().replace(/^http/, 'ws') + path;
+  const isVast = $derived(cloudProvider === 'vast');
+  const isVerda = $derived(cloudProvider === 'verda');
 
   const progressLabelMap: Record<string, string> = {
-    start: '開始',
-    validating: '設定検証',
-    validated: '設定検証',
-    selecting_instance: 'インスタンス選択',
-    instance_selected: 'インスタンス選択',
-    finding_location: 'ロケーション探索',
-    location_found: 'ロケーション探索',
-    creating_instance: 'インスタンス作成',
-    instance_created: 'インスタンス作成',
-    waiting_ip: 'IP割り当て待機',
-    ip_assigned: 'IP割り当て完了',
-    waiting_running: 'インスタンス起動待機',
-    instance_running: 'インスタンス起動完了',
-    connecting_ssh: 'SSH接続',
-    ssh_ready: 'SSH接続完了',
-    deploying: 'ファイル転送',
-    setting_up: '環境構築',
-    starting_training: '学習開始',
-    complete: '完了',
-    error: 'エラー'
+    queued: '開始待ち',
+    validate: '設定検証',
+    select_candidate: '候補確認',
+    create_instance: 'インスタンス作成',
+    wait_ip: 'IP割り当て待機',
+    connect_ssh: 'SSH接続',
+    deploy_files: 'ファイル転送',
+    setup_env: '環境構築',
+    start_training: '学習開始',
+    job_created: 'ジョブ作成',
+    completed: '完了',
+    failed: 'エラー'
+  };
+
+  const progressPercentMap: Record<string, number> = {
+    queued: 2,
+    validate: 10,
+    select_candidate: 20,
+    create_instance: 35,
+    wait_ip: 50,
+    connect_ssh: 65,
+    deploy_files: 78,
+    setup_env: 90,
+    start_training: 97,
+    job_created: 100,
+    completed: 100,
+    failed: 100
   };
 
   const buildJobName = (policy: string, shortId: string) => {
@@ -294,17 +345,41 @@
         mode: earlyStoppingMode
       },
       cloud: {
+        provider: cloudProvider,
         gpu_model: gpuModel,
         gpus_per_instance: gpuCount,
-        storage_size: storageSize,
-        is_spot: isSpot
-      },
+        selected_mode: selectedMode,
+        selected_instance_type: cloudProvider === 'verda' ? selectedInstanceType : null,
+        selected_offer_id: cloudProvider === 'vast' ? selectedOfferId : null,
+        selected_price_per_hour:
+          cloudProvider === 'vast' && selectedCandidatePricePerHour !== null
+            ? selectedCandidatePricePerHour
+            : null,
+        location: cloudProvider === 'verda' ? selectedLocation : 'auto',
+        ...(isVerda
+          ? {
+              storage_size: storageSize,
+              is_spot: selectedMode === 'spot'
+            }
+		          : {
+		              storage_size: storageSize,
+		              interruptible: selectedMode === 'spot',
+		              max_price:
+		                vastMaxPrice === null || Number.isNaN(vastMaxPrice)
+		                  ? null
+		                  : vastMaxPrice
+		            })
+		      },
       wandb_enable: false,
       sync_dataset: false
     };
 
-    if (selectedPretrained?.path) {
-      (payload.policy as Record<string, unknown>).pretrained_path = selectedPretrained.path;
+    const policyPayload = payload.policy as Record<string, unknown>;
+    if (supportsScratchInitialization) {
+      policyPayload.initialization = usesScratchInitialization ? 'scratch' : 'pretrained';
+    }
+    if (selectedPretrained?.path && !usesScratchInitialization) {
+      policyPayload.pretrained_path = selectedPretrained.path;
     }
     if (datasetVideoBackend !== 'auto') {
       (payload.dataset as Record<string, unknown>).video_backend = datasetVideoBackend;
@@ -326,7 +401,6 @@
       validationPayload.batch_size = validationBatchSize > 0 ? validationBatchSize : null;
     }
 
-    const policyPayload = payload.policy as Record<string, unknown>;
     if (policyDtype !== 'auto') policyPayload.dtype = policyDtype;
 
     const ampSetting = useAmpDisabled ? 'false' : policyUseAmp;
@@ -341,9 +415,89 @@
     return payload;
   };
 
+  const setProvisionOperationQuery = async (operationId: string | null) => {
+    const nextUrl = new URL(page.url);
+    if (operationId) {
+      nextUrl.searchParams.set('operation_id', operationId);
+    } else {
+      nextUrl.searchParams.delete('operation_id');
+    }
+    await goto(`${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true
+    });
+  };
+
+  const closeCreateStream = () => {
+    createOperationContributor?.dispose();
+    createOperationContributor = null;
+  };
+
+  const appendCreateEvent = (type: string, message: string, eventKey: string) => {
+    if (!message || eventKey === lastCreateEventKey) return;
+    lastCreateEventKey = eventKey;
+    createEvents = [
+      ...createEvents,
+      { type, message, timestamp: new Date().toLocaleTimeString('ja-JP') }
+    ].slice(-12);
+  };
+
+  const applyProvisionSnapshot = async (snapshot: TrainingProvisionOperationStatusResponse) => {
+    const step = snapshot.step || 'queued';
+    const label = progressLabelMap[step] ?? step;
+    const message = snapshot.message || label;
+    createStage = label;
+    createMessage = message;
+    createProgressPercent = progressPercentMap[step] ?? 0;
+    provisionOperationId = snapshot.operation_id;
+
+    appendCreateEvent(step, message, `${snapshot.state}:${step}:${message}`);
+
+    if (snapshot.job_id) {
+      closeCreateStream();
+      createStatus = 'complete';
+      submitting = false;
+      await goto(`/train/jobs/${snapshot.job_id}`);
+      return;
+    }
+
+    if (snapshot.state === 'failed') {
+      createStatus = 'error';
+      submitError = snapshot.message || snapshot.failure_reason || '学習ジョブの作成に失敗しました。';
+      submitting = false;
+      return;
+    }
+
+    if (snapshot.state === 'completed') {
+      createStatus = 'complete';
+      submitting = false;
+      return;
+    }
+
+    createStatus = 'running';
+    submitting = true;
+  };
+
   const submit = async () => {
     submitError = '';
     createStatus = 'idle';
+    if (cloudProvider === 'vast' && !isVastProviderEnabled) {
+      submitError = 'Vast.ai は現在選択できません。';
+      return;
+    }
+    if (cloudProvider === 'verda' && !isVerdaProviderEnabled) {
+      submitError = 'Verda認証情報が不足しています: DATACRUNCH_CLIENT_ID, DATACRUNCH_CLIENT_SECRET';
+      return;
+    }
+    if (cloudProvider === 'verda' && !selectedInstanceType) {
+      submitError = 'Verda のインスタンス候補を選択してください。';
+      return;
+    }
+    if (cloudProvider === 'vast' && selectedOfferId == null) {
+      submitError = 'Vast.ai のオファー候補を選択してください。';
+      return;
+    }
     const payload = buildPayload();
     if (!payload) {
       submitError = 'データセットを選択してください。';
@@ -354,81 +508,74 @@
     createStage = '開始';
     createMessage = '';
     createEvents = [];
-
-    if (createWs) {
-      createWs.close();
-    }
-
-    let accessToken = '';
     try {
-      const auth = await api.auth.token();
-      accessToken = auth.access_token;
+      closeCreateStream();
+      const accepted = await api.training.startProvisionOperation(payload);
+      provisionOperationId = accepted.operation_id;
+      createProgressPercent = progressPercentMap.queued;
+      await setProvisionOperationQuery(accepted.operation_id);
     } catch (error) {
       createStatus = 'error';
-      submitError = 'セッション情報を取得できませんでした。ログインし直してください。';
+      submitError = error instanceof Error ? error.message : '学習ジョブの作成に失敗しました。';
       submitting = false;
+    }
+  };
+
+  $effect(() => {
+    const operationId = page.url.searchParams.get('operation_id') ?? '';
+    if (!operationId) {
+      if (!submitting) {
+        closeCreateStream();
+        provisionOperationId = '';
+      }
       return;
     }
 
-    const ws = new WebSocket(
-      wsUrl(`/api/training/ws/create-job?access_token=${encodeURIComponent(accessToken)}`)
-    );
-    createWs = ws;
+    provisionOperationId = operationId;
+    closeCreateStream();
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify(payload));
-    };
-
-    ws.onmessage = async (event) => {
-      const data = JSON.parse(event.data as string) as { type?: string; message?: string; error?: string; job_id?: string };
-      if (data.type === 'heartbeat') return;
-      const type = data.type ?? 'status';
-      const label = progressLabelMap[type] ?? type;
-      const message = data.message || data.error || label;
-      createStage = label;
-      createMessage = message;
-      createEvents = [
-        ...createEvents,
-        { type, message, timestamp: new Date().toLocaleTimeString('ja-JP') }
-      ].slice(-12);
-
-      if (type === 'error') {
-        createStatus = 'error';
-        submitError = data.error || '学習ジョブの作成に失敗しました。';
-        submitting = false;
-        ws.close();
-      }
-
-      if (type === 'complete') {
-        createStatus = 'complete';
-        submitting = false;
-        ws.close();
-        if (data.job_id) {
-          await goto(`/train/jobs/${data.job_id}`);
+    let cancelled = false;
+    (async () => {
+      try {
+        const snapshot = await api.training.provisionOperation(operationId);
+        if (cancelled) return;
+        await applyProvisionSnapshot(snapshot);
+        if (snapshot.job_id || snapshot.state === 'failed' || snapshot.state === 'completed') {
+          return;
         }
-      }
-    };
-
-    ws.onerror = () => {
-      createStatus = 'error';
-      submitError = 'WebSocket接続に失敗しました。';
-      submitting = false;
-    };
-
-    ws.onclose = () => {
-      if (createStatus === 'running') {
+        if (!browser) return;
+        const currentOperationId = operationId;
+        closeCreateStream();
+        createOperationContributor = registerTabRealtimeContributor({
+          subscriptions: [
+            {
+              subscription_id: `train.new.provision.${currentOperationId}`,
+              kind: 'training.provision-operation',
+              params: { operation_id: currentOperationId }
+            }
+          ],
+          onEvent: (event: TabRealtimeEvent) => {
+            if (event.op !== 'snapshot' || event.source?.kind !== 'training.provision-operation') return;
+            if (provisionOperationId !== currentOperationId) return;
+            void applyProvisionSnapshot(event.payload as TrainingProvisionOperationStatusResponse);
+          }
+        });
+      } catch (error) {
+        if (cancelled) return;
         createStatus = 'error';
-        submitError = '接続が切断されました。';
+        submitError = error instanceof Error ? error.message : '作成進行の取得に失敗しました。';
         submitting = false;
       }
-      createWs = null;
-    };
-  };
+    })();
 
-  const availability = $derived($gpuAvailabilityQuery.data?.available ?? []);
+    return () => {
+      cancelled = true;
+      closeCreateStream();
+    };
+  });
 
   onDestroy(() => {
-    createWs?.close();
+    closeCreateStream();
   });
 </script>
 
@@ -473,7 +620,9 @@
               {/each}
             {/if}
           </select>
-          {#if selectedPretrained?.description}
+          {#if usesScratchInitialization}
+            <p class="mt-2 text-xs text-slate-500">事前学習済み重みを使わず、新規初期化で学習を開始します。</p>
+          {:else if selectedPretrained?.description}
             <p class="mt-2 text-xs text-slate-500">{selectedPretrained.description}</p>
           {/if}
         </label>
@@ -732,55 +881,38 @@
   </div>
 
   <div class="space-y-6">
-    <section class="card p-6">
-      <h2 class="text-xl font-semibold text-slate-900">クラウド設定</h2>
-      <div class="mt-4 grid gap-4">
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">GPUモデル</span>
-          <select class="input mt-2" bind:value={gpuModel}>
-            {#each GPU_MODELS as gpu}
-              <option value={gpu.name}>{gpu.name} - {gpu.description}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">GPU数</span>
-          <select class="input mt-2" bind:value={gpuCount}>
-            {#each GPU_COUNTS as count}
-              <option value={count}>{count} GPU</option>
-            {/each}
-          </select>
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">ストレージ (GB)</span>
-          <input class="input mt-2" type="number" min="1" bind:value={storageSize} />
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">インスタンス種別</span>
-          <div class="mt-3 grid gap-2 text-sm text-slate-600">
-            <label class="flex items-center gap-2">
-              <input type="radio" name="instanceType" value="spot" bind:group={instanceType} />
-              <span>スポット</span>
-            </label>
-            <label class="flex items-center gap-2">
-              <input type="radio" name="instanceType" value="ondemand" bind:group={instanceType} />
-              <span>オンデマンド</span>
-            </label>
-          </div>
-        </label>
-      </div>
-      <div class="mt-4">
-        <p class="label mb-2">空き状況</p>
-        <GpuAvailabilityBoard
-          items={availability}
-          loading={$gpuAvailabilityQuery.isLoading}
-          selectedGpuModel={gpuModel}
-          selectedGpuCount={gpuCount}
-          showOnlyAvailableDefault={true}
-          preferredModelOrder={gpuModelOrder}
-        />
-      </div>
-    </section>
+    <CloudInstanceSelector
+      {cloudProvider}
+      {gpuModel}
+      {gpuCount}
+      {storageSize}
+      {selectedMode}
+      {selectedInstanceType}
+      {selectedOfferId}
+      {selectedLocation}
+      {selectedCandidateTitle}
+      {selectedCandidateDetail}
+      {selectedCandidateRoute}
+      {selectedCandidatePricePerHour}
+      {vastMaxPrice}
+      {isVerdaProviderEnabled}
+      {isVastProviderEnabled}
+      onApplySelection={({ cloudProvider: nextProvider, gpuModel: nextGpuModel, gpuCount: nextGpuCount, storageSize: nextStorageSize, selectedMode: nextSelectedMode, selectedInstanceType: nextSelectedInstanceType, selectedOfferId: nextSelectedOfferId, selectedLocation: nextSelectedLocation, vastMaxPrice: nextVastMaxPrice, candidateTitle: nextCandidateTitle, candidateDetail: nextCandidateDetail, candidateRoute: nextCandidateRoute, candidatePricePerHour: nextCandidatePricePerHour }) => {
+        cloudProvider = nextProvider;
+        gpuModel = nextGpuModel;
+        gpuCount = nextGpuCount;
+        storageSize = nextStorageSize;
+        selectedMode = nextSelectedMode;
+        selectedInstanceType = nextSelectedInstanceType;
+        selectedOfferId = nextSelectedOfferId;
+        selectedLocation = nextSelectedLocation;
+        vastMaxPrice = nextVastMaxPrice;
+        selectedCandidateTitle = nextCandidateTitle;
+        selectedCandidateDetail = nextCandidateDetail;
+        selectedCandidateRoute = nextCandidateRoute;
+        selectedCandidatePricePerHour = nextCandidatePricePerHour;
+      }}
+    />
 
     <section class="card p-6">
       <h2 class="text-xl font-semibold text-slate-900">ジョブ名と実行</h2>
@@ -799,11 +931,17 @@
         <Button.Root class="btn-primary" type="button" onclick={submit} disabled={submitting}>
           {submitting ? '作成中...' : '学習を開始'}
         </Button.Root>
-        {#if submitting || createEvents.length}
+        {#if submitting || createEvents.length || provisionOperationId}
           <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
             <div class="flex items-center justify-between">
               <p class="label">作成進行</p>
               <span class="chip">{createStage}</span>
+            </div>
+            <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-200/80">
+              <div
+                class={`h-full rounded-full transition-[width] duration-300 ${createStatus === 'error' ? 'bg-rose-500' : 'bg-[linear-gradient(90deg,#5c7cff,#5f7cff,#7a8cff)]'}`}
+                style={`width: ${Math.max(0, Math.min(100, createProgressPercent))}%`}
+              ></div>
             </div>
             <p class="mt-2 text-sm text-slate-700">{createMessage || '進行状況を取得中...'}</p>
             <div class="mt-3 space-y-1">

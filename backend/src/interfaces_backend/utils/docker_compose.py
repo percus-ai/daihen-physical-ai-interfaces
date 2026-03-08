@@ -12,7 +12,7 @@ _DEFAULT_VLABOR_IMAGE_REPO = "ghcr.io/takatronix/vlabor-local"
 
 
 def get_lerobot_compose_file() -> Path:
-    return get_project_root() / "docker-compose.ros2.yml"
+    return get_project_root() / "docker" / "lerobot_ros2" / "compose.yml"
 
 
 def get_vlabor_compose_file() -> Path:

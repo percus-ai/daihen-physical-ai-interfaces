@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/state';
   import { AlertDialog, Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
-  import { connectStream } from '$lib/realtime/stream';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
@@ -71,12 +72,21 @@
     mounted = true;
   });
 
-  let stopOperateStream = () => {};
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
 
   onMount(() => {
-    stopOperateStream = connectStream<OperateStatusStreamPayload>({
-      path: '/api/stream/operate/status',
-      onMessage: (payload) => {
+    if (!browser) return;
+    realtimeContributor = registerTabRealtimeContributor({
+      subscriptions: [
+        {
+          subscription_id: `operate.session.${sessionId}`,
+          kind: 'operate.status',
+          params: {}
+        }
+      ],
+      onEvent: (event: TabRealtimeEvent) => {
+        if (event.op !== 'snapshot' || event.source?.kind !== 'operate.status') return;
+        const payload = event.payload as OperateStatusStreamPayload;
         queryClient.setQueryData(['profiles', 'vlabor', 'status'], payload.vlabor_status);
         queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
         queryClient.setQueryData(['operate', 'status'], payload.operate_status);
@@ -85,7 +95,8 @@
   });
 
   onDestroy(() => {
-    stopOperateStream();
+    realtimeContributor?.dispose();
+    realtimeContributor = null;
   });
 
   const runnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});

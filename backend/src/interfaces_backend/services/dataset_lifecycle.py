@@ -20,15 +20,11 @@ from supabase import create_async_client
 from supabase._async.client import AsyncClient
 
 from interfaces_backend.models.inference import InferenceModelSyncStatus
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
 from percus_ai.db import get_supabase_async_client, upsert_with_owner
 from percus_ai.storage.paths import get_datasets_dir, get_user_config_path
 from percus_ai.storage.r2_db_sync import R2DBSyncService
 
 logger = logging.getLogger(__name__)
-UPLOAD_TOPIC = "recording.upload"
-
-
 class DatasetLifecycle:
     """Manages dataset DB records and R2 uploads."""
 
@@ -622,7 +618,6 @@ class DatasetLifecycle:
             payload["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._dataset_upload_status[dataset_id] = payload
             snapshot = dict(payload)
-        get_realtime_event_bus().publish_threadsafe(UPLOAD_TOPIC, dataset_id, snapshot)
         return snapshot
 
 

@@ -1,24 +1,39 @@
 import type { LayoutLoad } from './$types';
 import { redirect } from '@sveltejs/kit';
 
+import { cacheAuthenticatedGate, getCachedAuthGate, invalidateAuthGate } from '$lib/auth/gate';
 import { getBackendUrl } from '$lib/config';
 
 export const ssr = false;
 
 export const load: LayoutLoad = async ({ url, fetch }) => {
-  if (url.pathname.startsWith('/auth')) {
-    return {};
+  if (
+    url.pathname.startsWith('/auth') ||
+    url.pathname === '/train/instance-selector-mock'
+  ) {
+    return {
+      authenticated: false
+    };
+  }
+  if (getCachedAuthGate()) {
+    return {
+      authenticated: true
+    };
   }
   try {
     const baseUrl = getBackendUrl();
     const fetchJson = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
+      const method = (init.method ?? 'GET').toUpperCase();
       const res = await fetch(`${baseUrl}${path}`, {
         ...init,
         credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(init.headers ?? {})
-        }
+        headers:
+          method === 'GET' || method === 'HEAD'
+            ? { ...(init.headers ?? {}) }
+            : {
+                'Content-Type': 'application/json',
+                ...(init.headers ?? {})
+              }
       });
       if (!res.ok) throw new Error(`request failed: ${res.status}`);
       return res.json();
@@ -59,10 +74,15 @@ export const load: LayoutLoad = async ({ url, fetch }) => {
     }
 
     if (!authenticated) {
+      invalidateAuthGate();
       throw new Error('unauthenticated');
     }
+    cacheAuthenticatedGate();
+    return {
+      authenticated: true
+    };
   } catch {
+    invalidateAuthGate();
     throw redirect(302, '/auth');
   }
-  return {};
 };

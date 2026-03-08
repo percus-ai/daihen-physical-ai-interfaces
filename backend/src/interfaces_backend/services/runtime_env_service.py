@@ -1,4 +1,4 @@
-"""Runtime environment orchestration with latest-state SSE snapshots."""
+"""Runtime environment orchestration with in-memory snapshots."""
 
 from __future__ import annotations
 
@@ -16,11 +16,8 @@ from interfaces_backend.models.runtime_env import (
     RuntimeEnvSnapshot,
     RuntimeEnvStatusSnapshot,
 )
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
 from percus_ai.environment import EnvironmentManager
 
-RUNTIME_ENV_TOPIC = "system.runtime_envs"
-RUNTIME_ENV_KEY = "global"
 _LOG_LIMIT = 200
 
 
@@ -54,7 +51,6 @@ def _estimate_progress_from_step(step: str | None, *, state: str) -> int | None:
 
 class RuntimeEnvService:
     def __init__(self, root_dir: Path | None = None) -> None:
-        self._bus = get_realtime_event_bus()
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="runtime-env")
         self._env_manager = EnvironmentManager(root_dir=root_dir)
@@ -83,7 +79,7 @@ class RuntimeEnvService:
             if encoded == self._last_published_payload:
                 return
             self._last_published_payload = encoded
-        await self._bus.publish(RUNTIME_ENV_TOPIC, RUNTIME_ENV_KEY, payload)
+        return None
 
     async def start_build(self, env_name: str, *, force: bool = False) -> RuntimeEnvSnapshot:
         normalized = self._normalize_known_env(env_name)
@@ -280,7 +276,7 @@ class RuntimeEnvService:
             self._snapshot = self._with_capabilities(snapshot)
             payload = self._snapshot.model_dump(mode="json")
             self._last_published_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        self._bus.publish_threadsafe(RUNTIME_ENV_TOPIC, RUNTIME_ENV_KEY, payload)
+        return None
 
     def _record_failure(self, env_name: str, error: str) -> None:
         now = _now_iso()
@@ -304,7 +300,7 @@ class RuntimeEnvService:
             self._snapshot = self._with_capabilities(snapshot)
             payload = self._snapshot.model_dump(mode="json")
             self._last_published_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        self._bus.publish_threadsafe(RUNTIME_ENV_TOPIC, RUNTIME_ENV_KEY, payload)
+        return None
 
     def _replace_snapshot(self, snapshot: RuntimeEnvSnapshot) -> None:
         with self._lock:

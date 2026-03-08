@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 from interfaces_backend.api import training
 
 
@@ -84,7 +87,7 @@ def test_get_gpu_availability_marks_instance_available(monkeypatch) -> None:
     monkeypatch.setattr(training, "_gpu_availability_cache", {})
     monkeypatch.setattr(training, "_gpu_availability_cache_time", {})
 
-    response = training.get_gpu_availability()
+    response = training.get_gpu_availability(provider="verda")
 
     h100 = next(item for item in response.available if item.gpu_model == "H100")
     assert h100.spot_available is True
@@ -117,7 +120,7 @@ def test_get_gpu_availability_all_scan_returns_all_instance_types(monkeypatch) -
     monkeypatch.setattr(training, "_gpu_availability_cache", {})
     monkeypatch.setattr(training, "_gpu_availability_cache_time", {})
 
-    response = training.get_gpu_availability(scan="all")
+    response = training.get_gpu_availability(provider="verda", scan="all")
     by_instance_type = {item.instance_type: item for item in response.available}
 
     assert "1H100.80S.22V" in by_instance_type
@@ -150,7 +153,32 @@ def test_get_gpu_availability_defaults_to_all(monkeypatch) -> None:
     monkeypatch.setattr(training, "_gpu_availability_cache", {})
     monkeypatch.setattr(training, "_gpu_availability_cache_time", {})
 
-    response = training.get_gpu_availability()
+    response = training.get_gpu_availability(provider="verda")
     by_instance_type = {item.instance_type: item for item in response.available}
     assert "1H100.80S.22V" in by_instance_type
     assert "2H100.80S.60V" in by_instance_type
+
+
+def test_provider_capabilities_reports_missing_vast_env(monkeypatch) -> None:
+    monkeypatch.delenv("VAST_API_KEY", raising=False)
+    monkeypatch.delenv("VAST_SSH_PRIVATE_KEY", raising=False)
+    monkeypatch.setattr(training, "_get_verda_client", lambda: object())
+
+    response = training.get_training_provider_capabilities()
+
+    assert response.verda_enabled is True
+    assert response.vast_enabled is False
+    assert response.missing_vast_env == ["VAST_API_KEY", "VAST_SSH_PRIVATE_KEY"]
+
+
+def test_get_gpu_availability_vast_rejects_missing_env(monkeypatch) -> None:
+    monkeypatch.delenv("VAST_API_KEY", raising=False)
+    monkeypatch.delenv("VAST_SSH_PRIVATE_KEY", raising=False)
+    monkeypatch.setattr(training, "_gpu_availability_cache", {})
+    monkeypatch.setattr(training, "_gpu_availability_cache_time", {})
+
+    with pytest.raises(HTTPException) as exc:
+        training.get_gpu_availability(provider="vast")
+
+    assert exc.value.status_code == 400
+    assert "VAST_API_KEY" in str(exc.value.detail)

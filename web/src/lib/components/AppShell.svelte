@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { browser } from '$app/environment';
+  import { onDestroy } from 'svelte';
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
   import { navItems, quickActions } from '$lib/navigation';
@@ -9,15 +10,15 @@
   import { toStore } from 'svelte/store';
 
   import { api } from '$lib/api/client';
-  import { connectStream } from '$lib/realtime/stream';
+  import { registerTabRealtimeContributor, setTabRealtimeRoute, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   let { children }: { children?: Snippet } = $props();
   let mobileOpen = $state(false);
-  let authenticated = $state(false);
   let switchingProfile = $state(false);
   let profileError = $state('');
   let profilesReady = $state(false);
+  const authenticated = $derived(Boolean(page.data.authenticated));
 
   type VlaborStatus = { dashboard_url?: string; status?: string };
   const vlaborStatusQuery = createQuery<VlaborStatus>(
@@ -31,7 +32,6 @@
   const immersiveView = $derived(
     page.url.pathname.startsWith('/record/sessions/') || page.url.pathname.startsWith('/operate/sessions/')
   );
-  let lastPath = '';
 
   type VlaborProfile = {
     name: string;
@@ -40,7 +40,7 @@
 
   const profileListQuery = createQuery<{ profiles?: VlaborProfile[]; active_profile_name?: string }>(
     toStore(() => ({
-      queryKey: ['profiles', 'list'],
+      queryKey: ['app-shell', 'profiles', 'list'],
       queryFn: api.profiles.list,
       enabled: authenticated && profilesReady
     }))
@@ -48,7 +48,7 @@
 
   const activeProfileQuery = createQuery<{ profile_name?: string }>(
     toStore(() => ({
-      queryKey: ['profiles', 'active'],
+      queryKey: ['app-shell', 'profiles', 'active'],
       queryFn: api.profiles.active,
       enabled: authenticated && profilesReady
     }))
@@ -75,52 +75,71 @@
     mobileOpen = false;
   };
 
-  const refreshAuth = async () => {
-    try {
-      const status = await api.auth.status();
-      authenticated = Boolean(status.authenticated);
-    } catch {
-      authenticated = false;
-    }
-  };
-
-  $effect(() => {
-    const currentPath = page.url.pathname + page.url.search;
-    if (currentPath !== lastPath) {
-      lastPath = currentPath;
-      refreshAuth();
-    }
-  });
-
   $effect(() => {
     if (immersiveView && mobileOpen) {
       mobileOpen = false;
     }
   });
-  let stopProfileStream = () => {};
-  let profileStreamActive = false;
+  let profileContributor: TabRealtimeContributorHandle | null = null;
 
   $effect(() => {
-    if (authenticated && profilesReady && !profileStreamActive) {
-      stopProfileStream();
-      stopProfileStream = connectStream({
-        path: '/api/stream/profiles/active',
-        onMessage: (payload) => {
-          queryClient.setQueryData(['profiles', 'active', 'status'], payload);
-        }
-      });
-      profileStreamActive = true;
+    if (!browser || !authenticated) {
       return;
     }
-    if ((!authenticated || !profilesReady) && profileStreamActive) {
-      stopProfileStream();
-      stopProfileStream = () => {};
-      profileStreamActive = false;
+    setTabRealtimeRoute({
+      id: page.url.pathname,
+      url: `${page.url.pathname}${page.url.search}`,
+      params: page.params
+    });
+  });
+
+  const handleProfileRealtimeEvent = (event: TabRealtimeEvent) => {
+    if (event.op !== 'snapshot') return;
+    queryClient.setQueryData(['profiles', 'active', 'status'], event.payload);
+  };
+
+  $effect(() => {
+    if (!browser) {
+      return;
     }
+
+    if (!authenticated || !profilesReady) {
+      profileContributor?.dispose();
+      profileContributor = null;
+      return;
+    }
+
+    if (profileContributor === null) {
+      profileContributor = registerTabRealtimeContributor({
+        contributorId: 'app-shell.profiles.active',
+        subscriptions: [
+          {
+            subscription_id: 'app-shell.profiles.active',
+            kind: 'profiles.active',
+            params: {}
+          }
+        ],
+        onEvent: handleProfileRealtimeEvent
+      });
+      if (!profileContributor) {
+        return;
+      }
+      return;
+    }
+
+    profileContributor.setEventHandler(handleProfileRealtimeEvent);
+    profileContributor.setSubscriptions([
+      {
+        subscription_id: 'app-shell.profiles.active',
+        kind: 'profiles.active',
+        params: {}
+      }
+    ]);
   });
 
   onDestroy(() => {
-    stopProfileStream();
+    profileContributor?.dispose();
+    profileContributor = null;
   });
 
   const formatProfileLabel = (profile: VlaborProfile) => {
@@ -137,6 +156,11 @@
       await api.profiles.setActive({ profile_name: nextName });
       await $activeProfileQuery?.refetch?.();
       await $profileListQuery?.refetch?.();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['profiles', 'list'] }),
+        queryClient.invalidateQueries({ queryKey: ['profiles', 'active'] }),
+        queryClient.invalidateQueries({ queryKey: ['profiles', 'active', 'status'] })
+      ]);
     } catch (err) {
       console.error(err);
       profileError = '切り替えに失敗しました';

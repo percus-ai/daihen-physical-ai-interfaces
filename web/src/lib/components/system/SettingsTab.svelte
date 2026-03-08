@@ -1,5 +1,15 @@
 <script lang="ts">
-  import type { SystemSettings, UserSettings } from '$lib/types/settings';
+  import { Combobox } from 'bits-ui';
+  import CaretUpDown from 'phosphor-svelte/lib/CaretUpDown';
+  import Check from 'phosphor-svelte/lib/Check';
+  import CaretDoubleUp from 'phosphor-svelte/lib/CaretDoubleUp';
+  import CaretDoubleDown from 'phosphor-svelte/lib/CaretDoubleDown';
+
+  import type {
+    FeaturesRepoSuggestions,
+    SystemSettings,
+    UserSettings
+  } from '$lib/types/settings';
 
   let {
     systemSettings = null,
@@ -12,6 +22,9 @@
     userSuccess = '',
     onSaveSystemSettings,
     onSaveUserSettings,
+    featuresRepoSuggestions = null,
+    featuresRepoSuggestionsPending = false,
+    onRefreshFeaturesRepoSuggestions,
   }: {
     systemSettings?: SystemSettings | null;
     userSettings?: UserSettings | null;
@@ -24,24 +37,55 @@
     onSaveSystemSettings: (payload: {
       pytorchVersion: string;
       torchvisionVersion: string;
+      repoUrl: string;
+      repoRef: string;
+      repoCommit?: string;
     }) => void | Promise<void>;
     onSaveUserSettings: (payload: {
       huggingfaceToken?: string;
       clear?: boolean;
     }) => void | Promise<void>;
+    featuresRepoSuggestions?: FeaturesRepoSuggestions | null;
+    featuresRepoSuggestionsPending?: boolean;
+    onRefreshFeaturesRepoSuggestions: (payload: {
+      repoUrl: string;
+      repoRef?: string;
+    }) => void | Promise<void>;
   } = $props();
 
   let systemTorchVersion = $state('');
   let systemTorchvisionVersion = $state('');
+  let systemFeaturesRepoUrl = $state('');
+  let systemFeaturesRepoRef = $state('');
+  let systemFeaturesRepoCommit = $state('');
   let userHuggingFaceToken = $state('');
+  let branchOpen = $state(false);
+  let commitOpen = $state(false);
+  let selectedBranchValue = $state('');
+  let selectedCommitValue = $state('');
+  let lastHydratedSystemSettingsKey = $state('');
 
   $effect(() => {
-    if (systemSettings?.bundled_torch?.pytorch_version && !systemTorchVersion) {
-      systemTorchVersion = systemSettings.bundled_torch.pytorch_version;
+    const nextKey = JSON.stringify({
+      updated_at: systemSettings?.updated_at ?? null,
+      pytorch_version: systemSettings?.bundled_torch?.pytorch_version ?? '',
+      torchvision_version: systemSettings?.bundled_torch?.torchvision_version ?? '',
+      repo_url: systemSettings?.features_repo?.repo_url ?? '',
+      repo_ref: systemSettings?.features_repo?.repo_ref ?? '',
+      repo_commit: systemSettings?.features_repo?.repo_commit ?? ''
+    });
+    if (!systemSettings || nextKey === lastHydratedSystemSettingsKey) {
+      return;
     }
-    if (systemSettings?.bundled_torch?.torchvision_version && !systemTorchvisionVersion) {
-      systemTorchvisionVersion = systemSettings.bundled_torch.torchvision_version;
-    }
+
+    systemTorchVersion = systemSettings.bundled_torch?.pytorch_version ?? '';
+    systemTorchvisionVersion = systemSettings.bundled_torch?.torchvision_version ?? '';
+    systemFeaturesRepoUrl = systemSettings.features_repo?.repo_url ?? '';
+    systemFeaturesRepoRef = systemSettings.features_repo?.repo_ref ?? '';
+    selectedBranchValue = systemSettings.features_repo?.repo_ref ?? '';
+    systemFeaturesRepoCommit = systemSettings.features_repo?.repo_commit ?? '';
+    selectedCommitValue = systemSettings.features_repo?.repo_commit ?? '';
+    lastHydratedSystemSettingsKey = nextKey;
   });
 
   const saveUserToken = async () => {
@@ -114,6 +158,43 @@
             : 'missing'
     )
   );
+
+  const branchLookupItems = $derived.by(() =>
+    (featuresRepoSuggestions?.branches ?? []).map((branch) => ({ value: branch, label: branch }))
+  );
+  const filteredBranchItems = $derived.by(() => {
+    const query = systemFeaturesRepoRef.trim().toLowerCase();
+    if (!query) return branchLookupItems;
+    return branchLookupItems.filter((item) => item.label.toLowerCase().includes(query));
+  });
+  const commitLookupItems = $derived.by(() =>
+    (featuresRepoSuggestions?.commits ?? []).map((commit) => ({
+      value: commit.sha,
+      label: `${commit.short_sha} ${commit.message}`.trim(),
+      shortSha: commit.short_sha,
+      message: commit.message
+    }))
+  );
+  const filteredCommitItems = $derived.by(() => {
+    const query = systemFeaturesRepoCommit.trim().toLowerCase();
+    if (!query) return commitLookupItems;
+    return commitLookupItems.filter(
+      (item) =>
+        item.value.toLowerCase().includes(query) ||
+        item.shortSha.toLowerCase().includes(query) ||
+        item.message.toLowerCase().includes(query)
+    );
+  });
+
+  const openBranchSuggestions = () => {
+    branchOpen = true;
+    void onRefreshFeaturesRepoSuggestions({ repoUrl: systemFeaturesRepoUrl, repoRef: systemFeaturesRepoRef });
+  };
+
+  const openCommitSuggestions = () => {
+    commitOpen = true;
+    void onRefreshFeaturesRepoSuggestions({ repoUrl: systemFeaturesRepoUrl, repoRef: systemFeaturesRepoRef });
+  };
 </script>
 
 <section class="space-y-6">
@@ -201,6 +282,9 @@
       <div class="mt-3 space-y-2 text-sm text-slate-600">
         <p>pytorch: {systemSettings?.bundled_torch?.pytorch_version ?? '-'}</p>
         <p>torchvision: {systemSettings?.bundled_torch?.torchvision_version ?? '-'}</p>
+        <p>features repo: {systemSettings?.features_repo?.repo_url ?? '-'}</p>
+        <p>branch: {systemSettings?.features_repo?.repo_ref ?? '-'}</p>
+        <p>commit: {systemSettings?.features_repo?.repo_commit ?? '-'}</p>
         <p>updated: {systemSettings?.updated_at ?? '-'}</p>
       </div>
     </div>
@@ -229,17 +313,205 @@
           disabled={systemPending}
         />
       </label>
+      <label class="text-sm text-slate-600">
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Features repo URL</span>
+        <input
+          bind:value={systemFeaturesRepoUrl}
+          class={`w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none ${systemVisual.input}`}
+          disabled={systemPending}
+          onblur={() => onRefreshFeaturesRepoSuggestions({ repoUrl: systemFeaturesRepoUrl, repoRef: systemFeaturesRepoRef })}
+        />
+      </label>
+      <label class="text-sm text-slate-600">
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Features repo branch</span>
+        <Combobox.Root
+          type="single"
+          value={selectedBranchValue}
+          inputValue={systemFeaturesRepoRef}
+          items={branchLookupItems}
+          open={branchOpen}
+          onOpenChange={(nextOpen) => {
+            branchOpen = nextOpen;
+          }}
+          onValueChange={(nextValue) => {
+            if (!nextValue) return;
+            selectedBranchValue = nextValue;
+            systemFeaturesRepoRef = nextValue;
+            branchOpen = false;
+          }}
+          disabled={systemPending}
+        >
+          <div class="relative">
+            <Combobox.Input
+              class={`w-full rounded-xl border bg-white px-3 py-2 pr-10 text-sm text-slate-900 focus:outline-none ${systemVisual.input}`}
+              disabled={systemPending}
+              autocomplete="off"
+              oninput={(event) => {
+                systemFeaturesRepoRef = (event.currentTarget as HTMLInputElement).value;
+                selectedBranchValue = '';
+                branchOpen = true;
+              }}
+              onfocus={openBranchSuggestions}
+            />
+            <Combobox.Trigger
+              class="absolute right-2 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100"
+              disabled={systemPending}
+              aria-label="Features repo branch 候補を開く"
+              onclick={openBranchSuggestions}
+            >
+              <CaretUpDown class="size-4" />
+            </Combobox.Trigger>
+          </div>
+
+          <Combobox.Portal>
+            <Combobox.Content
+              sideOffset={8}
+              class="z-50 max-h-[var(--bits-combobox-content-available-height)] w-[var(--bits-combobox-anchor-width)] rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+            >
+              <Combobox.ScrollUpButton class="flex w-full items-center justify-center py-1 text-slate-500">
+                <CaretDoubleUp class="size-3" />
+              </Combobox.ScrollUpButton>
+              <Combobox.Viewport class="max-h-64 p-1">
+                {#if filteredBranchItems.length === 0}
+                  <div class="px-3 py-2 text-xs text-slate-500">一致する branch がありません。</div>
+                {:else}
+                  {#each filteredBranchItems as item (`branch-${item.value}`)}
+                    <Combobox.Item value={item.value} label={item.label}>
+                      {#snippet children({ selected, highlighted })}
+                        <div
+                          class={`flex cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm ${
+                            highlighted ? 'bg-slate-100 text-slate-900' : 'text-slate-700'
+                          }`}
+                        >
+                          <span class="truncate">{item.label}</span>
+                          {#if selected}
+                            <Check class="size-4 text-brand" />
+                          {/if}
+                        </div>
+                      {/snippet}
+                    </Combobox.Item>
+                  {/each}
+                {/if}
+              </Combobox.Viewport>
+              <Combobox.ScrollDownButton class="flex w-full items-center justify-center py-1 text-slate-500">
+                <CaretDoubleDown class="size-3" />
+              </Combobox.ScrollDownButton>
+            </Combobox.Content>
+          </Combobox.Portal>
+        </Combobox.Root>
+      </label>
+      <label class="text-sm text-slate-600">
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Features repo commit</span>
+        <Combobox.Root
+          type="single"
+          value={selectedCommitValue}
+          inputValue={systemFeaturesRepoCommit}
+          items={commitLookupItems}
+          open={commitOpen}
+          onOpenChange={(nextOpen) => {
+            commitOpen = nextOpen;
+          }}
+          onValueChange={(nextValue) => {
+            if (!nextValue) return;
+            selectedCommitValue = nextValue;
+            systemFeaturesRepoCommit = nextValue;
+            commitOpen = false;
+          }}
+          disabled={systemPending}
+        >
+          <div class="relative">
+            <Combobox.Input
+              class={`w-full rounded-xl border bg-white px-3 py-2 pr-10 text-sm text-slate-900 focus:outline-none ${systemVisual.input}`}
+              disabled={systemPending}
+              autocomplete="off"
+              oninput={(event) => {
+                systemFeaturesRepoCommit = (event.currentTarget as HTMLInputElement).value;
+                selectedCommitValue = '';
+                commitOpen = true;
+              }}
+              onfocus={openCommitSuggestions}
+            />
+            <Combobox.Trigger
+              class="absolute right-2 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100"
+              disabled={systemPending}
+              aria-label="Features repo commit 候補を開く"
+              onclick={openCommitSuggestions}
+            >
+              <CaretUpDown class="size-4" />
+            </Combobox.Trigger>
+          </div>
+
+          <Combobox.Portal>
+            <Combobox.Content
+              sideOffset={8}
+              class="z-50 max-h-[var(--bits-combobox-content-available-height)] w-[var(--bits-combobox-anchor-width)] rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+            >
+              <Combobox.ScrollUpButton class="flex w-full items-center justify-center py-1 text-slate-500">
+                <CaretDoubleUp class="size-3" />
+              </Combobox.ScrollUpButton>
+              <Combobox.Viewport class="max-h-64 p-1">
+                {#if filteredCommitItems.length === 0}
+                  <div class="px-3 py-2 text-xs text-slate-500">一致する commit がありません。</div>
+                {:else}
+                  {#each filteredCommitItems as item (`commit-${item.value}`)}
+                    <Combobox.Item value={item.value} label={item.label}>
+                      {#snippet children({ selected, highlighted })}
+                        <div
+                          class={`flex cursor-pointer items-start justify-between gap-2 rounded-lg px-3 py-2 text-sm ${
+                            highlighted ? 'bg-slate-100 text-slate-900' : 'text-slate-700'
+                          }`}
+                        >
+                          <div class="min-w-0">
+                            <p class="font-semibold text-slate-800">{item.shortSha}</p>
+                            <p class="truncate text-xs text-slate-500">{item.message}</p>
+                          </div>
+                          {#if selected}
+                            <Check class="mt-0.5 size-4 shrink-0 text-brand" />
+                          {/if}
+                        </div>
+                      {/snippet}
+                    </Combobox.Item>
+                  {/each}
+                {/if}
+              </Combobox.Viewport>
+              <Combobox.ScrollDownButton class="flex w-full items-center justify-center py-1 text-slate-500">
+                <CaretDoubleDown class="size-3" />
+              </Combobox.ScrollDownButton>
+            </Combobox.Content>
+          </Combobox.Portal>
+        </Combobox.Root>
+        <p class="mt-2 text-xs text-slate-500">
+          {#if featuresRepoSuggestionsPending}
+            GitHub から候補を取得中...
+          {:else if featuresRepoSuggestions?.default_branch}
+            default branch: {featuresRepoSuggestions.default_branch}
+          {:else}
+            repo URL を入力すると branch / commit 候補を取得します。
+          {/if}
+        </p>
+      </label>
       <div class="flex flex-wrap gap-2">
         <button
           class="btn-primary"
           type="button"
           onclick={() => onSaveSystemSettings({
             pytorchVersion: systemTorchVersion,
-            torchvisionVersion: systemTorchvisionVersion
+            torchvisionVersion: systemTorchvisionVersion,
+            repoUrl: systemFeaturesRepoUrl,
+            repoRef: systemFeaturesRepoRef,
+            repoCommit: systemFeaturesRepoCommit
           })}
-          disabled={systemPending || !systemTorchVersion.trim() || !systemTorchvisionVersion.trim()}
+          disabled={systemPending || !systemTorchVersion.trim() || !systemTorchvisionVersion.trim() || !systemFeaturesRepoUrl.trim() || !systemFeaturesRepoRef.trim()}
         >
           保存
+        </button>
+        <button
+          class="btn-ghost"
+          type="button"
+          onclick={() => onRefreshFeaturesRepoSuggestions({ repoUrl: systemFeaturesRepoUrl, repoRef: systemFeaturesRepoRef })}
+          disabled={systemPending || !systemFeaturesRepoUrl.trim()}
+        >
+          候補を更新
         </button>
       </div>
     </div>

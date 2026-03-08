@@ -3,18 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from interfaces_backend.services import dataset_sync_jobs as jobs_module
 from interfaces_backend.services.dataset_sync_jobs import DatasetSyncJobsService
-
-
-class _DummyBus:
-    def publish_threadsafe(self, _topic: str, _key: str, _payload: dict) -> None:
-        return
-
-
-@pytest.fixture(autouse=True)
-def _stub_realtime_event_bus(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(jobs_module, "get_realtime_event_bus", lambda: _DummyBus())
 
 
 def test_create_allows_parallel_jobs_for_different_datasets_same_user() -> None:

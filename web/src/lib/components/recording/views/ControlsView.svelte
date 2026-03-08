@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { getContext } from 'svelte';
   import { AlertDialog, Button } from 'bits-ui';
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
-  import { connectStream } from '$lib/realtime/stream';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import {
@@ -49,7 +50,7 @@
     error?: string | null;
     updated_at?: string | null;
   } | null>(null);
-  let stopUploadStream: (() => void) | null = null;
+  let uploadContributor: TabRealtimeContributorHandle | null = null;
 
   const runAction = async (
     label: string,
@@ -180,7 +181,7 @@
           }
         );
         if (!success) {
-          disconnectUploadStream();
+          disposeUploadContributor();
           uploadModalOpen = false;
           return false;
         }
@@ -224,36 +225,9 @@
     return 0;
   });
 
-  const disconnectUploadStream = () => {
-    if (stopUploadStream) {
-      stopUploadStream();
-      stopUploadStream = null;
-    }
-  };
-
-  const startUploadStream = (datasetIdForStatus: string) => {
-    if (typeof window === 'undefined') return;
-    disconnectUploadStream();
-    stopUploadStream = connectStream({
-      path: `/api/stream/recording/sessions/${encodeURIComponent(datasetIdForStatus)}/upload-status`,
-      onMessage: (next) => {
-        uploadStatus = next as {
-          dataset_id: string;
-          status: string;
-          phase: string;
-          progress_percent: number;
-          message?: string;
-          files_done?: number;
-          total_files?: number;
-          current_file?: string | null;
-          error?: string | null;
-          updated_at?: string | null;
-        };
-        if (isTerminalUploadStatus(uploadStatus) && actionBusy !== '終了') {
-          disconnectUploadStream();
-        }
-      }
-    });
+  const disposeUploadContributor = () => {
+    uploadContributor?.dispose();
+    uploadContributor = null;
   };
 
   const startUploadModal = (datasetIdForStatus: string) => {
@@ -266,7 +240,6 @@
       progress_percent: 0,
       message: 'アップロード準備中...'
     };
-    startUploadStream(datasetIdForStatus);
   };
 
   const retryUpload = async () => {
@@ -283,7 +256,6 @@
       progress_percent: 0,
       message: 'アップロード準備中...'
     };
-    startUploadStream(targetDatasetId);
   };
 
   const openDatasetViewer = () => {
@@ -466,8 +438,36 @@
   });
 
   $effect(() => {
+    if (!browser) return;
+    const targetDatasetId = String(uploadStatus?.dataset_id || '').trim();
+    if (!uploadModalOpen || !targetDatasetId) {
+      disposeUploadContributor();
+      return;
+    }
+    disposeUploadContributor();
+    uploadContributor = registerTabRealtimeContributor({
+      subscriptions: [
+        {
+          subscription_id: `recording.controls.upload.${targetDatasetId}`,
+          kind: 'recording.upload-status',
+          params: { session_id: targetDatasetId }
+        }
+      ],
+      onEvent: (event: TabRealtimeEvent) => {
+        if (event.op !== 'snapshot' || event.source?.kind !== 'recording.upload-status') return;
+        if (String(uploadStatus?.dataset_id || '').trim() !== targetDatasetId) return;
+        uploadStatus = event.payload as typeof uploadStatus;
+      }
+    });
+
     return () => {
-      disconnectUploadStream();
+      disposeUploadContributor();
+    };
+  });
+
+  $effect(() => {
+    return () => {
+      disposeUploadContributor();
     };
   });
 
@@ -475,7 +475,7 @@
     if (!uploadStatus) return;
     if (!isTerminalUploadStatus(uploadStatus)) return;
     if (actionBusy === '終了') return;
-    disconnectUploadStream();
+    disposeUploadContributor();
   });
 </script>
 
@@ -619,7 +619,7 @@
           type="button"
           onclick={() => {
             uploadModalOpen = false;
-            disconnectUploadStream();
+            disposeUploadContributor();
           }}
         >
           閉じる

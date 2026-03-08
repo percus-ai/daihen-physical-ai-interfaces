@@ -14,9 +14,6 @@ from pydantic import BaseModel, Field
 from interfaces_backend.services.recorder_bridge import get_recorder_bridge
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.recording_session import get_recording_session_manager
-from interfaces_backend.services.session_control_events import (
-    publish_session_control_event_safely,
-)
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.startup_operations import get_startup_operations_service
 from interfaces_backend.models.startup import StartupOperationAcceptedResponse
@@ -39,16 +36,7 @@ async def _emit_recording_control_event(
     message: str | None = None,
     details: dict[str, object] | None = None,
 ) -> None:
-    await publish_session_control_event_safely(
-        session_kind="recording",
-        action=action,
-        phase=phase,
-        session_id=session_id,
-        operation_id=operation_id,
-        success=success,
-        message=message,
-        details=details,
-    )
+    return None
 
 
 # -- Request / Response models ------------------------------------------------

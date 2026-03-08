@@ -1,7 +1,9 @@
 import { getBackendUrl } from '$lib/config';
+import { cacheAuthenticatedGate, invalidateAuthGate } from '$lib/auth/gate';
 import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
 import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
 import type { SystemSettings, UserSettings } from '$lib/types/settings';
+import type { FeaturesRepoSuggestions } from '$lib/types/settings';
 
 class ApiError extends Error {
   status: number;
@@ -108,6 +110,164 @@ export type ExperimentUploadResponse = {
 export type StartupOperationAcceptedResponse = {
   operation_id: string;
   message?: string;
+};
+
+export type TabSessionLifecycle = {
+  visibility: 'foreground' | 'background' | 'closing';
+  reason?: string | null;
+};
+
+export type TabSessionRoute = {
+  id: string;
+  url: string;
+  params: Record<string, string>;
+};
+
+type RealtimeSubscriptionBase = {
+  subscription_id: string;
+};
+
+export type ProfilesActiveSubscription = RealtimeSubscriptionBase & {
+  kind: 'profiles.active';
+  params?: Record<string, never>;
+};
+
+export type ProfilesVlaborSubscription = RealtimeSubscriptionBase & {
+  kind: 'profiles.vlabor';
+  params?: Record<string, never>;
+};
+
+export type SystemStatusSubscription = RealtimeSubscriptionBase & {
+  kind: 'system.status';
+  params?: Record<string, never>;
+};
+
+export type OperateStatusSubscription = RealtimeSubscriptionBase & {
+  kind: 'operate.status';
+  params?: Record<string, never>;
+};
+
+export type SystemRuntimeEnvsSubscription = RealtimeSubscriptionBase & {
+  kind: 'system.runtime-envs';
+  params?: Record<string, never>;
+};
+
+export type SystemBundledTorchSubscription = RealtimeSubscriptionBase & {
+  kind: 'system.bundled-torch';
+  params?: Record<string, never>;
+};
+
+export type RecordingUploadStatusSubscription = RealtimeSubscriptionBase & {
+  kind: 'recording.upload-status';
+  params: {
+    session_id: string;
+  };
+};
+
+export type StartupOperationSubscription = RealtimeSubscriptionBase & {
+  kind: 'startup.operation';
+  params: {
+    operation_id: string;
+  };
+};
+
+export type TrainingProvisionOperationSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.provision-operation';
+  params: {
+    operation_id: string;
+  };
+};
+
+export type StorageModelSyncSubscription = RealtimeSubscriptionBase & {
+  kind: 'storage.model-sync';
+  params: {
+    job_id: string;
+  };
+};
+
+export type StorageDatasetSyncSubscription = RealtimeSubscriptionBase & {
+  kind: 'storage.dataset-sync';
+  params: {
+    job_id: string;
+  };
+};
+
+export type StorageDatasetMergeSubscription = RealtimeSubscriptionBase & {
+  kind: 'storage.dataset-merge';
+  params: {
+    job_id: string;
+  };
+};
+
+export type TrainingJobCoreSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.core';
+  params: {
+    job_id: string;
+  };
+};
+
+export type TrainingJobProvisionSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.provision';
+  params: {
+    job_id: string;
+  };
+};
+
+export type TrainingJobMetricsSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.metrics';
+  params: {
+    job_id: string;
+    limit?: number | null;
+  };
+};
+
+export type TrainingJobLogsSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.logs';
+  params: {
+    job_id: string;
+    log_type?: 'training' | 'setup';
+    tail_lines?: number | null;
+  };
+};
+
+export type TabSessionSubscription =
+  | ProfilesActiveSubscription
+  | ProfilesVlaborSubscription
+  | SystemStatusSubscription
+  | OperateStatusSubscription
+  | SystemRuntimeEnvsSubscription
+  | SystemBundledTorchSubscription
+  | RecordingUploadStatusSubscription
+  | StartupOperationSubscription
+  | TrainingProvisionOperationSubscription
+  | StorageModelSyncSubscription
+  | StorageDatasetSyncSubscription
+  | StorageDatasetMergeSubscription
+  | TrainingJobCoreSubscription
+  | TrainingJobProvisionSubscription
+  | TrainingJobMetricsSubscription
+  | TrainingJobLogsSubscription;
+
+export type TabSessionStateRequest = {
+  revision: number;
+  lifecycle: TabSessionLifecycle;
+  route: TabSessionRoute;
+  subscriptions: TabSessionSubscription[];
+};
+
+export type TabSessionStateResponse = {
+  tab_session_id: string;
+  revision: number;
+  lifecycle: TabSessionLifecycle;
+  route: TabSessionRoute;
+  subscriptions: TabSessionSubscription[];
+};
+
+export type TabSessionStatePutResponse = {
+  tab_session_id: string;
+  revision: number;
+  applied_at: string;
+  subscription_count: number;
 };
 
 export type StartupOperationStatusResponse = {
@@ -374,6 +534,7 @@ export type TrainingReviveResult = {
   ip: string;
   ssh_user: string;
   ssh_private_key: string;
+  ssh_port?: number | null;
   location: string;
   message: string;
 };
@@ -413,7 +574,78 @@ export type RemoteCheckpointUploadProgressMessage = {
   result?: RemoteCheckpointUploadResult;
 };
 
+export type TrainingProviderCapabilityResponse = {
+  verda_enabled?: boolean;
+  vast_enabled?: boolean;
+  missing_vast_env?: string[];
+};
+
+export type TrainingInstanceCandidate = {
+  provider: 'verda' | 'vast';
+  candidate_id: string;
+  title: string;
+  instance_type?: string | null;
+  offer_id?: number | null;
+  gpu_model: string;
+  gpu_count: number;
+  mode: 'spot' | 'ondemand';
+  route?: string;
+  location?: string | null;
+  price_per_hour?: number | null;
+  detail?: string;
+  storage_gb?: number | null;
+  gpu_memory_gb?: number | null;
+  cpu_cores?: number | null;
+  system_memory_gb?: number | null;
+};
+
+export type TrainingInstanceCandidatesResponse = {
+  candidates?: TrainingInstanceCandidate[];
+  checked_at?: string;
+};
+
+export type TrainingProvisionOperationAcceptedResponse = {
+  accepted?: boolean;
+  operation_id: string;
+  state?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  message?: string;
+};
+
+export type TrainingProvisionOperationStatusResponse = {
+  operation_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  step?: string;
+  message?: string | null;
+  failure_reason?: string | null;
+  provider?: 'verda' | 'vast';
+  instance_id?: string | null;
+  job_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
 let refreshPromise: Promise<boolean> | null = null;
+
+function withJsonHeaders(options: RequestInit = {}): RequestInit {
+  const method = (options.method ?? 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD') {
+    return {
+      ...options,
+      headers: {
+        ...options.headers
+      }
+    };
+  }
+  return {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers
+    }
+  };
+}
 
 async function baseFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const baseUrl = getBackendUrl();
@@ -446,13 +678,7 @@ async function parseApiError(response: Response): Promise<string> {
 }
 
 async function fetchJsonNoRefresh<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await baseFetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers
-    }
-  });
+  const response = await baseFetch(path, withJsonHeaders(options));
 
   if (!response.ok) {
     throw new ApiError(response.status, await parseApiError(response));
@@ -492,8 +718,10 @@ async function refreshSession(): Promise<boolean> {
     refreshPromise = (async () => {
       try {
         await fetchJsonNoRefresh('/api/auth/refresh', { method: 'POST' });
+        cacheAuthenticatedGate();
         return true;
       } catch {
+        invalidateAuthGate();
         return false;
       } finally {
         refreshPromise = null;
@@ -505,13 +733,18 @@ async function refreshSession(): Promise<boolean> {
 
 async function withAuthRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
-    return await fn();
+    const result = await fn();
+    cacheAuthenticatedGate();
+    return result;
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       const refreshed = await refreshSession();
       if (refreshed) {
-        return await fn();
+        const result = await fn();
+        cacheAuthenticatedGate();
+        return result;
       }
+      invalidateAuthGate();
     }
     throw err;
   }
@@ -616,11 +849,24 @@ export const api = {
     settings: () => fetchApi<SystemSettings>('/api/system/settings'),
     updateSettings: (payload: {
       bundled_torch?: { pytorch_version: string; torchvision_version: string };
+      features_repo?: { repo_url: string; repo_ref: string; repo_commit?: string | null };
     }) =>
       fetchApi<SystemSettings>('/api/system/settings', {
         method: 'PUT',
         body: JSON.stringify(payload)
-      })
+      }),
+    featuresRepoSuggestions: (params: {
+      repo_url: string;
+      repo_ref?: string | null;
+      signal?: AbortSignal;
+    }) => {
+      const query = new URLSearchParams({ repo_url: params.repo_url });
+      if (params.repo_ref) query.set('repo_ref', params.repo_ref);
+      return fetchApi<FeaturesRepoSuggestions>(
+        `/api/system/settings/features-repo/suggestions?${query.toString()}`,
+        { signal: params.signal }
+      );
+    }
   },
   config: {
     get: () => fetchApi('/api/config')
@@ -686,6 +932,24 @@ export const api = {
     activeStatus: () => fetchApi('/api/profiles/active/status'),
     vlaborStatus: () => fetchApi('/api/profiles/vlabor/status'),
     restartVlabor: () => fetchApi('/api/profiles/vlabor/restart', { method: 'POST' })
+  },
+  realtime: {
+    tabSessionState: (tabSessionId: string) =>
+      fetchApi<TabSessionStateResponse>(
+        `/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}/state`
+      ),
+    putTabSessionState: (tabSessionId: string, payload: TabSessionStateRequest) =>
+      fetchApi<TabSessionStatePutResponse>(
+        `/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}/state`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(payload)
+        }
+      ),
+    deleteTabSession: (tabSessionId: string) =>
+      fetchText(`/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}`, {
+        method: 'DELETE'
+      }).then(() => undefined)
   },
   teleop: {
     createSession: (payload: {
@@ -929,13 +1193,19 @@ export const api = {
     }
   },
   training: {
+    providerCapabilities: () =>
+      fetchApi<TrainingProviderCapabilityResponse>('/api/training/provider-capabilities'),
     jobs: () => fetchApi('/api/training/jobs'),
     job: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}`),
-    createJob: (data: Record<string, unknown>) =>
-      fetchApi('/api/training/jobs', {
+    startProvisionOperation: (data: Record<string, unknown>) =>
+      fetchApi<TrainingProvisionOperationAcceptedResponse>('/api/training/provision-operations', {
         method: 'POST',
         body: JSON.stringify(data)
       }),
+    provisionOperation: (operationId: string) =>
+      fetchApi<TrainingProvisionOperationStatusResponse>(
+        `/api/training/provision-operations/${encodeURIComponent(operationId)}`
+      ),
     stopJob: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/stop`, { method: 'POST' }),
     deleteJob: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}`, { method: 'DELETE' }),
     logs: (jobId: string, logType: string, lines: number = 30) =>
@@ -1077,7 +1347,48 @@ export const api = {
           }
         };
       }),
-    gpuAvailability: () => fetchApi('/api/training/gpu-availability')
+    gpuAvailability: (provider: 'verda' | 'vast') =>
+      fetchApi(`/api/training/gpu-availability?provider=${encodeURIComponent(provider)}`),
+    instanceCandidates: (params: {
+      provider: 'verda' | 'vast';
+      gpu_model?: string;
+      gpu_count?: number;
+      mode?: 'spot' | 'ondemand';
+      storage_size?: number;
+      max_price?: number | null;
+    }) => {
+      const query = new URLSearchParams({ provider: params.provider });
+      if (params.gpu_model) query.set('gpu_model', params.gpu_model);
+      if (typeof params.gpu_count === 'number') query.set('gpu_count', String(params.gpu_count));
+      if (params.mode) query.set('mode', params.mode);
+      if (typeof params.storage_size === 'number') query.set('storage_size', String(params.storage_size));
+      if (typeof params.max_price === 'number' && !Number.isNaN(params.max_price)) {
+        query.set('max_price', String(params.max_price));
+      }
+      return fetchApi<TrainingInstanceCandidatesResponse>(`/api/training/instance-candidates?${query.toString()}`);
+    },
+    verdaStorage: () => fetchApi('/api/training/verda/storage'),
+    verdaStorageDelete: (payload: { volume_ids: string[] }) =>
+      fetchApi('/api/training/verda/storage/delete', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    verdaStorageRestore: (payload: { volume_ids: string[] }) =>
+      fetchApi('/api/training/verda/storage/restore', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    verdaStoragePurge: (payload: { volume_ids: string[] }) =>
+      fetchApi('/api/training/verda/storage/purge', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+    vastStorage: () => fetchApi('/api/training/vast/storage'),
+    vastStorageDelete: (payload: { volume_ids: string[] }) =>
+      fetchApi('/api/training/vast/storage/delete', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      })
   },
   operate: {
     status: () => fetchApi('/api/operate/status')

@@ -1,4 +1,4 @@
-"""Central status monitor for system snapshot SSE streaming."""
+"""Central status monitor for system snapshots."""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from interfaces_backend.models.status_monitor import (
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.inference_runtime import get_inference_runtime_manager
 from interfaces_backend.services.inference_session import get_inference_session_manager
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
 from interfaces_backend.services.recorder_bridge import get_recorder_bridge
 from interfaces_backend.services.vlabor_profiles import (
     ProfileHealthContract,
@@ -47,11 +46,9 @@ from interfaces_backend.utils.docker_compose import (
     get_vlabor_compose_file,
     get_vlabor_env_file,
 )
+from interfaces_backend.utils.docker_services import get_docker_service_summary
 from percus_ai.environment.env_manager import EnvironmentManager
 from percus_ai.environment.platform import Platform
-
-SYSTEM_STATUS_TOPIC = "system.status"
-SYSTEM_STATUS_KEY = "global"
 
 _RUNTIME_TTL_S = 600.0
 _RUNTIME_CHECK_INTERVAL_S = 5.0
@@ -90,7 +87,6 @@ def _find_repo_root() -> Path:
 class SystemStatusMonitor:
     def __init__(self, root_dir: Path | None = None) -> None:
         self._root_dir = (root_dir or _find_repo_root()).resolve()
-        self._bus = get_realtime_event_bus()
         self._env_manager = EnvironmentManager(self._root_dir)
         self._recorder = get_recorder_bridge()
         self._lock = threading.RLock()
@@ -100,6 +96,7 @@ class SystemStatusMonitor:
         self._services = ServicesStatus()
         self._gpu = GpuSnapshot()
         self._ros2_contract_state = _Ros2ContractState()
+        self._ros2_all_topics: list[str] = []
         self._snapshot = self._build_snapshot_locked()
         self._last_published_payload = ""
         self._runtime_probe_fingerprint: str | None = None
@@ -136,6 +133,10 @@ class SystemStatusMonitor:
         with self._lock:
             return self._snapshot.model_copy(deep=True)
 
+    def get_cached_ros2_topics(self) -> list[str]:
+        with self._lock:
+            return list(self._ros2_all_topics)
+
     async def publish_snapshot(self) -> None:
         snapshot = self.get_snapshot()
         encoded = json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
@@ -143,11 +144,7 @@ class SystemStatusMonitor:
             if encoded == self._last_published_payload:
                 return
             self._last_published_payload = encoded
-        await self._bus.publish(
-            SYSTEM_STATUS_TOPIC,
-            SYSTEM_STATUS_KEY,
-            snapshot.model_dump(mode="json"),
-        )
+        return None
 
     async def _runtime_loop(self) -> None:
         while True:
@@ -442,6 +439,16 @@ class SystemStatusMonitor:
                 with self._lock:
                     self._services.ros2 = snapshot
                     self._ros2_contract_state = contract_state
+                    all_topics = graph.get("all_topics")
+                    self._ros2_all_topics = [
+                        item
+                        for item in (
+                            [self._optional_str(value) for value in all_topics]
+                            if isinstance(all_topics, list)
+                            else []
+                        )
+                        if item
+                    ]
                     self._refresh_snapshot_locked()
                 await self.publish_snapshot()
             except asyncio.CancelledError:
@@ -454,6 +461,7 @@ class SystemStatusMonitor:
                         last_error=str(exc),
                     )
                     self._ros2_contract_state = _Ros2ContractState()
+                    self._ros2_all_topics = []
                     self._refresh_snapshot_locked()
                 await self.publish_snapshot()
             await asyncio.sleep(_ROS2_INTERVAL_S)
@@ -559,22 +567,10 @@ class SystemStatusMonitor:
         compose_file = get_vlabor_compose_file()
         if not compose_file.exists():
             return {"status": "unknown", "service": "vlabor"}
-        compose_cmd = build_compose_command(compose_file, get_vlabor_env_file())
-        result = subprocess.run(
-            [*compose_cmd, "ps", "--format", "json", "vlabor"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return {"status": "unknown", "service": "vlabor"}
-        try:
-            data = json.loads(result.stdout)
-        except Exception:
-            return {"status": "unknown", "service": "vlabor"}
-        entry = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None)
+        entry = get_docker_service_summary("vlabor")
         if not entry:
             return {"status": "unknown", "service": "vlabor"}
-        state_raw = str(entry.get("State") or "").lower()
+        state_raw = str(entry.get("state") or "").lower()
         if "restarting" in state_raw:
             status = "restarting"
         elif "running" in state_raw:
@@ -586,8 +582,8 @@ class SystemStatusMonitor:
         return {
             "status": status,
             "service": "vlabor",
-            "state": str(entry.get("State") or status),
-            "status_detail": str(entry.get("Status") or ""),
+            "state": str(entry.get("state") or status),
+            "status_detail": str(entry.get("status_detail") or ""),
             "dashboard_url": f"http://{socket.gethostname()}.local:8888",
         }
 

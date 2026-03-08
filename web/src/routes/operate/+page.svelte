@@ -1,14 +1,15 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { goto } from '$app/navigation';
   import {
     api,
+    type TabSessionSubscription,
     type StartupOperationAcceptedResponse,
     type StartupOperationStatusResponse
   } from '$lib/api/client';
-  import { connectStream } from '$lib/realtime/stream';
-  import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
@@ -74,6 +75,7 @@
   type OperateStatusStreamPayload = {
     vlabor_status?: Record<string, any>;
     inference_runner_status?: InferenceRunnerStatusResponse;
+    operate_status?: OperateStatusResponse;
   };
 
   const inferenceModelsQuery = createQuery<InferenceModelsResponse>({
@@ -124,8 +126,15 @@
   let inferenceStopPending = $state(false);
   let startupStatus = $state<StartupOperationStatusResponse | null>(null);
   let startupStreamError = $state('');
-  let stopStartupStream = () => {};
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let startupContributor: TabRealtimeContributorHandle | null = null;
+  let startupOperationId = $state('');
+
+  const operateRealtimeSubscriptions: TabSessionSubscription[] = [
+    { subscription_id: 'operate.page.status', kind: 'operate.status', params: {} },
+    { subscription_id: 'operate.page.system-status', kind: 'system.status', params: {} }
+  ];
 
   const START_PHASE_LABELS: Record<string, string> = {
     queued: 'キュー待機',
@@ -152,38 +161,27 @@
     }
   });
 
-  const stopStartupStreamSubscription = () => {
-    stopStartupStream();
-    stopStartupStream = () => {};
+  const disposeStartupContributor = () => {
+    startupContributor?.dispose();
+    startupContributor = null;
   };
 
   const handleStartupStatusUpdate = async (status: StartupOperationStatusResponse) => {
     startupStatus = status;
     if (status.state === 'completed' && status.target_session_id) {
-      stopStartupStreamSubscription();
+      disposeStartupContributor();
+      startupOperationId = '';
       inferenceStartPending = false;
       await refetchQuery($inferenceRunnerStatusQuery);
       await goto(`/operate/sessions/${encodeURIComponent(status.target_session_id)}?kind=inference`);
       return;
     }
     if (status.state === 'failed') {
+      disposeStartupContributor();
+      startupOperationId = '';
       inferenceStartPending = false;
       inferenceStartError = status.error ?? status.message ?? '推論の開始に失敗しました。';
     }
-  };
-
-  const subscribeStartupStream = (operationId: string) => {
-    stopStartupStreamSubscription();
-    startupStreamError = '';
-    stopStartupStream = connectStream<StartupOperationStatusResponse>({
-      path: `/api/stream/startup/operations/${encodeURIComponent(operationId)}`,
-      onMessage: (payload) => {
-        void handleStartupStatusUpdate(payload);
-      },
-      onError: () => {
-        startupStreamError = '進捗ストリームが一時的に不安定です。再接続します...';
-      }
-    });
   };
 
   const handleInferenceStart = async () => {
@@ -225,7 +223,8 @@
       if (!result?.operation_id) {
         throw new Error('開始オペレーションIDを取得できませんでした。');
       }
-      subscribeStartupStream(result.operation_id);
+      disposeStartupContributor();
+      startupOperationId = result.operation_id;
       const snapshot = await api.startup.operation(result.operation_id);
       await handleStartupStatusUpdate(snapshot);
     } catch (err) {
@@ -291,33 +290,72 @@
   });
 
   $effect(() => {
-    const stopOperateStream = connectStream<OperateStatusStreamPayload>({
-      path: '/api/stream/operate/status',
-      onMessage: (payload) => {
-        queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
+    if (!browser) {
+      return;
+    }
+    if (!startupOperationId) {
+      disposeStartupContributor();
+      return;
+    }
+    const currentOperationId = startupOperationId;
+    disposeStartupContributor();
+    startupContributor = registerTabRealtimeContributor({
+      subscriptions: [
+        {
+          subscription_id: `operate.startup.${currentOperationId}`,
+          kind: 'startup.operation',
+          params: { operation_id: currentOperationId }
+        }
+      ],
+      onEvent: (event: TabRealtimeEvent) => {
+        if (event.op !== 'snapshot' || event.source?.kind !== 'startup.operation') return;
+        if (startupOperationId !== currentOperationId) return;
+        void handleStartupStatusUpdate(event.payload as StartupOperationStatusResponse);
       }
     });
 
     return () => {
-      stopOperateStream();
+      disposeStartupContributor();
     };
   });
 
   $effect(() => {
-    const stopSystemStatusStream = connectSystemStatusStream({
-      onMessage: (payload) => {
-        systemStatusSnapshot = payload;
+    if (!browser) {
+      return;
+    }
+    if (realtimeContributor === null) {
+      realtimeContributor = registerTabRealtimeContributor({
+        subscriptions: operateRealtimeSubscriptions,
+        onEvent: (event: TabRealtimeEvent) => {
+          if (event.op !== 'snapshot') return;
+          if (event.source?.kind === 'operate.status') {
+            const payload = event.payload as OperateStatusStreamPayload;
+            if (payload.inference_runner_status) {
+              queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
+            }
+            if (payload.operate_status) {
+              queryClient.setQueryData(['operate', 'status'], payload.operate_status);
+            }
+            return;
+          }
+          if (event.source?.kind === 'system.status') {
+            systemStatusSnapshot = event.payload as SystemStatusSnapshot;
+          }
+        }
+      });
+      if (!realtimeContributor) {
+        return;
       }
-    });
-
-    return () => {
-      stopSystemStatusStream();
-    };
+      return;
+    }
+    realtimeContributor.setSubscriptions(operateRealtimeSubscriptions);
   });
 
   $effect(() => {
     return () => {
-      stopStartupStreamSubscription();
+      disposeStartupContributor();
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
     };
   });
 </script>

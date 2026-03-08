@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { browser } from '$app/environment';
   import { toStore } from 'svelte/store';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
@@ -10,12 +10,18 @@
     api,
     type RemoteCheckpointUploadProgressMessage,
     type RemoteCheckpointUploadResult,
+    type TabSessionSubscription,
+    type TrainingJobCoreSubscription,
+    type TrainingJobLogsSubscription,
+    type TrainingJobMetricsSubscription,
+    type TrainingJobProvisionSubscription,
+    type TrainingProvisionOperationStatusResponse,
     type TrainingReviveProgressMessage,
     type TrainingReviveResult
   } from '$lib/api/client';
-  import { getBackendUrl } from '$lib/config';
   import { formatDate } from '$lib/format';
-  import { connectStream } from '$lib/realtime/stream';
+  import { getGpuModelLabel } from '$lib/policies';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   type JobInfo = {
@@ -29,6 +35,7 @@
     ip?: string;
     ssh_user?: string;
     ssh_private_key?: string;
+    ssh_port?: number;
     gpu_model?: string;
     gpus_per_instance?: number;
     created_at?: string;
@@ -39,6 +46,18 @@
   type TrainingConfig = {
     dataset?: { id?: string; video_backend?: string };
     policy?: { type?: string; pretrained_path?: string };
+    cloud?: {
+      provider?: string;
+      gpu_model?: string;
+      gpus_per_instance?: number;
+      storage_size?: number;
+      location?: string;
+      ssh_port?: number;
+      selected_mode?: 'spot' | 'ondemand';
+      selected_instance_type?: string;
+      selected_offer_id?: number;
+      max_price?: number;
+    };
     training?: {
       steps?: number;
       batch_size?: number;
@@ -51,6 +70,7 @@
 
   type JobDetailResponse = {
     job?: JobInfo;
+    provision_operation?: TrainingProvisionOperationStatusResponse | null;
     training_config?: TrainingConfig;
     summary?: Record<string, unknown> | null;
   };
@@ -65,6 +85,19 @@
     }))
   );
 
+  type MetricsResponse = {
+    train?: Array<{ step?: number; loss?: number; ts?: string }>;
+    val?: Array<{ step?: number; loss?: number; ts?: string }>;
+  };
+
+  const metricsQuery = createQuery<MetricsResponse>(
+    toStore(() => ({
+      queryKey: ['training', 'job', jobId, 'metrics'],
+      queryFn: () => api.training.metrics(jobId, 2000) as Promise<MetricsResponse>,
+      enabled: Boolean(jobId)
+    }))
+  );
+
   let logsType: 'training' | 'setup' = $state('training');
   let logLines = $state(30);
   let logs = $state('');
@@ -72,21 +105,11 @@
   let logsLoading = $state(false);
   let logsError = $state('');
 
-  let metrics: { train?: Array<{ step?: number; loss?: number; ts?: string }>; val?: Array<{ step?: number; loss?: number; ts?: string }> } | null =
-    $state(null);
-  let metricsLoading = $state(false);
-  let metricsError = $state('');
-
   let copied = $state(false);
-  type TrainingJobStreamPayload = {
-    job_detail?: JobDetailResponse;
-    metrics?: { train?: MetricPoint[]; val?: MetricPoint[] };
-  };
-
   let streamStatus = $state('idle');
   let streamError = $state('');
   let streamLines: string[] = $state([]);
-  let streamWs = $state.raw<WebSocket | null>(null);
+  let logStreamActive = $state(false);
   let reviveInProgress = $state(false);
   let reviveStage = $state('');
   let reviveMessage = $state('');
@@ -109,11 +132,24 @@
   let checkpointUploadResult: RemoteCheckpointUploadResult | null = $state(null);
 
   type MetricPoint = { step?: number; loss?: number; ts?: string };
+  let activeLogSnapshotKey = $state('');
 
   const jobInfo = $derived($jobQuery.data?.job);
+  const provisionOperation = $derived($jobQuery.data?.provision_operation ?? null);
   const trainingConfig = $derived($jobQuery.data?.training_config ?? {});
   const summary = $derived($jobQuery.data?.summary ?? {});
+  const metrics = $derived($metricsQuery.data ?? null);
+  const metricsLoading = $derived(Boolean($metricsQuery.isFetching));
+  const metricsError = $derived(
+    $metricsQuery.error instanceof Error ? $metricsQuery.error.message : ''
+  );
   const status = $derived(jobInfo?.status ?? '');
+  const provider = $derived(
+    String(trainingConfig?.cloud?.provider ?? 'verda').trim().toLowerCase()
+  );
+  const effectiveSshPort = $derived(
+    Number(trainingConfig?.cloud?.ssh_port ?? jobInfo?.ssh_port ?? 22)
+  );
   const datasetId = $derived(trainingConfig?.dataset?.id ?? '');
   const profileId = $derived(jobInfo?.profile_name ?? jobInfo?.profile_instance_id ?? '');
   const trainSeries = $derived(
@@ -129,12 +165,83 @@
 
   const isRunning = $derived(['running', 'starting', 'deploying'].includes(status));
   const canDelete = $derived(['completed', 'failed', 'stopped', 'terminated'].includes(status));
-  const canRevive = $derived(['completed', 'failed', 'stopped', 'terminated'].includes(status));
+  const canRevive = $derived(
+    provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
+  );
+  const provisionStepLabels: Record<string, string> = {
+    queued: '開始待ち',
+    validate: '設定検証',
+    select_candidate: '候補確認',
+    create_instance: 'インスタンス作成',
+    job_created: 'ジョブ作成',
+    wait_ip: 'IP割り当て待機',
+    connect_ssh: 'SSH接続',
+    deploy_files: 'ファイル転送',
+    setup_env: '環境構築',
+    start_training: '学習開始',
+    completed: '完了',
+    failed: 'エラー'
+  };
+  const provisionStepPercent: Record<string, number> = {
+    queued: 4,
+    validate: 12,
+    select_candidate: 24,
+    create_instance: 38,
+    job_created: 48,
+    wait_ip: 58,
+    connect_ssh: 70,
+    deploy_files: 82,
+    setup_env: 92,
+    start_training: 97,
+    completed: 100,
+    failed: 100
+  };
+  const provisionStep = $derived(provisionOperation?.step ?? '');
+  const provisionStepLabel = $derived(
+    provisionStep ? (provisionStepLabels[provisionStep] ?? provisionStep) : ''
+  );
+  const provisionTips: Record<string, string> = {
+    queued: '作成要求を受け付けました。インスタンスの確保をこれから開始します。',
+    validate: '設定内容を確認しています。通常はすぐに完了します。',
+    select_candidate: '利用可能なインスタンス候補を確認しています。',
+    create_instance: 'クラウド上でインスタンスを作成しています。数分かかることがあります。',
+    job_created: 'ジョブは作成済みです。これ以降の準備はこの画面で追跡できます。',
+    wait_ip: 'インスタンスの起動完了とネットワーク割り当てを待っています。',
+    connect_ssh: 'インスタンスへの接続確認をしています。これには数十秒から数分程度かかる場合があります。',
+    deploy_files: '学習に必要なファイルをインスタンスへ転送しています。',
+    setup_env: '学習環境をセットアップしています。これには数分から10分程度かかる場合があります。',
+    start_training: 'まもなく学習が始まります。開始後はログや loss が更新されます。',
+    completed: '学習開始までの準備は完了しました。以後はジョブ本体の状態を追跡します。',
+    failed: '作成が止まっています。更新時刻とエラーメッセージを確認してください。'
+  };
+  const provisionProgressPercent = $derived(
+    provisionStep ? (provisionStepPercent[provisionStep] ?? 0) : 0
+  );
+  const provisionTip = $derived(
+    provisionTips[provisionStep] ??
+      'この画面を離れても作成は継続します。更新が長時間止まる場合は異常の可能性があります。'
+  );
+  const showProvisionCard = $derived(
+    Boolean(provisionOperation) && (status === 'starting' || provisionOperation?.state === 'failed')
+  );
+
+  const sshTargetDisplay = $derived(
+    (() => {
+      if (!jobInfo?.ip) return '';
+      const port = effectiveSshPort;
+      return port > 0 && port !== 22 ? `${jobInfo.ip}:${port}` : jobInfo.ip;
+    })()
+  );
 
   const sshCommand = $derived(
-    jobInfo?.ip
-      ? `ssh -i ${jobInfo?.ssh_private_key ?? '~/.ssh/id_rsa'} ${jobInfo?.ssh_user ?? 'root'}@${jobInfo.ip}`
-      : ''
+    (() => {
+      if (!jobInfo?.ip) return '';
+      const keyPath = jobInfo?.ssh_private_key ?? '~/.ssh/id_rsa';
+      const user = jobInfo?.ssh_user ?? 'root';
+      const port = effectiveSshPort;
+      const portOpt = port > 0 && port !== 22 ? ` -p ${port}` : '';
+      return `ssh -i ${keyPath}${portOpt} ${user}@${jobInfo.ip}`;
+    })()
   );
   const displayedLogs = $derived(
     streamLines.length
@@ -142,12 +249,152 @@
       : logs
   );
   const reviveSshCommand = $derived(
-    reviveResult?.ip
-      ? `ssh -i ${reviveResult?.ssh_private_key ?? '~/.ssh/id_rsa'} ${reviveResult?.ssh_user ?? 'root'}@${reviveResult.ip}`
-      : ''
+    (() => {
+      if (!reviveResult?.ip) return '';
+      const keyPath = reviveResult?.ssh_private_key ?? '~/.ssh/id_rsa';
+      const user = reviveResult?.ssh_user ?? 'root';
+      const port = Number(reviveResult?.ssh_port ?? 22);
+      const portOpt = port > 0 && port !== 22 ? ` -p ${port}` : '';
+      return `ssh -i ${keyPath}${portOpt} ${user}@${reviveResult.ip}`;
+    })()
   );
 
-  const wsUrl = (path: string) => getBackendUrl().replace(/^http/, 'ws') + path;
+  const setProvisionOperationSnapshot = (
+    targetJobId: string,
+    snapshot: TrainingProvisionOperationStatusResponse | null
+  ) => {
+    if (!targetJobId) return;
+    queryClient.setQueryData<JobDetailResponse>(['training', 'job', targetJobId], (current) => {
+      return {
+        ...current,
+        provision_operation: snapshot
+      };
+    });
+  };
+
+  const setJobDetailSnapshot = (targetJobId: string, snapshot: JobDetailResponse) => {
+    if (!targetJobId) return;
+    queryClient.setQueryData<JobDetailResponse>(['training', 'job', targetJobId], snapshot);
+  };
+
+  const setMetricsSnapshot = (targetJobId: string, snapshot: MetricsResponse) => {
+    if (!targetJobId) return;
+    queryClient.setQueryData<MetricsResponse>(['training', 'job', targetJobId, 'metrics'], snapshot);
+  };
+
+  const buildRealtimeSubscriptions = (
+    targetJobId: string,
+    nextLogsType: 'training' | 'setup',
+    nextLogLines: number
+  ): TabSessionSubscription[] => {
+    const coreSubscription: TrainingJobCoreSubscription = {
+      subscription_id: `train.job.${targetJobId}.core`,
+      kind: 'training.job.core',
+      params: { job_id: targetJobId }
+    };
+    const provisionSubscription: TrainingJobProvisionSubscription = {
+      subscription_id: `train.job.${targetJobId}.provision`,
+      kind: 'training.job.provision',
+      params: { job_id: targetJobId }
+    };
+    const metricsSubscription: TrainingJobMetricsSubscription = {
+      subscription_id: `train.job.${targetJobId}.metrics`,
+      kind: 'training.job.metrics',
+      params: { job_id: targetJobId, limit: 2000 }
+    };
+    const logsSubscription: TrainingJobLogsSubscription = {
+      subscription_id: `train.job.${targetJobId}.logs`,
+      kind: 'training.job.logs',
+      params: {
+        job_id: targetJobId,
+        log_type: nextLogsType,
+        tail_lines: nextLogLines
+      }
+    };
+    return [coreSubscription, provisionSubscription, metricsSubscription, logsSubscription];
+  };
+
+  const appendLogLines = (lines: string[]) => {
+    if (!lines.length) return;
+    streamLines = [...streamLines, ...lines].slice(-200);
+  };
+
+  const handleLogControlPayload = (payload: Record<string, unknown>) => {
+    const type = String(payload.type ?? '').trim();
+    if (!type) return;
+    if (type === 'connected') {
+      logStreamActive = true;
+      streamStatus = 'connected';
+      streamError = '';
+      return;
+    }
+    if (type === 'stream_ended') {
+      logStreamActive = false;
+      streamStatus = 'ended';
+      return;
+    }
+    if (type === 'job_status') {
+      logStreamActive = false;
+      streamStatus = String(payload.status ?? 'stopped');
+      return;
+    }
+    if (type === 'job_deleted' || type === 'job_missing' || type === 'ip_missing') {
+      logStreamActive = false;
+      streamStatus = type;
+      streamError = `ログストリームが終了しました: ${type}`;
+    }
+  };
+
+  const handleRealtimeEvent = (
+    targetJobId: string,
+    registrationKey: string,
+    event: TabRealtimeEvent
+  ) => {
+    const activeKey = `${jobId}:${logsType}`;
+    if (registrationKey !== activeKey) {
+      return;
+    }
+
+    switch (event.source?.kind) {
+      case 'training.job.core':
+        if (event.op === 'snapshot') {
+          setJobDetailSnapshot(targetJobId, event.payload as JobDetailResponse);
+        }
+        return;
+      case 'training.job.provision':
+        if (event.op === 'snapshot') {
+          const payload = event.payload as { provision_operation?: TrainingProvisionOperationStatusResponse | null };
+          setProvisionOperationSnapshot(targetJobId, payload.provision_operation ?? null);
+        }
+        return;
+      case 'training.job.metrics':
+        if (event.op === 'snapshot') {
+          setMetricsSnapshot(targetJobId, event.payload as MetricsResponse);
+        }
+        return;
+      case 'training.job.logs':
+        if (event.op === 'append') {
+          const payload = event.payload as { lines?: string[] };
+          appendLogLines(payload.lines ?? []);
+          logStreamActive = true;
+          if (streamStatus === 'connecting' || streamStatus === 'idle') {
+            streamStatus = 'connected';
+          }
+          streamError = '';
+          return;
+        }
+        if (event.op === 'control') {
+          handleLogControlPayload(event.payload);
+          return;
+        }
+        if (event.op === 'error') {
+          logStreamActive = false;
+          streamStatus = 'error';
+          streamError = String(event.payload.message ?? 'ログストリーミングに失敗しました。');
+        }
+        return;
+    }
+  };
 
   const refresh = async () => {
     const refetch = $jobQuery?.refetch;
@@ -270,37 +517,47 @@
   };
 
   const fetchLogs = async () => {
-    logsError = '';
+    await loadLogsSnapshot(jobId, logsType, logLines);
+  };
+
+  const fetchMetrics = async () => {
     if (!jobId) {
+      return;
+    }
+    const refetch = $metricsQuery?.refetch;
+    if (typeof refetch === 'function') {
+      await refetch();
+    }
+  };
+
+  const loadLogsSnapshot = async (
+    nextJobId: string,
+    nextLogsType: 'training' | 'setup',
+    nextLogLines: number
+  ) => {
+    const requestKey = `${nextJobId}:${nextLogsType}`;
+    logsError = '';
+    if (!nextJobId) {
       logsError = 'ジョブIDが取得できません。';
       return;
     }
     logsLoading = true;
     try {
-      const result = await api.training.logs(jobId, logsType, logLines);
+      const result = await api.training.logs(nextJobId, nextLogsType, nextLogLines);
+      if (requestKey !== activeLogSnapshotKey) {
+        return;
+      }
       logs = (result as { logs?: string }).logs ?? '';
       logsSource = (result as { source?: string }).source ?? '';
     } catch (error) {
+      if (requestKey !== activeLogSnapshotKey) {
+        return;
+      }
       logsError = error instanceof Error ? error.message : 'ログ取得に失敗しました。';
     } finally {
-      logsLoading = false;
-    }
-  };
-
-  const fetchMetrics = async () => {
-    metricsError = '';
-    if (!jobId) {
-      metricsError = 'ジョブIDが取得できません。';
-      return;
-    }
-    metricsLoading = true;
-    try {
-      const result = await api.training.metrics(jobId, 2000);
-      metrics = result as typeof metrics;
-    } catch (error) {
-      metricsError = error instanceof Error ? error.message : 'メトリクス取得に失敗しました。';
-    } finally {
-      metricsLoading = false;
+      if (requestKey === activeLogSnapshotKey) {
+        logsLoading = false;
+      }
     }
   };
 
@@ -346,71 +603,19 @@
     }
   };
 
-  const startLogStream = async () => {
-    if (!jobId || streamWs) return;
+  const resetLogAppendState = () => {
+    logStreamActive = false;
     streamError = '';
-    logsError = '';
-
-    // Load full logs first so the user can see the full history before tailing.
-    try {
-      logsLoading = true;
-      const content = await api.training.downloadLogs(jobId, logsType);
-      logs = content ?? '';
-      logsSource = 'remote';
-    } catch (error) {
-      logsError = error instanceof Error ? error.message : 'ログ取得に失敗しました。';
-    } finally {
-      logsLoading = false;
-    }
-
     streamLines = [];
-    streamStatus = 'connecting';
-    const ws = new WebSocket(wsUrl(`/api/training/ws/jobs/${jobId}/logs?log_type=${logsType}`));
-    streamWs = ws;
-
-    ws.onopen = () => {
-      streamStatus = 'connected';
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data as string) as { type?: string; line?: string; status?: string; message?: string; error?: string };
-      if (data.type === 'heartbeat') return;
-      if (data.type === 'log' && data.line) {
-        streamLines = [...streamLines, data.line].slice(-200);
-      } else if (data.type === 'status') {
-        streamStatus = data.status || 'status';
-        if (data.status && data.status !== 'connected') {
-          ws.close();
-        }
-      } else if (data.type === 'error') {
-        streamError = data.error || 'ログストリーミングに失敗しました。';
-        streamStatus = 'error';
-        ws.close();
-      }
-    };
-
-    ws.onerror = () => {
-      streamError = 'WebSocket接続に失敗しました。';
-      streamStatus = 'error';
-    };
-
-    ws.onclose = () => {
-      streamWs = null;
-      if (streamStatus === 'connected') {
-        streamStatus = 'closed';
-      }
-    };
-  };
-
-  const stopLogStream = () => {
-    streamWs?.close();
-    streamWs = null;
-    streamStatus = 'stopped';
+    streamStatus = 'idle';
   };
 
   $effect(() => {
-    if (!isRunning && streamWs) {
-      stopLogStream();
+    if (!isRunning && logStreamActive) {
+      logStreamActive = false;
+      if (streamStatus === 'connected' || streamStatus === 'connecting') {
+        streamStatus = 'stopped';
+      }
     }
   });
 
@@ -418,16 +623,10 @@
   $effect(() => {
     if (jobId && jobId !== lastJobId) {
       lastJobId = jobId;
-      streamWs?.close();
-      streamWs = null;
-      streamLines = [];
-      streamStatus = 'idle';
-      streamError = '';
+      resetLogAppendState();
       logs = '';
       logsSource = '';
       logsError = '';
-      metrics = null;
-      metricsError = '';
       reviveInProgress = false;
       reviveStage = '';
       reviveMessage = '';
@@ -451,32 +650,48 @@
     }
   });
 
-  let stopTrainingStream = () => {};
-  let lastStreamJobId = '';
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
 
   $effect(() => {
-    if (jobId && jobId !== lastStreamJobId) {
-      stopTrainingStream();
-      lastStreamJobId = jobId;
-      stopTrainingStream = connectStream<TrainingJobStreamPayload>({
-        path: `/api/stream/training/jobs/${encodeURIComponent(jobId)}`,
-        onMessage: (payload) => {
-          if (payload.job_detail) {
-            queryClient.setQueryData(['training', 'job', jobId], payload.job_detail);
-          }
-          if (payload.metrics) {
-            metrics = payload.metrics;
-            metricsLoading = false;
-            metricsError = '';
-          }
-        }
-      });
+    if (!browser || !jobId) {
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
+      resetLogAppendState();
+      return;
     }
+
+    const currentJobId = jobId;
+    const currentLogsType = logsType;
+    const registrationKey = `${currentJobId}:${currentLogsType}`;
+
+    realtimeContributor?.dispose();
+    realtimeContributor = null;
+    resetLogAppendState();
+    activeLogSnapshotKey = registrationKey;
+    void loadLogsSnapshot(currentJobId, currentLogsType, logLines);
+
+    streamStatus = 'connecting';
+    realtimeContributor = registerTabRealtimeContributor({
+      subscriptions: buildRealtimeSubscriptions(currentJobId, currentLogsType, logLines),
+      onEvent: (event) => handleRealtimeEvent(currentJobId, registrationKey, event)
+    });
+    if (!realtimeContributor) {
+      return;
+    }
+
+    return () => {
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
+      activeLogSnapshotKey = '';
+      logStreamActive = false;
+    };
   });
 
-  onDestroy(() => {
-    stopTrainingStream();
-    streamWs?.close();
+  $effect(() => {
+    if (!realtimeContributor || !jobId) {
+      return;
+    }
+    realtimeContributor.setSubscriptions(buildRealtimeSubscriptions(jobId, logsType, logLines));
   });
 </script>
 
@@ -491,7 +706,7 @@
       <div class="mt-3 flex flex-wrap gap-2">
         <span class="chip">{status || 'unknown'}</span>
         {#if jobInfo?.gpu_model}
-          <span class="chip">{jobInfo.gpu_model} x {jobInfo.gpus_per_instance ?? 1}</span>
+          <span class="chip">{getGpuModelLabel(jobInfo.gpu_model)} x {jobInfo.gpus_per_instance ?? 1}</span>
         {/if}
         {#if jobInfo?.dataset_id}
           <span class="chip">{jobInfo.dataset_id}</span>
@@ -504,6 +719,54 @@
     </div>
   </div>
 </section>
+
+{#if showProvisionCard}
+  <section class="card p-6">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <p class="section-title">Creation Progress</p>
+        <h2 class="mt-2 text-xl font-semibold text-slate-900">作成進行カード</h2>
+        <p class="mt-2 text-sm text-slate-600">
+          {provisionTip}
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="chip">job: {status || 'starting'}</span>
+        <span class="chip">step: {provisionStepLabel || provisionStep || '-'}</span>
+        {#if provisionOperation?.provider}
+          <span class="chip">provider: {provisionOperation.provider}</span>
+        {/if}
+      </div>
+    </div>
+    <div class="mt-4 h-3 overflow-hidden rounded-full bg-slate-200/80">
+      <div
+        class={`h-full transition-all ${provisionOperation?.state === 'failed' ? 'bg-rose-500' : 'bg-brand'}`}
+        style={`width: ${provisionProgressPercent}%`}
+      ></div>
+    </div>
+    <div class="mt-4 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <p class="label">現在の状態</p>
+        <div class="mt-2 space-y-1 text-xs text-slate-500">
+          <p>job.status: <span class="font-semibold text-slate-800">{status || '-'}</span></p>
+          <p>provision.state: <span class="font-semibold text-slate-800">{provisionOperation?.state ?? '-'}</span></p>
+          <p>provision.step: <span class="font-semibold text-slate-800">{provisionStep || '-'}</span></p>
+        </div>
+      </div>
+      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <p class="label">補足</p>
+        <div class="mt-2 space-y-1 text-xs text-slate-500">
+          <p class="font-semibold text-slate-800">{provisionOperation?.message ?? provisionStepLabel ?? '状態取得中'}</p>
+          <p class="break-all">instance: {provisionOperation?.instance_id ?? '-'}</p>
+          <p>updated: {formatDate(provisionOperation?.updated_at)}</p>
+        </div>
+        {#if provisionOperation?.failure_reason}
+          <p class="mt-3 text-sm text-rose-600 break-words">{provisionOperation.failure_reason}</p>
+        {/if}
+      </div>
+    </div>
+  </section>
+{/if}
 
 <section class="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
   <div class="space-y-6 min-w-0">
@@ -534,7 +797,7 @@
         </div>
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
           <p class="label">IP</p>
-          <p class="mt-2 font-semibold text-slate-800">{jobInfo?.ip ?? '-'}</p>
+          <p class="mt-2 font-semibold text-slate-800">{sshTargetDisplay || '-'}</p>
         </div>
       </div>
     </section>
@@ -804,7 +1067,16 @@
                 <p>ストレージID: <span class="font-semibold text-slate-800 break-all">{reviveResult.volume_id}</span></p>
                 <p>インスタンスタイプ: <span class="font-semibold text-slate-800">{reviveResult.instance_type}</span></p>
                 <p>ロケーション: <span class="font-semibold text-slate-800">{reviveResult.location}</span></p>
-                <p>IP: <span class="font-semibold text-slate-800">{reviveResult.ip}</span></p>
+                <p>
+                  SSH接続先:
+                  <span class="font-semibold text-slate-800">
+                    {#if reviveResult.ssh_port && reviveResult.ssh_port !== 22}
+                      {reviveResult.ip}:{reviveResult.ssh_port}
+                    {:else}
+                      {reviveResult.ip}
+                    {/if}
+                  </span>
+                </p>
                 <p>SSHユーザー: <span class="font-semibold text-slate-800">{reviveResult.ssh_user}</span></p>
                 <p>SSH鍵: <span class="font-semibold text-slate-800 break-all">{reviveResult.ssh_private_key}</span></p>
               </div>
@@ -831,7 +1103,7 @@
       <div class="mt-4 grid gap-3 text-sm text-slate-600">
         <label class="text-sm font-semibold text-slate-700">
           <span class="label">ログ種別</span>
-          <select class="input mt-2" bind:value={logsType} disabled={Boolean(streamWs)}>
+          <select class="input mt-2" bind:value={logsType}>
             <option value="training">学習ログ</option>
             <option value="setup">セットアップログ</option>
           </select>
@@ -848,13 +1120,8 @@
             {logsLoading ? '取得中...' : 'ログを取得'}
           </Button.Root>
           <div class="flex flex-wrap gap-2">
-            <Button.Root class="btn-primary" type="button" onclick={startLogStream} disabled={Boolean(streamWs)}>
-              ストリーミング開始
-            </Button.Root>
-            <Button.Root class="btn-ghost" type="button" onclick={stopLogStream} disabled={!streamWs}>
-              ストリーミング停止
-            </Button.Root>
             <span class="chip">状態: {streamStatus}</span>
+            <span class="chip">{logStreamActive ? 'live' : 'idle'}</span>
           </div>
         {:else}
           <Button.Root class="btn-primary" type="button" onclick={downloadLogs}>

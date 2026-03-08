@@ -1,13 +1,13 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { onDestroy } from 'svelte';
   import { Button, DropdownMenu } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
-  import { api } from '$lib/api/client';
+  import { api, type TabSessionSubscription } from '$lib/api/client';
   import { formatBytes, formatDate } from '$lib/format';
-  import { connectStream } from '$lib/realtime/stream';
-  import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
@@ -87,7 +87,7 @@
   let archiveBusy = $state<Record<string, boolean>>({});
   let uploadStatusMap = $state<Record<string, RecordingUploadStatus>>({});
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
-  const uploadStreamStops = new Map<string, () => void>();
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
 
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
     idle: '未開始',
@@ -139,32 +139,6 @@
     }
   };
 
-  const stopUploadStream = (recordingId: string) => {
-    const stop = uploadStreamStops.get(recordingId);
-    if (!stop) return;
-    stop();
-    uploadStreamStops.delete(recordingId);
-  };
-
-  const ensureUploadStream = (recordingId: string) => {
-    if (!recordingId || uploadStreamStops.has(recordingId)) return;
-    const stop = connectStream<RecordingUploadStatus>({
-      path: `/api/stream/recording/sessions/${encodeURIComponent(recordingId)}/upload-status`,
-      onMessage: (payload) => {
-        const normalized = normalizeUploadStatus(recordingId, payload);
-        setUploadStatus(recordingId, normalized);
-        if (isTerminalUploadStatus(normalized.status) && !isReuploadBusy(recordingId)) {
-          window.setTimeout(() => {
-            if (!isReuploadBusy(recordingId)) {
-              stopUploadStream(recordingId);
-            }
-          }, 5000);
-        }
-      }
-    });
-    uploadStreamStops.set(recordingId, stop);
-  };
-
   const uploadStatusLabel = (recordingId: string) => {
     const status = uploadStatusMap[recordingId];
     if (!status) return '-';
@@ -187,7 +161,6 @@
   const reuploadRecording = async (recording: RecordingSummary) => {
     const recordingId = String(recording.recording_id || '').trim();
     if (!recordingId || !recording.is_local || isReuploadBusy(recordingId)) return;
-    ensureUploadStream(recordingId);
     setUploadStatus(
       recordingId,
       normalizeUploadStatus(recordingId, {
@@ -215,14 +188,6 @@
       toast.error(message);
     } finally {
       setReuploadBusy(recordingId, false);
-      const latest = uploadStatusMap[recordingId];
-      if (latest && isTerminalUploadStatus(latest.status)) {
-        window.setTimeout(() => {
-          if (!isReuploadBusy(recordingId)) {
-            stopUploadStream(recordingId);
-          }
-        }, 5000);
-      }
     }
   };
 
@@ -232,7 +197,6 @@
     setArchiveBusy(recordingId, true);
     try {
       await api.storage.archiveDataset(recordingId);
-      stopUploadStream(recordingId);
       uploadStatusMap = {
         ...uploadStatusMap,
         [recordingId]: normalizeUploadStatus(recordingId, { status: 'idle', phase: 'idle' })
@@ -309,30 +273,61 @@
 
   $effect(() => {
     const currentIds = new Set(recordings.map((recording) => String(recording.recording_id || '').trim()));
-    for (const recordingId of Array.from(uploadStreamStops.keys())) {
-      if (!currentIds.has(recordingId)) {
-        stopUploadStream(recordingId);
+    const nextMap: Record<string, RecordingUploadStatus> = {};
+    for (const [recordingId, status] of Object.entries(uploadStatusMap)) {
+      if (currentIds.has(recordingId)) {
+        nextMap[recordingId] = status;
       }
+    }
+    if (Object.keys(nextMap).length !== Object.keys(uploadStatusMap).length) {
+      uploadStatusMap = nextMap;
     }
   });
 
   $effect(() => {
-    const stopSystemStatusStream = connectSystemStatusStream({
-      onMessage: (payload) => {
-        systemStatusSnapshot = payload;
+    if (!browser) {
+      return;
+    }
+    if (realtimeContributor === null) {
+      realtimeContributor = registerTabRealtimeContributor({
+        subscriptions: [],
+        onEvent: (event: TabRealtimeEvent) => {
+          if (event.op !== 'snapshot') return;
+          if (event.source?.kind === 'system.status') {
+            systemStatusSnapshot = event.payload as SystemStatusSnapshot;
+            return;
+          }
+          if (event.source?.kind === 'recording.upload-status') {
+            const payload = event.payload as RecordingUploadStatus;
+            const recordingId = String(payload.dataset_id || '').trim();
+            if (!recordingId) return;
+            setUploadStatus(recordingId, normalizeUploadStatus(recordingId, payload));
+          }
+        }
+      });
+      if (!realtimeContributor) {
+        return;
       }
-    });
-
-    return () => {
-      stopSystemStatusStream();
-    };
+    }
+    const subscriptions: TabSessionSubscription[] = [
+      { subscription_id: 'record.page.system-status', kind: 'system.status', params: {} },
+      ...recordings
+        .map((recording) => String(recording.recording_id || '').trim())
+        .filter(Boolean)
+        .map(
+          (recordingId): TabSessionSubscription => ({
+            subscription_id: `record.page.upload.${recordingId}`,
+            kind: 'recording.upload-status',
+            params: { session_id: recordingId }
+          })
+        )
+    ];
+    realtimeContributor.setSubscriptions(subscriptions);
   });
 
   onDestroy(() => {
-    for (const stop of uploadStreamStops.values()) {
-      stop();
-    }
-    uploadStreamStops.clear();
+    realtimeContributor?.dispose();
+    realtimeContributor = null;
   });
 
 </script>

@@ -1,22 +1,19 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
+  import { browser } from '$app/environment';
+  import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
-  import { untrack } from 'svelte';
   import { Tabs } from 'bits-ui';
 
-  import { api } from '$lib/api/client';
+  import { api, type TabSessionSubscription } from '$lib/api/client';
   import ProfileTab from '$lib/components/system/ProfileTab.svelte';
   import RuntimeTab from '$lib/components/system/RuntimeTab.svelte';
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
   import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
-  import { connectBundledTorchStream } from '$lib/realtime/bundledTorch';
-  import { connectRuntimeEnvStream } from '$lib/realtime/runtimeEnv';
-  import { connectStream } from '$lib/realtime/stream';
-  import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
   import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
-  import type { SystemSettings, UserSettings } from '$lib/types/settings';
+  import type { FeaturesRepoSuggestions, SystemSettings, UserSettings } from '$lib/types/settings';
   import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
 
   type SystemTab = 'status' | 'profile' | 'runtime' | 'settings';
@@ -31,7 +28,7 @@
     };
   };
 
-  type OperateStatusStreamPayload = {
+  type OperateStatusRealtimePayload = {
     operate_status?: {
       network?: OperateNetworkStatus;
     };
@@ -56,6 +53,8 @@
   let bundledTorchSnapshot = $state<BundledTorchBuildSnapshot | null>(null);
   let runtimeEnvSnapshot = $state<RuntimeEnvSnapshot | null>(null);
   let systemSettings = $state<SystemSettings | null>(null);
+  let featuresRepoSuggestions = $state<FeaturesRepoSuggestions | null>(null);
+  let featuresRepoSuggestionsPending = $state(false);
   let userSettings = $state<UserSettings | null>(null);
   let bundledTorchActionPending = $state(false);
   let bundledTorchActionError = $state('');
@@ -67,6 +66,18 @@
   let userSettingsPending = $state(false);
   let userSettingsError = $state('');
   let userSettingsSuccess = $state('');
+  let featuresRepoSuggestionsAbort = $state<AbortController | null>(null);
+  let pendingTabNavigation = $state<SystemTab | null>(null);
+
+  afterNavigate(() => {
+    const nextTab = normalizeTab(page.url.searchParams.get('tab'));
+    if (pendingTabNavigation !== null && nextTab === pendingTabNavigation) {
+      pendingTabNavigation = null;
+    }
+    if (nextTab !== activeTab) {
+      activeTab = nextTab;
+    }
+  });
 
   const renderStatusLabel = (value?: string) => {
     switch (value) {
@@ -109,29 +120,6 @@
         return 'border-slate-200 bg-slate-100 text-slate-600';
     }
   };
-
-  $effect(() => {
-    const queryTab = normalizeTab(page.url.searchParams.get('tab'));
-    if (untrack(() => activeTab) !== queryTab) {
-      activeTab = queryTab;
-    }
-  });
-
-  $effect(() => {
-    const rawTab = page.url.searchParams.get('tab');
-    const queryTab = normalizeTab(rawTab);
-    const expectedTab = activeTab === 'status' ? null : activeTab;
-    if (rawTab === expectedTab || (rawTab === null && activeTab === queryTab)) {
-      return;
-    }
-    const nextUrl = new URL(page.url);
-    if (activeTab === 'status') {
-      nextUrl.searchParams.delete('tab');
-    } else {
-      nextUrl.searchParams.set('tab', activeTab);
-    }
-    void goto(nextUrl, { replaceState: true, noScroll: true, keepFocus: true });
-  });
 
   const loadInitialState = async () => {
     const [bundledResult, runtimeEnvResult, operateResult, systemSettingsResult, userSettingsResult] = await Promise.allSettled([
@@ -241,6 +229,9 @@
   const saveSystemSettings = async (payload: {
     pytorchVersion: string;
     torchvisionVersion: string;
+    repoUrl: string;
+    repoRef: string;
+    repoCommit?: string;
   }) => {
     systemSettingsPending = true;
     systemSettingsError = '';
@@ -250,6 +241,11 @@
         bundled_torch: {
           pytorch_version: payload.pytorchVersion.trim(),
           torchvision_version: payload.torchvisionVersion.trim()
+        },
+        features_repo: {
+          repo_url: payload.repoUrl.trim(),
+          repo_ref: payload.repoRef.trim(),
+          repo_commit: payload.repoCommit?.trim() || null
         }
       });
       systemSettingsSuccess = 'system settings を更新しました。';
@@ -260,6 +256,54 @@
       systemSettingsPending = false;
     }
   };
+
+  const refreshFeaturesRepoSuggestions = async (payload: { repoUrl: string; repoRef?: string }) => {
+    const repoUrl = payload.repoUrl.trim();
+    if (!repoUrl) {
+      featuresRepoSuggestionsAbort?.abort();
+      featuresRepoSuggestionsAbort = null;
+      featuresRepoSuggestionsPending = false;
+      featuresRepoSuggestions = null;
+      return;
+    }
+    featuresRepoSuggestionsAbort?.abort();
+    const controller = new AbortController();
+    featuresRepoSuggestionsAbort = controller;
+    featuresRepoSuggestionsPending = true;
+    try {
+      featuresRepoSuggestions = await api.system.featuresRepoSuggestions({
+        repo_url: repoUrl,
+        repo_ref: payload.repoRef?.trim() || undefined,
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      systemSettingsError =
+        error instanceof Error ? error.message : 'features repo 候補の取得に失敗しました。';
+    } finally {
+      if (featuresRepoSuggestionsAbort === controller) {
+        featuresRepoSuggestionsAbort = null;
+        featuresRepoSuggestionsPending = false;
+      }
+    }
+  };
+
+  $effect(() => {
+    if (
+      activeTab !== 'settings' ||
+      !systemSettings?.features_repo?.repo_url ||
+      featuresRepoSuggestionsPending ||
+      featuresRepoSuggestions
+    ) {
+      return;
+    }
+    void refreshFeaturesRepoSuggestions({
+      repoUrl: systemSettings.features_repo.repo_url,
+      repoRef: systemSettings.features_repo.repo_ref
+    });
+  });
 
   const saveUserSettings = async (payload: {
     huggingfaceToken?: string;
@@ -282,37 +326,101 @@
     }
   };
 
+  const buildRealtimeSubscriptions = (tab: SystemTab): TabSessionSubscription[] => {
+    if (tab === 'status') {
+      return [
+        { subscription_id: 'system.page.status', kind: 'system.status', params: {} },
+        { subscription_id: 'system.page.operate', kind: 'operate.status', params: {} }
+      ];
+    }
+    if (tab === 'runtime') {
+      return [
+        { subscription_id: 'system.page.bundled-torch', kind: 'system.bundled-torch', params: {} },
+        { subscription_id: 'system.page.runtime-envs', kind: 'system.runtime-envs', params: {} }
+      ];
+    }
+    return [];
+  };
+
+  const handleRealtimeEvent = (event: TabRealtimeEvent) => {
+    if (event.op !== 'snapshot') return;
+    switch (event.source?.kind) {
+      case 'system.status':
+        systemStatusSnapshot = event.payload as SystemStatusSnapshot;
+        return;
+      case 'operate.status': {
+        const payload = event.payload as OperateStatusRealtimePayload;
+        networkStatus = payload.operate_status?.network ?? null;
+        return;
+      }
+      case 'system.bundled-torch':
+        bundledTorchSnapshot = event.payload as BundledTorchBuildSnapshot;
+        return;
+      case 'system.runtime-envs':
+        runtimeEnvSnapshot = event.payload as RuntimeEnvSnapshot;
+        return;
+    }
+  };
+
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+
   onMount(() => {
     void loadInitialState();
 
-    const stopSystemStatusStream = connectSystemStatusStream({
-      onMessage: (payload) => {
-        systemStatusSnapshot = payload;
-      }
-    });
-    const stopOperateStream = connectStream<OperateStatusStreamPayload>({
-      path: '/api/stream/operate/status',
-      onMessage: (payload) => {
-        networkStatus = payload.operate_status?.network ?? null;
-      }
-    });
-    const stopBundledTorchStream = connectBundledTorchStream({
-      onMessage: (payload) => {
-        bundledTorchSnapshot = payload;
-      }
-    });
-    const stopRuntimeEnvStream = connectRuntimeEnvStream({
-      onMessage: (payload) => {
-        runtimeEnvSnapshot = payload;
-      }
-    });
-
     return () => {
-      stopSystemStatusStream();
-      stopOperateStream();
-      stopBundledTorchStream();
-      stopRuntimeEnvStream();
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
+      featuresRepoSuggestionsAbort?.abort();
+      featuresRepoSuggestionsAbort = null;
+      featuresRepoSuggestionsPending = false;
     };
+  });
+
+  $effect(() => {
+    if (!browser) {
+      return;
+    }
+    if (pendingTabNavigation === activeTab) {
+      return;
+    }
+    const currentUrl = new URL(page.url);
+    const targetUrl = new URL(page.url);
+    if (activeTab === 'status') {
+      targetUrl.searchParams.delete('tab');
+    } else {
+      targetUrl.searchParams.set('tab', activeTab);
+    }
+    if (`${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}` === `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`) {
+      return;
+    }
+    pendingTabNavigation = activeTab;
+    void goto(`${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`, {
+      keepFocus: true,
+      noScroll: true,
+      invalidateAll: false,
+    }).catch(() => {
+      pendingTabNavigation = null;
+    });
+  });
+
+  $effect(() => {
+    if (!browser) {
+      return;
+    }
+
+    if (realtimeContributor === null) {
+      realtimeContributor = registerTabRealtimeContributor({
+        subscriptions: buildRealtimeSubscriptions(activeTab),
+        onEvent: handleRealtimeEvent
+      });
+      if (!realtimeContributor) {
+        return;
+      }
+      return;
+    }
+
+    realtimeContributor.setEventHandler(handleRealtimeEvent);
+    realtimeContributor.setSubscriptions(buildRealtimeSubscriptions(activeTab));
   });
 </script>
 
@@ -356,43 +464,54 @@
     </div>
 
     <Tabs.Content value="status" class="mt-6 space-y-6">
-      <SystemStatusTab snapshot={systemStatusSnapshot} network={networkStatus} />
+      {#if activeTab === 'status'}
+        <SystemStatusTab snapshot={systemStatusSnapshot} network={networkStatus} />
+      {/if}
     </Tabs.Content>
 
     <Tabs.Content value="profile" class="mt-6 space-y-6">
-      <ProfileTab />
+      {#if activeTab === 'profile'}
+        <ProfileTab />
+      {/if}
     </Tabs.Content>
 
     <Tabs.Content value="runtime" class="mt-6 space-y-6">
-      <RuntimeTab
-        snapshot={systemStatusSnapshot}
-        runtimeEnvSnapshot={runtimeEnvSnapshot}
-        bundledTorchSnapshot={bundledTorchSnapshot}
-        systemSettings={systemSettings}
-        runtimeEnvActionPending={runtimeEnvActionPending}
-        runtimeEnvActionError={runtimeEnvActionError}
-        bundledTorchActionPending={bundledTorchActionPending}
-        bundledTorchActionError={bundledTorchActionError}
-        onRuntimeBuild={triggerRuntimeBuild}
-        onRuntimeDelete={triggerRuntimeDelete}
-        onBuild={triggerBuild}
-        onClean={triggerClean}
-      />
+      {#if activeTab === 'runtime'}
+        <RuntimeTab
+          snapshot={systemStatusSnapshot}
+          runtimeEnvSnapshot={runtimeEnvSnapshot}
+          bundledTorchSnapshot={bundledTorchSnapshot}
+          systemSettings={systemSettings}
+          runtimeEnvActionPending={runtimeEnvActionPending}
+          runtimeEnvActionError={runtimeEnvActionError}
+          bundledTorchActionPending={bundledTorchActionPending}
+          bundledTorchActionError={bundledTorchActionError}
+          onRuntimeBuild={triggerRuntimeBuild}
+          onRuntimeDelete={triggerRuntimeDelete}
+          onBuild={triggerBuild}
+          onClean={triggerClean}
+        />
+      {/if}
     </Tabs.Content>
 
     <Tabs.Content value="settings" class="mt-6 space-y-6">
-      <SettingsTab
-        systemSettings={systemSettings}
-        userSettings={userSettings}
-        systemPending={systemSettingsPending}
-        userPending={userSettingsPending}
-        systemError={systemSettingsError}
-        userError={userSettingsError}
-        systemSuccess={systemSettingsSuccess}
-        userSuccess={userSettingsSuccess}
-        onSaveSystemSettings={saveSystemSettings}
-        onSaveUserSettings={saveUserSettings}
-      />
+      {#if activeTab === 'settings'}
+        <SettingsTab
+          systemSettings={systemSettings}
+          userSettings={userSettings}
+          featuresRepoSuggestions={featuresRepoSuggestions}
+          featuresRepoSuggestionsPending={featuresRepoSuggestionsPending}
+          systemPending={systemSettingsPending}
+          userPending={userSettingsPending}
+          systemError={systemSettingsError}
+          userError={userSettingsError}
+          systemSuccess={systemSettingsSuccess}
+          userSuccess={userSettingsSuccess}
+          onSaveSystemSettings={saveSystemSettings}
+          onSaveUserSettings={saveUserSettings}
+          onRefreshFeaturesRepoSuggestions={refreshFeaturesRepoSuggestions}
+        />
+      {/if}
     </Tabs.Content>
   </Tabs.Root>
 </section>

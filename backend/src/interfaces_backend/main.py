@@ -22,6 +22,12 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 def _find_repo_root() -> Path:
     """Find repository root by looking for data/.env file."""
+    project_root_raw = str(os.environ.get("PHYSICAL_AI_PROJECT_ROOT") or "").strip()
+    if project_root_raw:
+        project_root = Path(project_root_raw).expanduser()
+        if project_root.is_dir():
+            return project_root
+
     current = Path.cwd()
     for _ in range(10):  # Look up to 10 levels
         # Priority: look for data/.env (indicates repo root with config)
@@ -80,10 +86,10 @@ from interfaces_backend.api import (
     operate_router,
     platform_router,
     profiles_router,
+    realtime_router,
     recording_router,
     startup_router,
     storage_router,
-    stream_router,
     system_router,
     teleop_router,
     training_router,
@@ -91,15 +97,14 @@ from interfaces_backend.api import (
     webui_blueprints_router,
 )
 from interfaces_backend.services.bundled_torch_build_service import get_bundled_torch_build_service
-from interfaces_backend.services.lerobot_runtime import start_lerobot
+from interfaces_backend.services.lerobot_runtime import start_lerobot_on_backend_startup
 from interfaces_backend.services.runtime_env_service import get_runtime_env_service
 from interfaces_backend.services.system_status_monitor import get_system_status_monitor
-from interfaces_backend.core.request_auth import (
-    build_session_from_request,
-    is_session_expired,
-    refresh_session_from_request,
-    set_session_cookies,
+from interfaces_backend.services.training_provision_recovery import (
+    get_training_provision_recovery_service,
 )
+from interfaces_backend.services.tab_realtime import get_tab_realtime_registry
+from interfaces_backend.core.request_auth import resolve_session_from_request, set_session_cookies
 from interfaces_backend.services.vlabor_runtime import start_vlabor_on_backend_startup
 from interfaces_backend.services.vlabor_profiles import get_active_profile_spec
 from percus_ai.observability import (
@@ -132,15 +137,11 @@ async def start_vlabor_container() -> None:
         startup_logger.warning("Could not resolve active profile; starting VLAbor without profile")
         profile_name = None
     start_vlabor_on_backend_startup(profile=profile_name, logger=startup_logger)
-    lerobot_result = start_lerobot(strict=False)
-    if lerobot_result.returncode != 0:
-        detail = (lerobot_result.stderr or lerobot_result.stdout).strip()
-        startup_logger.warning("Failed to start lerobot stack on backend startup: %s", detail)
-    else:
-        startup_logger.info("lerobot stack started on backend startup")
+    start_lerobot_on_backend_startup(logger=startup_logger)
     get_system_status_monitor().ensure_started()
     await get_bundled_torch_build_service().refresh_snapshot()
     await get_runtime_env_service().refresh_snapshot()
+    get_training_provision_recovery_service().ensure_started()
 
 
 @app.on_event("shutdown")
@@ -148,6 +149,8 @@ async def stop_background_monitors() -> None:
     await get_system_status_monitor().shutdown()
     await get_bundled_torch_build_service().shutdown()
     await get_runtime_env_service().shutdown()
+    await get_training_provision_recovery_service().shutdown()
+    get_tab_realtime_registry().shutdown()
 
 
 def _extract_request_session_id(request: Request) -> Optional[str]:
@@ -252,15 +255,9 @@ async def log_slow_requests(request, call_next):
 
 @app.middleware("http")
 async def attach_supabase_session(request, call_next):
-    session = build_session_from_request(request)
-    session_refreshed = False
-    if session and is_session_expired(session):
-        refreshed_session = refresh_session_from_request(request)
-        if refreshed_session:
-            session = refreshed_session
-            session_refreshed = True
-        else:
-            session = None
+    session, session_refreshed = resolve_session_from_request(request)
+    request.state.supabase_session = session
+    request.state.supabase_session_refreshed = session_refreshed
     token = set_request_session(session)
     try:
         response = await call_next(request)
@@ -281,10 +278,10 @@ app.include_router(inference_router)
 app.include_router(operate_router)
 app.include_router(platform_router)
 app.include_router(profiles_router)
+app.include_router(realtime_router)
 app.include_router(recording_router)
 app.include_router(startup_router)
 app.include_router(storage_router)
-app.include_router(stream_router)
 app.include_router(system_router)
 app.include_router(teleop_router)
 app.include_router(training_router)

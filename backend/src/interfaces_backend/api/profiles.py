@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import socket
-import subprocess
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
@@ -32,11 +29,9 @@ from interfaces_backend.services.vlabor_runtime import (
     restart_vlabor,
     stream_vlabor_script,
 )
-from interfaces_backend.utils.docker_compose import (
-    build_compose_command,
-    get_vlabor_compose_file,
-    get_vlabor_env_file,
-)
+from interfaces_backend.services.system_status_monitor import get_system_status_monitor
+from interfaces_backend.utils.docker_compose import get_vlabor_compose_file
+from interfaces_backend.utils.docker_services import get_docker_service_summary
 from percus_ai.db import get_current_user_id
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -49,40 +44,15 @@ def _require_user_id() -> str:
         raise HTTPException(status_code=401, detail="Login required") from exc
 
 
-def _get_vlabor_compose_cmd(*, strict: bool) -> tuple[list[str], Path]:
-    compose_file = get_vlabor_compose_file()
-    if strict and not compose_file.exists():
-        raise HTTPException(status_code=500, detail=f"{compose_file} not found")
-    return build_compose_command(compose_file, get_vlabor_env_file()), compose_file
-
-
 def _get_vlabor_status() -> dict:
-    compose_cmd, compose_file = _get_vlabor_compose_cmd(strict=False)
+    compose_file = get_vlabor_compose_file()
     if not compose_file.exists():
         return {"status": "unknown", "service": "vlabor"}
-
-    result = subprocess.run(
-        [*compose_cmd, "ps", "--format", "json", "vlabor"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return {"status": "unknown", "service": "vlabor"}
-    try:
-        data = json.loads(result.stdout)
-    except Exception:
-        return {"status": "unknown", "service": "vlabor"}
-
-    entry = None
-    if isinstance(data, list):
-        entry = data[0] if data else None
-    elif isinstance(data, dict):
-        entry = data
-
+    entry = get_docker_service_summary("vlabor")
     if not entry:
         return {"status": "unknown", "service": "vlabor"}
 
-    state_raw = (entry.get("State") or "").lower()
+    state_raw = str(entry.get("state") or "").lower()
     status_value = "unknown"
     if "restarting" in state_raw:
         status_value = "restarting"
@@ -96,32 +66,13 @@ def _get_vlabor_status() -> dict:
     return {
         "status": status_value,
         "service": "vlabor",
-        "state": entry.get("State"),
-        "status_detail": entry.get("Status"),
-        "running_for": entry.get("RunningFor"),
-        "created_at": entry.get("CreatedAt"),
-        "container_id": entry.get("ID"),
+        "state": entry.get("state"),
+        "status_detail": entry.get("status_detail"),
+        "running_for": entry.get("running_for"),
+        "created_at": entry.get("created_at"),
+        "container_id": entry.get("container_id"),
         "dashboard_url": dashboard_url,
     }
-
-
-def _fetch_ros2_topics() -> list[str]:
-    compose_cmd, compose_file = _get_vlabor_compose_cmd(strict=False)
-    if not compose_file.exists():
-        return []
-    cmd = [
-        *compose_cmd,
-        "exec",
-        "-T",
-        "vlabor",
-        "bash",
-        "-lc",
-        "source /opt/ros/humble/setup.sh && ros2 topic list",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    if result.returncode != 0:
-        return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 async def _stream_script_to_websocket(
@@ -242,7 +193,9 @@ async def set_active_profile(request: VlaborProfileSelectRequest):
 async def get_active_profile_status():
     _require_user_id()
     active = await get_active_profile_spec()
-    topics = _fetch_ros2_topics()
+    monitor = get_system_status_monitor()
+    monitor.ensure_started()
+    topics = monitor.get_cached_ros2_topics()
     topic_set = set(topics)
 
     cameras = []
@@ -297,7 +250,7 @@ async def get_active_profile_status():
 
 @router.get("/vlabor/status", response_model=VlaborStatusResponse)
 async def get_vlabor_status():
-    return VlaborStatusResponse(**_get_vlabor_status())
+    return VlaborStatusResponse(**(await asyncio.to_thread(_get_vlabor_status)))
 
 
 @router.websocket("/ws/vlabor/restart")

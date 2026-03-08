@@ -27,9 +27,6 @@ from interfaces_backend.models.inference import (
 from interfaces_backend.models.startup import StartupOperationAcceptedResponse
 from interfaces_backend.services.inference_runtime import get_inference_runtime_manager
 from interfaces_backend.services.inference_session import get_inference_session_manager
-from interfaces_backend.services.session_control_events import (
-    publish_session_control_event_safely,
-)
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.startup_operations import get_startup_operations_service
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
@@ -51,16 +48,7 @@ async def _emit_inference_control_event(
     message: str | None = None,
     details: dict[str, object] | None = None,
 ) -> None:
-    await publish_session_control_event_safely(
-        session_kind="inference",
-        action=action,
-        phase=phase,
-        session_id=session_id,
-        operation_id=operation_id,
-        success=success,
-        message=message,
-        details=details,
-    )
+    return None
 
 
 def _to_size_mb(size_bytes: object) -> float:
