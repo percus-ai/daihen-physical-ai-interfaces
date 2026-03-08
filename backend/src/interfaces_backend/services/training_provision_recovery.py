@@ -185,12 +185,7 @@ class TrainingProvisionRecoveryService:
         message = "バックエンド再起動によりプロビジョニングが中断されました。"
 
         if instance_id and not job_id:
-            deleted, detail = await asyncio.get_running_loop().run_in_executor(
-                None,
-                cleanup_provision_instance,
-                provider,
-                instance_id,
-            )
+            deleted, detail = cleanup_provision_instance(provider, instance_id)
             if deleted:
                 message = "バックエンド再起動により中断されたため、作成中インスタンスをクリーンアップしました。"
             else:

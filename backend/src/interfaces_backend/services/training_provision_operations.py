@@ -342,8 +342,13 @@ class TrainingProvisionOperationsService:
                 raise
             await self._update_with_client(service_client, operation_id=operation_id, patch=patch)
         snapshot = await self.get_system(operation_id=operation_id)
-        if snapshot is not None:
+        if snapshot is None:
             return None
+        await self._publish(snapshot)
+
+    async def _publish(self, snapshot: TrainingProvisionOperationStatusResponse) -> None:
+        del snapshot
+        return None
 
     @staticmethod
     async def _update_with_client(
