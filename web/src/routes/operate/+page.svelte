@@ -1,14 +1,16 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { goto } from '$app/navigation';
   import {
     api,
+    type TabSessionSubscription,
     type StartupOperationAcceptedResponse,
     type StartupOperationStatusResponse
   } from '$lib/api/client';
   import { connectStream } from '$lib/realtime/stream';
-  import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
@@ -74,6 +76,7 @@
   type OperateStatusStreamPayload = {
     vlabor_status?: Record<string, any>;
     inference_runner_status?: InferenceRunnerStatusResponse;
+    operate_status?: OperateStatusResponse;
   };
 
   const inferenceModelsQuery = createQuery<InferenceModelsResponse>({
@@ -126,6 +129,12 @@
   let startupStreamError = $state('');
   let stopStartupStream = () => {};
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+
+  const operateRealtimeSubscriptions: TabSessionSubscription[] = [
+    { subscription_id: 'operate.page.status', kind: 'operate.status', params: {} },
+    { subscription_id: 'operate.page.system-status', kind: 'system.status', params: {} }
+  ];
 
   const START_PHASE_LABELS: Record<string, string> = {
     queued: 'キュー待機',
@@ -291,33 +300,44 @@
   });
 
   $effect(() => {
-    const stopOperateStream = connectStream<OperateStatusStreamPayload>({
-      path: '/api/stream/operate/status',
-      onMessage: (payload) => {
-        queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
-      }
-    });
-
-    return () => {
-      stopOperateStream();
-    };
-  });
-
-  $effect(() => {
-    const stopSystemStatusStream = connectSystemStatusStream({
-      onMessage: (payload) => {
-        systemStatusSnapshot = payload;
-      }
-    });
-
-    return () => {
-      stopSystemStatusStream();
-    };
+    if (!browser) {
+      return;
+    }
+    const client = getTabRealtimeClient();
+    if (!client) {
+      return;
+    }
+    if (realtimeContributor === null) {
+      realtimeContributor = client.registerContributor({
+        contributorId: 'operate.page',
+        subscriptions: operateRealtimeSubscriptions,
+        onEvent: (event: TabRealtimeEvent) => {
+          if (event.op !== 'snapshot') return;
+          if (event.source?.kind === 'operate.status') {
+            const payload = event.payload as OperateStatusStreamPayload;
+            if (payload.inference_runner_status) {
+              queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
+            }
+            if (payload.operate_status) {
+              queryClient.setQueryData(['operate', 'status'], payload.operate_status);
+            }
+            return;
+          }
+          if (event.source?.kind === 'system.status') {
+            systemStatusSnapshot = event.payload as SystemStatusSnapshot;
+          }
+        }
+      });
+      return;
+    }
+    realtimeContributor.setSubscriptions(operateRealtimeSubscriptions);
   });
 
   $effect(() => {
     return () => {
       stopStartupStreamSubscription();
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
     };
   });
 </script>

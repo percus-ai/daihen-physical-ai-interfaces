@@ -1,11 +1,12 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { onDestroy, onMount } from 'svelte';
   import { toStore } from 'svelte/store';
   import { createQuery } from '@tanstack/svelte-query';
 
   import { api } from '$lib/api/client';
   import { getBackendUrl } from '$lib/config';
-  import { connectStream } from '$lib/realtime/stream';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   type VlaborProfile = {
@@ -208,19 +209,31 @@
     void runVlaborWsOperation(restartPath);
   }
 
-  let stopVlaborStream = () => {};
+  let vlaborContributor: TabRealtimeContributorHandle | null = null;
 
   onMount(() => {
-    stopVlaborStream = connectStream({
-      path: '/api/stream/profiles/vlabor',
-      onMessage: (payload) => {
-        queryClient.setQueryData(['profiles', 'vlabor', 'status'], payload);
+    if (!browser) return;
+    const client = getTabRealtimeClient();
+    if (!client) return;
+    vlaborContributor = client.registerContributor({
+      contributorId: 'system.profile.vlabor',
+      subscriptions: [
+        {
+          subscription_id: 'system.profile.vlabor',
+          kind: 'profiles.vlabor',
+          params: {}
+        }
+      ],
+      onEvent: (event: TabRealtimeEvent) => {
+        if (event.op !== 'snapshot' || event.source?.kind !== 'profiles.vlabor') return;
+        queryClient.setQueryData(['profiles', 'vlabor', 'status'], event.payload);
       }
     });
   });
 
   onDestroy(() => {
-    stopVlaborStream();
+    vlaborContributor?.dispose();
+    vlaborContributor = null;
     restartWs?.close();
   });
 </script>

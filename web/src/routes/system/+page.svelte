@@ -1,17 +1,15 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { Tabs } from 'bits-ui';
 
-  import { api } from '$lib/api/client';
+  import { api, type TabSessionSubscription } from '$lib/api/client';
   import ProfileTab from '$lib/components/system/ProfileTab.svelte';
   import RuntimeTab from '$lib/components/system/RuntimeTab.svelte';
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
   import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
-  import { connectBundledTorchStream } from '$lib/realtime/bundledTorch';
-  import { connectRuntimeEnvStream } from '$lib/realtime/runtimeEnv';
-  import { connectStream } from '$lib/realtime/stream';
-  import { connectSystemStatusStream } from '$lib/realtime/systemStatus';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
   import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
   import type { FeaturesRepoSuggestions, SystemSettings, UserSettings } from '$lib/types/settings';
@@ -29,7 +27,7 @@
     };
   };
 
-  type OperateStatusStreamPayload = {
+  type OperateStatusRealtimePayload = {
     operate_status?: {
       network?: OperateNetworkStatus;
     };
@@ -316,13 +314,50 @@
     }
   };
 
-  let stopActiveTabStreams: () => void = () => {};
+  const buildRealtimeSubscriptions = (tab: SystemTab): TabSessionSubscription[] => {
+    if (tab === 'status') {
+      return [
+        { subscription_id: 'system.page.status', kind: 'system.status', params: {} },
+        { subscription_id: 'system.page.operate', kind: 'operate.status', params: {} }
+      ];
+    }
+    if (tab === 'runtime') {
+      return [
+        { subscription_id: 'system.page.bundled-torch', kind: 'system.bundled-torch', params: {} },
+        { subscription_id: 'system.page.runtime-envs', kind: 'system.runtime-envs', params: {} }
+      ];
+    }
+    return [];
+  };
+
+  const handleRealtimeEvent = (event: TabRealtimeEvent) => {
+    if (event.op !== 'snapshot') return;
+    switch (event.source?.kind) {
+      case 'system.status':
+        systemStatusSnapshot = event.payload as SystemStatusSnapshot;
+        return;
+      case 'operate.status': {
+        const payload = event.payload as OperateStatusRealtimePayload;
+        networkStatus = payload.operate_status?.network ?? null;
+        return;
+      }
+      case 'system.bundled-torch':
+        bundledTorchSnapshot = event.payload as BundledTorchBuildSnapshot;
+        return;
+      case 'system.runtime-envs':
+        runtimeEnvSnapshot = event.payload as RuntimeEnvSnapshot;
+        return;
+    }
+  };
+
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
 
   onMount(() => {
     void loadInitialState();
 
     return () => {
-      stopActiveTabStreams();
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
       featuresRepoSuggestionsAbort?.abort();
       featuresRepoSuggestionsAbort = null;
       featuresRepoSuggestionsPending = false;
@@ -330,46 +365,26 @@
   });
 
   $effect(() => {
-    stopActiveTabStreams();
-
-    if (activeTab === 'status') {
-      const stopSystemStatusStream = connectSystemStatusStream({
-        onMessage: (payload) => {
-          systemStatusSnapshot = payload;
-        }
-      });
-      const stopOperateStream = connectStream<OperateStatusStreamPayload>({
-        path: '/api/stream/operate/status',
-        onMessage: (payload) => {
-          networkStatus = payload.operate_status?.network ?? null;
-        }
-      });
-      stopActiveTabStreams = () => {
-        stopSystemStatusStream();
-        stopOperateStream();
-      };
+    if (!browser) {
       return;
     }
 
-    if (activeTab === 'runtime') {
-      const stopBundledTorchStream = connectBundledTorchStream({
-        onMessage: (payload) => {
-          bundledTorchSnapshot = payload;
-        }
-      });
-      const stopRuntimeEnvStream = connectRuntimeEnvStream({
-        onMessage: (payload) => {
-          runtimeEnvSnapshot = payload;
-        }
-      });
-      stopActiveTabStreams = () => {
-        stopBundledTorchStream();
-        stopRuntimeEnvStream();
-      };
+    const client = getTabRealtimeClient();
+    if (!client) {
       return;
     }
 
-    stopActiveTabStreams = () => {};
+    if (realtimeContributor === null) {
+      realtimeContributor = client.registerContributor({
+        contributorId: 'system.page',
+        subscriptions: buildRealtimeSubscriptions(activeTab),
+        onEvent: handleRealtimeEvent
+      });
+      return;
+    }
+
+    realtimeContributor.setEventHandler(handleRealtimeEvent);
+    realtimeContributor.setSubscriptions(buildRealtimeSubscriptions(activeTab));
   });
 </script>
 

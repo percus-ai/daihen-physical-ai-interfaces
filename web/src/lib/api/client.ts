@@ -132,6 +132,38 @@ export type ProfilesActiveSubscription = RealtimeSubscriptionBase & {
   params?: Record<string, never>;
 };
 
+export type ProfilesVlaborSubscription = RealtimeSubscriptionBase & {
+  kind: 'profiles.vlabor';
+  params?: Record<string, never>;
+};
+
+export type SystemStatusSubscription = RealtimeSubscriptionBase & {
+  kind: 'system.status';
+  params?: Record<string, never>;
+};
+
+export type OperateStatusSubscription = RealtimeSubscriptionBase & {
+  kind: 'operate.status';
+  params?: Record<string, never>;
+};
+
+export type SystemRuntimeEnvsSubscription = RealtimeSubscriptionBase & {
+  kind: 'system.runtime-envs';
+  params?: Record<string, never>;
+};
+
+export type SystemBundledTorchSubscription = RealtimeSubscriptionBase & {
+  kind: 'system.bundled-torch';
+  params?: Record<string, never>;
+};
+
+export type RecordingUploadStatusSubscription = RealtimeSubscriptionBase & {
+  kind: 'recording.upload-status';
+  params: {
+    session_id: string;
+  };
+};
+
 export type TrainingJobCoreSubscription = RealtimeSubscriptionBase & {
   kind: 'training.job.core';
   params: {
@@ -165,6 +197,12 @@ export type TrainingJobLogsSubscription = RealtimeSubscriptionBase & {
 
 export type TabSessionSubscription =
   | ProfilesActiveSubscription
+  | ProfilesVlaborSubscription
+  | SystemStatusSubscription
+  | OperateStatusSubscription
+  | SystemRuntimeEnvsSubscription
+  | SystemBundledTorchSubscription
+  | RecordingUploadStatusSubscription
   | TrainingJobCoreSubscription
   | TrainingJobProvisionSubscription
   | TrainingJobMetricsSubscription
