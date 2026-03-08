@@ -2,6 +2,11 @@
 
 WebUIの設計・実装で後回しの項目をここに記録。
 
+## 作業前確認
+
+- WebUIの既存設計に関わる変更を始める前に、関連する `docs/設計/` の設計書を確認する
+- realtime / streaming を触る場合は `docs/設計/タブ単位リアルタイム配信.md` を先に読む
+
 ## 既にAPI連携済み
 - /api/analytics/overview
 - /api/system/health, /api/system/resources, /api/system/info, /api/system/gpu, /api/system/logs
