@@ -2,7 +2,7 @@ import { derived, get, writable, type Readable } from 'svelte/store';
 import { createQuery, type QueryClient } from '@tanstack/svelte-query';
 
 import { api, type DatasetSyncJobStatus, type DatasetViewerResponse, type DatasetViewerSignalFieldsResponse } from '$lib/api/client';
-import { connectStream } from '$lib/realtime/stream';
+import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
 import { qk } from '$lib/queryKeys';
 
 type NotifyFn = (message: string, level?: 'info' | 'success' | 'error') => void;
@@ -162,25 +162,33 @@ export const createDatasetAvailabilityController = (opts: {
     }
   });
 
-  let stopStream: null | (() => void) = null;
+  let contributor: TabRealtimeContributorHandle | null = null;
   const unsubStream = derived([syncJobId, enabled], (values) => values).subscribe(([$jobId, $enabled]) => {
-    stopStream?.();
-    stopStream = null;
-    if (!$enabled) return;
-    if (!$jobId) return;
+    contributor?.dispose();
+    contributor = null;
+    if (!$enabled || !$jobId) return;
+    const client = getTabRealtimeClient();
+    if (!client) return;
     const currentJobId = $jobId;
-    const streamPath = `/api/stream/storage/dataset-sync/jobs/${encodeURIComponent(currentJobId)}`;
-    stopStream = connectStream<DatasetSyncJobStatus>({
-      path: streamPath,
-      onMessage: (payload) => {
-        queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), payload);
+    contributor = client.registerContributor({
+      contributorId: `viewer.dataset-sync.${currentJobId}`,
+      subscriptions: [
+        {
+          subscription_id: `viewer.dataset-sync.${currentJobId}`,
+          kind: 'storage.dataset-sync',
+          params: { job_id: currentJobId }
+        }
+      ],
+      onEvent: (event: TabRealtimeEvent) => {
+        if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-sync') return;
+        queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), event.payload as DatasetSyncJobStatus);
       }
     });
   });
 
   const destroy = () => {
-    stopStream?.();
-    stopStream = null;
+    contributor?.dispose();
+    contributor = null;
     unsubDatasetId();
     unsubAutoStart();
     unsubTerminal();

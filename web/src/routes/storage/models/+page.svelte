@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
-  import { api, type ModelSyncJobState, type ModelSyncJobStatus } from '$lib/api/client';
+  import { api, type ModelSyncJobState, type ModelSyncJobStatus, type TabSessionSubscription } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
-  import { connectStream } from '$lib/realtime/stream';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
 
   type ModelSummary = {
     id: string;
@@ -43,7 +44,7 @@
   let selectedIds = $state<string[]>([]);
   let jobsById = $state<Record<string, ModelSyncJobStatus>>({});
   let activeJobsByModelId = $state<Record<string, ModelSyncJobStatus>>({});
-  const streamStops = new Map<string, () => void>();
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
 
   const syncPending = $derived(syncAllPending);
 
@@ -73,13 +74,6 @@
     return nextTs >= prevTs;
   };
 
-  const stopJobStream = (jobId: string) => {
-    const stop = streamStops.get(jobId);
-    if (!stop) return;
-    stop();
-    streamStops.delete(jobId);
-  };
-
   const applyJobSnapshot = (job: ModelSyncJobStatus) => {
     const normalized = normalizeJob(job);
     const previous = jobsById[normalized.job_id];
@@ -105,28 +99,8 @@
       activeJobsByModelId = next;
     }
     if (isTerminalJobState(normalized.state)) {
-      stopJobStream(normalized.job_id);
       void refetchModels();
     }
-  };
-
-  const ensureJobStream = (jobId: string) => {
-    if (!jobId || streamStops.has(jobId)) return;
-
-    let stop = () => {};
-    stop = connectStream<ModelSyncJobStatus>({
-      path: `/api/stream/storage/model-sync/jobs/${encodeURIComponent(jobId)}`,
-      onMessage: (payload) => {
-        applyJobSnapshot(payload);
-      },
-      onError: () => {
-        // Fallback polling in action handlers keeps status eventually consistent.
-      }
-    });
-
-    streamStops.set(jobId, () => {
-      stop();
-    });
   };
 
   const refetchModels = async () => {
@@ -159,24 +133,16 @@
         nextActive[job.model_id] = job;
       }
       activeJobIds.add(job.job_id);
-      ensureJobStream(job.job_id);
     }
 
     jobsById = nextJobsById;
     activeJobsByModelId = nextActive;
-
-    for (const [jobId] of streamStops) {
-      if (!activeJobIds.has(jobId)) {
-        stopJobStream(jobId);
-      }
-    }
   };
 
   const startModelSync = async (modelId: string) => {
     const accepted = await api.storage.syncModel(modelId);
     const snapshot = await api.storage.modelSyncJob(accepted.job_id);
     applyJobSnapshot(snapshot);
-    ensureJobStream(accepted.job_id);
     return snapshot;
   };
 
@@ -184,7 +150,6 @@
     await api.storage.cancelModelSyncJob(jobId);
     const snapshot = await api.storage.modelSyncJob(jobId);
     applyJobSnapshot(snapshot);
-    ensureJobStream(jobId);
     return snapshot;
   };
 
@@ -403,6 +368,19 @@
     }
   }
 
+  const activeJobSubscriptions = $derived.by(() =>
+    Object.keys(jobsById)
+      .map((jobId) => jobsById[jobId])
+      .filter((job) => isActiveJobState(job?.state))
+      .map(
+        (job): TabSessionSubscription => ({
+          subscription_id: `storage.model-sync.${job.job_id}`,
+          kind: 'storage.model-sync',
+          params: { job_id: job.job_id }
+        })
+      )
+  );
+
   $effect(() => {
     let disposed = false;
 
@@ -419,11 +397,25 @@
 
     return () => {
       disposed = true;
-      for (const stop of streamStops.values()) {
-        stop();
-      }
-      streamStops.clear();
     };
+  });
+
+  $effect(() => {
+    if (!browser) return;
+    const client = getTabRealtimeClient();
+    if (!client) return;
+    if (realtimeContributor === null) {
+      realtimeContributor = client.registerContributor({
+        contributorId: 'storage.models',
+        subscriptions: activeJobSubscriptions,
+        onEvent: (event: TabRealtimeEvent) => {
+          if (event.op !== 'snapshot' || event.source?.kind !== 'storage.model-sync') return;
+          applyJobSnapshot(event.payload as ModelSyncJobStatus);
+        }
+      });
+      return;
+    }
+    realtimeContributor.setSubscriptions(activeJobSubscriptions);
   });
 </script>
 

@@ -9,7 +9,6 @@
     type StartupOperationAcceptedResponse,
     type StartupOperationStatusResponse
   } from '$lib/api/client';
-  import { connectStream } from '$lib/realtime/stream';
   import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
@@ -127,9 +126,10 @@
   let inferenceStopPending = $state(false);
   let startupStatus = $state<StartupOperationStatusResponse | null>(null);
   let startupStreamError = $state('');
-  let stopStartupStream = () => {};
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let startupContributor: TabRealtimeContributorHandle | null = null;
+  let startupOperationId = $state('');
 
   const operateRealtimeSubscriptions: TabSessionSubscription[] = [
     { subscription_id: 'operate.page.status', kind: 'operate.status', params: {} },
@@ -161,38 +161,27 @@
     }
   });
 
-  const stopStartupStreamSubscription = () => {
-    stopStartupStream();
-    stopStartupStream = () => {};
+  const disposeStartupContributor = () => {
+    startupContributor?.dispose();
+    startupContributor = null;
   };
 
   const handleStartupStatusUpdate = async (status: StartupOperationStatusResponse) => {
     startupStatus = status;
     if (status.state === 'completed' && status.target_session_id) {
-      stopStartupStreamSubscription();
+      disposeStartupContributor();
+      startupOperationId = '';
       inferenceStartPending = false;
       await refetchQuery($inferenceRunnerStatusQuery);
       await goto(`/operate/sessions/${encodeURIComponent(status.target_session_id)}?kind=inference`);
       return;
     }
     if (status.state === 'failed') {
+      disposeStartupContributor();
+      startupOperationId = '';
       inferenceStartPending = false;
       inferenceStartError = status.error ?? status.message ?? '推論の開始に失敗しました。';
     }
-  };
-
-  const subscribeStartupStream = (operationId: string) => {
-    stopStartupStreamSubscription();
-    startupStreamError = '';
-    stopStartupStream = connectStream<StartupOperationStatusResponse>({
-      path: `/api/stream/startup/operations/${encodeURIComponent(operationId)}`,
-      onMessage: (payload) => {
-        void handleStartupStatusUpdate(payload);
-      },
-      onError: () => {
-        startupStreamError = '進捗ストリームが一時的に不安定です。再接続します...';
-      }
-    });
   };
 
   const handleInferenceStart = async () => {
@@ -234,7 +223,8 @@
       if (!result?.operation_id) {
         throw new Error('開始オペレーションIDを取得できませんでした。');
       }
-      subscribeStartupStream(result.operation_id);
+      disposeStartupContributor();
+      startupOperationId = result.operation_id;
       const snapshot = await api.startup.operation(result.operation_id);
       await handleStartupStatusUpdate(snapshot);
     } catch (err) {
@@ -303,6 +293,41 @@
     if (!browser) {
       return;
     }
+    if (!startupOperationId) {
+      disposeStartupContributor();
+      return;
+    }
+    const client = getTabRealtimeClient();
+    if (!client) {
+      return;
+    }
+    const currentOperationId = startupOperationId;
+    disposeStartupContributor();
+    startupContributor = client.registerContributor({
+      contributorId: `operate.startup.${currentOperationId}`,
+      subscriptions: [
+        {
+          subscription_id: `operate.startup.${currentOperationId}`,
+          kind: 'startup.operation',
+          params: { operation_id: currentOperationId }
+        }
+      ],
+      onEvent: (event: TabRealtimeEvent) => {
+        if (event.op !== 'snapshot' || event.source?.kind !== 'startup.operation') return;
+        if (startupOperationId !== currentOperationId) return;
+        void handleStartupStatusUpdate(event.payload as StartupOperationStatusResponse);
+      }
+    });
+
+    return () => {
+      disposeStartupContributor();
+    };
+  });
+
+  $effect(() => {
+    if (!browser) {
+      return;
+    }
     const client = getTabRealtimeClient();
     if (!client) {
       return;
@@ -335,7 +360,7 @@
 
   $effect(() => {
     return () => {
-      stopStartupStreamSubscription();
+      disposeStartupContributor();
       realtimeContributor?.dispose();
       realtimeContributor = null;
     };

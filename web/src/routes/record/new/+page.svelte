@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
   import { Button } from 'bits-ui';
   import {
@@ -6,7 +7,7 @@
     type StartupOperationAcceptedResponse,
     type StartupOperationStatusResponse
   } from '$lib/api/client';
-  import { connectStream } from '$lib/realtime/stream';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
 
   const DATASET_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
   const START_PHASE_LABELS: Record<string, string> = {
@@ -46,7 +47,8 @@
   let error = $state('');
   let startupStatus = $state<StartupOperationStatusResponse | null>(null);
   let startupStreamError = $state('');
-  let stopStartupStream = () => {};
+  let startupOperationId = $state('');
+  let startupContributor: TabRealtimeContributorHandle | null = null;
 
   const validateDatasetName = (value: string) => {
     const trimmed = value.trim();
@@ -77,37 +79,26 @@
     return Number.isFinite(parsed) ? parsed : NaN;
   };
 
-  const stopStartupStreamSubscription = () => {
-    stopStartupStream();
-    stopStartupStream = () => {};
+  const disposeStartupContributor = () => {
+    startupContributor?.dispose();
+    startupContributor = null;
   };
 
   const handleStartupStatusUpdate = async (status: StartupOperationStatusResponse) => {
     startupStatus = status;
     if (status.state === 'completed' && status.target_session_id) {
-      stopStartupStreamSubscription();
+      disposeStartupContributor();
+      startupOperationId = '';
       submitting = false;
       await goto(`/record/sessions/${status.target_session_id}`);
       return;
     }
     if (status.state === 'failed') {
+      disposeStartupContributor();
+      startupOperationId = '';
       submitting = false;
       error = status.error ?? status.message ?? '収録データセットの作成に失敗しました。';
     }
-  };
-
-  const subscribeStartupStream = (operationId: string) => {
-    stopStartupStreamSubscription();
-    startupStreamError = '';
-    stopStartupStream = connectStream<StartupOperationStatusResponse>({
-      path: `/api/stream/startup/operations/${encodeURIComponent(operationId)}`,
-      onMessage: (payload) => {
-        void handleStartupStatusUpdate(payload);
-      },
-      onError: () => {
-        startupStreamError = '進捗ストリームが一時的に不安定です。再接続します...';
-      }
-    });
   };
 
   const handleRegenerate = () => {
@@ -159,7 +150,8 @@
       if (!result?.operation_id) {
         throw new Error('開始オペレーションIDを取得できませんでした。');
       }
-      subscribeStartupStream(result.operation_id);
+      disposeStartupContributor();
+      startupOperationId = result.operation_id;
       const snapshot = await api.startup.operation(result.operation_id);
       await handleStartupStatusUpdate(snapshot);
     } catch (err) {
@@ -178,8 +170,39 @@
   const startupDetail = $derived(startupStatus?.detail ?? {});
 
   $effect(() => {
+    if (!browser) return;
+    if (!startupOperationId) {
+      disposeStartupContributor();
+      return;
+    }
+    const client = getTabRealtimeClient();
+    if (!client) return;
+    const currentOperationId = startupOperationId;
+    disposeStartupContributor();
+    startupContributor = client.registerContributor({
+      contributorId: `record.new.startup.${currentOperationId}`,
+      subscriptions: [
+        {
+          subscription_id: `record.new.startup.${currentOperationId}`,
+          kind: 'startup.operation',
+          params: { operation_id: currentOperationId }
+        }
+      ],
+      onEvent: (event: TabRealtimeEvent) => {
+        if (event.op !== 'snapshot' || event.source?.kind !== 'startup.operation') return;
+        if (startupOperationId !== currentOperationId) return;
+        void handleStartupStatusUpdate(event.payload as StartupOperationStatusResponse);
+      }
+    });
+
     return () => {
-      stopStartupStreamSubscription();
+      disposeStartupContributor();
+    };
+  });
+
+  $effect(() => {
+    return () => {
+      disposeStartupContributor();
     };
   });
 </script>

@@ -1,18 +1,19 @@
 <script lang="ts">
-	  import { onDestroy } from 'svelte';
-	  import { Button } from 'bits-ui';
+  import { browser } from '$app/environment';
+  import { onDestroy } from 'svelte';
+  import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
-	  import { page } from '$app/state';
-	  import { goto } from '$app/navigation';
-	  import {
-      api,
-      type TrainingProvisionOperationStatusResponse
-    } from '$lib/api/client';
-	  import HelpLabel from '$lib/components/HelpLabel.svelte';
-	  import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
+  import { page } from '$app/state';
+  import { goto } from '$app/navigation';
+  import {
+    api,
+    type TrainingProvisionOperationStatusResponse
+  } from '$lib/api/client';
+  import HelpLabel from '$lib/components/HelpLabel.svelte';
+  import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
   import { formatBytes, formatDate } from '$lib/format';
   import { GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
-  import { connectStream } from '$lib/realtime/stream';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import type { TrainingProviderCapabilityResponse } from '$lib/types/training';
 
   type DatasetSummary = {
@@ -35,8 +36,8 @@
     queryFn: () => api.storage.datasets()
   });
 
-	  let cloudProvider = $state<'verda' | 'vast'>('verda');
-	  let vastMaxPrice = $state<number | null>(null);
+  let cloudProvider = $state<'verda' | 'vast'>('verda');
+  let vastMaxPrice = $state<number | null>(null);
 
 	  const providerCapabilitiesQuery = createQuery<TrainingProviderCapabilityResponse>({
 	    queryKey: ['training', 'provider-capabilities'],
@@ -108,8 +109,7 @@
   let createEvents = $state<Array<{ type: string; message: string; timestamp: string }>>([]);
   let createProgressPercent = $state(0);
   let provisionOperationId = $state('');
-  let createStreamCleanup: (() => void) | null = null;
-  let createStreamOperationId = '';
+  let createOperationContributor: TabRealtimeContributorHandle | null = null;
   let lastCreateEventKey = '';
 
   let selectedDataset = $state('');
@@ -405,9 +405,8 @@
   };
 
   const closeCreateStream = () => {
-    createStreamCleanup?.();
-    createStreamCleanup = null;
-    createStreamOperationId = '';
+    createOperationContributor?.dispose();
+    createOperationContributor = null;
   };
 
   const appendCreateEvent = (type: string, message: string, eventKey: string) => {
@@ -507,10 +506,6 @@
       return;
     }
 
-    if (createStreamOperationId === operationId && createStreamCleanup) {
-      return;
-    }
-
     provisionOperationId = operationId;
     closeCreateStream();
 
@@ -523,16 +518,24 @@
         if (snapshot.job_id || snapshot.state === 'failed' || snapshot.state === 'completed') {
           return;
         }
-        createStreamOperationId = operationId;
-        createStreamCleanup = connectStream<TrainingProvisionOperationStatusResponse>({
-          path: `/api/stream/training/provision-operations/${encodeURIComponent(operationId)}`,
-          onMessage: (payload) => {
-            void applyProvisionSnapshot(payload);
-          },
-          onError: () => {
-            if (createStatus === 'running') {
-              submitError = '進行状況ストリームの接続に失敗しました。';
+        if (!browser) return;
+        const client = getTabRealtimeClient();
+        if (!client) return;
+        const currentOperationId = operationId;
+        closeCreateStream();
+        createOperationContributor = client.registerContributor({
+          contributorId: `train.new.provision.${currentOperationId}`,
+          subscriptions: [
+            {
+              subscription_id: `train.new.provision.${currentOperationId}`,
+              kind: 'training.provision-operation',
+              params: { operation_id: currentOperationId }
             }
+          ],
+          onEvent: (event: TabRealtimeEvent) => {
+            if (event.op !== 'snapshot' || event.source?.kind !== 'training.provision-operation') return;
+            if (provisionOperationId !== currentOperationId) return;
+            void applyProvisionSnapshot(event.payload as TrainingProvisionOperationStatusResponse);
           }
         });
       } catch (error) {

@@ -164,6 +164,41 @@ export type RecordingUploadStatusSubscription = RealtimeSubscriptionBase & {
   };
 };
 
+export type StartupOperationSubscription = RealtimeSubscriptionBase & {
+  kind: 'startup.operation';
+  params: {
+    operation_id: string;
+  };
+};
+
+export type TrainingProvisionOperationSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.provision-operation';
+  params: {
+    operation_id: string;
+  };
+};
+
+export type StorageModelSyncSubscription = RealtimeSubscriptionBase & {
+  kind: 'storage.model-sync';
+  params: {
+    job_id: string;
+  };
+};
+
+export type StorageDatasetSyncSubscription = RealtimeSubscriptionBase & {
+  kind: 'storage.dataset-sync';
+  params: {
+    job_id: string;
+  };
+};
+
+export type StorageDatasetMergeSubscription = RealtimeSubscriptionBase & {
+  kind: 'storage.dataset-merge';
+  params: {
+    job_id: string;
+  };
+};
+
 export type TrainingJobCoreSubscription = RealtimeSubscriptionBase & {
   kind: 'training.job.core';
   params: {
@@ -203,6 +238,11 @@ export type TabSessionSubscription =
   | SystemRuntimeEnvsSubscription
   | SystemBundledTorchSubscription
   | RecordingUploadStatusSubscription
+  | StartupOperationSubscription
+  | TrainingProvisionOperationSubscription
+  | StorageModelSyncSubscription
+  | StorageDatasetSyncSubscription
+  | StorageDatasetMergeSubscription
   | TrainingJobCoreSubscription
   | TrainingJobProvisionSubscription
   | TrainingJobMetricsSubscription

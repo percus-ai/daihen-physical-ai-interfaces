@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { AlertDialog, Button } from 'bits-ui';
   import { goto } from '$app/navigation';
 
-  import { connectStream } from '$lib/realtime/stream';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import type { DatasetMergeJobStatus } from '$lib/api/client';
   import { formatBytes } from '$lib/format';
@@ -22,7 +23,7 @@
   }: Props = $props();
 
   let status = $state<DatasetMergeJobStatus | null>(null);
-  let stopStream: null | (() => void) = null;
+  let contributor: TabRealtimeContributorHandle | null = null;
   let completedNotifiedForJobId = $state('');
 
   const clampPercent = (value: unknown) => {
@@ -59,12 +60,12 @@
   };
 
   const disconnect = () => {
-    stopStream?.();
-    stopStream = null;
+    contributor?.dispose();
+    contributor = null;
   };
 
   $effect(() => {
-    if (typeof window === 'undefined') return;
+    if (!browser) return;
     if (!open) {
       disconnect();
       return;
@@ -75,10 +76,20 @@
     status = null;
     completedNotifiedForJobId = '';
 
-    stopStream = connectStream<DatasetMergeJobStatus>({
-      path: `/api/stream/storage/dataset-merge/jobs/${encodeURIComponent(jobId)}`,
-      onMessage: (next) => {
-        status = next;
+    const client = getTabRealtimeClient();
+    if (!client) return;
+    contributor = client.registerContributor({
+      contributorId: `storage.dataset-merge.${jobId}`,
+      subscriptions: [
+        {
+          subscription_id: `storage.dataset-merge.${jobId}`,
+          kind: 'storage.dataset-merge',
+          params: { job_id: jobId }
+        }
+      ],
+      onEvent: (event: TabRealtimeEvent) => {
+        if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-merge') return;
+        status = event.payload as DatasetMergeJobStatus;
       }
     });
 
