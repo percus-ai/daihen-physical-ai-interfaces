@@ -137,13 +137,33 @@ def test_tab_session_subscription_schema_accepts_system_operate_recording_source
             "kind": "startup.operation",
             "params": {"operation_id": "op-1"},
         },
+        {
+            "subscription_id": "training.provision-operation",
+            "kind": "training.provision-operation",
+            "params": {"operation_id": "prov-1"},
+        },
+        {
+            "subscription_id": "storage.model-sync",
+            "kind": "storage.model-sync",
+            "params": {"job_id": "model-job-1"},
+        },
+        {
+            "subscription_id": "storage.dataset-sync",
+            "kind": "storage.dataset-sync",
+            "params": {"job_id": "dataset-job-1"},
+        },
+        {
+            "subscription_id": "storage.dataset-merge",
+            "kind": "storage.dataset-merge",
+            "params": {"job_id": "merge-job-1"},
+        },
     ]
 
     state = TabSessionStateRequest.model_validate(payload)
 
-    assert len(state.subscriptions) == 7
+    assert len(state.subscriptions) == 11
     assert state.subscriptions[0].kind == "system.status"
-    assert state.subscriptions[-1].kind == "startup.operation"
+    assert state.subscriptions[-1].kind == "storage.dataset-merge"
 
 
 def test_tab_session_registry_put_get_delete_flow():
@@ -375,6 +395,26 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
                 }
             )
 
+    class _TrainingProvisionOperations:
+        async def get(self, *, user_id, operation_id):
+            assert user_id == "user-1"
+            return _Snapshot(
+                {
+                    "operation_id": operation_id,
+                    "state": "running",
+                    "step": "create_instance",
+                    "message": "creating",
+                }
+            )
+
+    class _SyncJobs:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+
+        def get(self, *, user_id, job_id):
+            assert user_id == "user-1"
+            return _Snapshot({"job_id": job_id, "state": "running", "kind": self.kind})
+
     async def _get_vlabor_status():
         return _Snapshot({"status": "running", "dashboard_url": "http://example.test"})
 
@@ -417,7 +457,27 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
         lambda: _StartupOperations(),
     )
     monkeypatch.setattr(
+        "interfaces_backend.services.training_provision_operations.get_training_provision_operations_service",
+        lambda: _TrainingProvisionOperations(),
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.model_sync_jobs.get_model_sync_jobs_service",
+        lambda: _SyncJobs("model"),
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.dataset_sync_jobs.get_dataset_sync_jobs_service",
+        lambda: _SyncJobs("dataset"),
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.dataset_merge_jobs.get_dataset_merge_jobs_service",
+        lambda: _SyncJobs("merge"),
+    )
+    monkeypatch.setattr(
         "interfaces_backend.services.session_manager.require_user_id",
+        lambda: "user-1",
+    )
+    monkeypatch.setattr(
+        "percus_ai.db.get_current_user_id",
         lambda: "user-1",
     )
 
@@ -440,6 +500,26 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
                     "kind": "startup.operation",
                     "params": {"operation_id": "op-1"},
                 },
+                {
+                    "subscription_id": "training.provision-operation",
+                    "kind": "training.provision-operation",
+                    "params": {"operation_id": "prov-1"},
+                },
+                {
+                    "subscription_id": "storage.model-sync",
+                    "kind": "storage.model-sync",
+                    "params": {"job_id": "model-job-1"},
+                },
+                {
+                    "subscription_id": "storage.dataset-sync",
+                    "kind": "storage.dataset-sync",
+                    "params": {"job_id": "dataset-job-1"},
+                },
+                {
+                    "subscription_id": "storage.dataset-merge",
+                    "kind": "storage.dataset-merge",
+                    "params": {"job_id": "merge-job-1"},
+                },
             ],
         }
     )
@@ -458,5 +538,9 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
         assert payloads["recording.upload-status"]["dataset_id"] == "dataset-1"
         assert payloads["startup.operation"]["operation_id"] == "op-1"
         assert payloads["startup.operation"]["state"] == "running"
+        assert payloads["training.provision-operation"]["operation_id"] == "prov-1"
+        assert payloads["storage.model-sync"]["job_id"] == "model-job-1"
+        assert payloads["storage.dataset-sync"]["job_id"] == "dataset-job-1"
+        assert payloads["storage.dataset-merge"]["job_id"] == "merge-job-1"
 
     asyncio.run(_run())

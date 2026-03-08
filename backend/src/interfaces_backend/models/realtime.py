@@ -127,6 +127,20 @@ class StartupOperationParams(BaseModel):
         return normalized
 
 
+class StorageJobParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(..., min_length=1, max_length=256)
+
+    @field_validator("job_id")
+    @classmethod
+    def _normalize_job_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("job_id must not be empty")
+        return normalized
+
+
 class ProfilesActiveSubscription(_SubscriptionBase):
     kind: Literal["profiles.active"]
     params: ProfilesActiveParams = Field(default_factory=ProfilesActiveParams)
@@ -167,6 +181,26 @@ class StartupOperationSubscription(_SubscriptionBase):
     params: StartupOperationParams
 
 
+class TrainingProvisionOperationSubscription(_SubscriptionBase):
+    kind: Literal["training.provision-operation"]
+    params: StartupOperationParams
+
+
+class StorageModelSyncSubscription(_SubscriptionBase):
+    kind: Literal["storage.model-sync"]
+    params: StorageJobParams
+
+
+class StorageDatasetSyncSubscription(_SubscriptionBase):
+    kind: Literal["storage.dataset-sync"]
+    params: StorageJobParams
+
+
+class StorageDatasetMergeSubscription(_SubscriptionBase):
+    kind: Literal["storage.dataset-merge"]
+    params: StorageJobParams
+
+
 class TrainingJobCoreSubscription(_SubscriptionBase):
     kind: Literal["training.job.core"]
     params: TrainingJobRefParams
@@ -196,6 +230,10 @@ TabSessionSubscription = Annotated[
     | SystemBundledTorchSubscription
     | RecordingUploadStatusSubscription
     | StartupOperationSubscription
+    | TrainingProvisionOperationSubscription
+    | StorageModelSyncSubscription
+    | StorageDatasetSyncSubscription
+    | StorageDatasetMergeSubscription
     | TrainingJobCoreSubscription
     | TrainingJobProvisionSubscription
     | TrainingJobMetricsSubscription

@@ -16,11 +16,15 @@ from interfaces_backend.models.realtime import (
     ProfilesVlaborSubscription,
     OperateStatusSubscription,
     RecordingUploadStatusSubscription,
+    StorageDatasetMergeSubscription,
+    StorageDatasetSyncSubscription,
+    StorageModelSyncSubscription,
     StartupOperationSubscription,
     SystemBundledTorchSubscription,
     SystemRuntimeEnvsSubscription,
     SystemStatusSubscription,
     TabSessionSubscription,
+    TrainingProvisionOperationSubscription,
     TrainingJobCoreSubscription,
     TrainingJobLogsSubscription,
     TrainingJobMetricsSubscription,
@@ -66,6 +70,14 @@ class TabRealtimeSourceRegistry:
         if isinstance(subscription, RecordingUploadStatusSubscription):
             return 1.0
         if isinstance(subscription, StartupOperationSubscription):
+            return 0.5
+        if isinstance(subscription, TrainingProvisionOperationSubscription):
+            return 0.5
+        if isinstance(subscription, StorageModelSyncSubscription):
+            return 0.5
+        if isinstance(subscription, StorageDatasetSyncSubscription):
+            return 0.5
+        if isinstance(subscription, StorageDatasetMergeSubscription):
             return 0.5
         if isinstance(subscription, TrainingJobProvisionSubscription):
             return 2.0
@@ -158,6 +170,58 @@ class TabRealtimeSourceRegistry:
                 snapshot = get_startup_operations_service().get(
                     user_id=user_id,
                     operation_id=subscription.params.operation_id,
+                )
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, TrainingProvisionOperationSubscription):
+                from percus_ai.db import get_current_user_id
+                from interfaces_backend.services.training_provision_operations import (
+                    get_training_provision_operations_service,
+                )
+
+                user_id = get_current_user_id()
+                snapshot = await get_training_provision_operations_service().get(
+                    user_id=user_id,
+                    operation_id=subscription.params.operation_id,
+                )
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, StorageModelSyncSubscription):
+                from interfaces_backend.services.session_manager import require_user_id
+                from interfaces_backend.services.model_sync_jobs import (
+                    get_model_sync_jobs_service,
+                )
+
+                user_id = require_user_id()
+                snapshot = get_model_sync_jobs_service().get(
+                    user_id=user_id,
+                    job_id=subscription.params.job_id,
+                )
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, StorageDatasetSyncSubscription):
+                from interfaces_backend.services.session_manager import require_user_id
+                from interfaces_backend.services.dataset_sync_jobs import (
+                    get_dataset_sync_jobs_service,
+                )
+
+                user_id = require_user_id()
+                snapshot = get_dataset_sync_jobs_service().get(
+                    user_id=user_id,
+                    job_id=subscription.params.job_id,
+                )
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, StorageDatasetMergeSubscription):
+                from interfaces_backend.services.session_manager import require_user_id
+                from interfaces_backend.services.dataset_merge_jobs import (
+                    get_dataset_merge_jobs_service,
+                )
+
+                user_id = require_user_id()
+                snapshot = get_dataset_merge_jobs_service().get(
+                    user_id=user_id,
+                    job_id=subscription.params.job_id,
                 )
                 return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
 
