@@ -7,7 +7,7 @@
     type StartupOperationAcceptedResponse,
     type StartupOperationStatusResponse
   } from '$lib/api/client';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
 
   const DATASET_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
   const START_PHASE_LABELS: Record<string, string> = {
@@ -175,11 +175,9 @@
       disposeStartupContributor();
       return;
     }
-    const client = getTabRealtimeClient();
-    if (!client) return;
     const currentOperationId = startupOperationId;
     disposeStartupContributor();
-    startupContributor = client.registerContributor({
+    startupContributor = registerTabRealtimeContributor({
       subscriptions: [
         {
           subscription_id: `record.new.startup.${currentOperationId}`,

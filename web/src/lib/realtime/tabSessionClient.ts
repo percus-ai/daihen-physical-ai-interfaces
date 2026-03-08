@@ -628,3 +628,17 @@ export const getTabRealtimeClient = () => {
   }
   return singletonClient;
 };
+
+export const registerTabRealtimeContributor = (
+  input: TabRealtimeContributor
+): TabRealtimeContributorHandle | null => {
+  return getTabRealtimeClient()?.registerContributor(input) ?? null;
+};
+
+export const setTabRealtimeRoute = (input: {
+  id?: string;
+  url?: string;
+  params?: Record<string, string | undefined>;
+}) => {
+  getTabRealtimeClient()?.setRoute(input);
+};

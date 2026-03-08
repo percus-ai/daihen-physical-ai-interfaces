@@ -3,7 +3,7 @@
   import { AlertDialog, Button } from 'bits-ui';
   import { goto } from '$app/navigation';
 
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import type { DatasetMergeJobStatus } from '$lib/api/client';
   import { formatBytes } from '$lib/format';
@@ -76,9 +76,7 @@
     status = null;
     completedNotifiedForJobId = '';
 
-    const client = getTabRealtimeClient();
-    if (!client) return;
-    contributor = client.registerContributor({
+    contributor = registerTabRealtimeContributor({
       subscriptions: [
         {
           subscription_id: `storage.dataset-merge.${jobId}`,

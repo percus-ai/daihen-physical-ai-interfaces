@@ -2,7 +2,7 @@ import { derived, get, writable, type Readable } from 'svelte/store';
 import { createQuery, type QueryClient } from '@tanstack/svelte-query';
 
 import { api, type DatasetSyncJobStatus, type DatasetViewerResponse, type DatasetViewerSignalFieldsResponse } from '$lib/api/client';
-import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
 import { qk } from '$lib/queryKeys';
 
 type NotifyFn = (message: string, level?: 'info' | 'success' | 'error') => void;
@@ -167,10 +167,8 @@ export const createDatasetAvailabilityController = (opts: {
     contributor?.dispose();
     contributor = null;
     if (!$enabled || !$jobId) return;
-    const client = getTabRealtimeClient();
-    if (!client) return;
     const currentJobId = $jobId;
-    contributor = client.registerContributor({
+    contributor = registerTabRealtimeContributor({
       subscriptions: [
         {
           subscription_id: `viewer.dataset-sync.${currentJobId}`,

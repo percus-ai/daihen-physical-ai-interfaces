@@ -4,7 +4,7 @@
   import { AlertDialog, Button } from 'bits-ui';
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import {
@@ -444,12 +444,8 @@
       disposeUploadContributor();
       return;
     }
-    const client = getTabRealtimeClient();
-    if (!client) {
-      return;
-    }
     disposeUploadContributor();
-    uploadContributor = client.registerContributor({
+    uploadContributor = registerTabRealtimeContributor({
       subscriptions: [
         {
           subscription_id: `recording.controls.upload.${targetDatasetId}`,

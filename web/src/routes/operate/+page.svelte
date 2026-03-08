@@ -9,7 +9,7 @@
     type StartupOperationAcceptedResponse,
     type StartupOperationStatusResponse
   } from '$lib/api/client';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
@@ -297,13 +297,9 @@
       disposeStartupContributor();
       return;
     }
-    const client = getTabRealtimeClient();
-    if (!client) {
-      return;
-    }
     const currentOperationId = startupOperationId;
     disposeStartupContributor();
-    startupContributor = client.registerContributor({
+    startupContributor = registerTabRealtimeContributor({
       subscriptions: [
         {
           subscription_id: `operate.startup.${currentOperationId}`,
@@ -327,12 +323,8 @@
     if (!browser) {
       return;
     }
-    const client = getTabRealtimeClient();
-    if (!client) {
-      return;
-    }
     if (realtimeContributor === null) {
-      realtimeContributor = client.registerContributor({
+      realtimeContributor = registerTabRealtimeContributor({
         subscriptions: operateRealtimeSubscriptions,
         onEvent: (event: TabRealtimeEvent) => {
           if (event.op !== 'snapshot') return;
@@ -351,6 +343,9 @@
           }
         }
       });
+      if (!realtimeContributor) {
+        return;
+      }
       return;
     }
     realtimeContributor.setSubscriptions(operateRealtimeSubscriptions);

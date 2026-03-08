@@ -9,7 +9,7 @@
   import RuntimeTab from '$lib/components/system/RuntimeTab.svelte';
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
   import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
   import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
   import type { FeaturesRepoSuggestions, SystemSettings, UserSettings } from '$lib/types/settings';
@@ -369,16 +369,14 @@
       return;
     }
 
-    const client = getTabRealtimeClient();
-    if (!client) {
-      return;
-    }
-
     if (realtimeContributor === null) {
-      realtimeContributor = client.registerContributor({
+      realtimeContributor = registerTabRealtimeContributor({
         subscriptions: buildRealtimeSubscriptions(activeTab),
         onEvent: handleRealtimeEvent
       });
+      if (!realtimeContributor) {
+        return;
+      }
       return;
     }
 

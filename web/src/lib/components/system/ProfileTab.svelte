@@ -6,7 +6,7 @@
 
   import { api } from '$lib/api/client';
   import { getBackendUrl } from '$lib/config';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   type VlaborProfile = {
@@ -213,9 +213,7 @@
 
   onMount(() => {
     if (!browser) return;
-    const client = getTabRealtimeClient();
-    if (!client) return;
-    vlaborContributor = client.registerContributor({
+    vlaborContributor = registerTabRealtimeContributor({
       subscriptions: [
         {
           subscription_id: 'system.profile.vlabor',

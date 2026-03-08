@@ -5,7 +5,7 @@
   import { AlertDialog, Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
@@ -76,9 +76,7 @@
 
   onMount(() => {
     if (!browser) return;
-    const client = getTabRealtimeClient();
-    if (!client) return;
-    realtimeContributor = client.registerContributor({
+    realtimeContributor = registerTabRealtimeContributor({
       subscriptions: [
         {
           subscription_id: `operate.session.${sessionId}`,

@@ -5,7 +5,7 @@
   import { api, type ModelSyncJobState, type ModelSyncJobStatus, type TabSessionSubscription } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
 
   type ModelSummary = {
     id: string;
@@ -402,16 +402,17 @@
 
   $effect(() => {
     if (!browser) return;
-    const client = getTabRealtimeClient();
-    if (!client) return;
     if (realtimeContributor === null) {
-      realtimeContributor = client.registerContributor({
+      realtimeContributor = registerTabRealtimeContributor({
         subscriptions: activeJobSubscriptions,
         onEvent: (event: TabRealtimeEvent) => {
           if (event.op !== 'snapshot' || event.source?.kind !== 'storage.model-sync') return;
           applyJobSnapshot(event.payload as ModelSyncJobStatus);
         }
       });
+      if (!realtimeContributor) {
+        return;
+      }
       return;
     }
     realtimeContributor.setSubscriptions(activeJobSubscriptions);

@@ -7,7 +7,7 @@
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import { api, type TabSessionSubscription } from '$lib/api/client';
   import { formatBytes, formatDate } from '$lib/format';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
@@ -288,12 +288,8 @@
     if (!browser) {
       return;
     }
-    const client = getTabRealtimeClient();
-    if (!client) {
-      return;
-    }
     if (realtimeContributor === null) {
-      realtimeContributor = client.registerContributor({
+      realtimeContributor = registerTabRealtimeContributor({
         subscriptions: [],
         onEvent: (event: TabRealtimeEvent) => {
           if (event.op !== 'snapshot') return;
@@ -309,6 +305,9 @@
           }
         }
       });
+      if (!realtimeContributor) {
+        return;
+      }
     }
     const subscriptions: TabSessionSubscription[] = [
       { subscription_id: 'record.page.system-status', kind: 'system.status', params: {} },

@@ -21,7 +21,7 @@
   } from '$lib/api/client';
   import { formatDate } from '$lib/format';
   import { getGpuModelLabel } from '$lib/policies';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   type JobInfo = {
@@ -670,16 +670,14 @@
     activeLogSnapshotKey = registrationKey;
     void loadLogsSnapshot(currentJobId, currentLogsType, logLines);
 
-    const client = getTabRealtimeClient();
-    if (!client) {
-      return;
-    }
-
     streamStatus = 'connecting';
-    realtimeContributor = client.registerContributor({
+    realtimeContributor = registerTabRealtimeContributor({
       subscriptions: buildRealtimeSubscriptions(currentJobId, currentLogsType, logLines),
       onEvent: (event) => handleRealtimeEvent(currentJobId, registrationKey, event)
     });
+    if (!realtimeContributor) {
+      return;
+    }
 
     return () => {
       realtimeContributor?.dispose();

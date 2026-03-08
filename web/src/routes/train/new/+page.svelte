@@ -13,7 +13,7 @@
   import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
   import { formatBytes, formatDate } from '$lib/format';
   import { GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import type { TrainingProviderCapabilityResponse } from '$lib/types/training';
 
   type DatasetSummary = {
@@ -540,11 +540,9 @@
           return;
         }
         if (!browser) return;
-        const client = getTabRealtimeClient();
-        if (!client) return;
         const currentOperationId = operationId;
         closeCreateStream();
-        createOperationContributor = client.registerContributor({
+        createOperationContributor = registerTabRealtimeContributor({
           subscriptions: [
             {
               subscription_id: `train.new.provision.${currentOperationId}`,
