@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { browser } from '$app/environment';
   import { toStore } from 'svelte/store';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
@@ -10,13 +10,18 @@
     api,
     type RemoteCheckpointUploadProgressMessage,
     type RemoteCheckpointUploadResult,
+    type TabSessionSubscription,
+    type TrainingJobCoreSubscription,
+    type TrainingJobLogsSubscription,
+    type TrainingJobMetricsSubscription,
+    type TrainingJobProvisionSubscription,
     type TrainingProvisionOperationStatusResponse,
     type TrainingReviveProgressMessage,
     type TrainingReviveResult
   } from '$lib/api/client';
   import { formatDate } from '$lib/format';
   import { getGpuModelLabel } from '$lib/policies';
-  import { connectStream } from '$lib/realtime/stream';
+  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   type JobInfo = {
@@ -80,6 +85,19 @@
     }))
   );
 
+  type MetricsResponse = {
+    train?: Array<{ step?: number; loss?: number; ts?: string }>;
+    val?: Array<{ step?: number; loss?: number; ts?: string }>;
+  };
+
+  const metricsQuery = createQuery<MetricsResponse>(
+    toStore(() => ({
+      queryKey: ['training', 'job', jobId, 'metrics'],
+      queryFn: () => api.training.metrics(jobId, 2000) as Promise<MetricsResponse>,
+      enabled: Boolean(jobId)
+    }))
+  );
+
   let logsType: 'training' | 'setup' = $state('training');
   let logLines = $state(30);
   let logs = $state('');
@@ -87,18 +105,7 @@
   let logsLoading = $state(false);
   let logsError = $state('');
 
-  let metrics: { train?: Array<{ step?: number; loss?: number; ts?: string }>; val?: Array<{ step?: number; loss?: number; ts?: string }> } | null =
-    $state(null);
-  let metricsLoading = $state(false);
-  let metricsError = $state('');
-
   let copied = $state(false);
-  let provisionStreamError = $state('');
-  type TrainingJobStreamPayload = {
-    job_detail?: JobDetailResponse;
-    metrics?: { train?: MetricPoint[]; val?: MetricPoint[] };
-  };
-
   let streamStatus = $state('idle');
   let streamError = $state('');
   let streamLines: string[] = $state([]);
@@ -125,11 +132,18 @@
   let checkpointUploadResult: RemoteCheckpointUploadResult | null = $state(null);
 
   type MetricPoint = { step?: number; loss?: number; ts?: string };
+  const REALTIME_DEFAULT_TAIL_LINES = 400;
+  let activeLogSnapshotKey = $state('');
 
   const jobInfo = $derived($jobQuery.data?.job);
   const provisionOperation = $derived($jobQuery.data?.provision_operation ?? null);
   const trainingConfig = $derived($jobQuery.data?.training_config ?? {});
   const summary = $derived($jobQuery.data?.summary ?? {});
+  const metrics = $derived($metricsQuery.data ?? null);
+  const metricsLoading = $derived(Boolean($metricsQuery.isFetching));
+  const metricsError = $derived(
+    $metricsQuery.error instanceof Error ? $metricsQuery.error.message : ''
+  );
   const status = $derived(jobInfo?.status ?? '');
   const provider = $derived(
     String(trainingConfig?.cloud?.provider ?? 'verda').trim().toLowerCase()
@@ -247,16 +261,140 @@
   );
 
   const setProvisionOperationSnapshot = (
+    targetJobId: string,
     snapshot: TrainingProvisionOperationStatusResponse | null
   ) => {
-    if (!jobId) return;
-    queryClient.setQueryData<JobDetailResponse>(['training', 'job', jobId], (current) => {
-      if (!current) return current;
+    if (!targetJobId) return;
+    queryClient.setQueryData<JobDetailResponse>(['training', 'job', targetJobId], (current) => {
       return {
         ...current,
         provision_operation: snapshot
       };
     });
+  };
+
+  const setJobDetailSnapshot = (targetJobId: string, snapshot: JobDetailResponse) => {
+    if (!targetJobId) return;
+    queryClient.setQueryData<JobDetailResponse>(['training', 'job', targetJobId], snapshot);
+  };
+
+  const setMetricsSnapshot = (targetJobId: string, snapshot: MetricsResponse) => {
+    if (!targetJobId) return;
+    queryClient.setQueryData<MetricsResponse>(['training', 'job', targetJobId, 'metrics'], snapshot);
+  };
+
+  const buildRealtimeSubscriptions = (
+    targetJobId: string,
+    nextLogsType: 'training' | 'setup',
+    nextLogLines: number
+  ): TabSessionSubscription[] => {
+    const coreSubscription: TrainingJobCoreSubscription = {
+      subscription_id: `train.job.${targetJobId}.core`,
+      kind: 'training.job.core',
+      params: { job_id: targetJobId }
+    };
+    const provisionSubscription: TrainingJobProvisionSubscription = {
+      subscription_id: `train.job.${targetJobId}.provision`,
+      kind: 'training.job.provision',
+      params: { job_id: targetJobId }
+    };
+    const metricsSubscription: TrainingJobMetricsSubscription = {
+      subscription_id: `train.job.${targetJobId}.metrics`,
+      kind: 'training.job.metrics',
+      params: { job_id: targetJobId, limit: 2000 }
+    };
+    const logsSubscription: TrainingJobLogsSubscription = {
+      subscription_id: `train.job.${targetJobId}.logs`,
+      kind: 'training.job.logs',
+      params: {
+        job_id: targetJobId,
+        log_type: nextLogsType,
+        tail_lines: nextLogLines
+      }
+    };
+    return [coreSubscription, provisionSubscription, metricsSubscription, logsSubscription];
+  };
+
+  const appendLogLines = (lines: string[]) => {
+    if (!lines.length) return;
+    streamLines = [...streamLines, ...lines].slice(-200);
+  };
+
+  const handleLogControlPayload = (payload: Record<string, unknown>) => {
+    const type = String(payload.type ?? '').trim();
+    if (!type) return;
+    if (type === 'connected') {
+      logStreamActive = true;
+      streamStatus = 'connected';
+      streamError = '';
+      return;
+    }
+    if (type === 'stream_ended') {
+      logStreamActive = false;
+      streamStatus = 'ended';
+      return;
+    }
+    if (type === 'job_status') {
+      logStreamActive = false;
+      streamStatus = String(payload.status ?? 'stopped');
+      return;
+    }
+    if (type === 'job_deleted' || type === 'job_missing' || type === 'ip_missing') {
+      logStreamActive = false;
+      streamStatus = type;
+      streamError = `ログストリームが終了しました: ${type}`;
+    }
+  };
+
+  const handleRealtimeEvent = (
+    targetJobId: string,
+    registrationKey: string,
+    event: TabRealtimeEvent
+  ) => {
+    const activeKey = `${jobId}:${logsType}`;
+    if (registrationKey !== activeKey) {
+      return;
+    }
+
+    switch (event.source?.kind) {
+      case 'training.job.core':
+        if (event.op === 'snapshot') {
+          setJobDetailSnapshot(targetJobId, event.payload as JobDetailResponse);
+        }
+        return;
+      case 'training.job.provision':
+        if (event.op === 'snapshot') {
+          const payload = event.payload as { provision_operation?: TrainingProvisionOperationStatusResponse | null };
+          setProvisionOperationSnapshot(targetJobId, payload.provision_operation ?? null);
+        }
+        return;
+      case 'training.job.metrics':
+        if (event.op === 'snapshot') {
+          setMetricsSnapshot(targetJobId, event.payload as MetricsResponse);
+        }
+        return;
+      case 'training.job.logs':
+        if (event.op === 'append') {
+          const payload = event.payload as { lines?: string[] };
+          appendLogLines(payload.lines ?? []);
+          logStreamActive = true;
+          if (streamStatus === 'connecting' || streamStatus === 'idle') {
+            streamStatus = 'connected';
+          }
+          streamError = '';
+          return;
+        }
+        if (event.op === 'control') {
+          handleLogControlPayload(event.payload);
+          return;
+        }
+        if (event.op === 'error') {
+          logStreamActive = false;
+          streamStatus = 'error';
+          streamError = String(event.payload.message ?? 'ログストリーミングに失敗しました。');
+        }
+        return;
+    }
   };
 
   const refresh = async () => {
@@ -380,37 +518,47 @@
   };
 
   const fetchLogs = async () => {
-    logsError = '';
+    await loadLogsSnapshot(jobId, logsType, logLines);
+  };
+
+  const fetchMetrics = async () => {
     if (!jobId) {
+      return;
+    }
+    const refetch = $metricsQuery?.refetch;
+    if (typeof refetch === 'function') {
+      await refetch();
+    }
+  };
+
+  const loadLogsSnapshot = async (
+    nextJobId: string,
+    nextLogsType: 'training' | 'setup',
+    nextLogLines: number
+  ) => {
+    const requestKey = `${nextJobId}:${nextLogsType}`;
+    logsError = '';
+    if (!nextJobId) {
       logsError = 'ジョブIDが取得できません。';
       return;
     }
     logsLoading = true;
     try {
-      const result = await api.training.logs(jobId, logsType, logLines);
+      const result = await api.training.logs(nextJobId, nextLogsType, nextLogLines);
+      if (requestKey !== activeLogSnapshotKey) {
+        return;
+      }
       logs = (result as { logs?: string }).logs ?? '';
       logsSource = (result as { source?: string }).source ?? '';
     } catch (error) {
+      if (requestKey !== activeLogSnapshotKey) {
+        return;
+      }
       logsError = error instanceof Error ? error.message : 'ログ取得に失敗しました。';
     } finally {
-      logsLoading = false;
-    }
-  };
-
-  const fetchMetrics = async () => {
-    metricsError = '';
-    if (!jobId) {
-      metricsError = 'ジョブIDが取得できません。';
-      return;
-    }
-    metricsLoading = true;
-    try {
-      const result = await api.training.metrics(jobId, 2000);
-      metrics = result as typeof metrics;
-    } catch (error) {
-      metricsError = error instanceof Error ? error.message : 'メトリクス取得に失敗しました。';
-    } finally {
-      metricsLoading = false;
+      if (requestKey === activeLogSnapshotKey) {
+        logsLoading = false;
+      }
     }
   };
 
@@ -456,81 +604,19 @@
     }
   };
 
-  let stopLogStreamHandle = () => {};
-
-  const closeLogStream = () => {
-    stopLogStreamHandle();
-    stopLogStreamHandle = () => {};
+  const resetLogAppendState = () => {
     logStreamActive = false;
-  };
-
-  const startLogStream = async () => {
-    if (!jobId || logStreamActive) return;
     streamError = '';
-    logsError = '';
-
-    // Load full logs first so the user can see the full history before tailing.
-    try {
-      logsLoading = true;
-      const content = await api.training.downloadLogs(jobId, logsType);
-      logs = content ?? '';
-      logsSource = 'remote';
-    } catch (error) {
-      logsError = error instanceof Error ? error.message : 'ログ取得に失敗しました。';
-    } finally {
-      logsLoading = false;
-    }
-
     streamLines = [];
-    streamStatus = 'connecting';
-    logStreamActive = true;
-    const stop = connectStream<{
-      type?: string;
-      line?: string;
-      status?: string;
-      message?: string;
-      error?: string;
-    }>({
-      path: `/api/stream/training/jobs/${encodeURIComponent(jobId)}/logs?log_type=${logsType}`,
-      onMessage: (data) => {
-        if (data.type === 'connected') {
-          streamStatus = 'connected';
-          return;
-        }
-        if (data.type === 'log' && data.line) {
-          streamLines = [...streamLines, data.line].slice(-200);
-          return;
-        }
-        if (data.type === 'status') {
-          streamStatus = data.status || 'status';
-          closeLogStream();
-          return;
-        }
-        if (data.type === 'error') {
-          streamError = data.error || 'ログストリーミングに失敗しました。';
-          streamStatus = 'error';
-          closeLogStream();
-        }
-      },
-      onError: () => {
-        streamError = 'SSE接続に失敗しました。';
-        streamStatus = 'error';
-        closeLogStream();
-      }
-    });
-    stopLogStreamHandle = () => {
-      stop();
-    };
-  };
-
-  const stopLogStream = () => {
-    closeLogStream();
-    streamStatus = 'stopped';
+    streamStatus = 'idle';
   };
 
   $effect(() => {
     if (!isRunning && logStreamActive) {
-      stopLogStream();
+      logStreamActive = false;
+      if (streamStatus === 'connected' || streamStatus === 'connecting') {
+        streamStatus = 'stopped';
+      }
     }
   });
 
@@ -538,15 +624,10 @@
   $effect(() => {
     if (jobId && jobId !== lastJobId) {
       lastJobId = jobId;
-      closeLogStream();
-      streamLines = [];
-      streamStatus = 'idle';
-      streamError = '';
+      resetLogAppendState();
       logs = '';
       logsSource = '';
       logsError = '';
-      metrics = null;
-      metricsError = '';
       reviveInProgress = false;
       reviveStage = '';
       reviveMessage = '';
@@ -567,63 +648,58 @@
       checkpointUploadError = '';
       checkpointUploadEvents = [];
       checkpointUploadResult = null;
-      provisionStreamError = '';
     }
   });
 
-  let stopTrainingStream = () => {};
-  let lastStreamJobId = '';
-  let stopProvisionStream = () => {};
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
 
   $effect(() => {
-    if (jobId && jobId !== lastStreamJobId) {
-      stopTrainingStream();
-      lastStreamJobId = jobId;
-      stopTrainingStream = connectStream<TrainingJobStreamPayload>({
-        path: `/api/stream/training/jobs/${encodeURIComponent(jobId)}`,
-        onMessage: (payload) => {
-          if (payload.job_detail) {
-            queryClient.setQueryData(['training', 'job', jobId], payload.job_detail);
-          }
-          if (payload.metrics) {
-            metrics = payload.metrics;
-            metricsLoading = false;
-            metricsError = '';
-          }
-        }
-      });
-    }
-  });
-
-  $effect(() => {
-    if (!jobId || status !== 'starting') {
-      stopProvisionStream();
-      provisionStreamError = '';
+    if (!browser || !jobId) {
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
+      resetLogAppendState();
       return;
     }
 
-    stopProvisionStream();
-    provisionStreamError = '';
-    stopProvisionStream = connectStream<TrainingProvisionOperationStatusResponse>({
-      path: `/api/stream/training/jobs/${encodeURIComponent(jobId)}/provision-operation`,
-      onMessage: (payload) => {
-        provisionStreamError = '';
-        setProvisionOperationSnapshot(payload);
-      },
-      onError: () => {
-        provisionStreamError = '作成進行ストリームの接続に失敗しました。';
-      }
+    const currentJobId = jobId;
+    const currentLogsType = logsType;
+    const registrationKey = `${currentJobId}:${currentLogsType}`;
+
+    realtimeContributor?.dispose();
+    realtimeContributor = null;
+    resetLogAppendState();
+    activeLogSnapshotKey = registrationKey;
+    void loadLogsSnapshot(currentJobId, currentLogsType, logLines);
+
+    const client = getTabRealtimeClient();
+    if (!client) {
+      return;
+    }
+
+    streamStatus = 'connecting';
+    realtimeContributor = client.registerContributor({
+      contributorId: `train.job.${currentJobId}.${currentLogsType}`,
+      subscriptions: buildRealtimeSubscriptions(
+        currentJobId,
+        currentLogsType,
+        REALTIME_DEFAULT_TAIL_LINES
+      ),
+      onEvent: (event) => handleRealtimeEvent(currentJobId, registrationKey, event)
     });
 
     return () => {
-      stopProvisionStream();
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
+      activeLogSnapshotKey = '';
+      logStreamActive = false;
     };
   });
 
-  onDestroy(() => {
-    stopProvisionStream();
-    stopTrainingStream();
-    closeLogStream();
+  $effect(() => {
+    if (!realtimeContributor || !jobId) {
+      return;
+    }
+    realtimeContributor.setSubscriptions(buildRealtimeSubscriptions(jobId, logsType, logLines));
   });
 </script>
 
@@ -694,9 +770,6 @@
         </div>
         {#if provisionOperation?.failure_reason}
           <p class="mt-3 text-sm text-rose-600 break-words">{provisionOperation.failure_reason}</p>
-        {/if}
-        {#if provisionStreamError}
-          <p class="mt-3 text-sm text-rose-600">{provisionStreamError}</p>
         {/if}
       </div>
     </div>
@@ -1038,7 +1111,7 @@
       <div class="mt-4 grid gap-3 text-sm text-slate-600">
         <label class="text-sm font-semibold text-slate-700">
           <span class="label">ログ種別</span>
-          <select class="input mt-2" bind:value={logsType} disabled={logStreamActive}>
+          <select class="input mt-2" bind:value={logsType}>
             <option value="training">学習ログ</option>
             <option value="setup">セットアップログ</option>
           </select>
@@ -1055,13 +1128,8 @@
             {logsLoading ? '取得中...' : 'ログを取得'}
           </Button.Root>
           <div class="flex flex-wrap gap-2">
-            <Button.Root class="btn-primary" type="button" onclick={startLogStream} disabled={logStreamActive}>
-              ストリーミング開始
-            </Button.Root>
-            <Button.Root class="btn-ghost" type="button" onclick={stopLogStream} disabled={!logStreamActive}>
-              ストリーミング停止
-            </Button.Root>
             <span class="chip">状態: {streamStatus}</span>
+            <span class="chip">{logStreamActive ? 'live' : 'idle'}</span>
           </div>
         {:else}
           <Button.Root class="btn-primary" type="button" onclick={downloadLogs}>
