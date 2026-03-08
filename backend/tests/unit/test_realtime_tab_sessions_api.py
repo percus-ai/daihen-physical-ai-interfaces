@@ -194,8 +194,30 @@ def test_tab_session_registry_rejects_stale_revision():
     result = registry.apply_state(user_id="user-1", tab_session_id="tab-1", state=state_v2)
     assert result.revision == 2
 
+    changed = _make_state_payload(revision=2)
+    changed["route"]["url"] = "/train/jobs/job-1?tab=logs"
+    changed_state = TabSessionStateRequest.model_validate(changed)
+
     with pytest.raises(TabSessionRevisionConflictError):
-        registry.apply_state(user_id="user-1", tab_session_id="tab-1", state=state_v2)
+        registry.apply_state(user_id="user-1", tab_session_id="tab-1", state=changed_state)
+
+
+def test_tab_session_registry_accepts_same_revision_when_state_is_identical():
+    registry = TabRealtimeRegistry()
+    state_v2 = TabSessionStateRequest.model_validate(_make_state_payload(revision=2))
+
+    first = registry.apply_state(user_id="user-1", tab_session_id="tab-1", state=state_v2)
+    second = registry.apply_state(user_id="user-1", tab_session_id="tab-1", state=state_v2)
+
+    assert second.revision == first.revision
+    assert second.subscription_count == first.subscription_count
+
+    changed = _make_state_payload(revision=2)
+    changed["route"]["url"] = "/train/jobs/job-1?tab=logs"
+    changed_state = TabSessionStateRequest.model_validate(changed)
+
+    with pytest.raises(TabSessionRevisionConflictError):
+        registry.apply_state(user_id="user-1", tab_session_id="tab-1", state=changed_state)
 
 
 def test_tab_session_registry_stream_replay_from_last_event_id():

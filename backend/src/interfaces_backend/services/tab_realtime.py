@@ -105,6 +105,10 @@ def _build_subscription_index(state: Optional[TabSessionStateRequest]) -> dict[s
     return index
 
 
+def _state_json(state: TabSessionStateRequest) -> dict[str, Any]:
+    return state.model_dump(mode="json")
+
+
 def _session_ttl_seconds(visibility: str) -> float:
     if visibility == "background":
         return BACKGROUND_SESSION_TTL_SECONDS
@@ -127,6 +131,7 @@ class _TabSession:
         self._subscriptions: dict[str, _SubscriptionRuntime] = {}
         self._deleted = False
         self._last_touched_mono = time.monotonic()
+        self._last_applied_at = _utc_now_iso()
 
     def _touch_unlocked(self) -> None:
         self._last_touched_mono = time.monotonic()
@@ -161,6 +166,18 @@ class _TabSession:
             if self._deleted:
                 raise TabSessionNotFoundError(f"Tab session not found: {self.tab_session_id}")
             if state.revision <= self._revision:
+                if (
+                    state.revision == self._revision
+                    and self._state is not None
+                    and _state_json(state) == _state_json(self._state)
+                ):
+                    self._touch_unlocked()
+                    return TabSessionApplyResult(
+                        tab_session_id=self.tab_session_id,
+                        revision=self._revision,
+                        applied_at=self._last_applied_at,
+                        subscription_count=len(self._subscriptions),
+                    )
                 raise TabSessionRevisionConflictError(
                     f"stale revision: current={self._revision}, requested={state.revision}"
                 )
@@ -192,6 +209,7 @@ class _TabSession:
                     "subscription_count": len(new_subscriptions),
                 },
             )
+            self._last_applied_at = event["emitted_at"]
 
             return TabSessionApplyResult(
                 tab_session_id=self.tab_session_id,
