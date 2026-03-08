@@ -20,6 +20,7 @@ from interfaces_backend.services.tab_realtime import (
     TabSessionRevisionConflictError,
     get_tab_realtime_registry,
 )
+from interfaces_backend.services.tab_realtime_sources import get_tab_realtime_source_registry
 from percus_ai.db import get_current_user_id
 
 router = APIRouter(prefix="/api/realtime", tags=["realtime"])
@@ -121,6 +122,7 @@ async def stream_tab_session(request: Request, tab_session_id: str):
             user_id=user_id,
             tab_session_id=normalized_tab_session_id,
             last_event_id=last_event_id,
+            source_registry=get_tab_realtime_source_registry(),
         )
     except TabSessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -138,7 +140,7 @@ async def stream_tab_session(request: Request, tab_session_id: str):
                 if await request.is_disconnected():
                     break
 
-                status, events = handle.poll(after_seq=after_seq)
+                status, events = await handle.poll(after_seq=after_seq)
                 if events:
                     for event in events:
                         after_seq = max(after_seq, int(event.get("stream_seq", 0)))
@@ -178,4 +180,3 @@ async def delete_tab_session(tab_session_id: str):
         tab_session_id=normalized_tab_session_id,
     )
     return Response(status_code=204)
-

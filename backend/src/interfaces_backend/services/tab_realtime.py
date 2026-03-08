@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Protocol
 from uuid import uuid4
 
 from interfaces_backend.models.realtime import (
+    TabSessionSubscription,
     TabSessionStateRequest,
     TabSessionStateResponse,
 )
@@ -22,6 +25,14 @@ REPLAY_BUFFER_MAX_EVENTS = 512
 FOREGROUND_SESSION_TTL_SECONDS = 120.0
 BACKGROUND_SESSION_TTL_SECONDS = 600.0
 CLOSING_SESSION_TTL_SECONDS = 5.0
+
+
+class _SourceRegistryProtocol(Protocol):
+    def interval_for(self, subscription: TabSessionSubscription) -> float:
+        ...
+
+    async def poll(self, subscription: TabSessionSubscription) -> Any:
+        ...
 
 
 class TabSessionNotFoundError(RuntimeError):
@@ -40,6 +51,16 @@ class TabSessionApplyResult:
     subscription_count: int
 
 
+@dataclass
+class _SubscriptionRuntime:
+    subscription: TabSessionSubscription
+    generation: int
+    source_version: int = 0
+    last_payload_json: str | None = None
+    last_polled_mono: float = 0.0
+    pending_immediate: bool = True
+
+
 class TabSessionStreamHandle:
     """Stream handle bound to one session connection."""
 
@@ -49,13 +70,19 @@ class TabSessionStreamHandle:
         session: "_TabSession",
         connection_id: str,
         replay_events: list[_ReplayEvent],
+        source_registry: _SourceRegistryProtocol,
     ) -> None:
         self._session = session
         self._connection_id = connection_id
         self.replay_events = replay_events
+        self._source_registry = source_registry
 
-    def poll(self, *, after_seq: int) -> tuple[_PollStatus, list[_ReplayEvent]]:
-        return self._session.poll_events(connection_id=self._connection_id, after_seq=after_seq)
+    async def poll(self, *, after_seq: int) -> tuple[_PollStatus, list[_ReplayEvent]]:
+        return await self._session.poll_events(
+            connection_id=self._connection_id,
+            after_seq=after_seq,
+            source_registry=self._source_registry,
+        )
 
     def close(self) -> None:
         self._session.close_stream(self._connection_id)
@@ -93,6 +120,7 @@ class _TabSession:
         self._active_connection_id: str | None = None
         self._events: deque[_ReplayEvent] = deque(maxlen=REPLAY_BUFFER_MAX_EVENTS)
         self._stream_seq = 0
+        self._subscriptions: dict[str, _SubscriptionRuntime] = {}
         self._deleted = False
         self._last_touched_mono = time.monotonic()
 
@@ -134,11 +162,13 @@ class _TabSession:
                 )
 
             old_subscriptions = _build_subscription_index(self._state)
+            old_visibility = self._visibility
             self._state = state
             self._revision = state.revision
             self._visibility = state.lifecycle.visibility
             self._touch_unlocked()
             new_subscriptions = _build_subscription_index(self._state)
+            self._reconcile_subscriptions_unlocked(state.subscriptions, force_immediate=old_visibility != self._visibility)
 
             added = sorted(set(new_subscriptions.keys()) - set(old_subscriptions.keys()))
             removed = sorted(set(old_subscriptions.keys()) - set(new_subscriptions.keys()))
@@ -165,6 +195,43 @@ class _TabSession:
                 applied_at=event["emitted_at"],
                 subscription_count=len(new_subscriptions),
             )
+
+    def _reconcile_subscriptions_unlocked(
+        self,
+        subscriptions: list[TabSessionSubscription],
+        *,
+        force_immediate: bool,
+    ) -> None:
+        next_runtimes: dict[str, _SubscriptionRuntime] = {}
+        for subscription in subscriptions:
+            previous = self._subscriptions.get(subscription.subscription_id)
+            if previous is None:
+                next_runtimes[subscription.subscription_id] = _SubscriptionRuntime(
+                    subscription=subscription,
+                    generation=1,
+                    pending_immediate=True,
+                )
+                continue
+
+            previous_dump = previous.subscription.model_dump(mode="json")
+            next_dump = subscription.model_dump(mode="json")
+            if previous_dump == next_dump:
+                next_runtimes[subscription.subscription_id] = _SubscriptionRuntime(
+                    subscription=subscription,
+                    generation=previous.generation,
+                    source_version=previous.source_version,
+                    last_payload_json=previous.last_payload_json,
+                    last_polled_mono=previous.last_polled_mono,
+                    pending_immediate=previous.pending_immediate or force_immediate,
+                )
+                continue
+
+            next_runtimes[subscription.subscription_id] = _SubscriptionRuntime(
+                subscription=subscription,
+                generation=previous.generation + 1,
+                pending_immediate=True,
+            )
+        self._subscriptions = next_runtimes
 
     def open_stream(self, *, last_event_id: int | None) -> tuple[str, list[_ReplayEvent]]:
         with self._lock:
@@ -203,14 +270,77 @@ class _TabSession:
                 replay = [event for event in self._events if event["stream_seq"] > last_event_id]
             return connection_id, replay
 
-    def poll_events(
+    async def poll_events(
         self,
         *,
         connection_id: str,
         after_seq: int,
+        source_registry: _SourceRegistryProtocol,
     ) -> tuple[_PollStatus, list[_ReplayEvent]]:
+        pending: list[tuple[str, int, TabSessionSubscription]] = []
+        now_mono = time.monotonic()
         with self._lock:
             self._touch_unlocked()
+            if self._active_connection_id != connection_id:
+                return "superseded", []
+            existing_events = [event for event in self._events if event["stream_seq"] > after_seq]
+            if self._deleted:
+                return "deleted", []
+            if self._visibility != "foreground":
+                if existing_events:
+                    return "events", existing_events
+                return "idle", []
+            for subscription_id, runtime in self._subscriptions.items():
+                interval = source_registry.interval_for(runtime.subscription)
+                should_poll = runtime.pending_immediate or runtime.last_polled_mono == 0.0
+                if not should_poll and (now_mono - runtime.last_polled_mono) >= interval:
+                    should_poll = True
+                if should_poll:
+                    pending.append((subscription_id, runtime.generation, runtime.subscription))
+
+        for subscription_id, generation, subscription in pending:
+            result = await source_registry.poll(subscription)
+            with self._lock:
+                current_runtime = self._subscriptions.get(subscription_id)
+                if current_runtime is None or current_runtime.generation != generation:
+                    continue
+                if self._active_connection_id != connection_id or self._deleted:
+                    return "superseded", []
+                current_runtime.last_polled_mono = time.monotonic()
+                current_runtime.pending_immediate = False
+                source_meta = {
+                    "subscription_id": subscription.subscription_id,
+                    "kind": subscription.kind,
+                    "params": subscription.params.model_dump(mode="json"),
+                    "generation": current_runtime.generation,
+                }
+                if result.error is not None:
+                    error_payload = {"message": result.error}
+                    encoded_error = json.dumps(error_payload, ensure_ascii=False, sort_keys=True)
+                    if encoded_error == current_runtime.last_payload_json:
+                        continue
+                    current_runtime.last_payload_json = encoded_error
+                    self._append_event_unlocked(
+                        op="error",
+                        source=source_meta,
+                        payload=error_payload,
+                    )
+                    continue
+                payload = result.payload or {}
+                encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                if encoded == current_runtime.last_payload_json:
+                    continue
+                current_runtime.last_payload_json = encoded
+                current_runtime.source_version += 1
+                self._append_event_unlocked(
+                    op="snapshot",
+                    source=source_meta,
+                    source_version=current_runtime.source_version,
+                    payload=payload,
+                )
+
+        await asyncio.sleep(0)
+        with self._lock:
             if self._active_connection_id != connection_id:
                 return "superseded", []
             events = [event for event in self._events if event["stream_seq"] > after_seq]
@@ -318,6 +448,7 @@ class TabRealtimeRegistry:
         user_id: str,
         tab_session_id: str,
         last_event_id: int | None,
+        source_registry: _SourceRegistryProtocol,
     ) -> TabSessionStreamHandle:
         self._cleanup_expired_sessions()
         with self._lock:
@@ -330,6 +461,7 @@ class TabRealtimeRegistry:
             session=session,
             connection_id=connection_id,
             replay_events=replay,
+            source_registry=source_registry,
         )
 
     def delete_session(self, *, user_id: str, tab_session_id: str) -> bool:
@@ -368,4 +500,3 @@ def reset_tab_realtime_registry() -> None:
         if _tab_realtime_registry is not None:
             _tab_realtime_registry.shutdown()
         _tab_realtime_registry = None
-
