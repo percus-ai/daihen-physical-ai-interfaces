@@ -419,6 +419,9 @@ def test_refresh_job_status_from_instance_marks_vast_not_found(monkeypatch):
     monkeypatch.setitem(sys.modules, "percus_ai.training.providers", providers_pkg)
     monkeypatch.setitem(sys.modules, "percus_ai.training.providers.vast", vast_module)
     monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_refresh_job_ssh_target_if_needed", lambda job_data: asyncio.sleep(0, result=job_data))
+    monkeypatch.setattr(training, "_check_remote_status", lambda _job_data: "unreachable")
+    monkeypatch.setattr(training, "_has_recent_training_metrics", lambda _job_id: asyncio.sleep(0, result=False))
 
     job = {
         "job_id": "job-vast-2",
@@ -454,6 +457,34 @@ def test_refresh_job_status_from_instance_keeps_vast_running_when_provider_missi
     job = {
         "job_id": "job-vast-keep-1",
         "instance_id": "dead-instance",
+        "ip": "ssh8.vast.ai",
+        "ssh_port": 15434,
+        "status": "running",
+        "training_config": {"cloud": {"provider": "vast", "ssh_port": 15434}},
+    }
+
+    instance_status = asyncio.run(training._refresh_job_status_from_instance(job))
+    assert instance_status == "running"
+    assert job["status"] == "running"
+    assert "termination_reason" not in job
+    assert not saved_jobs
+
+
+def test_refresh_job_status_from_instance_keeps_vast_running_when_recent_metrics_exist(monkeypatch):
+    saved_jobs: list[dict] = []
+
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_check_instance_status", lambda _job_data: "terminated")
+    monkeypatch.setattr(training, "_refresh_job_ssh_target_if_needed", lambda job_data: asyncio.sleep(0, result=job_data))
+    monkeypatch.setattr(training, "_check_remote_status", lambda _job_data: "unreachable")
+    monkeypatch.setattr(training, "_has_recent_training_metrics", lambda _job_id: asyncio.sleep(0, result=True))
+
+    job = {
+        "job_id": "job-vast-metrics-1",
+        "instance_id": "32405434",
         "ip": "ssh8.vast.ai",
         "ssh_port": 15434,
         "status": "running",
@@ -567,6 +598,45 @@ def test_check_all_jobs_status_keeps_vast_running_when_remote_running(monkeypatc
     assert response.updates[0].new_status == "running"
     assert response.updates[0].instance_status == "running"
     assert "stale" in response.updates[0].reason.lower()
+    assert not saved_jobs
+    assert not archived_jobs
+
+
+def test_check_all_jobs_status_keeps_vast_running_when_recent_metrics_exist(monkeypatch):
+    saved_jobs: list[dict] = []
+    archived_jobs: list[str] = []
+
+    async def fake_list_jobs():
+        return [
+            {
+                "job_id": "job-vast-bulk-2",
+                "instance_id": "32405435",
+                "ip": "ssh8.vast.ai",
+                "ssh_port": 15435,
+                "status": "running",
+                "training_config": {"cloud": {"provider": "vast", "ssh_port": 15435}},
+            }
+        ]
+
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
+    async def fake_archive_job_metrics(job_id: str):
+        archived_jobs.append(job_id)
+
+    monkeypatch.setattr(training, "_list_jobs", fake_list_jobs)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_archive_job_metrics", fake_archive_job_metrics)
+    monkeypatch.setattr(training, "_check_instance_status", lambda _job_data: "terminated")
+    monkeypatch.setattr(training, "_refresh_job_ssh_target_if_needed", lambda job_data: asyncio.sleep(0, result=job_data))
+    monkeypatch.setattr(training, "_check_remote_status", lambda _job_data: "unreachable")
+    monkeypatch.setattr(training, "_has_recent_training_metrics", lambda _job_id: asyncio.sleep(0, result=True))
+
+    response = asyncio.run(training.check_all_jobs_status())
+    assert response.checked_count == 1
+    assert response.updates[0].new_status == "running"
+    assert response.updates[0].instance_status == "running"
+    assert "recent metrics" in response.updates[0].reason.lower()
     assert not saved_jobs
     assert not archived_jobs
 

@@ -12,7 +12,7 @@ import time
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Literal, Optional, TypeVar
 
@@ -1227,20 +1227,94 @@ def _is_terminated_instance_status(status: str) -> bool:
     }
 
 
-async def _should_preserve_job_from_remote_status(job_data: dict, instance_status: Optional[str]) -> Optional[str]:
-    """Prefer observed remote process state over flaky provider status for Vast."""
+def _parse_optional_utc_datetime(value: object) -> Optional[datetime]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        parsed = _parse_job_created_at(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _vast_termination_metrics_grace_period() -> timedelta:
+    raw = str(os.environ.get("TRAINING_VAST_TERMINATION_METRICS_GRACE_MINUTES") or "").strip()
+    if not raw:
+        return timedelta(minutes=15)
+    try:
+        return timedelta(minutes=max(int(raw), 1))
+    except ValueError:
+        logger.warning(
+            "Invalid TRAINING_VAST_TERMINATION_METRICS_GRACE_MINUTES=%r; fallback to 15",
+            raw,
+        )
+        return timedelta(minutes=15)
+
+
+async def _has_recent_training_metrics(job_id: str) -> bool:
+    normalized_job_id = str(job_id or "").strip()
+    if not normalized_job_id:
+        return False
+
+    async def _fetch_with(client: AsyncClient) -> list[dict]:
+        response = (
+            await client.table("training_job_metrics")
+            .select("ts")
+            .eq("job_id", normalized_job_id)
+            .order("ts", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return response.data or []
+
+    data = await _with_training_service_role_retry(
+        action="loading latest metric timestamp for training job",
+        target=normalized_job_id,
+        operation=_fetch_with,
+    )
+    if not data:
+        return False
+
+    latest_ts = _parse_optional_utc_datetime(data[0].get("ts"))
+    if latest_ts is None:
+        return False
+
+    return latest_ts >= (datetime.now(timezone.utc) - _vast_termination_metrics_grace_period())
+
+
+async def _should_preserve_job_from_remote_status(
+    job_data: dict,
+    instance_status: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Prefer remote reachability and recent metrics over flaky provider status for Vast."""
     provider = _get_job_provider(job_data)
     if provider != "vast":
-        return None
+        return None, None
 
     if instance_status not in {None, "unavailable"} and not _is_terminated_instance_status(instance_status):
-        return None
+        return None, None
 
     await _refresh_job_ssh_target_if_needed(job_data)
     remote_status = _check_remote_status(job_data)
     if remote_status in {"running", "starting"}:
-        return remote_status
-    return None
+        return remote_status, f"Provider status stale; remote process is {remote_status}"
+
+    preserved_status = str(job_data.get("status") or "").strip().lower() or "running"
+    if remote_status != "unreachable":
+        return (
+            preserved_status,
+            f"Provider status stale; SSH reachable and remote process is {remote_status}",
+        )
+
+    if await _has_recent_training_metrics(str(job_data.get("job_id") or "").strip()):
+        return preserved_status, "Provider status stale; recent metrics activity detected"
+
+    return None, None
 
 
 async def _refresh_job_status_from_instance(job_data: dict) -> Optional[str]:
@@ -1248,7 +1322,7 @@ async def _refresh_job_status_from_instance(job_data: dict) -> Optional[str]:
     if not instance_id:
         return None
     instance_status = _check_instance_status(job_data)
-    preserved_remote_status = await _should_preserve_job_from_remote_status(job_data, instance_status)
+    preserved_remote_status, _ = await _should_preserve_job_from_remote_status(job_data, instance_status)
     if preserved_remote_status:
         return preserved_remote_status
     if instance_status is None:
@@ -4782,7 +4856,10 @@ async def check_all_jobs_status():
 
         # Check instance status via provider-specific API.
         instance_status = _check_instance_status(job_data) if instance_id else None
-        preserved_remote_status = await _should_preserve_job_from_remote_status(job_data, instance_status)
+        preserved_remote_status, preserved_reason = await _should_preserve_job_from_remote_status(
+            job_data,
+            instance_status,
+        )
         if preserved_remote_status:
             updates.append(
                 JobStatusUpdate(
@@ -4790,7 +4867,7 @@ async def check_all_jobs_status():
                     old_status=old_status,
                     new_status=old_status,
                     instance_status=preserved_remote_status,
-                    reason=f"Provider status stale; remote process is {preserved_remote_status}",
+                    reason=preserved_reason or f"Provider status stale; remote process is {preserved_remote_status}",
                 )
             )
             continue
