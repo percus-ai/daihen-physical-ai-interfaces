@@ -16,6 +16,7 @@ from interfaces_backend.models.realtime import (
     ProfilesVlaborSubscription,
     OperateStatusSubscription,
     RecordingUploadStatusSubscription,
+    StartupOperationSubscription,
     SystemBundledTorchSubscription,
     SystemRuntimeEnvsSubscription,
     SystemStatusSubscription,
@@ -64,6 +65,8 @@ class TabRealtimeSourceRegistry:
             return 2.0
         if isinstance(subscription, RecordingUploadStatusSubscription):
             return 1.0
+        if isinstance(subscription, StartupOperationSubscription):
+            return 0.5
         if isinstance(subscription, TrainingJobProvisionSubscription):
             return 2.0
         if isinstance(subscription, TrainingJobCoreSubscription):
@@ -144,6 +147,19 @@ class TabRealtimeSourceRegistry:
                 lifecycle = get_dataset_lifecycle()
                 snapshot = lifecycle.get_dataset_upload_status(subscription.params.session_id)
                 return RealtimeSourcePollResult(payload=dict(snapshot))
+
+            if isinstance(subscription, StartupOperationSubscription):
+                from interfaces_backend.services.session_manager import require_user_id
+                from interfaces_backend.services.startup_operations import (
+                    get_startup_operations_service,
+                )
+
+                user_id = require_user_id()
+                snapshot = get_startup_operations_service().get(
+                    user_id=user_id,
+                    operation_id=subscription.params.operation_id,
+                )
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
 
             if isinstance(subscription, TrainingJobCoreSubscription):
                 from interfaces_backend.api.training import get_job

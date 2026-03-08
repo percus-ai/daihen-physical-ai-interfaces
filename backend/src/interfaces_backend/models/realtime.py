@@ -113,6 +113,20 @@ class RecordingUploadStatusParams(BaseModel):
         return normalized
 
 
+class StartupOperationParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str = Field(..., min_length=1, max_length=256)
+
+    @field_validator("operation_id")
+    @classmethod
+    def _normalize_operation_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("operation_id must not be empty")
+        return normalized
+
+
 class ProfilesActiveSubscription(_SubscriptionBase):
     kind: Literal["profiles.active"]
     params: ProfilesActiveParams = Field(default_factory=ProfilesActiveParams)
@@ -148,6 +162,11 @@ class RecordingUploadStatusSubscription(_SubscriptionBase):
     params: RecordingUploadStatusParams
 
 
+class StartupOperationSubscription(_SubscriptionBase):
+    kind: Literal["startup.operation"]
+    params: StartupOperationParams
+
+
 class TrainingJobCoreSubscription(_SubscriptionBase):
     kind: Literal["training.job.core"]
     params: TrainingJobRefParams
@@ -176,6 +195,7 @@ TabSessionSubscription = Annotated[
     | SystemRuntimeEnvsSubscription
     | SystemBundledTorchSubscription
     | RecordingUploadStatusSubscription
+    | StartupOperationSubscription
     | TrainingJobCoreSubscription
     | TrainingJobProvisionSubscription
     | TrainingJobMetricsSubscription

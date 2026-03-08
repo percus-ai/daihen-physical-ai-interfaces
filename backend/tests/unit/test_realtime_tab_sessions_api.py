@@ -132,13 +132,18 @@ def test_tab_session_subscription_schema_accepts_system_operate_recording_source
             "kind": "recording.upload-status",
             "params": {"session_id": "dataset-1"},
         },
+        {
+            "subscription_id": "startup.operation",
+            "kind": "startup.operation",
+            "params": {"operation_id": "op-1"},
+        },
     ]
 
     state = TabSessionStateRequest.model_validate(payload)
 
-    assert len(state.subscriptions) == 6
+    assert len(state.subscriptions) == 7
     assert state.subscriptions[0].kind == "system.status"
-    assert state.subscriptions[-1].kind == "recording.upload-status"
+    assert state.subscriptions[-1].kind == "startup.operation"
 
 
 def test_tab_session_registry_put_get_delete_flow():
@@ -357,6 +362,19 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
                 "total_files": 8,
             }
 
+    class _StartupOperations:
+        def get(self, *, user_id, operation_id):
+            assert user_id == "user-1"
+            return _Snapshot(
+                {
+                    "operation_id": operation_id,
+                    "kind": "inference_start",
+                    "state": "running",
+                    "phase": "launch_worker",
+                    "progress_percent": 55,
+                }
+            )
+
     async def _get_vlabor_status():
         return _Snapshot({"status": "running", "dashboard_url": "http://example.test"})
 
@@ -394,6 +412,14 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
         "interfaces_backend.services.dataset_lifecycle.get_dataset_lifecycle",
         lambda: _DatasetLifecycle(),
     )
+    monkeypatch.setattr(
+        "interfaces_backend.services.startup_operations.get_startup_operations_service",
+        lambda: _StartupOperations(),
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.session_manager.require_user_id",
+        lambda: "user-1",
+    )
 
     state = TabSessionStateRequest.model_validate(
         {
@@ -408,6 +434,11 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
                     "subscription_id": "recording.upload-status",
                     "kind": "recording.upload-status",
                     "params": {"session_id": "dataset-1"},
+                },
+                {
+                    "subscription_id": "startup.operation",
+                    "kind": "startup.operation",
+                    "params": {"operation_id": "op-1"},
                 },
             ],
         }
@@ -425,5 +456,7 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
         assert payloads["system.runtime-envs"]["envs"] == []
         assert payloads["system.bundled-torch"]["state"] == "idle"
         assert payloads["recording.upload-status"]["dataset_id"] == "dataset-1"
+        assert payloads["startup.operation"]["operation_id"] == "op-1"
+        assert payloads["startup.operation"]["state"] == "running"
 
     asyncio.run(_run())
