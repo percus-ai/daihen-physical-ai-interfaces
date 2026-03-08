@@ -5,6 +5,7 @@ import { getBackendUrl } from '$lib/config';
 const TAB_SESSION_ID_KEY = 'percus.realtime.tab_session_id';
 const TAB_SESSION_REVISION_KEY = 'percus.realtime.tab_session_revision';
 const TAB_SESSION_BROADCAST_CHANNEL = 'percus.realtime.tab_session';
+const TAB_SESSION_DEBUG_KEY = 'percus.realtime.debug';
 
 type TabSessionPresenceMessage = {
   type: 'announce' | 'ack';
@@ -79,6 +80,11 @@ const writeStoredRevision = (revision: number) => {
   sessionStorage.setItem(TAB_SESSION_REVISION_KEY, String(revision));
 };
 
+const clearStoredRevision = () => {
+  if (!browser) return;
+  sessionStorage.removeItem(TAB_SESSION_REVISION_KEY);
+};
+
 const createTabSessionId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -93,18 +99,25 @@ const createClientInstanceId = () => {
   return `instance-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
-const readTabSessionId = () => {
-  if (!browser) return '';
+const readTabSessionRecord = () => {
+  if (!browser) return { tabSessionId: '', existed: false };
   const existing = sessionStorage.getItem(TAB_SESSION_ID_KEY);
-  if (existing) return existing;
+  if (existing) {
+    return { tabSessionId: existing, existed: true };
+  }
   const nextId = createTabSessionId();
   sessionStorage.setItem(TAB_SESSION_ID_KEY, nextId);
-  return nextId;
+  return { tabSessionId: nextId, existed: false };
 };
 
 const writeTabSessionId = (tabSessionId: string) => {
   if (!browser) return;
   sessionStorage.setItem(TAB_SESSION_ID_KEY, tabSessionId);
+};
+
+const clearStoredTabSessionId = () => {
+  if (!browser) return;
+  sessionStorage.removeItem(TAB_SESSION_ID_KEY);
 };
 
 const filterRouteParams = (params: Record<string, string | undefined>) => {
@@ -134,8 +147,10 @@ const cloneSubscription = (subscription: TabSessionSubscription): TabSessionSubs
   normalizeJsonValue(subscription) as TabSessionSubscription;
 
 class TabRealtimeClient {
+  private readonly initialSession = readTabSessionRecord();
   private instanceId = createClientInstanceId();
-  private tabSessionId = readTabSessionId();
+  private tabSessionId = this.initialSession.tabSessionId;
+  private hasStoredSession = this.initialSession.existed;
   private appliedRevision = readStoredRevision();
   private route: TabSessionRoute = buildDefaultRoute();
   private lifecycle: TabSessionLifecycle = {
@@ -155,6 +170,10 @@ class TabRealtimeClient {
   private inFlightState: InFlightState | null = null;
   private presenceChannel: BroadcastChannel | null = null;
   private nextContributorSequence = 0;
+  private pendingSyncReasons: string[] = [];
+  private bootstrapInFlight: Promise<void> | null = null;
+  private bootstrapComplete = false;
+  private shouldPersistSessionRecord = true;
 
   constructor() {
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
@@ -171,14 +190,22 @@ class TabRealtimeClient {
       onEvent: input.onEvent
     };
     this.contributors.set(contributorId, contributor);
-    this.scheduleSync();
+    this.debug('contributor.register', {
+      contributorId,
+      subscriptionIds: contributor.subscriptions.map((subscription) => subscription.subscription_id),
+    });
+    this.scheduleSync(`contributor.register:${contributorId}`);
 
     return {
       setSubscriptions: (subscriptions) => {
         const current = this.contributors.get(contributorId);
         if (!current) return;
         current.subscriptions = [...subscriptions];
-        this.scheduleSync();
+        this.debug('contributor.setSubscriptions', {
+          contributorId,
+          subscriptionIds: subscriptions.map((subscription) => subscription.subscription_id),
+        });
+        this.scheduleSync(`contributor.setSubscriptions:${contributorId}`);
       },
       setEventHandler: (onEvent) => {
         const current = this.contributors.get(contributorId);
@@ -187,7 +214,8 @@ class TabRealtimeClient {
       },
       dispose: () => {
         if (!this.contributors.delete(contributorId)) return;
-        this.scheduleSync();
+        this.debug('contributor.dispose', { contributorId });
+        this.scheduleSync(`contributor.dispose:${contributorId}`);
       }
     };
   }
@@ -202,7 +230,8 @@ class TabRealtimeClient {
       return;
     }
     this.route = nextRoute;
-    this.scheduleSync();
+    this.debug('route.set', { route: nextRoute });
+    this.scheduleSync('route.set');
   }
 
   async close(): Promise<void> {
@@ -211,8 +240,10 @@ class TabRealtimeClient {
       visibility: 'closing',
       reason: 'close'
     };
+    this.shouldPersistSessionRecord = false;
+    this.clearStoredSessionRecord();
     try {
-      this.scheduleSync({ deleteAfterSync: true });
+      this.scheduleSync('client.close', { deleteAfterSync: true });
       while (this.syncInFlight) {
         await this.syncInFlight;
       }
@@ -237,11 +268,13 @@ class TabRealtimeClient {
     this.lifecycle = {
       visibility: document.visibilityState === 'hidden' ? 'background' : 'foreground'
     };
-    this.scheduleSync();
+    this.debug('lifecycle.visibilitychange', { lifecycle: this.lifecycle });
+    this.scheduleSync('lifecycle.visibilitychange');
   };
 
   private readonly handleOnline = () => {
-    this.scheduleSync();
+    this.debug('network.online');
+    this.scheduleSync('network.online');
     this.ensureStream();
   };
 
@@ -250,8 +283,11 @@ class TabRealtimeClient {
       visibility: 'closing',
       reason: 'pagehide'
     };
+    this.shouldPersistSessionRecord = false;
+    this.clearStoredSessionRecord();
     this.closeStream();
-    this.scheduleSync({ keepalive: true, deleteAfterSync: true });
+    this.debug('lifecycle.pagehide', { lifecycle: this.lifecycle });
+    this.scheduleSync('lifecycle.pagehide', { keepalive: true, deleteAfterSync: true });
   };
 
   private composeState(): ComposedState {
@@ -332,17 +368,33 @@ class TabRealtimeClient {
     this.appliedRevision = revision;
     this.appliedStateKey = composed.stateKey;
     this.appliedSubscriptionOwners = composed.subscriptionOwners;
-    writeStoredRevision(this.appliedRevision);
+    if (this.shouldPersistSessionRecord) {
+      writeStoredRevision(this.appliedRevision);
+    }
   }
 
-  private scheduleSync(options: { keepalive?: boolean; deleteAfterSync?: boolean } = {}) {
+  private scheduleSync(
+    reason: string,
+    options: { keepalive?: boolean; deleteAfterSync?: boolean } = {}
+  ) {
     if (this.disposed) return;
+    this.pendingSyncReasons.push(reason);
     if (options.keepalive) {
       this.syncKeepaliveRequested = true;
     }
     if (options.deleteAfterSync) {
       this.deleteAfterSyncRequested = true;
     }
+    this.debug('sync.schedule', {
+      reason,
+      queuedReasons: [...this.pendingSyncReasons],
+      inFlight: Boolean(this.syncInFlight),
+      syncQueued: this.syncQueued,
+      keepaliveRequested: this.syncKeepaliveRequested,
+      deleteAfterSyncRequested: this.deleteAfterSyncRequested,
+      appliedRevision: this.appliedRevision,
+      appliedStateKey: this.shortHash(this.appliedStateKey),
+    });
     if (this.syncInFlight) {
       this.syncQueued = true;
       return;
@@ -355,7 +407,7 @@ class TabRealtimeClient {
         this.syncInFlight = null;
         if (this.syncQueued) {
           this.syncQueued = false;
-          this.scheduleSync();
+          this.scheduleSync('sync.queued-drain');
         }
       });
   }
@@ -363,12 +415,35 @@ class TabRealtimeClient {
   private async syncState(options: { keepalive?: boolean; deleteAfterSync?: boolean } = {}) {
     const keepaliveRequested = options.keepalive ?? this.syncKeepaliveRequested;
     const deleteAfterSync = options.deleteAfterSync ?? this.deleteAfterSyncRequested;
+    const reasons = [...this.pendingSyncReasons];
+    this.pendingSyncReasons = [];
     this.syncKeepaliveRequested = false;
     this.deleteAfterSyncRequested = false;
+    this.debug('sync.start', {
+      reasons,
+      keepaliveRequested,
+      deleteAfterSync,
+      appliedRevision: this.appliedRevision,
+      appliedStateKey: this.shortHash(this.appliedStateKey),
+    });
+
+    await this.ensureBootstrappedState(reasons);
 
     for (let attempts = 0; attempts < 8; attempts += 1) {
       const desired = this.composeState();
+      this.debug('sync.compose', {
+        attempt: attempts + 1,
+        reasons,
+        desiredStateKey: this.shortHash(desired.stateKey),
+        subscriptionCount: desired.state.subscriptions.length,
+      });
       if (desired.stateKey === this.appliedStateKey) {
+        this.debug('sync.skip-applied-match', {
+          reasons,
+          deleteAfterSync,
+          appliedRevision: this.appliedRevision,
+          appliedStateKey: this.shortHash(this.appliedStateKey),
+        });
         if (deleteAfterSync) {
           await this.deleteTabSession(this.tabSessionId, { keepalive: keepaliveRequested });
         }
@@ -380,13 +455,36 @@ class TabRealtimeClient {
       const revision = this.appliedRevision + 1;
       const request = this.buildRequest(desired, revision);
       this.inFlightState = { revision, composed: desired };
+      this.debug('sync.put.start', {
+        attempt: attempts + 1,
+        reasons,
+        tabSessionId: syncTabSessionId,
+        requestedRevision: revision,
+        desiredStateKey: this.shortHash(desired.stateKey),
+        keepaliveRequested,
+        deleteAfterSync,
+      });
 
       try {
         const result = await this.putTabSessionState(syncTabSessionId, request, {
           keepalive: keepaliveRequested
         });
         this.inFlightState = null;
+        this.debug('sync.put.success', {
+          attempt: attempts + 1,
+          reasons,
+          tabSessionId: syncTabSessionId,
+          requestedRevision: revision,
+          appliedRevision: result.revision,
+          desiredStateKey: this.shortHash(desired.stateKey),
+        });
         if (syncTabSessionId !== this.tabSessionId) {
+          this.debug('sync.put.stale-session-ignored', {
+            attempt: attempts + 1,
+            reasons,
+            syncTabSessionId,
+            currentTabSessionId: this.tabSessionId,
+          });
           continue;
         }
         this.adoptAppliedState(desired, result.revision);
@@ -400,7 +498,26 @@ class TabRealtimeClient {
         const status = typeof error === 'object' && error && 'status' in error ? Number((error as { status?: number }).status) : 0;
         if (status === 409) {
           const current = await api.realtime.tabSessionState(syncTabSessionId);
+          this.debug('sync.put.conflict', {
+            attempt: attempts + 1,
+            reasons,
+            tabSessionId: syncTabSessionId,
+            requestedRevision: revision,
+            currentRevision: current.revision,
+            desiredStateKey: this.shortHash(desired.stateKey),
+            currentStateKey: this.shortHash(this.buildStateKey({
+              lifecycle: current.lifecycle,
+              route: current.route,
+              subscriptions: current.subscriptions,
+            })),
+          });
           if (syncTabSessionId !== this.tabSessionId) {
+            this.debug('sync.put.conflict.stale-session-ignored', {
+              attempt: attempts + 1,
+              reasons,
+              syncTabSessionId,
+              currentTabSessionId: this.tabSessionId,
+            });
             continue;
           }
           const currentComposed = this.composeStateFromResponse(current);
@@ -408,19 +525,43 @@ class TabRealtimeClient {
 
           const latestDesired = this.composeState();
           if (latestDesired.stateKey === currentComposed.stateKey) {
+            this.debug('sync.put.conflict.adopt-server-state', {
+              attempt: attempts + 1,
+              reasons,
+              tabSessionId: syncTabSessionId,
+              adoptedRevision: current.revision,
+              adoptedStateKey: this.shortHash(currentComposed.stateKey),
+            });
             if (deleteAfterSync) {
               await this.deleteTabSession(syncTabSessionId, { keepalive: keepaliveRequested });
             }
             this.ensureStream();
             return;
           }
+          this.debug('sync.put.conflict.retry-latest-desired', {
+            attempt: attempts + 1,
+            reasons,
+            tabSessionId: syncTabSessionId,
+            adoptedRevision: current.revision,
+            latestDesiredStateKey: this.shortHash(latestDesired.stateKey),
+          });
           continue;
         }
         if (status === 404) {
+          this.debug('sync.put.session-missing', {
+            attempt: attempts + 1,
+            reasons,
+            tabSessionId: syncTabSessionId,
+          });
           this.resetSessionIdentity();
           continue;
         }
         if (status === 401) {
+          this.debug('sync.put.unauthorized', {
+            attempt: attempts + 1,
+            reasons,
+            tabSessionId: syncTabSessionId,
+          });
           this.closeStream();
           return;
         }
@@ -467,7 +608,7 @@ class TabRealtimeClient {
     if (this.disposed || this.streamReconnectTimer !== null) return;
     this.streamReconnectTimer = window.setTimeout(() => {
       this.streamReconnectTimer = null;
-      this.scheduleSync();
+      this.scheduleSync('stream.reconnect');
       this.ensureStream();
     }, 1000);
   }
@@ -484,7 +625,7 @@ class TabRealtimeClient {
     if (!subscriptionId) {
       if (event.op === 'control' && event.payload.type === 'session_deleted') {
         this.resetSessionIdentity();
-        this.scheduleSync();
+        this.scheduleSync('control.session_deleted');
       }
       return;
     }
@@ -509,6 +650,81 @@ class TabRealtimeClient {
     this.source = null;
   }
 
+  private async ensureBootstrappedState(reasons: string[]) {
+    if (this.bootstrapComplete || !this.hasStoredSession || !this.tabSessionId) {
+      return;
+    }
+    if (this.bootstrapInFlight) {
+      await this.bootstrapInFlight;
+      return;
+    }
+
+    const bootstrapTabSessionId = this.tabSessionId;
+    this.bootstrapInFlight = (async () => {
+      this.debug('bootstrap.start', {
+        reasons,
+        tabSessionId: bootstrapTabSessionId,
+        storedRevision: this.appliedRevision,
+      });
+      try {
+        const current = await api.realtime.tabSessionState(bootstrapTabSessionId);
+        if (bootstrapTabSessionId !== this.tabSessionId) {
+          this.debug('bootstrap.stale-session-ignored', {
+            reasons,
+            bootstrapTabSessionId,
+            currentTabSessionId: this.tabSessionId,
+          });
+          return;
+        }
+        const currentComposed = this.composeStateFromResponse(current);
+        this.adoptAppliedState(currentComposed, current.revision);
+        this.hasStoredSession = false;
+        this.bootstrapComplete = true;
+        this.debug('bootstrap.adopt-server-state', {
+          reasons,
+          tabSessionId: bootstrapTabSessionId,
+          adoptedRevision: current.revision,
+          adoptedStateKey: this.shortHash(currentComposed.stateKey),
+        });
+      } catch (error) {
+        const status =
+          typeof error === 'object' && error && 'status' in error
+            ? Number((error as { status?: number }).status)
+            : 0;
+        if (status === 404) {
+          this.debug('bootstrap.session-missing', {
+            reasons,
+            tabSessionId: bootstrapTabSessionId,
+          });
+          if (bootstrapTabSessionId === this.tabSessionId) {
+            this.resetSessionIdentity();
+          }
+          this.bootstrapComplete = true;
+          return;
+        }
+        if (status === 401) {
+          this.debug('bootstrap.unauthorized', {
+            reasons,
+            tabSessionId: bootstrapTabSessionId,
+          });
+          this.closeStream();
+          this.bootstrapComplete = true;
+          return;
+        }
+        this.debug('bootstrap.failed', {
+          reasons,
+          tabSessionId: bootstrapTabSessionId,
+          status,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        this.bootstrapInFlight = null;
+      }
+    })();
+
+    await this.bootstrapInFlight;
+  }
+
   private resetSessionIdentity() {
     this.closeStream();
     this.lastHandledStreamSeq = 0;
@@ -518,10 +734,19 @@ class TabRealtimeClient {
     this.inFlightState = null;
     this.syncKeepaliveRequested = false;
     this.deleteAfterSyncRequested = false;
+    this.bootstrapInFlight = null;
+    this.bootstrapComplete = true;
+    this.hasStoredSession = false;
+    this.shouldPersistSessionRecord = true;
     writeStoredRevision(0);
     this.tabSessionId = createTabSessionId();
     writeTabSessionId(this.tabSessionId);
     this.broadcastPresence('announce');
+  }
+
+  private clearStoredSessionRecord() {
+    clearStoredTabSessionId();
+    clearStoredRevision();
   }
 
   private async putTabSessionState(
@@ -611,11 +836,69 @@ class TabRealtimeClient {
     }
 
     if (this.instanceId.localeCompare(message.instanceId) < 0) {
+      this.debug('presence.keep-current-session', {
+        tabSessionId: this.tabSessionId,
+        localInstanceId: this.instanceId,
+        remoteInstanceId: message.instanceId,
+        messageType: message.type,
+      });
       return;
     }
 
+    this.debug('presence.reset-session-identity', {
+      tabSessionId: this.tabSessionId,
+      localInstanceId: this.instanceId,
+      remoteInstanceId: message.instanceId,
+      messageType: message.type,
+    });
     this.resetSessionIdentity();
-    this.scheduleSync();
+    this.scheduleSync('presence.reset-session-identity');
+  }
+
+  private isDebugEnabled() {
+    if (!browser) return false;
+    const fromSession =
+      typeof sessionStorage !== 'undefined'
+        ? sessionStorage.getItem(TAB_SESSION_DEBUG_KEY)
+        : null;
+    const fromLocal =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem(TAB_SESSION_DEBUG_KEY)
+        : null;
+    if (fromSession === '1' || fromLocal === '1') {
+      return true;
+    }
+    const locationSearch =
+      typeof window !== 'undefined' && 'location' in window && window.location
+        ? window.location.search
+        : '';
+    return new URLSearchParams(locationSearch).get('realtimeDebug') === '1';
+  }
+
+  private shortHash(value: string) {
+    if (!value) return 'empty';
+    let hash = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
+  }
+
+  private debug(event: string, payload: Record<string, unknown> = {}) {
+    if (!this.isDebugEnabled()) {
+      return;
+    }
+    console.debug('[tab-realtime]', {
+      event,
+      instanceId: this.instanceId,
+      tabSessionId: this.tabSessionId,
+      appliedRevision: this.appliedRevision,
+      appliedStateKey: this.shortHash(this.appliedStateKey),
+      inFlightRevision: this.inFlightState?.revision ?? null,
+      syncQueued: this.syncQueued,
+      contributorCount: this.contributors.size,
+      ...payload,
+    });
   }
 }
 

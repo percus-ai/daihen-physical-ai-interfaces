@@ -219,6 +219,48 @@ describe('tabSessionClient', () => {
     expect(client.appliedRevision).toBe(7);
   });
 
+  it('bootstraps stored tab session state before first PUT after reload', async () => {
+    sessionStorage.setItem('percus.realtime.tab_session_id', 'tab-reload');
+    sessionStorage.setItem('percus.realtime.tab_session_revision', '13');
+    realtimeApi.tabSessionState.mockResolvedValueOnce(
+      buildStateResponse({
+        tab_session_id: 'tab-reload',
+        revision: 14
+      })
+    );
+
+    const { getTabRealtimeClient } = await import('./tabSessionClient');
+    const client = getTabRealtimeClient() as unknown as {
+      registerContributor: (input: {
+        contributorId?: string;
+        subscriptions: Array<{
+          subscription_id: string;
+          kind: 'profiles.active';
+          params: Record<string, never>;
+        }>;
+      }) => unknown;
+      appliedRevision?: number;
+      syncInFlight?: Promise<void> | null;
+    };
+
+    client.registerContributor({
+      contributorId: 'profiles',
+      subscriptions: [
+        {
+          subscription_id: 'profiles.active',
+          kind: 'profiles.active',
+          params: {}
+        }
+      ]
+    });
+
+    await flushClient(client);
+
+    expect(realtimeApi.tabSessionState).toHaveBeenCalledTimes(1);
+    expect(realtimeApi.putTabSessionState).not.toHaveBeenCalled();
+    expect(client.appliedRevision).toBe(14);
+  });
+
   it('canonicalizes subscription order to avoid redundant PUTs', async () => {
     realtimeApi.putTabSessionState.mockResolvedValue({ revision: 1 });
 
@@ -260,6 +302,8 @@ describe('tabSessionClient', () => {
   });
 
   it('uses keepalive fetch for pagehide close path', async () => {
+    sessionStorage.setItem('percus.realtime.tab_session_id', 'tab-pagehide');
+    sessionStorage.setItem('percus.realtime.tab_session_revision', '1');
     realtimeApi.putTabSessionState.mockResolvedValueOnce({ revision: 1 });
     const fetchMock = vi
       .mocked(fetch)
@@ -308,6 +352,8 @@ describe('tabSessionClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT', keepalive: true });
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'DELETE', keepalive: true });
+    expect(sessionStorage.getItem('percus.realtime.tab_session_id')).toBeNull();
+    expect(sessionStorage.getItem('percus.realtime.tab_session_revision')).toBeNull();
   });
 
   it('resets session identity when another tab announces the same tab_session_id', async () => {
