@@ -258,6 +258,11 @@ class CloudConfig(BaseModel):
         None,
         description="Selected Vast offer id",
     )
+    selected_price_per_hour: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Selected candidate hourly price from the UI",
+    )
 
     # Vast.ai specific (v1)
     interruptible: Optional[bool] = Field(None, description="Selected Vast interruptible instance")

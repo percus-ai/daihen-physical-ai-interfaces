@@ -19,6 +19,7 @@ def _valid_create_job_payload() -> dict[str, Any]:
             "gpus_per_instance": 1,
             "selected_mode": "spot",
             "selected_offer_id": 123456,
+            "selected_price_per_hour": 0.72,
             "interruptible": True,
             "max_price": 1.2,
             "storage_size": 120,

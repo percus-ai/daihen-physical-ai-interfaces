@@ -351,6 +351,10 @@
         selected_mode: selectedMode,
         selected_instance_type: cloudProvider === 'verda' ? selectedInstanceType : null,
         selected_offer_id: cloudProvider === 'vast' ? selectedOfferId : null,
+        selected_price_per_hour:
+          cloudProvider === 'vast' && selectedCandidatePricePerHour !== null
+            ? selectedCandidatePricePerHour
+            : null,
         location: cloudProvider === 'verda' ? selectedLocation : 'auto',
         ...(isVerda
           ? {

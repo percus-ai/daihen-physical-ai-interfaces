@@ -228,14 +228,16 @@
         'verda',
         draftGpuModel,
         draftGpuCount,
-        currentRequestedMode
+        currentRequestedMode,
+        parsedStorageSize
       ],
       queryFn: () =>
         api.training.instanceCandidates({
           provider: 'verda',
           gpu_model: draftGpuModel !== 'any' ? draftGpuModel : undefined,
           gpu_count: draftGpuCount !== 'any' ? draftGpuCount : undefined,
-          mode: currentRequestedMode ?? undefined
+          mode: currentRequestedMode ?? undefined,
+          storage_size: parsedStorageSize ?? undefined
         }),
       enabled: modalOpen && draftProvider === 'verda' && isVerdaProviderEnabled
     }))
@@ -256,6 +258,7 @@
         draftGpuModel,
         draftGpuCount,
         currentRequestedMode,
+        parsedStorageSize,
         parsedMaxPrice
       ],
       queryFn: () =>
@@ -264,6 +267,7 @@
           gpu_model: draftGpuModel !== 'any' ? draftGpuModel : undefined,
           gpu_count: draftGpuCount !== 'any' ? draftGpuCount : undefined,
           mode: currentRequestedMode ?? undefined,
+          storage_size: parsedStorageSize ?? undefined,
           max_price: parsedMaxPrice
         }),
       enabled: modalOpen && draftProvider === 'vast' && isVastProviderEnabled
