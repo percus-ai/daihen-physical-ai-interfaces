@@ -115,6 +115,70 @@ def test_start_provision_operation_rejects_vast_when_required_env_missing(monkey
     assert "VAST_SSH_PRIVATE_KEY" in str(exc.value.detail)
 
 
+def test_run_training_provision_operation_cleans_up_instance_after_job_created(monkeypatch):
+    import interfaces_backend.api.training as training_api
+    from fastapi import HTTPException
+    from percus_ai.training import orchestrator as orch
+
+    progress_events: list[dict[str, Any]] = []
+    cleanup_calls: list[tuple[str, str]] = []
+    fail_calls: list[dict[str, str]] = []
+
+    class _FakeOperations:
+        async def update_from_progress(self, *, operation_id: str, progress: dict):
+            progress_events.append({"operation_id": operation_id, **progress})
+
+        async def fail(self, *, operation_id: str, message: str, failure_reason: str):
+            fail_calls.append(
+                {
+                    "operation_id": operation_id,
+                    "message": message,
+                    "failure_reason": failure_reason,
+                }
+            )
+
+    def fake_create_job_with_progress(request_data: dict, emit_progress, supabase_session: dict):
+        assert request_data["job_id"] == "job-1"
+        assert supabase_session["user_id"] == "user-1"
+        emit_progress({"type": "instance_created", "instance_id": "inst-1"})
+        emit_progress({"type": "job_created", "job_id": "job-1", "instance_id": "inst-1"})
+        raise HTTPException(status_code=500, detail="ssh failed")
+
+    def fake_cleanup(provider: str, instance_id: str):
+        cleanup_calls.append((provider, instance_id))
+        return True, "deleted"
+
+    monkeypatch.setattr(training_api, "get_training_provision_operations_service", lambda: _FakeOperations())
+    monkeypatch.setattr(training_api, "cleanup_provision_instance", fake_cleanup)
+    monkeypatch.setattr(orch, "create_job_with_progress", fake_create_job_with_progress)
+
+    async def _run():
+        await training_api._run_training_provision_operation(
+            operation_id="op-1",
+            request_data={
+                "job_id": "job-1",
+                "job_name": "job",
+                "dataset": {"id": "dataset-1"},
+                "policy": {"type": "pi05"},
+                "cloud": {"provider": "vast"},
+            },
+            supabase_session={"user_id": "user-1"},
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert cleanup_calls == [("vast", "inst-1")]
+    assert fail_calls == [
+        {
+            "operation_id": "op-1",
+            "message": "学習インスタンス作成に失敗しました。 作成中インスタンスは削除しました。",
+            "failure_reason": "ssh failed",
+        }
+    ]
+    assert [event["type"] for event in progress_events] == ["instance_created", "job_created"]
+
+
 def test_create_continue_job_rejects_non_verda_provider():
     from interfaces_backend.models.training import JobCreateContinueRequest
     import interfaces_backend.api.training as training_api

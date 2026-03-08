@@ -4906,41 +4906,32 @@ async def _run_training_provision_operation(
     def worker() -> dict:
         return create_job_with_progress(request_data, emit_progress, supabase_session)
 
+    async def cleanup_failed_instance() -> str:
+        if not latest["instance_id"]:
+            return ""
+        deleted, detail = await loop.run_in_executor(
+            None,
+            cleanup_provision_instance,
+            provider,
+            latest["instance_id"],
+        )
+        return (
+            " 作成中インスタンスは削除しました。"
+            if deleted
+            else f" 作成中インスタンスの削除に失敗しました: {detail}"
+        )
+
     try:
         await loop.run_in_executor(_executor, worker)
     except HTTPException as exc:
-        cleanup_note = ""
-        if latest["instance_id"] and not latest["job_id"]:
-            deleted, detail = await loop.run_in_executor(
-                None,
-                cleanup_provision_instance,
-                provider,
-                latest["instance_id"],
-            )
-            cleanup_note = (
-                " 作成中インスタンスは削除しました。"
-                if deleted
-                else f" 作成中インスタンスの削除に失敗しました: {detail}"
-            )
+        cleanup_note = await cleanup_failed_instance()
         await operations.fail(
             operation_id=operation_id,
             message=f"学習インスタンス作成に失敗しました。{cleanup_note}".strip(),
             failure_reason=str(exc.detail),
         )
     except Exception as exc:
-        cleanup_note = ""
-        if latest["instance_id"] and not latest["job_id"]:
-            deleted, detail = await loop.run_in_executor(
-                None,
-                cleanup_provision_instance,
-                provider,
-                latest["instance_id"],
-            )
-            cleanup_note = (
-                " 作成中インスタンスは削除しました。"
-                if deleted
-                else f" 作成中インスタンスの削除に失敗しました: {detail}"
-            )
+        cleanup_note = await cleanup_failed_instance()
         await operations.fail(
             operation_id=operation_id,
             message=f"学習インスタンス作成に失敗しました。{cleanup_note}".strip(),
