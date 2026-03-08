@@ -90,7 +90,6 @@ from interfaces_backend.api import (
     recording_router,
     startup_router,
     storage_router,
-    stream_router,
     system_router,
     teleop_router,
     training_router,
@@ -283,7 +282,6 @@ app.include_router(realtime_router)
 app.include_router(recording_router)
 app.include_router(startup_router)
 app.include_router(storage_router)
-app.include_router(stream_router)
 app.include_router(system_router)
 app.include_router(teleop_router)
 app.include_router(training_router)

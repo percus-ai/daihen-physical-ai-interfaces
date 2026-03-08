@@ -14,7 +14,6 @@ from interfaces_backend.api.realtime import router as realtime_router
 from interfaces_backend.api.recording import router as recording_router
 from interfaces_backend.api.startup import router as startup_router
 from interfaces_backend.api.storage import router as storage_router
-from interfaces_backend.api.stream import router as stream_router
 from interfaces_backend.api.system import router as system_router
 from interfaces_backend.api.teleop import router as teleop_router
 from interfaces_backend.api.training import router as training_router
@@ -36,7 +35,6 @@ __all__ = [
     "recording_router",
     "startup_router",
     "storage_router",
-    "stream_router",
     "system_router",
     "teleop_router",
     "training_router",
