@@ -28,6 +28,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import PlainTextResponse
+from postgrest.exceptions import APIError
 from supabase import create_async_client
 from supabase._async.client import AsyncClient
 
@@ -114,6 +115,18 @@ _T = TypeVar("_T")
 def _is_jwt_expired_error(exc: Exception) -> bool:
     text = str(exc)
     return "JWT expired" in text or "PGRST303" in text
+
+
+def _is_invalid_uuid_error(exc: Exception) -> bool:
+    if isinstance(exc, APIError):
+        code = str(getattr(exc, "code", "") or "").strip()
+        if code == "22P02":
+            return True
+        details = getattr(exc, "details", None)
+        if isinstance(details, str) and "invalid input syntax for type uuid" in details.lower():
+            return True
+    text = str(exc).lower()
+    return "invalid input syntax for type uuid" in text
 
 
 _ISO_FRACTION_TZ_PATTERN = re.compile(r"^(?P<prefix>.+?T\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?(?P<tz>Z|[+-]\d{2}:\d{2})?$")
@@ -1409,6 +1422,8 @@ async def _load_job(job_id: str, include_deleted: bool = False) -> Optional[dict
     try:
         records = await _fetch_with(client)
     except Exception as exc:
+        if _is_invalid_uuid_error(exc):
+            return None
         if not _is_jwt_expired_error(exc):
             raise
         service_client = await _get_service_db_client()

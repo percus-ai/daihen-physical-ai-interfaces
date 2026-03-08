@@ -124,7 +124,12 @@ def _isolate_env(tmp_path_factory):
     os.environ["HOME"] = str(home_dir)
     os.environ["PHYSICAL_AI_DATA_DIR"] = str(workspace)
     os.environ["PHYSICAL_AI_PROJECT_ROOT"] = str(REPO_ROOT)
+    os.environ["PHI_ENV"] = "e2e"
     os.environ["PHI_DISABLE_TRAINING_PROVISION_RECOVERY"] = "1"
+
+    # Pre-create bind-mount source paths as current user to prevent Docker from
+    # auto-creating root-owned directories (e.g. profiles/classes).
+    (workspace / "profiles" / "classes").mkdir(parents=True, exist_ok=True)
 
     yield
 
@@ -140,6 +145,7 @@ def _reset_backend_state() -> None:
     import interfaces_backend.services.startup_operations as startup_operations
     import interfaces_backend.services.tab_realtime as tab_realtime
     import interfaces_backend.services.training_provision_recovery as training_provision_recovery
+    import percus_ai.db as percus_db
 
     calibration._sessions.clear()
     calibration._motor_buses.clear()
@@ -154,21 +160,19 @@ def _reset_backend_state() -> None:
     startup_operations.reset_startup_operations_service()
     tab_realtime.reset_tab_realtime_registry()
     training_provision_recovery.reset_training_provision_recovery_service()
+    percus_db.reset_supabase_async_client_cache()
 
 
 
 @pytest.fixture(autouse=True)
-def _clean_storage():
+def _clean_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import shutil
 
-    data_dir = Path(os.environ["PHYSICAL_AI_DATA_DIR"])
-    for child in data_dir.iterdir():
-        if child.name == "data":
-            continue
-        if child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+    # Use an isolated data dir per test to avoid cross-test contamination and
+    # host permission collisions from container-created files.
+    data_dir = tmp_path / "physical-ai-data"
+    (data_dir / "profiles" / "classes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PHYSICAL_AI_DATA_DIR", str(data_dir))
 
     calib_dir = Path(os.environ["HOME"]) / ".cache" / "percus_ai" / "calibration"
     if calib_dir.exists():

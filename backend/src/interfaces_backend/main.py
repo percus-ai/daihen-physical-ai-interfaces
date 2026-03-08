@@ -22,6 +22,12 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 def _find_repo_root() -> Path:
     """Find repository root by looking for data/.env file."""
+    project_root_raw = str(os.environ.get("PHYSICAL_AI_PROJECT_ROOT") or "").strip()
+    if project_root_raw:
+        project_root = Path(project_root_raw).expanduser()
+        if project_root.is_dir():
+            return project_root
+
     current = Path.cwd()
     for _ in range(10):  # Look up to 10 levels
         # Priority: look for data/.env (indicates repo root with config)
