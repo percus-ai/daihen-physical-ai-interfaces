@@ -14,6 +14,10 @@ from interfaces_backend.services.dataset_lifecycle import DatasetLifecycle, get_
 from interfaces_backend.services.inference_recording_controller import (
     InferenceRecordingController,
 )
+from interfaces_backend.services.inference_model_compatibility import (
+    InferenceModelCompatibilityError,
+    validate_inference_model_profile_compatibility,
+)
 from interfaces_backend.services.inference_runtime import (
     InferenceRuntimeManager,
     get_inference_runtime_manager,
@@ -35,6 +39,7 @@ from interfaces_backend.services.vlabor_profiles import (
     extract_arm_namespaces,
     extract_recorder_arm_streams,
 )
+from percus_ai.storage.paths import get_models_dir
 
 logger = logging.getLogger(__name__)
 _ACTIVE_RECORDER_STATES = {"warming", "recording", "paused", "resetting", "resetting_paused"}
@@ -352,11 +357,35 @@ class InferenceSessionManager(BaseSessionManager):
                 sync_status_callback=_on_model_sync,
             )
 
+            model_dir = get_models_dir() / str(kwargs["model_id"])
+            try:
+                compatibility = validate_inference_model_profile_compatibility(
+                    model_dir=model_dir,
+                    profile_snapshot=state.profile.snapshot,
+                )
+            except InferenceModelCompatibilityError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            self._emit_progress(
+                progress_callback,
+                phase="prepare_env",
+                progress_percent=84.0,
+                message="推論実行環境を準備しています...",
+            )
+            try:
+                await asyncio.to_thread(
+                    self._runtime.prepare_environment,
+                    policy_type=compatibility.policy_type,
+                    progress_callback=progress_callback,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+
             # Start GPU worker
             self._emit_progress(
                 progress_callback,
                 phase="launch_worker",
-                progress_percent=86.0,
+                progress_percent=94.0,
                 message="推論ワーカーを起動しています...",
             )
             try:
@@ -395,7 +424,7 @@ class InferenceSessionManager(BaseSessionManager):
             self._emit_progress(
                 progress_callback,
                 phase="persist",
-                progress_percent=96.0,
+                progress_percent=99.0,
                 message="推論セッション情報を保存しています...",
             )
             try:

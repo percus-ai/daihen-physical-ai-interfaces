@@ -14,6 +14,7 @@
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
   import TaskCandidateCombobox from '$lib/components/TaskCandidateCombobox.svelte';
+  import { START_PHASE_LABELS } from '$lib/operate/startupPhases';
   import type { SystemStatusSnapshot } from '$lib/types/systemStatus';
 
   type InferenceModel = {
@@ -126,18 +127,6 @@
   let startupStreamError = $state('');
   let stopStartupStream = () => {};
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
-
-  const START_PHASE_LABELS: Record<string, string> = {
-    queued: 'キュー待機',
-    resolve_profile: 'プロファイル解決',
-    start_lerobot: 'Lerobot起動',
-    sync_model: 'モデル同期',
-    launch_worker: 'ワーカー起動',
-    prepare_recorder: '録画準備',
-    persist: '状態保存',
-    done: '完了',
-    error: '失敗'
-  };
 
   const emptyRunnerStatus: RunnerStatus = {};
   $effect(() => {

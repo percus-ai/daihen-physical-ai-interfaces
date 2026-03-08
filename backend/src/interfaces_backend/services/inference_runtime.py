@@ -292,6 +292,66 @@ class InferenceRuntimeManager:
             "checks": checks,
         }
 
+    def prepare_environment(
+        self,
+        *,
+        policy_type: str,
+        progress_callback: Optional[Callable[[str, float, str, Optional[dict[str, Any]]], None]] = None,
+    ) -> str:
+        normalized_policy_type = str(policy_type or "").strip().lower()
+        if not normalized_policy_type:
+            raise RuntimeError("Environment preparation failed: policy type is missing")
+
+        env_manager = EnvironmentManager(get_project_root())
+        env_name = env_manager.get_env_for_policy(normalized_policy_type)
+        last_error: Optional[str] = None
+
+        def _on_env_event(event: dict[str, object]) -> None:
+            nonlocal last_error
+            if not isinstance(event, dict):
+                return
+            event_type = str(event.get("type") or "").strip().lower()
+            step = str(event.get("step") or "").strip() or "prepare"
+            message = str(event.get("message") or "").strip() or "推論実行環境を準備しています..."
+            error = str(event.get("error") or "").strip()
+            try:
+                raw_percent = float(event.get("percent") or 0.0)
+            except (TypeError, ValueError):
+                raw_percent = 0.0
+            mapped_percent = 84.0 + (max(0.0, min(raw_percent, 100.0)) * 0.08)
+            detail = {"env_name": env_name, "step": step}
+            if error:
+                detail["error"] = error
+            if progress_callback is not None:
+                progress_callback("prepare_env", mapped_percent, message, detail)
+            if event_type == "error":
+                last_error = error or message
+
+        if progress_callback is not None:
+            progress_callback(
+                "prepare_env",
+                84.0,
+                "推論実行環境を準備しています...",
+                {"env_name": env_name},
+            )
+
+        prepared = env_manager.ensure_env(
+            env_name,
+            silent=True,
+            callback=_on_env_event,
+        )
+        if not prepared:
+            detail = last_error or f"failed to ensure environment '{env_name}'"
+            raise RuntimeError(f"Environment preparation failed: {detail}")
+        if progress_callback is not None:
+            progress_callback(
+                "prepare_env",
+                92.0,
+                "推論実行環境の準備が完了しました。",
+                {"env_name": env_name},
+            )
+        return env_name
+
     # --------------------------------------------------------------------- #
     # Lifecycle control
     # --------------------------------------------------------------------- #
@@ -404,7 +464,7 @@ class InferenceRuntimeManager:
         worker_trace_path = ipc_dir / "worker_trace.jsonl"
         event_log_path = ipc_dir / "events.jsonl"
         if progress_callback is not None:
-            progress_callback("launch_worker", 88.0, "推論ワーカーを起動しています...", None)
+            progress_callback("launch_worker", 94.0, "推論ワーカーを起動しています...", None)
         worker_cmd += [
             "--trace-log-path",
             str(worker_trace_path),
@@ -412,12 +472,15 @@ class InferenceRuntimeManager:
 
         event_log_path.touch(exist_ok=True)
         worker_log = open(log_path, "a", encoding="utf-8")
+        worker_env = os.environ.copy()
+        worker_env["PERCUS_AI_SKIP_ENV_ENSURE"] = "1"
         worker_proc = subprocess.Popen(
             worker_cmd,
             cwd=repo_root,
             stdout=worker_log,
             stderr=subprocess.STDOUT,
             text=True,
+            env=worker_env,
         )
 
         with self._lock:
@@ -462,11 +525,12 @@ class InferenceRuntimeManager:
             except Exception:
                 time.sleep(0.2)
         else:
+            timeout_message = "Timed out waiting for worker control socket"
             with self._lock:
-                self._last_error = "worker startup timeout"
+                self._last_error = timeout_message
                 self._runner_state = "error"
             self._cleanup_worker_resources()
-            raise RuntimeError("Timed out waiting for worker control socket")
+            raise RuntimeError(timeout_message)
 
         model_policy_options = dict(active_policy_options)
         if denoising_steps_value is not None:
@@ -493,7 +557,7 @@ class InferenceRuntimeManager:
             "protocol": {"name": _PROTOCOL_NAME, "version": _PROTOCOL_VERSION},
         }
         if progress_callback is not None:
-            progress_callback("launch_worker", 94.0, "ワーカーとハンドシェイクしています...", None)
+            progress_callback("launch_worker", 97.0, "ワーカーとハンドシェイクしています...", None)
         try:
             self._send_ctrl_command("start_session", start_payload, timeout_ms=_START_SESSION_TIMEOUT_MS)
         except Exception as exc:
