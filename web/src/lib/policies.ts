@@ -21,6 +21,13 @@ export type PolicyInfo = {
   useAmp?: boolean;
 };
 
+export type GpuModelInfo = {
+  value: string;
+  label: string;
+  description: string;
+  torchNightly: boolean;
+};
+
 export const POLICY_TYPES: PolicyInfo[] = [
   {
     id: 'act',
@@ -107,16 +114,24 @@ export const POLICY_TYPES: PolicyInfo[] = [
   }
 ];
 
-export const GPU_MODELS = [
-  { name: 'B300', description: '262GB VRAM - Blackwell Ultra (torch nightly必須)', torchNightly: true },
-  { name: 'B200', description: '180GB VRAM - Blackwell (torch nightly必須)', torchNightly: true },
-  { name: 'H200', description: '141GB VRAM - Hopper 大容量', torchNightly: false },
-  { name: 'H100', description: '80GB VRAM - Hopper 標準 (推奨)', torchNightly: false },
-  { name: 'A100', description: '80GB VRAM - Ampere コスパ良', torchNightly: false },
-  { name: 'L40S', description: '48GB VRAM - Ada Lovelace', torchNightly: false },
-  { name: 'RTX PRO 6000', description: 'RTX PRO 6000 クラス', torchNightly: false },
-  { name: 'RTX 6000ADA', description: '48GB VRAM - RTX 6000 Ada', torchNightly: false },
-  { name: 'RTX A6000', description: '48GB VRAM - RTX A6000', torchNightly: false }
+export const GPU_MODELS: GpuModelInfo[] = [
+  { value: 'B300', label: 'B300', description: '262GB VRAM - Blackwell Ultra (torch nightly必須)', torchNightly: true },
+  { value: 'B200', label: 'B200', description: '180GB VRAM - Blackwell (torch nightly必須)', torchNightly: true },
+  { value: 'H200', label: 'H200', description: '141GB VRAM - Hopper 大容量', torchNightly: false },
+  { value: 'H100', label: 'H100', description: '80GB VRAM - Hopper 標準 (推奨)', torchNightly: false },
+  { value: 'A100', label: 'A100', description: '80GB VRAM - Ampere コスパ良', torchNightly: false },
+  { value: 'L40S', label: 'L40S', description: '48GB VRAM - Ada Lovelace', torchNightly: false },
+  { value: 'RTX PRO 6000', label: 'RTX PRO 6000', description: 'RTX PRO 6000 クラス', torchNightly: false },
+  { value: 'RTX6000ADA', label: 'RTX 6000ADA', description: '48GB VRAM - RTX 6000 Ada', torchNightly: false },
+  { value: 'RTXA6000', label: 'RTX A6000', description: '48GB VRAM - RTX A6000', torchNightly: false }
 ];
+
+const GPU_MODEL_LABEL_MAP = new Map(GPU_MODELS.map((gpu) => [gpu.value, gpu.label]));
+
+export const getGpuModelLabel = (value: string | null | undefined): string => {
+  const key = String(value || '').trim();
+  if (!key) return '';
+  return GPU_MODEL_LABEL_MAP.get(key) ?? key;
+};
 
 export const GPU_COUNTS = [1, 2, 4, 8];

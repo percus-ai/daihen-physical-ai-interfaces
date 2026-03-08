@@ -5,7 +5,7 @@
   import toast from 'svelte-french-toast';
 
   import { api } from '$lib/api/client';
-  import { GPU_MODELS } from '$lib/policies';
+  import { GPU_MODELS, getGpuModelLabel } from '$lib/policies';
   import type {
     TrainingInstanceCandidate,
     TrainingInstanceCandidatesResponse
@@ -73,7 +73,7 @@
     onApplySelection
   }: Props = $props();
 
-  const gpuModelOptions = ['any', ...GPU_MODELS.map((gpu) => gpu.name)];
+  const gpuModelOptions = ['any', ...GPU_MODELS.map((gpu) => gpu.value)];
   const storagePresetOptions = ['200', '300', '400', '500'];
   const vastPricePresetOptions = ['', '2.5', '3.5', '5.0'];
 
@@ -136,10 +136,10 @@
     gpu_model?: string;
     gpu_count?: number;
   }) => {
-    if (candidate.provider === 'verda') {
-      if (candidate.gpu_model && candidate.gpu_count) return `${candidate.gpu_model} x${candidate.gpu_count}`;
-      if (candidate.gpuLabel) return candidate.gpuLabel;
+    if (candidate.gpu_model && candidate.gpu_count) {
+      return `${getGpuModelLabel(candidate.gpu_model)} x${candidate.gpu_count}`;
     }
+    if (candidate.gpuLabel) return candidate.gpuLabel;
     return candidate.title;
   };
 
@@ -281,7 +281,7 @@
     detail: candidate.detail || candidate.route || candidate.location || '',
     route: candidate.route || candidate.location || 'auto',
     priceLabel: formatPrice(candidate.price_per_hour),
-    gpuLabel: `${candidate.gpu_model} x${candidate.gpu_count}`,
+    gpuLabel: `${getGpuModelLabel(candidate.gpu_model)} x${candidate.gpu_count}`,
     statusText: '利用可能'
   });
 
@@ -301,7 +301,7 @@
       detail: String(selectedCandidateDetail || '').trim(),
       route: String(selectedCandidateRoute || selectedLocation || 'auto').trim() || 'auto',
       priceLabel: formatPrice(selectedCandidatePricePerHour),
-      gpuLabel: `${gpuModel} x${gpuCount}`,
+      gpuLabel: `${getGpuModelLabel(gpuModel)} x${gpuCount}`,
       gpu_count: gpuCount,
       statusText: '利用可能',
       price_per_hour: selectedCandidatePricePerHour
@@ -616,7 +616,7 @@
                               class={`${roomyChipButtonClass} ${chipClass(draftGpuModel === option)}`}
                               onclick={() => (draftGpuModel = option)}
                             >
-                              {option === 'any' ? '任意' : option}
+                              {option === 'any' ? '任意' : getGpuModelLabel(option)}
                             </button>
                           {/each}
                         </div>

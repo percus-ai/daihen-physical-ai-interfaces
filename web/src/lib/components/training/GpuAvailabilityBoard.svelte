@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getGpuModelLabel } from '$lib/policies';
   import type { GpuAvailabilityItem } from '$lib/types/training';
 
   let {
@@ -148,7 +149,7 @@
             onclick={() => toggleExpanded(group.modelName)}
           >
             <div class="min-w-0">
-              <p class="text-sm font-semibold text-slate-900">{group.modelName}</p>
+              <p class="text-sm font-semibold text-slate-900">{getGpuModelLabel(group.modelName)}</p>
               <p class="mt-0.5 text-xs text-slate-500">
                 {group.entries.length} 構成 / 利用可能 {group.availableEntries}
               </p>

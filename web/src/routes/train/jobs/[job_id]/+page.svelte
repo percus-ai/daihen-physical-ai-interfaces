@@ -15,6 +15,7 @@
     type TrainingReviveResult
   } from '$lib/api/client';
   import { formatDate } from '$lib/format';
+  import { getGpuModelLabel } from '$lib/policies';
   import { connectStream } from '$lib/realtime/stream';
   import { queryClient } from '$lib/queryClient';
 
@@ -637,7 +638,7 @@
       <div class="mt-3 flex flex-wrap gap-2">
         <span class="chip">{status || 'unknown'}</span>
         {#if jobInfo?.gpu_model}
-          <span class="chip">{jobInfo.gpu_model} x {jobInfo.gpus_per_instance ?? 1}</span>
+          <span class="chip">{getGpuModelLabel(jobInfo.gpu_model)} x {jobInfo.gpus_per_instance ?? 1}</span>
         {/if}
         {#if jobInfo?.dataset_id}
           <span class="chip">{jobInfo.dataset_id}</span>

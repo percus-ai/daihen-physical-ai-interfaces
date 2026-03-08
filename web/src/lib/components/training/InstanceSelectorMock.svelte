@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Button, Dialog } from 'bits-ui';
   import toast from 'svelte-french-toast';
-  import { GPU_MODELS } from '$lib/policies';
+  import { GPU_MODELS, getGpuModelLabel } from '$lib/policies';
 
   type Provider = 'verda' | 'vast';
   type Availability = 'available' | 'checking' | 'blocked';
@@ -197,7 +197,7 @@
   };
 
   const candidatePreviewLine = (candidate: Candidate) => `${candidate.detail} / ${candidate.route}`;
-  const gpuModelOptions = ['any', ...GPU_MODELS.map((gpu) => gpu.name)];
+  const gpuModelOptions = ['any', ...GPU_MODELS.map((gpu) => gpu.value)];
   const storagePresetOptions = ['200', '300', '400', '500'];
   const vastPricePresetOptions = ['', '2.5', '3.5', '5.0'];
   const chipClass = (active: boolean) =>
@@ -535,15 +535,15 @@
                   <div>
                     <span class="label">GPUモデル</span>
                     <div class="mt-1 flex flex-wrap gap-1">
-                      {#each gpuModelOptions as option}
-                        <button
-                          type="button"
-                          class={`${roomyChipButtonClass} ${chipClass(draftGpuModel === option)}`}
-                          onclick={() => (draftGpuModel = option)}
-                        >
-                          {option === 'any' ? '任意' : option}
-                        </button>
-                      {/each}
+                        {#each gpuModelOptions as option}
+                          <button
+                            type="button"
+                            class={`${roomyChipButtonClass} ${chipClass(draftGpuModel === option)}`}
+                            onclick={() => (draftGpuModel = option)}
+                          >
+                            {option === 'any' ? '任意' : getGpuModelLabel(option)}
+                          </button>
+                        {/each}
                     </div>
                   </div>
 

@@ -82,7 +82,7 @@
 	    enabled: false
 	  });
 
-	  const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.name));
+	  const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.value));
 	  let activeTab = $state<'availability' | 'jobs' | 'storage'>('jobs');
 
 	  const storageItems = $derived(
