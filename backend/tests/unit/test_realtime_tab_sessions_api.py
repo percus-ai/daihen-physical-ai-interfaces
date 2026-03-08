@@ -49,11 +49,12 @@ def _make_state_payload(*, revision: int = 1, visibility: str = "foreground") ->
 class _FakeSourceRegistry:
     def __init__(self) -> None:
         self.poll_counts: dict[str, int] = {}
+        self.cleaned: list[str] = []
 
     def interval_for(self, subscription) -> float:
         return 0.0
 
-    async def poll(self, subscription) -> RealtimeSourcePollResult:
+    async def poll(self, subscription, state=None) -> RealtimeSourcePollResult:
         self.poll_counts[subscription.subscription_id] = self.poll_counts.get(subscription.subscription_id, 0) + 1
         if subscription.kind == "training.job.logs":
             return RealtimeSourcePollResult(error="logs unsupported")
@@ -64,6 +65,27 @@ class _FakeSourceRegistry:
                 "job_id": getattr(subscription.params, "job_id", None),
             }
         )
+
+    def cleanup(self, subscription, state) -> None:
+        del state
+        self.cleaned.append(subscription.subscription_id)
+
+
+class _FakeAppendSourceRegistry(_FakeSourceRegistry):
+    async def poll(self, subscription, state=None) -> RealtimeSourcePollResult:
+        count = self.poll_counts.get(subscription.subscription_id, 0) + 1
+        self.poll_counts[subscription.subscription_id] = count
+        if subscription.kind == "training.job.logs":
+            return RealtimeSourcePollResult(
+                op="append",
+                payload={
+                    "job_id": getattr(subscription.params, "job_id", None),
+                    "lines": [f"log-line-{count}"],
+                },
+                cursor=str(count),
+                next_state={"count": count},
+            )
+        return await super().poll(subscription, state=state)
 
 
 def test_tab_session_subscription_schema_is_typed():
@@ -211,6 +233,36 @@ def test_tab_session_registry_bumps_generation_when_subscription_changes():
         )
         assert changed_snapshot["source"]["generation"] == 2
         assert changed_snapshot["payload"]["job_id"] == "job-2"
+
+    asyncio.run(_run())
+    stream.close()
+
+
+def test_tab_session_registry_forwards_append_events_without_payload_dedup():
+    registry = TabRealtimeRegistry()
+    source_registry = _FakeAppendSourceRegistry()
+    state = TabSessionStateRequest.model_validate(_make_state_payload(revision=1))
+    registry.apply_state(user_id="user-1", tab_session_id="tab-1", state=state)
+
+    stream = registry.open_stream(
+        user_id="user-1",
+        tab_session_id="tab-1",
+        last_event_id=None,
+        source_registry=source_registry,
+    )
+
+    async def _run():
+        last_event_id = max(event["stream_seq"] for event in stream.replay_events)
+        _, first_events = await stream.poll(after_seq=last_event_id)
+        after_first = max(event["stream_seq"] for event in first_events)
+        first_append = next(event for event in first_events if event["op"] == "append")
+        assert first_append["payload"]["lines"] == ["log-line-1"]
+        assert first_append["cursor"] == "1"
+
+        _, second_events = await stream.poll(after_seq=after_first)
+        second_append = next(event for event in second_events if event["op"] == "append")
+        assert second_append["payload"]["lines"] == ["log-line-2"]
+        assert second_append["cursor"] == "2"
 
     asyncio.run(_run())
     stream.close()

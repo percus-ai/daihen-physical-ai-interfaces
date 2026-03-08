@@ -31,7 +31,10 @@ class _SourceRegistryProtocol(Protocol):
     def interval_for(self, subscription: TabSessionSubscription) -> float:
         ...
 
-    async def poll(self, subscription: TabSessionSubscription) -> Any:
+    async def poll(self, subscription: TabSessionSubscription, state: Any | None = None) -> Any:
+        ...
+
+    def cleanup(self, subscription: TabSessionSubscription, state: Any | None) -> None:
         ...
 
 
@@ -59,6 +62,7 @@ class _SubscriptionRuntime:
     last_payload_json: str | None = None
     last_polled_mono: float = 0.0
     pending_immediate: bool = True
+    source_state: Any | None = None
 
 
 class TabSessionStreamHandle:
@@ -202,6 +206,7 @@ class _TabSession:
         *,
         force_immediate: bool,
     ) -> None:
+        source_registry = self._source_registry()
         next_runtimes: dict[str, _SubscriptionRuntime] = {}
         for subscription in subscriptions:
             previous = self._subscriptions.get(subscription.subscription_id)
@@ -223,15 +228,31 @@ class _TabSession:
                     last_payload_json=previous.last_payload_json,
                     last_polled_mono=previous.last_polled_mono,
                     pending_immediate=previous.pending_immediate or force_immediate,
+                    source_state=previous.source_state,
                 )
                 continue
 
+            source_registry.cleanup(previous.subscription, previous.source_state)
             next_runtimes[subscription.subscription_id] = _SubscriptionRuntime(
                 subscription=subscription,
                 generation=previous.generation + 1,
                 pending_immediate=True,
             )
+        for subscription_id, previous in self._subscriptions.items():
+            if subscription_id not in next_runtimes:
+                source_registry.cleanup(previous.subscription, previous.source_state)
+        if self._visibility != "foreground":
+            for runtime in next_runtimes.values():
+                source_registry.cleanup(runtime.subscription, runtime.source_state)
+                runtime.source_state = None
+                runtime.pending_immediate = True
         self._subscriptions = next_runtimes
+
+    @staticmethod
+    def _source_registry() -> _SourceRegistryProtocol:
+        from interfaces_backend.services.tab_realtime_sources import get_tab_realtime_source_registry
+
+        return get_tab_realtime_source_registry()
 
     def open_stream(self, *, last_event_id: int | None) -> tuple[str, list[_ReplayEvent]]:
         with self._lock:
@@ -296,24 +317,37 @@ class _TabSession:
                 if not should_poll and (now_mono - runtime.last_polled_mono) >= interval:
                     should_poll = True
                 if should_poll:
-                    pending.append((subscription_id, runtime.generation, runtime.subscription))
+                    pending.append(
+                        (
+                            subscription_id,
+                            runtime.generation,
+                            runtime.subscription,
+                            runtime.source_state,
+                        )
+                    )
 
-        for subscription_id, generation, subscription in pending:
-            result = await source_registry.poll(subscription)
+        for subscription_id, generation, subscription, source_state in pending:
+            result = await source_registry.poll(subscription, source_state)
             with self._lock:
                 current_runtime = self._subscriptions.get(subscription_id)
                 if current_runtime is None or current_runtime.generation != generation:
+                    source_registry.cleanup(subscription, result.next_state)
                     continue
                 if self._active_connection_id != connection_id or self._deleted:
+                    source_registry.cleanup(subscription, result.next_state)
                     return "superseded", []
                 current_runtime.last_polled_mono = time.monotonic()
                 current_runtime.pending_immediate = False
+                current_runtime.source_state = result.next_state
                 source_meta = {
                     "subscription_id": subscription.subscription_id,
                     "kind": subscription.kind,
                     "params": subscription.params.model_dump(mode="json"),
                     "generation": current_runtime.generation,
                 }
+                if result.close_state:
+                    source_registry.cleanup(subscription, current_runtime.source_state)
+                    current_runtime.source_state = None
                 if result.error is not None:
                     error_payload = {"message": result.error}
                     encoded_error = json.dumps(error_payload, ensure_ascii=False, sort_keys=True)
@@ -328,14 +362,16 @@ class _TabSession:
                     continue
                 payload = result.payload or {}
                 encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-                if encoded == current_runtime.last_payload_json:
+                if result.op != "append" and encoded == current_runtime.last_payload_json:
                     continue
-                current_runtime.last_payload_json = encoded
+                if result.op != "append":
+                    current_runtime.last_payload_json = encoded
                 current_runtime.source_version += 1
                 self._append_event_unlocked(
-                    op="snapshot",
+                    op=result.op,
                     source=source_meta,
                     source_version=current_runtime.source_version,
+                    cursor=result.cursor,
                     payload=payload,
                 )
 
@@ -354,6 +390,11 @@ class _TabSession:
         with self._lock:
             if self._active_connection_id == connection_id:
                 self._active_connection_id = None
+                source_registry = self._source_registry()
+                for runtime in self._subscriptions.values():
+                    source_registry.cleanup(runtime.subscription, runtime.source_state)
+                    runtime.source_state = None
+                    runtime.pending_immediate = True
                 self._touch_unlocked()
 
     def current_state(self) -> TabSessionStateResponse:
@@ -372,6 +413,10 @@ class _TabSession:
         with self._lock:
             if self._deleted:
                 return
+            source_registry = self._source_registry()
+            for runtime in self._subscriptions.values():
+                source_registry.cleanup(runtime.subscription, runtime.source_state)
+                runtime.source_state = None
             self._append_event_unlocked(
                 op="control",
                 payload={
