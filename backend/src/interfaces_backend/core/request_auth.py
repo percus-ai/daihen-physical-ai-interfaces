@@ -77,6 +77,10 @@ def _refresh_timeout_seconds() -> int:
     raw = os.environ.get("PHI_SUPABASE_REFRESH_TIMEOUT_SECONDS")
     if raw is None or raw == "":
         return DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS
 
 
 def _refresh_backoff_seconds() -> int:
@@ -91,10 +95,6 @@ def _refresh_backoff_seconds() -> int:
 
 def _refresh_backoff_key(refresh_token: str) -> str:
     return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS
 
 
 def set_session_cookies(response: Response, session: dict[str, Any]) -> None:

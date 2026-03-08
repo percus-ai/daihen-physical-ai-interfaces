@@ -3,6 +3,30 @@ from types import SimpleNamespace
 import urllib.error
 
 
+def test_refresh_timeout_seconds_uses_env_value(monkeypatch):
+    monkeypatch.setenv("PHI_SUPABASE_REFRESH_TIMEOUT_SECONDS", "9")
+
+    assert request_auth._refresh_timeout_seconds() == 9
+
+
+def test_refresh_timeout_seconds_falls_back_for_invalid_env(monkeypatch):
+    monkeypatch.setenv("PHI_SUPABASE_REFRESH_TIMEOUT_SECONDS", "invalid")
+
+    assert (
+        request_auth._refresh_timeout_seconds()
+        == request_auth.DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS
+    )
+
+
+def test_refresh_timeout_seconds_uses_default_when_env_missing(monkeypatch):
+    monkeypatch.delenv("PHI_SUPABASE_REFRESH_TIMEOUT_SECONDS", raising=False)
+
+    assert (
+        request_auth._refresh_timeout_seconds()
+        == request_auth.DEFAULT_SUPABASE_REFRESH_TIMEOUT_SECONDS
+    )
+
+
 def test_build_session_from_tokens_uses_verified_claims(monkeypatch):
     monkeypatch.setattr(
         request_auth,
