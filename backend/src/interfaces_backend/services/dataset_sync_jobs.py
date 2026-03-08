@@ -18,9 +18,6 @@ from interfaces_backend.models.storage import (
     DatasetSyncJobState,
     DatasetSyncJobStatus,
 )
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
-
-DATASET_SYNC_JOB_TOPIC = "storage.dataset_sync.job"
 _ACTIVE_STATES: set[DatasetSyncJobState] = {"queued", "running"}
 _TERMINAL_STATES: set[DatasetSyncJobState] = {"completed", "failed", "cancelled"}
 _DEFAULT_TTL_SECONDS = 1800
@@ -86,8 +83,6 @@ class DatasetSyncJobsService:
                 created_at=now,
                 updated_at=now,
             )
-            snapshot = self._jobs[job_id].to_response()
-        self._publish(snapshot)
         return DatasetSyncJobAcceptedResponse(
             accepted=True,
             job_id=job_id,
@@ -150,7 +145,6 @@ class DatasetSyncJobsService:
             record.updated_at = _utcnow()
             snapshot = record.to_response()
             self._tasks.pop(job_id, None)
-        self._publish(snapshot)
         return DatasetSyncJobCancelResponse(
             job_id=snapshot.job_id,
             accepted=True,
@@ -226,14 +220,7 @@ class DatasetSyncJobsService:
             if record.state in _TERMINAL_STATES:
                 self._tasks.pop(job_id, None)
         if snapshot is not None:
-            self._publish(snapshot)
-
-    def _publish(self, snapshot: DatasetSyncJobStatus) -> None:
-        get_realtime_event_bus().publish_threadsafe(
-            DATASET_SYNC_JOB_TOPIC,
-            snapshot.job_id,
-            snapshot.model_dump(mode="json"),
-        )
+            return None
 
     def _cleanup_locked(self) -> None:
         cutoff = _utcnow() - timedelta(seconds=self._ttl_seconds)

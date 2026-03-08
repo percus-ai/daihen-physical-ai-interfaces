@@ -26,9 +26,6 @@ from interfaces_backend.models.storage import (
     ModelSyncJobState,
     ModelSyncJobStatus,
 )
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
-
-MODEL_SYNC_JOB_TOPIC = "storage.model_sync.job"
 _ACTIVE_STATES: set[ModelSyncJobState] = {"queued", "running"}
 _TERMINAL_STATES: set[ModelSyncJobState] = {"completed", "failed", "cancelled"}
 _DEFAULT_TTL_SECONDS = 1800
@@ -106,8 +103,6 @@ class ModelSyncJobsService:
             self._pending.append(job_id)
             if self._pending_event is not None:
                 self._pending_event.set()
-            snapshot = self._jobs[job_id].to_response()
-        self._publish(snapshot)
         return ModelSyncJobAcceptedResponse(
             job_id=job_id,
             model_id=model_id,
@@ -179,7 +174,6 @@ class ModelSyncJobsService:
                 record.message = "モデル同期の中断を要求しました。"
             record.updated_at = _utcnow()
             snapshot = record.to_response()
-        self._publish(snapshot)
         return ModelSyncJobCancelResponse(
             job_id=snapshot.job_id,
             accepted=True,
@@ -387,14 +381,7 @@ class ModelSyncJobsService:
             if record.state in _TERMINAL_STATES:
                 self._cancel_events.pop(job_id, None)
         if snapshot is not None:
-            self._publish(snapshot)
-
-    def _publish(self, snapshot: ModelSyncJobStatus) -> None:
-        get_realtime_event_bus().publish_threadsafe(
-            MODEL_SYNC_JOB_TOPIC,
-            snapshot.job_id,
-            snapshot.model_dump(mode="json"),
-        )
+            return None
 
     def _cleanup_locked(self) -> None:
         cutoff = _utcnow() - timedelta(seconds=self._ttl_seconds)

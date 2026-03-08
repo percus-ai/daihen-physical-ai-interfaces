@@ -4,18 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from interfaces_backend.models.storage import DatasetMergeRequest, DatasetMergeResponse
-from interfaces_backend.services import dataset_merge_jobs as jobs_module
 from interfaces_backend.services.dataset_merge_jobs import DatasetMergeJobsService
-
-
-class _DummyBus:
-    def publish_threadsafe(self, _topic: str, _key: str, _payload: dict) -> None:
-        return
-
-
-@pytest.fixture(autouse=True)
-def _stub_realtime_event_bus(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(jobs_module, "get_realtime_event_bus", lambda: _DummyBus())
 
 
 def test_create_rejects_parallel_jobs_for_same_user() -> None:
@@ -81,4 +70,3 @@ def test_update_from_progress_error_marks_failed() -> None:
     status = service.get(user_id="user-1", job_id=accepted.job_id)
     assert status.state == "failed"
     assert status.error == "boom"
-

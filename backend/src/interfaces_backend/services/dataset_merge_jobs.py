@@ -1,4 +1,4 @@
-"""In-memory dataset merge job tracking with SSE updates."""
+"""In-memory dataset merge job tracking."""
 
 from __future__ import annotations
 
@@ -17,9 +17,6 @@ from interfaces_backend.models.storage import (
     DatasetMergeRequest,
     DatasetMergeResponse,
 )
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
-
-DATASET_MERGE_JOB_TOPIC = "storage.dataset_merge.job"
 _ACTIVE_STATES: set[DatasetMergeJobState] = {"queued", "running"}
 _TERMINAL_STATES: set[DatasetMergeJobState] = {"completed", "failed"}
 _DEFAULT_TTL_SECONDS = 1800
@@ -90,8 +87,6 @@ class DatasetMergeJobsService:
                 step="queued",
             )
             self._jobs[job_id] = record
-            snapshot = record.to_response()
-        self._publish(snapshot)
         return DatasetMergeJobAcceptedResponse(
             accepted=True,
             job_id=job_id,
@@ -137,8 +132,7 @@ class DatasetMergeJobsService:
             record.result_episode_count = int(result.episode_count or 0)
             record.detail.step = "completed"
             record.updated_at = _utcnow()
-            snapshot = record.to_response()
-        self._publish(snapshot)
+            record.to_response()
 
     def update_from_progress(self, *, job_id: str, progress: dict) -> None:
         """Translate merge/upload progress callbacks into a single job snapshot."""
@@ -284,14 +278,7 @@ class DatasetMergeJobsService:
             record.updated_at = _utcnow()
             snapshot = record.to_response()
         if snapshot is not None:
-            self._publish(snapshot)
-
-    def _publish(self, snapshot: DatasetMergeJobStatus) -> None:
-        get_realtime_event_bus().publish_threadsafe(
-            DATASET_MERGE_JOB_TOPIC,
-            snapshot.job_id,
-            snapshot.model_dump(mode="json"),
-        )
+            return None
 
     def _cleanup_locked(self) -> None:
         cutoff = _utcnow() - timedelta(seconds=self._ttl_seconds)

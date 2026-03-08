@@ -1,4 +1,4 @@
-"""Central status monitor for system snapshot SSE streaming."""
+"""Central status monitor for system snapshots."""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from interfaces_backend.models.status_monitor import (
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.inference_runtime import get_inference_runtime_manager
 from interfaces_backend.services.inference_session import get_inference_session_manager
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
 from interfaces_backend.services.recorder_bridge import get_recorder_bridge
 from interfaces_backend.services.vlabor_profiles import (
     ProfileHealthContract,
@@ -50,9 +49,6 @@ from interfaces_backend.utils.docker_compose import (
 from interfaces_backend.utils.docker_services import get_docker_service_summary
 from percus_ai.environment.env_manager import EnvironmentManager
 from percus_ai.environment.platform import Platform
-
-SYSTEM_STATUS_TOPIC = "system.status"
-SYSTEM_STATUS_KEY = "global"
 
 _RUNTIME_TTL_S = 600.0
 _RUNTIME_CHECK_INTERVAL_S = 5.0
@@ -91,7 +87,6 @@ def _find_repo_root() -> Path:
 class SystemStatusMonitor:
     def __init__(self, root_dir: Path | None = None) -> None:
         self._root_dir = (root_dir or _find_repo_root()).resolve()
-        self._bus = get_realtime_event_bus()
         self._env_manager = EnvironmentManager(self._root_dir)
         self._recorder = get_recorder_bridge()
         self._lock = threading.RLock()
@@ -149,11 +144,7 @@ class SystemStatusMonitor:
             if encoded == self._last_published_payload:
                 return
             self._last_published_payload = encoded
-        await self._bus.publish(
-            SYSTEM_STATUS_TOPIC,
-            SYSTEM_STATUS_KEY,
-            snapshot.model_dump(mode="json"),
-        )
+        return None
 
     async def _runtime_loop(self) -> None:
         while True:

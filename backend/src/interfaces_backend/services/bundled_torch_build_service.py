@@ -1,4 +1,4 @@
-"""Bundled-torch build orchestration with latest-state SSE snapshots."""
+"""Bundled-torch build orchestration with in-memory snapshots."""
 
 from __future__ import annotations
 
@@ -17,11 +17,8 @@ from interfaces_backend.models.build import (
     BundledTorchLogEntry,
     BundledTorchPlatformInfo,
 )
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
 from percus_ai.environment import Platform, TorchBuilder
 
-BUNDLED_TORCH_TOPIC = "system.bundled_torch"
-BUNDLED_TORCH_KEY = "global"
 _LOG_LIMIT = 400
 
 
@@ -31,7 +28,6 @@ def _now_iso() -> str:
 
 class BundledTorchBuildService:
     def __init__(self) -> None:
-        self._bus = get_realtime_event_bus()
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bundled-torch")
         self._active_task: asyncio.Task[None] | None = None
@@ -72,7 +68,7 @@ class BundledTorchBuildService:
             if encoded == self._last_published_payload:
                 return
             self._last_published_payload = encoded
-        await self._bus.publish(BUNDLED_TORCH_TOPIC, BUNDLED_TORCH_KEY, payload)
+        return None
 
     async def start_build(
         self,
@@ -268,7 +264,7 @@ class BundledTorchBuildService:
             payload = self._snapshot.model_dump(mode="json")
             encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
             self._last_published_payload = encoded
-        self._bus.publish_threadsafe(BUNDLED_TORCH_TOPIC, BUNDLED_TORCH_KEY, payload)
+        return None
 
     def _record_failure(self, error: str) -> None:
         now = _now_iso()
@@ -285,7 +281,7 @@ class BundledTorchBuildService:
             self._snapshot = self._with_capabilities(snapshot)
             payload = self._snapshot.model_dump(mode="json")
             self._last_published_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        self._bus.publish_threadsafe(BUNDLED_TORCH_TOPIC, BUNDLED_TORCH_KEY, payload)
+        return None
 
     def _replace_snapshot(self, snapshot: BundledTorchBuildSnapshot) -> None:
         with self._lock:

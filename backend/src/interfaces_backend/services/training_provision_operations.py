@@ -1,4 +1,4 @@
-"""Persistent training provision operation tracking with SSE updates."""
+"""Persistent training provision operation tracking."""
 
 from __future__ import annotations
 
@@ -18,14 +18,12 @@ from interfaces_backend.models.training import (
     TrainingProvisionOperationAcceptedResponse,
     TrainingProvisionOperationStatusResponse,
 )
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
 from percus_ai.db import get_supabase_async_client
 from percus_ai.training.providers.vast import destroy_instance
 from percus_ai.training.providers.verda import VerdaProvider
 
 logger = logging.getLogger(__name__)
 
-TRAINING_PROVISION_OPERATION_TOPIC = "training.provision_operation"
 TRAINING_PROVISION_OPERATION_TABLE = "training_provision_operations"
 _ACTIVE_STATES = {"queued", "running"}
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
@@ -132,8 +130,6 @@ class TrainingProvisionOperationsService:
             "finished_at": None,
         }
         await self._upsert(record)
-        snapshot = self._row_to_response(record)
-        await self._publish(snapshot)
         return TrainingProvisionOperationAcceptedResponse(
             accepted=True,
             operation_id=operation_id,
@@ -347,7 +343,7 @@ class TrainingProvisionOperationsService:
             await self._update_with_client(service_client, operation_id=operation_id, patch=patch)
         snapshot = await self.get_system(operation_id=operation_id)
         if snapshot is not None:
-            await self._publish(snapshot)
+            return None
 
     @staticmethod
     async def _update_with_client(
@@ -378,15 +374,6 @@ class TrainingProvisionOperationsService:
             started_at=row.get("started_at"),
             finished_at=row.get("finished_at"),
         )
-
-    @staticmethod
-    async def _publish(snapshot: TrainingProvisionOperationStatusResponse) -> None:
-        await get_realtime_event_bus().publish(
-            TRAINING_PROVISION_OPERATION_TOPIC,
-            snapshot.operation_id,
-            snapshot.model_dump(mode="json"),
-        )
-
 
 _service: TrainingProvisionOperationsService | None = None
 

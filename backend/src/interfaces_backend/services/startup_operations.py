@@ -17,12 +17,9 @@ from interfaces_backend.models.startup import (
     StartupOperationState,
     StartupOperationStatusResponse,
 )
-from interfaces_backend.services.realtime_events import get_realtime_event_bus
-
 _ACTIVE_STATES: set[StartupOperationState] = {"queued", "running"}
 _TERMINAL_STATES: set[StartupOperationState] = {"completed", "failed"}
 _DEFAULT_TTL_SECONDS = 1800
-STARTUP_OPERATION_TOPIC = "startup.operation"
 
 ProgressCallback = Callable[[str, float, str, dict[str, Any] | None], None]
 
@@ -86,8 +83,6 @@ class StartupOperationsService:
                 kind=kind,
                 message="処理を開始しました。",
             )
-            record = self._operations[operation_id].to_response()
-        self._publish_status(record)
         return StartupOperationAcceptedResponse(operation_id=operation_id, message="accepted")
 
     def get(self, *, user_id: str, operation_id: str) -> StartupOperationStatusResponse:
@@ -196,15 +191,7 @@ class StartupOperationsService:
             record.updated_at = _utcnow()
             response = record.to_response()
         if response is not None:
-            self._publish_status(response)
-
-    @staticmethod
-    def _publish_status(status: StartupOperationStatusResponse) -> None:
-        get_realtime_event_bus().publish_threadsafe(
-            STARTUP_OPERATION_TOPIC,
-            status.operation_id,
-            status.model_dump(mode="json"),
-        )
+            return None
 
     def _cleanup_locked(self) -> None:
         cutoff = _utcnow() - timedelta(seconds=self._ttl_seconds)
