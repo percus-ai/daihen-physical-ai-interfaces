@@ -72,6 +72,10 @@ class ProfilesActiveParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EmptyRealtimeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 class TrainingJobRefParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -95,9 +99,53 @@ class TrainingJobLogsParams(TrainingJobRefParams):
     tail_lines: int | None = Field(default=None, ge=1, le=5000)
 
 
+class RecordingUploadStatusParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(..., min_length=1, max_length=256)
+
+    @field_validator("session_id")
+    @classmethod
+    def _normalize_session_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("session_id must not be empty")
+        return normalized
+
+
 class ProfilesActiveSubscription(_SubscriptionBase):
     kind: Literal["profiles.active"]
     params: ProfilesActiveParams = Field(default_factory=ProfilesActiveParams)
+
+
+class ProfilesVlaborSubscription(_SubscriptionBase):
+    kind: Literal["profiles.vlabor"]
+    params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
+
+
+class SystemStatusSubscription(_SubscriptionBase):
+    kind: Literal["system.status"]
+    params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
+
+
+class OperateStatusSubscription(_SubscriptionBase):
+    kind: Literal["operate.status"]
+    params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
+
+
+class SystemRuntimeEnvsSubscription(_SubscriptionBase):
+    kind: Literal["system.runtime-envs"]
+    params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
+
+
+class SystemBundledTorchSubscription(_SubscriptionBase):
+    kind: Literal["system.bundled-torch"]
+    params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
+
+
+class RecordingUploadStatusSubscription(_SubscriptionBase):
+    kind: Literal["recording.upload-status"]
+    params: RecordingUploadStatusParams
 
 
 class TrainingJobCoreSubscription(_SubscriptionBase):
@@ -122,6 +170,12 @@ class TrainingJobLogsSubscription(_SubscriptionBase):
 
 TabSessionSubscription = Annotated[
     ProfilesActiveSubscription
+    | ProfilesVlaborSubscription
+    | SystemStatusSubscription
+    | OperateStatusSubscription
+    | SystemRuntimeEnvsSubscription
+    | SystemBundledTorchSubscription
+    | RecordingUploadStatusSubscription
     | TrainingJobCoreSubscription
     | TrainingJobProvisionSubscription
     | TrainingJobMetricsSubscription

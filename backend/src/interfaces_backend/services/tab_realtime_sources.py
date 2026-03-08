@@ -13,6 +13,12 @@ from paramiko.channel import Channel
 from percus_ai.training.ssh.client import SSHConnection
 from interfaces_backend.models.realtime import (
     ProfilesActiveSubscription,
+    ProfilesVlaborSubscription,
+    OperateStatusSubscription,
+    RecordingUploadStatusSubscription,
+    SystemBundledTorchSubscription,
+    SystemRuntimeEnvsSubscription,
+    SystemStatusSubscription,
     TabSessionSubscription,
     TrainingJobCoreSubscription,
     TrainingJobLogsSubscription,
@@ -46,6 +52,18 @@ class TabRealtimeSourceRegistry:
     def interval_for(self, subscription: TabSessionSubscription) -> float:
         if isinstance(subscription, ProfilesActiveSubscription):
             return 5.0
+        if isinstance(subscription, ProfilesVlaborSubscription):
+            return 2.0
+        if isinstance(subscription, SystemStatusSubscription):
+            return 2.0
+        if isinstance(subscription, OperateStatusSubscription):
+            return 2.0
+        if isinstance(subscription, SystemRuntimeEnvsSubscription):
+            return 2.0
+        if isinstance(subscription, SystemBundledTorchSubscription):
+            return 2.0
+        if isinstance(subscription, RecordingUploadStatusSubscription):
+            return 1.0
         if isinstance(subscription, TrainingJobProvisionSubscription):
             return 2.0
         if isinstance(subscription, TrainingJobCoreSubscription):
@@ -67,6 +85,65 @@ class TabRealtimeSourceRegistry:
 
                 snapshot = await get_active_profile_status()
                 return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, ProfilesVlaborSubscription):
+                from interfaces_backend.api.profiles import get_vlabor_status
+
+                snapshot = await get_vlabor_status()
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, SystemStatusSubscription):
+                from interfaces_backend.services.system_status_monitor import (
+                    get_system_status_monitor,
+                )
+
+                monitor = get_system_status_monitor()
+                monitor.ensure_started()
+                snapshot = monitor.get_snapshot()
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, OperateStatusSubscription):
+                from interfaces_backend.api.inference import get_inference_runner_status
+                from interfaces_backend.api.operate import get_operate_status
+                from interfaces_backend.api.profiles import get_vlabor_status
+
+                vlabor_status = await get_vlabor_status()
+                inference_runner_status = await get_inference_runner_status()
+                operate_status = await get_operate_status()
+                return RealtimeSourcePollResult(
+                    payload={
+                        "vlabor_status": vlabor_status.model_dump(mode="json"),
+                        "inference_runner_status": inference_runner_status.model_dump(mode="json"),
+                        "operate_status": operate_status.model_dump(mode="json"),
+                    }
+                )
+
+            if isinstance(subscription, SystemRuntimeEnvsSubscription):
+                from interfaces_backend.services.runtime_env_service import (
+                    get_runtime_env_service,
+                )
+
+                service = get_runtime_env_service()
+                await service.refresh_snapshot()
+                snapshot = service.get_snapshot()
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, SystemBundledTorchSubscription):
+                from interfaces_backend.services.bundled_torch_build_service import (
+                    get_bundled_torch_build_service,
+                )
+
+                service = get_bundled_torch_build_service()
+                await service.refresh_snapshot()
+                snapshot = service.get_snapshot()
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, RecordingUploadStatusSubscription):
+                from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
+
+                lifecycle = get_dataset_lifecycle()
+                snapshot = lifecycle.get_dataset_upload_status(subscription.params.session_id)
+                return RealtimeSourcePollResult(payload=dict(snapshot))
 
             if isinstance(subscription, TrainingJobCoreSubscription):
                 from interfaces_backend.api.training import get_job

@@ -11,7 +11,10 @@ from interfaces_backend.services.tab_realtime import (
     TabSessionNotFoundError,
     TabSessionRevisionConflictError,
 )
-from interfaces_backend.services.tab_realtime_sources import RealtimeSourcePollResult
+from interfaces_backend.services.tab_realtime_sources import (
+    RealtimeSourcePollResult,
+    TabRealtimeSourceRegistry,
+)
 
 
 def _make_state_payload(*, revision: int = 1, visibility: str = "foreground") -> dict:
@@ -94,6 +97,48 @@ def test_tab_session_subscription_schema_is_typed():
 
     with pytest.raises(ValidationError):
         TabSessionStateRequest.model_validate(invalid_payload)
+
+
+def test_tab_session_subscription_schema_accepts_system_operate_recording_sources():
+    payload = _make_state_payload()
+    payload["subscriptions"] = [
+        {
+            "subscription_id": "system.status",
+            "kind": "system.status",
+            "params": {},
+        },
+        {
+            "subscription_id": "operate.status",
+            "kind": "operate.status",
+            "params": {},
+        },
+        {
+            "subscription_id": "system.runtime-envs",
+            "kind": "system.runtime-envs",
+            "params": {},
+        },
+        {
+            "subscription_id": "system.bundled-torch",
+            "kind": "system.bundled-torch",
+            "params": {},
+        },
+        {
+            "subscription_id": "profiles.vlabor",
+            "kind": "profiles.vlabor",
+            "params": {},
+        },
+        {
+            "subscription_id": "recording.upload-status",
+            "kind": "recording.upload-status",
+            "params": {"session_id": "dataset-1"},
+        },
+    ]
+
+    state = TabSessionStateRequest.model_validate(payload)
+
+    assert len(state.subscriptions) == 6
+    assert state.subscriptions[0].kind == "system.status"
+    assert state.subscriptions[-1].kind == "recording.upload-status"
 
 
 def test_tab_session_registry_put_get_delete_flow():
@@ -266,3 +311,119 @@ def test_tab_session_registry_forwards_append_events_without_payload_dedup():
 
     asyncio.run(_run())
     stream.close()
+
+
+def test_tab_realtime_source_registry_supports_system_operate_and_recording_sources(monkeypatch):
+    registry = TabRealtimeSourceRegistry()
+
+    class _Snapshot:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def model_dump(self, mode="json"):
+            assert mode == "json"
+            return dict(self._payload)
+
+    class _Monitor:
+        def ensure_started(self):
+            return None
+
+        def get_snapshot(self):
+            return _Snapshot({"overall": {"level": "healthy"}})
+
+    class _RuntimeEnvService:
+        async def refresh_snapshot(self):
+            return None
+
+        def get_snapshot(self):
+            return _Snapshot({"envs": [], "updated_at": "2026-03-08T00:00:00Z"})
+
+    class _BundledTorchService:
+        async def refresh_snapshot(self):
+            return None
+
+        def get_snapshot(self):
+            return _Snapshot({"state": "idle", "updated_at": "2026-03-08T00:00:00Z"})
+
+    class _DatasetLifecycle:
+        def get_dataset_upload_status(self, session_id):
+            return {
+                "dataset_id": session_id,
+                "status": "running",
+                "phase": "upload",
+                "progress_percent": 12.5,
+                "message": "uploading",
+                "files_done": 1,
+                "total_files": 8,
+            }
+
+    async def _get_vlabor_status():
+        return _Snapshot({"status": "running", "dashboard_url": "http://example.test"})
+
+    async def _get_inference_runner_status():
+        return _Snapshot({"runner_status": {"active": True, "session_id": "inf-1"}})
+
+    async def _get_operate_status():
+        return _Snapshot({"network": {"status": "healthy"}})
+
+    monkeypatch.setattr(
+        "interfaces_backend.api.profiles.get_vlabor_status",
+        _get_vlabor_status,
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.api.inference.get_inference_runner_status",
+        _get_inference_runner_status,
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.api.operate.get_operate_status",
+        _get_operate_status,
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.system_status_monitor.get_system_status_monitor",
+        lambda: _Monitor(),
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.runtime_env_service.get_runtime_env_service",
+        lambda: _RuntimeEnvService(),
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.bundled_torch_build_service.get_bundled_torch_build_service",
+        lambda: _BundledTorchService(),
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.dataset_lifecycle.get_dataset_lifecycle",
+        lambda: _DatasetLifecycle(),
+    )
+
+    state = TabSessionStateRequest.model_validate(
+        {
+            **_make_state_payload(),
+            "subscriptions": [
+                {"subscription_id": "profiles.vlabor", "kind": "profiles.vlabor", "params": {}},
+                {"subscription_id": "system.status", "kind": "system.status", "params": {}},
+                {"subscription_id": "operate.status", "kind": "operate.status", "params": {}},
+                {"subscription_id": "system.runtime-envs", "kind": "system.runtime-envs", "params": {}},
+                {"subscription_id": "system.bundled-torch", "kind": "system.bundled-torch", "params": {}},
+                {
+                    "subscription_id": "recording.upload-status",
+                    "kind": "recording.upload-status",
+                    "params": {"session_id": "dataset-1"},
+                },
+            ],
+        }
+    )
+
+    async def _run():
+        payloads = {}
+        for subscription in state.subscriptions:
+            result = await registry.poll(subscription)
+            payloads[subscription.kind] = result.payload
+
+        assert payloads["profiles.vlabor"]["status"] == "running"
+        assert payloads["system.status"]["overall"]["level"] == "healthy"
+        assert payloads["operate.status"]["inference_runner_status"]["runner_status"]["active"] is True
+        assert payloads["system.runtime-envs"]["envs"] == []
+        assert payloads["system.bundled-torch"]["state"] == "idle"
+        assert payloads["recording.upload-status"]["dataset_id"] == "dataset-1"
+
+    asyncio.run(_run())
