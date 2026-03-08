@@ -5,6 +5,7 @@
   import { Button } from 'bits-ui';
 
   import { api } from '$lib/api/client';
+  import { invalidateAuthGate } from '$lib/auth/gate';
 
   type AuthStatus = {
     authenticated: boolean;
@@ -43,6 +44,7 @@
     }
     submitting = true;
     error = null;
+    invalidateAuthGate();
     try {
       await api.auth.login(email, password);
       await refreshStatus();
@@ -59,6 +61,7 @@
   const handleLogout = async () => {
     submitting = true;
     error = null;
+    invalidateAuthGate();
     try {
       await api.auth.logout();
       status = { authenticated: false };

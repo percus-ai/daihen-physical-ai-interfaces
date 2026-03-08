@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { beforeNavigate } from '$app/navigation';
+  import { onDestroy } from 'svelte';
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
   import { navItems, quickActions } from '$lib/navigation';
@@ -9,7 +10,7 @@
   import { toStore } from 'svelte/store';
 
   import { api } from '$lib/api/client';
-  import { connectStream } from '$lib/realtime/stream';
+  import { closeRouteScopedStreams, connectStream } from '$lib/realtime/stream';
   import { queryClient } from '$lib/queryClient';
 
   let { children }: { children?: Snippet } = $props();
@@ -75,6 +76,15 @@
     mobileOpen = false;
   };
 
+  beforeNavigate((navigation) => {
+    const from = navigation.from?.url;
+    const to = navigation.to?.url;
+    if (from && to && from.pathname === to.pathname && from.search === to.search) {
+      return;
+    }
+    closeRouteScopedStreams();
+  });
+
   const refreshAuth = async () => {
     try {
       const status = await api.auth.status();
@@ -105,6 +115,7 @@
       stopProfileStream();
       stopProfileStream = connectStream({
         path: '/api/stream/profiles/active',
+        scope: 'persistent',
         onMessage: (payload) => {
           queryClient.setQueryData(['profiles', 'active', 'status'], payload);
         }

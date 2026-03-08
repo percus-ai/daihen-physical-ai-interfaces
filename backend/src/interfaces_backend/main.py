@@ -97,12 +97,7 @@ from interfaces_backend.services.system_status_monitor import get_system_status_
 from interfaces_backend.services.training_provision_operations import (
     get_training_provision_operations_service,
 )
-from interfaces_backend.core.request_auth import (
-    build_session_from_request,
-    is_session_expired,
-    refresh_session_from_request,
-    set_session_cookies,
-)
+from interfaces_backend.core.request_auth import resolve_session_from_request, set_session_cookies
 from interfaces_backend.services.vlabor_runtime import start_vlabor_on_backend_startup
 from interfaces_backend.services.vlabor_profiles import get_active_profile_spec
 from percus_ai.observability import (
@@ -256,15 +251,9 @@ async def log_slow_requests(request, call_next):
 
 @app.middleware("http")
 async def attach_supabase_session(request, call_next):
-    session = build_session_from_request(request)
-    session_refreshed = False
-    if session and is_session_expired(session):
-        refreshed_session = refresh_session_from_request(request)
-        if refreshed_session:
-            session = refreshed_session
-            session_refreshed = True
-        else:
-            session = None
+    session, session_refreshed = resolve_session_from_request(request)
+    request.state.supabase_session = session
+    request.state.supabase_session_refreshed = session_refreshed
     token = set_request_session(session)
     try:
         response = await call_next(request)

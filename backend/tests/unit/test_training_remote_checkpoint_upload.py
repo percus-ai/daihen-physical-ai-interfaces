@@ -14,6 +14,9 @@ os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
 def _load_training_api_module():
     inserted_module_names: list[str] = []
     training_pkg = types.ModuleType("percus_ai.training")
+    providers_pkg = types.ModuleType("percus_ai.training.providers")
+    providers_vast_module = types.ModuleType("percus_ai.training.providers.vast")
+    providers_verda_module = types.ModuleType("percus_ai.training.providers.verda")
     ssh_pkg = types.ModuleType("percus_ai.training.ssh")
     ssh_client_module = types.ModuleType("percus_ai.training.ssh.client")
     ssh_executor_module = types.ModuleType("percus_ai.training.ssh.executor")
@@ -27,12 +30,24 @@ def _load_training_api_module():
     def _stub_run_remote_command(*_args, **_kwargs):
         return 0, "", ""
 
+    def _stub_destroy_instance(*_args, **_kwargs):
+        return None
+
+    class _StubVerdaProvider:
+        def terminate_instance(self, *_args, **_kwargs):
+            return None
+
     ssh_client_module.SSHConnection = _StubSSHConnection
     ssh_executor_module.RemoteExecutor = _StubRemoteExecutor
     ssh_executor_module.run_remote_command = _stub_run_remote_command
+    providers_vast_module.destroy_instance = _stub_destroy_instance
+    providers_verda_module.VerdaProvider = _StubVerdaProvider
 
     for name, module in (
         ("percus_ai.training", training_pkg),
+        ("percus_ai.training.providers", providers_pkg),
+        ("percus_ai.training.providers.vast", providers_vast_module),
+        ("percus_ai.training.providers.verda", providers_verda_module),
         ("percus_ai.training.ssh", ssh_pkg),
         ("percus_ai.training.ssh.client", ssh_client_module),
         ("percus_ai.training.ssh.executor", ssh_executor_module),
@@ -419,6 +434,73 @@ def test_refresh_job_status_from_instance_marks_vast_not_found(monkeypatch):
     assert saved_jobs and saved_jobs[-1]["status"] == "terminated"
 
 
+def test_refresh_job_status_from_instance_keeps_vast_running_when_provider_missing(monkeypatch):
+    saved_jobs: list[dict] = []
+    providers_pkg = types.ModuleType("percus_ai.training.providers")
+    vast_module = types.ModuleType("percus_ai.training.providers.vast")
+
+    def _get_instance(_instance_id: str):
+        raise RuntimeError("404 not found")
+
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
+    vast_module.get_instance = _get_instance
+    monkeypatch.setitem(sys.modules, "percus_ai.training.providers", providers_pkg)
+    monkeypatch.setitem(sys.modules, "percus_ai.training.providers.vast", vast_module)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_check_remote_status", lambda _job_data: "running")
+
+    job = {
+        "job_id": "job-vast-keep-1",
+        "instance_id": "dead-instance",
+        "ip": "ssh8.vast.ai",
+        "ssh_port": 15434,
+        "status": "running",
+        "training_config": {"cloud": {"provider": "vast", "ssh_port": 15434}},
+    }
+
+    instance_status = asyncio.run(training._refresh_job_status_from_instance(job))
+    assert instance_status == "running"
+    assert job["status"] == "running"
+    assert "termination_reason" not in job
+    assert not saved_jobs
+
+
+def test_refresh_job_ssh_target_if_needed_updates_vast_port(monkeypatch):
+    saved_jobs: list[dict] = []
+    providers_pkg = types.ModuleType("percus_ai.training.providers")
+    vast_module = types.ModuleType("percus_ai.training.providers.vast")
+
+    class _VastInstance:
+        ip = "ssh8.vast.ai"
+        ssh_port = 21456
+
+    def _get_instance(_instance_id: str):
+        return _VastInstance()
+
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
+    vast_module.get_instance = _get_instance
+    monkeypatch.setitem(sys.modules, "percus_ai.training.providers", providers_pkg)
+    monkeypatch.setitem(sys.modules, "percus_ai.training.providers.vast", vast_module)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+
+    job = {
+        "job_id": "job-vast-port-1",
+        "instance_id": "32405434",
+        "ip": "ssh8.vast.ai",
+        "ssh_port": 15434,
+        "training_config": {"cloud": {"provider": "vast", "ssh_port": 15434}},
+    }
+
+    updated = asyncio.run(training._refresh_job_ssh_target_if_needed(dict(job)))
+    assert updated["ssh_port"] == 21456
+    assert updated["training_config"]["cloud"]["ssh_port"] == 21456
+    assert saved_jobs and saved_jobs[-1]["ssh_port"] == 21456
+
+
 def test_get_instance_status_uses_provider_aware_status_checker(monkeypatch):
     async def fake_load_job(_job_id: str):
         return {
@@ -449,6 +531,107 @@ def test_get_instance_status_uses_provider_aware_status_checker(monkeypatch):
     assert response.remote_process_status == "running"
     assert response.message == "Instance running, training in progress"
     assert called["count"] == 1
+
+
+def test_check_all_jobs_status_keeps_vast_running_when_remote_running(monkeypatch):
+    saved_jobs: list[dict] = []
+    archived_jobs: list[str] = []
+
+    async def fake_list_jobs():
+        return [
+            {
+                "job_id": "job-vast-bulk-1",
+                "instance_id": "32405434",
+                "ip": "ssh8.vast.ai",
+                "ssh_port": 15434,
+                "status": "running",
+                "training_config": {"cloud": {"provider": "vast", "ssh_port": 15434}},
+            }
+        ]
+
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
+    async def fake_archive_job_metrics(job_id: str):
+        archived_jobs.append(job_id)
+
+    monkeypatch.setattr(training, "_list_jobs", fake_list_jobs)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_archive_job_metrics", fake_archive_job_metrics)
+    monkeypatch.setattr(training, "_check_instance_status", lambda _job_data: None)
+    monkeypatch.setattr(training, "_refresh_job_ssh_target_if_needed", lambda job_data: asyncio.sleep(0, result=job_data))
+    monkeypatch.setattr(training, "_check_remote_status", lambda _job_data: "running")
+
+    response = asyncio.run(training.check_all_jobs_status())
+    assert response.checked_count == 1
+    assert response.updates[0].new_status == "running"
+    assert response.updates[0].instance_status == "running"
+    assert "stale" in response.updates[0].reason.lower()
+    assert not saved_jobs
+    assert not archived_jobs
+
+
+def test_list_jobs_uses_request_user_id_hint(monkeypatch):
+    captured: dict = {}
+
+    async def fake_list_jobs(days: int = 365, owner_user_id: str | None = None):
+        captured["days"] = days
+        captured["owner_user_id"] = owner_user_id
+        return []
+
+    monkeypatch.setattr(training, "_list_jobs", fake_list_jobs)
+    monkeypatch.setattr(training, "extract_request_user_id_hint", lambda _request: "user-123")
+
+    response = asyncio.run(training.list_jobs(object(), days=30))
+    assert response.total == 0
+    assert captured == {"days": 30, "owner_user_id": "user-123"}
+
+
+def test_parse_job_created_at_accepts_five_digit_fraction():
+    parsed = training._parse_job_created_at("2026-03-08T05:15:57.42918+00:00")
+    assert parsed.isoformat() == "2026-03-08T05:15:57.429180+00:00"
+
+
+def test_list_jobs_includes_recent_vast_jobs_with_five_digit_fraction(monkeypatch):
+    rows = [
+        {
+            "job_id": "job-vast-1",
+            "status": "completed",
+            "created_at": "2026-03-08T05:15:57.42918+00:00",
+            "deleted_at": None,
+        },
+        {
+            "job_id": "job-vast-2",
+            "status": "terminated",
+            "created_at": "2026-03-08T04:39:08.34181+00:00",
+            "deleted_at": None,
+        },
+    ]
+
+    class _Query:
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def is_(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        async def execute(self):
+            return types.SimpleNamespace(data=rows)
+
+    class _Client:
+        def table(self, _name: str):
+            return _Query()
+
+    async def fake_get_supabase_async_client():
+        return _Client()
+
+    monkeypatch.setattr(training, "get_supabase_async_client", fake_get_supabase_async_client)
+
+    result = asyncio.run(training._list_jobs(days=365, owner_user_id="user-123"))
+    assert [job["job_id"] for job in result] == ["job-vast-1", "job-vast-2"]
 
 
 def test_revive_rejects_non_verda_job(monkeypatch):

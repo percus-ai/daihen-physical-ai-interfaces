@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 
 from interfaces_backend.core.request_auth import (
     is_session_expired,
@@ -11,7 +17,16 @@ from interfaces_backend.core.request_auth import (
 from interfaces_backend.api.inference import get_inference_runner_status
 from interfaces_backend.api.operate import get_operate_status
 from interfaces_backend.api.profiles import get_active_profile_status, get_vlabor_status
-from interfaces_backend.api.training import get_job, get_job_metrics
+from interfaces_backend.api.training import (
+    RUNNING_STATUSES,
+    _get_setup_log_file_path,
+    _get_ssh_connection_for_job,
+    _get_training_log_file_path,
+    _load_job,
+    get_job,
+    get_job_metrics,
+    get_job_provision_operation,
+)
 from interfaces_backend.services.dataset_lifecycle import UPLOAD_TOPIC, get_dataset_lifecycle
 from interfaces_backend.services.dataset_sync_jobs import (
     DATASET_SYNC_JOB_TOPIC,
@@ -66,6 +81,7 @@ from interfaces_backend.utils.sse import sse_queue_response
 from percus_ai.db import get_current_user_id, get_supabase_session, set_request_session
 
 router = APIRouter(prefix="/api/stream", tags=["stream"])
+logger = logging.getLogger(__name__)
 
 PROFILE_ACTIVE_TOPIC = "profiles.active"
 PROFILE_VLABOR_TOPIC = "profiles.vlabor"
@@ -286,6 +302,157 @@ async def stream_training_provision_operation(request: Request, operation_id: st
     await bus.publish(
         TRAINING_PROVISION_OPERATION_TOPIC,
         operation_id,
+        snapshot.model_dump(mode="json"),
+    )
+    return sse_queue_response(
+        request,
+        subscription.queue,
+        on_close=subscription.close,
+    )
+
+
+@router.get("/training/jobs/{job_id}/logs")
+async def stream_training_job_logs(
+    request: Request,
+    job_id: str,
+    log_type: str = "training",
+):
+    _require_user_id()
+    if log_type not in {"training", "setup"}:
+        raise HTTPException(status_code=400, detail=f"Invalid log_type: {log_type}")
+
+    _refresh_stream_session_if_needed()
+
+    async def event_stream():
+        ssh_conn = None
+        channel = None
+        last_status_poll = 0.0
+
+        def encode(payload: dict) -> str:
+            return f"data: {json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n\n"
+
+        try:
+            job_data = await _load_job(job_id)
+            if not job_data:
+                yield encode({"type": "error", "error": f"Job not found: {job_id}"})
+                return
+
+            ip = job_data.get("ip")
+            if not ip:
+                yield encode({"type": "error", "error": "Job has no IP address"})
+                return
+
+            loop = asyncio.get_running_loop()
+            ssh_conn = await loop.run_in_executor(
+                None,
+                lambda: _get_ssh_connection_for_job(job_data, timeout=30),
+            )
+            if not ssh_conn:
+                yield encode({"type": "error", "error": "SSH接続に失敗しました"})
+                return
+
+            yield encode({"type": "connected", "message": "SSH接続完了"})
+
+            log_file = (
+                _get_setup_log_file_path(job_data)
+                if log_type == "setup"
+                else _get_training_log_file_path(job_data)
+            )
+            transport = ssh_conn.client.get_transport()
+            channel = transport.open_session()
+            channel.exec_command(f"tail -f {log_file} 2>/dev/null")
+            channel.setblocking(0)
+
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                emitted = False
+                try:
+                    if channel.recv_ready():
+                        data = channel.recv(4096)
+                        if data:
+                            lines = data.decode("utf-8", errors="replace").split("\n")
+                            for line in lines:
+                                if line.strip():
+                                    yield encode({"type": "log", "line": line})
+                                    emitted = True
+
+                    if channel.exit_status_ready():
+                        yield encode(
+                            {
+                                "type": "status",
+                                "status": "stream_ended",
+                                "message": "ログストリーム終了",
+                            }
+                        )
+                        break
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("SSH recv error for %s: %s", job_id, exc)
+
+                now = asyncio.get_running_loop().time()
+                if now - last_status_poll >= 5.0:
+                    last_status_poll = now
+                    current_job = await _load_job(job_id, include_deleted=True)
+                    if current_job is None:
+                        yield encode(
+                            {
+                                "type": "status",
+                                "status": "deleted",
+                                "message": "ジョブが見つかりません。",
+                            }
+                        )
+                        break
+
+                    current_status = str(current_job.get("status") or "").strip()
+                    if current_status and current_status not in RUNNING_STATUSES:
+                        yield encode(
+                            {
+                                "type": "status",
+                                "status": current_status,
+                                "message": f"ジョブ状態: {current_status}",
+                            }
+                        )
+                        break
+
+                if not emitted:
+                    await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.error("SSE log stream error for job %s: %s", job_id, exc)
+            yield encode({"type": "error", "error": str(exc)})
+        finally:
+            try:
+                if channel is not None:
+                    channel.close()
+            except Exception:
+                pass
+            if ssh_conn:
+                try:
+                    ssh_conn.disconnect()
+                except Exception:
+                    pass
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/training/jobs/{job_id}/provision-operation")
+async def stream_training_job_provision_operation(request: Request, job_id: str):
+    _require_user_id()
+    snapshot = await get_job_provision_operation(job_id)
+    bus = get_realtime_event_bus()
+    subscription = bus.subscribe(TRAINING_PROVISION_OPERATION_TOPIC, snapshot.operation_id)
+    await bus.publish(
+        TRAINING_PROVISION_OPERATION_TOPIC,
+        snapshot.operation_id,
         snapshot.model_dump(mode="json"),
     )
     return sse_queue_response(

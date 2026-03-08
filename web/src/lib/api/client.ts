@@ -1,4 +1,5 @@
 import { getBackendUrl } from '$lib/config';
+import { cacheAuthenticatedGate, invalidateAuthGate } from '$lib/auth/gate';
 import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
 import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
 import type { SystemSettings, UserSettings } from '$lib/types/settings';
@@ -375,6 +376,7 @@ export type TrainingReviveResult = {
   ip: string;
   ssh_user: string;
   ssh_private_key: string;
+  ssh_port?: number | null;
   location: string;
   message: string;
 };
@@ -545,8 +547,10 @@ async function refreshSession(): Promise<boolean> {
     refreshPromise = (async () => {
       try {
         await fetchJsonNoRefresh('/api/auth/refresh', { method: 'POST' });
+        cacheAuthenticatedGate();
         return true;
       } catch {
+        invalidateAuthGate();
         return false;
       } finally {
         refreshPromise = null;
@@ -558,13 +562,18 @@ async function refreshSession(): Promise<boolean> {
 
 async function withAuthRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
-    return await fn();
+    const result = await fn();
+    cacheAuthenticatedGate();
+    return result;
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       const refreshed = await refreshSession();
       if (refreshed) {
-        return await fn();
+        const result = await fn();
+        cacheAuthenticatedGate();
+        return result;
       }
+      invalidateAuthGate();
     }
     throw err;
   }

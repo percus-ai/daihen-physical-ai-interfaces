@@ -10,10 +10,10 @@
     api,
     type RemoteCheckpointUploadProgressMessage,
     type RemoteCheckpointUploadResult,
+    type TrainingProvisionOperationStatusResponse,
     type TrainingReviveProgressMessage,
     type TrainingReviveResult
   } from '$lib/api/client';
-  import { getBackendUrl } from '$lib/config';
   import { formatDate } from '$lib/format';
   import { connectStream } from '$lib/realtime/stream';
   import { queryClient } from '$lib/queryClient';
@@ -29,6 +29,7 @@
     ip?: string;
     ssh_user?: string;
     ssh_private_key?: string;
+    ssh_port?: number;
     gpu_model?: string;
     gpus_per_instance?: number;
     created_at?: string;
@@ -45,6 +46,7 @@
       gpus_per_instance?: number;
       storage_size?: number;
       location?: string;
+      ssh_port?: number;
       selected_mode?: 'spot' | 'ondemand';
       selected_instance_type?: string;
       selected_offer_id?: number;
@@ -62,6 +64,7 @@
 
   type JobDetailResponse = {
     job?: JobInfo;
+    provision_operation?: TrainingProvisionOperationStatusResponse | null;
     training_config?: TrainingConfig;
     summary?: Record<string, unknown> | null;
   };
@@ -89,6 +92,7 @@
   let metricsError = $state('');
 
   let copied = $state(false);
+  let provisionStreamError = $state('');
   type TrainingJobStreamPayload = {
     job_detail?: JobDetailResponse;
     metrics?: { train?: MetricPoint[]; val?: MetricPoint[] };
@@ -97,7 +101,7 @@
   let streamStatus = $state('idle');
   let streamError = $state('');
   let streamLines: string[] = $state([]);
-  let streamWs = $state.raw<WebSocket | null>(null);
+  let logStreamActive = $state(false);
   let reviveInProgress = $state(false);
   let reviveStage = $state('');
   let reviveMessage = $state('');
@@ -122,11 +126,15 @@
   type MetricPoint = { step?: number; loss?: number; ts?: string };
 
   const jobInfo = $derived($jobQuery.data?.job);
+  const provisionOperation = $derived($jobQuery.data?.provision_operation ?? null);
   const trainingConfig = $derived($jobQuery.data?.training_config ?? {});
   const summary = $derived($jobQuery.data?.summary ?? {});
   const status = $derived(jobInfo?.status ?? '');
   const provider = $derived(
     String(trainingConfig?.cloud?.provider ?? 'verda').trim().toLowerCase()
+  );
+  const effectiveSshPort = $derived(
+    Number(trainingConfig?.cloud?.ssh_port ?? jobInfo?.ssh_port ?? 22)
   );
   const datasetId = $derived(trainingConfig?.dataset?.id ?? '');
   const profileId = $derived(jobInfo?.profile_name ?? jobInfo?.profile_instance_id ?? '');
@@ -146,11 +154,80 @@
   const canRevive = $derived(
     provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
   );
+  const provisionStepLabels: Record<string, string> = {
+    queued: '開始待ち',
+    validate: '設定検証',
+    select_candidate: '候補確認',
+    create_instance: 'インスタンス作成',
+    job_created: 'ジョブ作成',
+    wait_ip: 'IP割り当て待機',
+    connect_ssh: 'SSH接続',
+    deploy_files: 'ファイル転送',
+    setup_env: '環境構築',
+    start_training: '学習開始',
+    completed: '完了',
+    failed: 'エラー'
+  };
+  const provisionStepPercent: Record<string, number> = {
+    queued: 4,
+    validate: 12,
+    select_candidate: 24,
+    create_instance: 38,
+    job_created: 48,
+    wait_ip: 58,
+    connect_ssh: 70,
+    deploy_files: 82,
+    setup_env: 92,
+    start_training: 97,
+    completed: 100,
+    failed: 100
+  };
+  const provisionStep = $derived(provisionOperation?.step ?? '');
+  const provisionStepLabel = $derived(
+    provisionStep ? (provisionStepLabels[provisionStep] ?? provisionStep) : ''
+  );
+  const provisionTips: Record<string, string> = {
+    queued: '作成要求を受け付けました。インスタンスの確保をこれから開始します。',
+    validate: '設定内容を確認しています。通常はすぐに完了します。',
+    select_candidate: '利用可能なインスタンス候補を確認しています。',
+    create_instance: 'クラウド上でインスタンスを作成しています。数分かかることがあります。',
+    job_created: 'ジョブは作成済みです。これ以降の準備はこの画面で追跡できます。',
+    wait_ip: 'インスタンスの起動完了とネットワーク割り当てを待っています。',
+    connect_ssh: 'インスタンスへの接続確認をしています。完了まで少し待ってください。',
+    deploy_files: '学習に必要なファイルをインスタンスへ転送しています。',
+    setup_env: '学習環境をセットアップしています。これには数分から10分程度かかる場合があります。',
+    start_training: 'まもなく学習が始まります。開始後はログや loss が更新されます。',
+    completed: '学習開始までの準備は完了しました。以後はジョブ本体の状態を追跡します。',
+    failed: '作成が止まっています。更新時刻とエラーメッセージを確認してください。'
+  };
+  const provisionProgressPercent = $derived(
+    provisionStep ? (provisionStepPercent[provisionStep] ?? 0) : 0
+  );
+  const provisionTip = $derived(
+    provisionTips[provisionStep] ??
+      'この画面を離れても作成は継続します。更新が長時間止まる場合は異常の可能性があります。'
+  );
+  const showProvisionCard = $derived(
+    Boolean(provisionOperation) && (status === 'starting' || provisionOperation?.state === 'failed')
+  );
+
+  const sshTargetDisplay = $derived(
+    (() => {
+      if (!jobInfo?.ip) return '';
+      const port = effectiveSshPort;
+      return port > 0 && port !== 22 ? `${jobInfo.ip}:${port}` : jobInfo.ip;
+    })()
+  );
 
   const sshCommand = $derived(
-    jobInfo?.ip
-      ? `ssh -i ${jobInfo?.ssh_private_key ?? '~/.ssh/id_rsa'} ${jobInfo?.ssh_user ?? 'root'}@${jobInfo.ip}`
-      : ''
+    (() => {
+      if (!jobInfo?.ip) return '';
+      const keyPath = jobInfo?.ssh_private_key ?? '~/.ssh/id_rsa';
+      const user = jobInfo?.ssh_user ?? 'root';
+      const port = effectiveSshPort;
+      const portOpt = port > 0 && port !== 22 ? ` -p ${port}` : '';
+      return `ssh -i ${keyPath}${portOpt} ${user}@${jobInfo.ip}`;
+    })()
   );
   const displayedLogs = $derived(
     streamLines.length
@@ -158,12 +235,28 @@
       : logs
   );
   const reviveSshCommand = $derived(
-    reviveResult?.ip
-      ? `ssh -i ${reviveResult?.ssh_private_key ?? '~/.ssh/id_rsa'} ${reviveResult?.ssh_user ?? 'root'}@${reviveResult.ip}`
-      : ''
+    (() => {
+      if (!reviveResult?.ip) return '';
+      const keyPath = reviveResult?.ssh_private_key ?? '~/.ssh/id_rsa';
+      const user = reviveResult?.ssh_user ?? 'root';
+      const port = Number(reviveResult?.ssh_port ?? 22);
+      const portOpt = port > 0 && port !== 22 ? ` -p ${port}` : '';
+      return `ssh -i ${keyPath}${portOpt} ${user}@${reviveResult.ip}`;
+    })()
   );
 
-  const wsUrl = (path: string) => getBackendUrl().replace(/^http/, 'ws') + path;
+  const setProvisionOperationSnapshot = (
+    snapshot: TrainingProvisionOperationStatusResponse | null
+  ) => {
+    if (!jobId) return;
+    queryClient.setQueryData<JobDetailResponse>(['training', 'job', jobId], (current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        provision_operation: snapshot
+      };
+    });
+  };
 
   const refresh = async () => {
     const refetch = $jobQuery?.refetch;
@@ -362,8 +455,16 @@
     }
   };
 
+  let stopLogStreamHandle = () => {};
+
+  const closeLogStream = () => {
+    stopLogStreamHandle();
+    stopLogStreamHandle = () => {};
+    logStreamActive = false;
+  };
+
   const startLogStream = async () => {
-    if (!jobId || streamWs) return;
+    if (!jobId || logStreamActive) return;
     streamError = '';
     logsError = '';
 
@@ -381,51 +482,53 @@
 
     streamLines = [];
     streamStatus = 'connecting';
-    const ws = new WebSocket(wsUrl(`/api/training/ws/jobs/${jobId}/logs?log_type=${logsType}`));
-    streamWs = ws;
-
-    ws.onopen = () => {
-      streamStatus = 'connected';
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data as string) as { type?: string; line?: string; status?: string; message?: string; error?: string };
-      if (data.type === 'heartbeat') return;
-      if (data.type === 'log' && data.line) {
-        streamLines = [...streamLines, data.line].slice(-200);
-      } else if (data.type === 'status') {
-        streamStatus = data.status || 'status';
-        if (data.status && data.status !== 'connected') {
-          ws.close();
+    logStreamActive = true;
+    const stop = connectStream<{
+      type?: string;
+      line?: string;
+      status?: string;
+      message?: string;
+      error?: string;
+    }>({
+      path: `/api/stream/training/jobs/${encodeURIComponent(jobId)}/logs?log_type=${logsType}`,
+      onMessage: (data) => {
+        if (data.type === 'connected') {
+          streamStatus = 'connected';
+          return;
         }
-      } else if (data.type === 'error') {
-        streamError = data.error || 'ログストリーミングに失敗しました。';
+        if (data.type === 'log' && data.line) {
+          streamLines = [...streamLines, data.line].slice(-200);
+          return;
+        }
+        if (data.type === 'status') {
+          streamStatus = data.status || 'status';
+          closeLogStream();
+          return;
+        }
+        if (data.type === 'error') {
+          streamError = data.error || 'ログストリーミングに失敗しました。';
+          streamStatus = 'error';
+          closeLogStream();
+        }
+      },
+      onError: () => {
+        streamError = 'SSE接続に失敗しました。';
         streamStatus = 'error';
-        ws.close();
+        closeLogStream();
       }
-    };
-
-    ws.onerror = () => {
-      streamError = 'WebSocket接続に失敗しました。';
-      streamStatus = 'error';
-    };
-
-    ws.onclose = () => {
-      streamWs = null;
-      if (streamStatus === 'connected') {
-        streamStatus = 'closed';
-      }
+    });
+    stopLogStreamHandle = () => {
+      stop();
     };
   };
 
   const stopLogStream = () => {
-    streamWs?.close();
-    streamWs = null;
+    closeLogStream();
     streamStatus = 'stopped';
   };
 
   $effect(() => {
-    if (!isRunning && streamWs) {
+    if (!isRunning && logStreamActive) {
       stopLogStream();
     }
   });
@@ -434,8 +537,7 @@
   $effect(() => {
     if (jobId && jobId !== lastJobId) {
       lastJobId = jobId;
-      streamWs?.close();
-      streamWs = null;
+      closeLogStream();
       streamLines = [];
       streamStatus = 'idle';
       streamError = '';
@@ -464,11 +566,13 @@
       checkpointUploadError = '';
       checkpointUploadEvents = [];
       checkpointUploadResult = null;
+      provisionStreamError = '';
     }
   });
 
   let stopTrainingStream = () => {};
   let lastStreamJobId = '';
+  let stopProvisionStream = () => {};
 
   $effect(() => {
     if (jobId && jobId !== lastStreamJobId) {
@@ -490,9 +594,35 @@
     }
   });
 
+  $effect(() => {
+    if (!jobId || status !== 'starting') {
+      stopProvisionStream();
+      provisionStreamError = '';
+      return;
+    }
+
+    stopProvisionStream();
+    provisionStreamError = '';
+    stopProvisionStream = connectStream<TrainingProvisionOperationStatusResponse>({
+      path: `/api/stream/training/jobs/${encodeURIComponent(jobId)}/provision-operation`,
+      onMessage: (payload) => {
+        provisionStreamError = '';
+        setProvisionOperationSnapshot(payload);
+      },
+      onError: () => {
+        provisionStreamError = '作成進行ストリームの接続に失敗しました。';
+      }
+    });
+
+    return () => {
+      stopProvisionStream();
+    };
+  });
+
   onDestroy(() => {
+    stopProvisionStream();
     stopTrainingStream();
-    streamWs?.close();
+    closeLogStream();
   });
 </script>
 
@@ -520,6 +650,57 @@
     </div>
   </div>
 </section>
+
+{#if showProvisionCard}
+  <section class="card p-6">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <p class="section-title">Creation Progress</p>
+        <h2 class="mt-2 text-xl font-semibold text-slate-900">作成進行カード</h2>
+        <p class="mt-2 text-sm text-slate-600">
+          {provisionTip}
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="chip">job: {status || 'starting'}</span>
+        <span class="chip">step: {provisionStepLabel || provisionStep || '-'}</span>
+        {#if provisionOperation?.provider}
+          <span class="chip">provider: {provisionOperation.provider}</span>
+        {/if}
+      </div>
+    </div>
+    <div class="mt-4 h-3 overflow-hidden rounded-full bg-slate-200/80">
+      <div
+        class={`h-full transition-all ${provisionOperation?.state === 'failed' ? 'bg-rose-500' : 'bg-brand'}`}
+        style={`width: ${provisionProgressPercent}%`}
+      ></div>
+    </div>
+    <div class="mt-4 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <p class="label">現在の状態</p>
+        <div class="mt-2 space-y-1 text-xs text-slate-500">
+          <p>job.status: <span class="font-semibold text-slate-800">{status || '-'}</span></p>
+          <p>provision.state: <span class="font-semibold text-slate-800">{provisionOperation?.state ?? '-'}</span></p>
+          <p>provision.step: <span class="font-semibold text-slate-800">{provisionStep || '-'}</span></p>
+        </div>
+      </div>
+      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <p class="label">補足</p>
+        <div class="mt-2 space-y-1 text-xs text-slate-500">
+          <p class="font-semibold text-slate-800">{provisionOperation?.message ?? provisionStepLabel ?? '状態取得中'}</p>
+          <p class="break-all">instance: {provisionOperation?.instance_id ?? '-'}</p>
+          <p>updated: {formatDate(provisionOperation?.updated_at)}</p>
+        </div>
+        {#if provisionOperation?.failure_reason}
+          <p class="mt-3 text-sm text-rose-600 break-words">{provisionOperation.failure_reason}</p>
+        {/if}
+        {#if provisionStreamError}
+          <p class="mt-3 text-sm text-rose-600">{provisionStreamError}</p>
+        {/if}
+      </div>
+    </div>
+  </section>
+{/if}
 
 <section class="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
   <div class="space-y-6 min-w-0">
@@ -550,7 +731,7 @@
         </div>
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
           <p class="label">IP</p>
-          <p class="mt-2 font-semibold text-slate-800">{jobInfo?.ip ?? '-'}</p>
+          <p class="mt-2 font-semibold text-slate-800">{sshTargetDisplay || '-'}</p>
         </div>
       </div>
     </section>
@@ -820,7 +1001,16 @@
                 <p>ストレージID: <span class="font-semibold text-slate-800 break-all">{reviveResult.volume_id}</span></p>
                 <p>インスタンスタイプ: <span class="font-semibold text-slate-800">{reviveResult.instance_type}</span></p>
                 <p>ロケーション: <span class="font-semibold text-slate-800">{reviveResult.location}</span></p>
-                <p>IP: <span class="font-semibold text-slate-800">{reviveResult.ip}</span></p>
+                <p>
+                  SSH接続先:
+                  <span class="font-semibold text-slate-800">
+                    {#if reviveResult.ssh_port && reviveResult.ssh_port !== 22}
+                      {reviveResult.ip}:{reviveResult.ssh_port}
+                    {:else}
+                      {reviveResult.ip}
+                    {/if}
+                  </span>
+                </p>
                 <p>SSHユーザー: <span class="font-semibold text-slate-800">{reviveResult.ssh_user}</span></p>
                 <p>SSH鍵: <span class="font-semibold text-slate-800 break-all">{reviveResult.ssh_private_key}</span></p>
               </div>
@@ -847,7 +1037,7 @@
       <div class="mt-4 grid gap-3 text-sm text-slate-600">
         <label class="text-sm font-semibold text-slate-700">
           <span class="label">ログ種別</span>
-          <select class="input mt-2" bind:value={logsType} disabled={Boolean(streamWs)}>
+          <select class="input mt-2" bind:value={logsType} disabled={logStreamActive}>
             <option value="training">学習ログ</option>
             <option value="setup">セットアップログ</option>
           </select>
@@ -864,10 +1054,10 @@
             {logsLoading ? '取得中...' : 'ログを取得'}
           </Button.Root>
           <div class="flex flex-wrap gap-2">
-            <Button.Root class="btn-primary" type="button" onclick={startLogStream} disabled={Boolean(streamWs)}>
+            <Button.Root class="btn-primary" type="button" onclick={startLogStream} disabled={logStreamActive}>
               ストリーミング開始
             </Button.Root>
-            <Button.Root class="btn-ghost" type="button" onclick={stopLogStream} disabled={!streamWs}>
+            <Button.Root class="btn-ghost" type="button" onclick={stopLogStream} disabled={!logStreamActive}>
               ストリーミング停止
             </Button.Root>
             <span class="chip">状態: {streamStatus}</span>

@@ -1,6 +1,7 @@
 import type { LayoutLoad } from './$types';
 import { redirect } from '@sveltejs/kit';
 
+import { cacheAuthenticatedGate, getCachedAuthGate, invalidateAuthGate } from '$lib/auth/gate';
 import { getBackendUrl } from '$lib/config';
 
 export const ssr = false;
@@ -10,6 +11,9 @@ export const load: LayoutLoad = async ({ url, fetch }) => {
     url.pathname.startsWith('/auth') ||
     url.pathname === '/train/instance-selector-mock'
   ) {
+    return {};
+  }
+  if (getCachedAuthGate()) {
     return {};
   }
   try {
@@ -62,9 +66,12 @@ export const load: LayoutLoad = async ({ url, fetch }) => {
     }
 
     if (!authenticated) {
+      invalidateAuthGate();
       throw new Error('unauthenticated');
     }
+    cacheAuthenticatedGate();
   } catch {
+    invalidateAuthGate();
     throw redirect(302, '/auth');
   }
   return {};

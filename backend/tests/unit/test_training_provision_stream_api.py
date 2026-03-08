@@ -53,3 +53,49 @@ def test_training_provision_operation_stream_emits_snapshot(monkeypatch):
         assert get_realtime_event_bus().subscriber_count(stream_api.TRAINING_PROVISION_OPERATION_TOPIC, 'op-1') == 0
 
     asyncio.run(_run())
+
+
+def test_training_job_provision_operation_stream_resolves_by_job(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_sse_queue_response(request, queue, *, event=None, heartbeat=25.0, payload_key='payload', on_close=None):
+        captured['request'] = request
+        captured['queue'] = queue
+        captured['payload_key'] = payload_key
+        captured['on_close'] = on_close
+        return 'stream-response'
+
+    async def fake_get_job_provision_operation(job_id: str) -> TrainingProvisionOperationStatusResponse:
+        assert job_id == 'job-1'
+        return TrainingProvisionOperationStatusResponse(
+            operation_id='op-job-1',
+            state='running',
+            step='setup_env',
+            message='環境構築',
+            provider='verda',
+            instance_id='inst-1',
+            job_id='job-1',
+        )
+
+    monkeypatch.setattr(stream_api, '_require_user_id', lambda: 'user-1')
+    monkeypatch.setattr(stream_api, 'get_job_provision_operation', fake_get_job_provision_operation)
+    monkeypatch.setattr(stream_api, 'sse_queue_response', fake_sse_queue_response)
+
+    async def _run():
+        response = await stream_api.stream_training_job_provision_operation(_FakeRequest(), 'job-1')
+        assert response == 'stream-response'
+        event = await asyncio.wait_for(captured['queue'].get(), timeout=1.0)
+        payload = event['payload']
+        assert payload['operation_id'] == 'op-job-1'
+        assert payload['job_id'] == 'job-1'
+        assert payload['step'] == 'setup_env'
+        captured['on_close']()
+        assert (
+            get_realtime_event_bus().subscriber_count(
+                stream_api.TRAINING_PROVISION_OPERATION_TOPIC,
+                'op-job-1',
+            )
+            == 0
+        )
+
+    asyncio.run(_run())

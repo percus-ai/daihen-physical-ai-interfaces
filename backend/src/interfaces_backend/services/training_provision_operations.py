@@ -158,6 +158,27 @@ class TrainingProvisionOperationsService:
             return None
         return self._row_to_response(row)
 
+    async def get_for_job(
+        self,
+        *,
+        user_id: str,
+        job_id: str,
+    ) -> Optional[TrainingProvisionOperationStatusResponse]:
+        row = await self._load_by_job_id(job_id, owner_user_id=user_id)
+        if row is None:
+            return None
+        return self._row_to_response(row)
+
+    async def get_for_job_system(
+        self,
+        *,
+        job_id: str,
+    ) -> Optional[TrainingProvisionOperationStatusResponse]:
+        row = await self._load_by_job_id(job_id, owner_user_id=None)
+        if row is None:
+            return None
+        return self._row_to_response(row)
+
     async def set_running(
         self,
         *,
@@ -178,7 +199,7 @@ class TrainingProvisionOperationsService:
         self,
         *,
         operation_id: str,
-        message: str = "学習ジョブを作成しました。",
+        message: str = "学習開始までの初期化が完了しました。",
     ) -> None:
         await self._update(
             operation_id=operation_id,
@@ -259,8 +280,9 @@ class TrainingProvisionOperationsService:
                 continue
             provider = str(row.get("provider") or "").strip().lower()
             instance_id = str(row.get("instance_id") or "").strip()
+            job_id = str(row.get("job_id") or "").strip()
             message = "バックエンド再起動によりプロビジョニングが中断されました。"
-            if instance_id:
+            if instance_id and not job_id:
                 deleted, detail = await asyncio.get_running_loop().run_in_executor(
                     None,
                     cleanup_provision_instance,
@@ -274,6 +296,11 @@ class TrainingProvisionOperationsService:
                         "バックエンド再起動により中断され、作成中インスタンスのクリーンアップに失敗しました。 "
                         f"({detail})"
                     )
+            elif job_id:
+                message = (
+                    "バックエンド再起動により作成進行の追跡が中断されました。"
+                    " ジョブ詳細画面から状態を確認してください。"
+                )
             await self._update_with_client(
                 service_client,
                 operation_id=operation_id,
@@ -294,6 +321,26 @@ class TrainingProvisionOperationsService:
     async def _load(self, operation_id: str, *, owner_user_id: str | None) -> Optional[dict[str, Any]]:
         async def _fetch_with(client: AsyncClient) -> list[dict[str, Any]]:
             query = client.table(TRAINING_PROVISION_OPERATION_TABLE).select("*").eq("operation_id", operation_id)
+            if owner_user_id:
+                query = query.eq("owner_user_id", owner_user_id)
+            response = await query.execute()
+            return response.data or []
+
+        client = await get_supabase_async_client()
+        try:
+            rows = await _fetch_with(client)
+        except Exception as exc:
+            if not _is_jwt_expired_error(exc):
+                raise
+            service_client = await _get_service_db_client()
+            if service_client is None:
+                raise
+            rows = await _fetch_with(service_client)
+        return rows[0] if rows else None
+
+    async def _load_by_job_id(self, job_id: str, *, owner_user_id: str | None) -> Optional[dict[str, Any]]:
+        async def _fetch_with(client: AsyncClient) -> list[dict[str, Any]]:
+            query = client.table(TRAINING_PROVISION_OPERATION_TABLE).select("*").eq("job_id", job_id)
             if owner_user_id:
                 query = query.eq("owner_user_id", owner_user_id)
             response = await query.execute()

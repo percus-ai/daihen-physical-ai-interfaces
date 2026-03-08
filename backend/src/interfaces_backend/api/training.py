@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import shlex
 import tempfile
 import time
@@ -21,6 +22,7 @@ from fastapi import (
     BackgroundTasks,
     HTTPException,
     Query,
+    Request,
     Response,
     WebSocket,
     WebSocketDisconnect,
@@ -33,6 +35,7 @@ from interfaces_backend.core.request_auth import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
     build_session_from_tokens,
+    extract_request_user_id_hint,
     is_session_expired,
     refresh_session_from_refresh_token,
 )
@@ -111,6 +114,28 @@ _T = TypeVar("_T")
 def _is_jwt_expired_error(exc: Exception) -> bool:
     text = str(exc)
     return "JWT expired" in text or "PGRST303" in text
+
+
+_ISO_FRACTION_TZ_PATTERN = re.compile(r"^(?P<prefix>.+?T\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?(?P<tz>Z|[+-]\d{2}:\d{2})?$")
+
+
+def _parse_job_created_at(value: str) -> datetime:
+    normalized = value.strip()
+    match = _ISO_FRACTION_TZ_PATTERN.match(normalized)
+    if not match:
+        raise ValueError(f"Unsupported created_at format: {value!r}")
+
+    prefix = match.group("prefix")
+    fraction = match.group("fraction") or ""
+    tz = match.group("tz") or ""
+    if tz == "Z":
+        tz = "+00:00"
+    if fraction:
+        fraction = fraction[:6].ljust(6, "0")
+        normalized = f"{prefix}.{fraction}{tz}"
+    else:
+        normalized = f"{prefix}{tz}"
+    return datetime.fromisoformat(normalized)
 
 
 async def _get_service_db_client() -> Optional[AsyncClient]:
@@ -1187,11 +1212,30 @@ def _is_terminated_instance_status(status: str) -> bool:
     }
 
 
+async def _should_preserve_job_from_remote_status(job_data: dict, instance_status: Optional[str]) -> Optional[str]:
+    """Prefer observed remote process state over flaky provider status for Vast."""
+    provider = _get_job_provider(job_data)
+    if provider != "vast":
+        return None
+
+    if instance_status not in {None, "unavailable"} and not _is_terminated_instance_status(instance_status):
+        return None
+
+    await _refresh_job_ssh_target_if_needed(job_data)
+    remote_status = _check_remote_status(job_data)
+    if remote_status in {"running", "starting"}:
+        return remote_status
+    return None
+
+
 async def _refresh_job_status_from_instance(job_data: dict) -> Optional[str]:
     instance_id = job_data.get("instance_id")
     if not instance_id:
         return None
     instance_status = _check_instance_status(job_data)
+    preserved_remote_status = await _should_preserve_job_from_remote_status(job_data, instance_status)
+    if preserved_remote_status:
+        return preserved_remote_status
     if instance_status is None:
         job_data["status"] = "terminated"
         job_data["termination_reason"] = "INSTANCE_NOT_FOUND"
@@ -1242,7 +1286,72 @@ async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
     job_id = str(job_data.get("job_id") or "").strip()
     if not job_id:
         return job_data
-    if _get_job_provider(job_data) != "verda":
+
+    provider = _get_job_provider(job_data)
+    if provider == "vast":
+        instance_id = str(job_data.get("instance_id") or "").strip()
+        if not instance_id:
+            return job_data
+
+        try:
+            from percus_ai.training.providers.vast import get_instance
+
+            current = get_instance(instance_id)
+        except Exception:
+            return job_data
+
+        new_ip = str(getattr(current, "ip", "") or "").strip()
+        try:
+            new_port = int(getattr(current, "ssh_port", None) or 0)
+        except (TypeError, ValueError):
+            new_port = 0
+        if not new_ip:
+            return job_data
+
+        old_ip = str(job_data.get("ip") or "").strip()
+        old_port = 22
+        try:
+            old_port = int(job_data.get("ssh_port") or 22)
+        except (TypeError, ValueError):
+            old_port = 22
+        training_cfg = job_data.get("training_config")
+        cloud_cfg: dict | None = None
+        if isinstance(training_cfg, dict):
+            maybe_cloud = training_cfg.get("cloud")
+            if isinstance(maybe_cloud, dict):
+                cloud_cfg = maybe_cloud
+                try:
+                    cloud_port = int(cloud_cfg.get("ssh_port") or 0)
+                except (TypeError, ValueError):
+                    cloud_port = 0
+                if cloud_port > 0:
+                    old_port = cloud_port
+
+        changed = False
+        if new_ip != old_ip:
+            job_data["ip"] = new_ip
+            changed = True
+        if new_port > 0 and new_port != old_port:
+            job_data["ssh_port"] = new_port
+            if cloud_cfg is not None:
+                cloud_cfg["ssh_port"] = new_port
+            changed = True
+        if not changed:
+            return job_data
+
+        await _save_job(job_data)
+        logger.info(
+            "Refreshed Vast SSH target: job_id=%s instance_id=%s old_ip=%s old_port=%s new_ip=%s new_port=%s",
+            job_id,
+            instance_id,
+            old_ip or "none",
+            old_port,
+            new_ip,
+            new_port or 22,
+        )
+        return job_data
+
+    if provider != "verda":
         return job_data
 
     instance_id = str(job_data.get("instance_id") or "").strip()
@@ -1356,6 +1465,7 @@ async def _save_job(job_data: dict) -> None:
         "started_at",
         "summary",
         "early_stopping",
+        "provision_operation_id",
     }
     record = {k: job_data.get(k) for k in fixed_fields if k in job_data}
     job_id = record.get("job_id")
@@ -1418,6 +1528,25 @@ def _load_job_sync(job_id: str, include_deleted: bool = False) -> Optional[dict]
 
 def _save_job_sync(job_data: dict) -> None:
     _run_async(_save_job(job_data))
+
+
+async def _resolve_job_provision_operation(job_data: dict) -> Optional[TrainingProvisionOperationStatusResponse]:
+    operations = get_training_provision_operations_service()
+    operation_id = str(job_data.get("provision_operation_id") or "").strip()
+    snapshot: Optional[TrainingProvisionOperationStatusResponse] = None
+    if operation_id:
+        snapshot = await operations.get_system(operation_id=operation_id)
+    if snapshot is None:
+        job_id = str(job_data.get("job_id") or "").strip()
+        if job_id:
+            snapshot = await operations.get_for_job_system(job_id=job_id)
+    if snapshot is None:
+        return None
+
+    job_status = str(job_data.get("status") or "").strip().lower()
+    if snapshot.state == "completed" and job_status != "starting":
+        return None
+    return snapshot
 
 
 def _update_cleanup_status_sync(job_id: str, status: str) -> None:
@@ -1671,18 +1800,31 @@ async def _mark_job_completed(
     await _archive_job_metrics(job_id)
 
 
-async def _list_jobs(days: int = 365) -> list[dict]:
+async def _list_jobs(days: int = 365, owner_user_id: Optional[str] = None) -> list[dict]:
     """List jobs from DB.
 
     Args:
         days: Return jobs from past N days.
               Running/starting jobs are always included.
     """
+    async def _fetch_with(client: AsyncClient) -> list[dict]:
+        query = client.table(DB_TABLE).select("*").is_("deleted_at", "null")
+        if owner_user_id:
+            query = query.eq("owner_user_id", owner_user_id)
+        response = await query.execute()
+        return response.data or []
+
     client = await get_supabase_async_client()
-    response = (
-        await client.table(DB_TABLE).select("*").is_("deleted_at", "null").execute()
-    )
-    jobs = response.data or []
+    try:
+        jobs = await _fetch_with(client)
+    except Exception as exc:
+        if not _is_jwt_expired_error(exc):
+            raise
+        service_client = await _get_service_db_client()
+        if service_client is None:
+            raise
+        logger.warning("JWT expired while listing training jobs; retrying with service key")
+        jobs = await _fetch_with(service_client)
 
     cutoff_date = datetime.now() - timedelta(days=days)
     filtered = []
@@ -1695,7 +1837,7 @@ async def _list_jobs(days: int = 365) -> list[dict]:
         if not created_at:
             continue
         try:
-            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            created = _parse_job_created_at(created_at)
             if created.tzinfo:
                 created = created.replace(tzinfo=None)
             if created >= cutoff_date:
@@ -3785,13 +3927,15 @@ async def websocket_verda_storage(websocket: WebSocket):
 
 
 @router.get("/jobs", response_model=JobListResponse)
-async def list_jobs(days: int = Query(365, ge=1, le=365)):
+async def list_jobs(request: Request, days: int = Query(365, ge=1, le=365)):
     """List training jobs.
 
     Args:
         days: Return jobs from past N days (running jobs always included)
     """
-    jobs_data = await _list_jobs(days)
+    owner_user_id = extract_request_user_id_hint(request)
+    jobs_data = await _list_jobs(days, owner_user_id=owner_user_id)
+
     def _coerce_jobinfo_fields(record: dict) -> dict:
         coerced = dict(record or {})
         # DB rows may contain explicit NULLs; Pydantic defaults don't apply if the key exists with None.
@@ -3803,6 +3947,11 @@ async def list_jobs(days: int = Query(365, ge=1, le=365)):
             coerced["ssh_private_key"] = "~/.ssh/id_rsa"
         if coerced.get("remote_base_dir") is None:
             coerced["remote_base_dir"] = "/root/.physical-ai"
+        if coerced.get("ssh_port") is None:
+            cloud_cfg = (coerced.get("training_config") or {}).get("cloud") or {}
+            cloud_port = cloud_cfg.get("ssh_port")
+            if cloud_port is not None:
+                coerced["ssh_port"] = cloud_port
         return coerced
 
     jobs = [JobInfo(**_coerce_jobinfo_fields(j)) for j in jobs_data]
@@ -3828,6 +3977,11 @@ async def get_job(job_id: str):
         job_coerced["ssh_private_key"] = "~/.ssh/id_rsa"
     if job_coerced.get("remote_base_dir") is None:
         job_coerced["remote_base_dir"] = "/root/.physical-ai"
+    if job_coerced.get("ssh_port") is None:
+        cloud_cfg = (job_coerced.get("training_config") or {}).get("cloud") or {}
+        cloud_port = cloud_cfg.get("ssh_port")
+        if cloud_port is not None:
+            job_coerced["ssh_port"] = cloud_port
     job = JobInfo(**job_coerced)
     remote_status = None
     progress = None
@@ -3835,6 +3989,7 @@ async def get_job(job_id: str):
     summary = job_data.get("summary")
     early_stopping = job_data.get("early_stopping")
     training_config = job_data.get("training_config")
+    provision_operation = await _resolve_job_provision_operation(job_data)
 
     # Progress is derived from Supabase metrics
     if job.status in ("running", "starting", "deploying"):
@@ -3842,6 +3997,7 @@ async def get_job(job_id: str):
 
     return JobDetailResponse(
         job=job,
+        provision_operation=provision_operation,
         remote_status=remote_status,
         progress=progress,
         latest_train_metrics=latest_train_metrics,
@@ -3884,6 +4040,22 @@ async def get_job_logs(
         )
 
     return JobLogsResponse(job_id=job_id, logs=logs, lines=lines, source=source)
+
+
+@router.get(
+    "/jobs/{job_id}/provision-operation",
+    response_model=TrainingProvisionOperationStatusResponse,
+)
+async def get_job_provision_operation(job_id: str):
+    """Resolve the active provision operation for a training job."""
+    job_data = await _load_job(job_id)
+    if not job_data:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    snapshot = await _resolve_job_provision_operation(job_data)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=f"Provision operation not found for job: {job_id}")
+    return snapshot
 
 
 @router.get("/jobs/{job_id}/logs/download", response_class=PlainTextResponse)
@@ -4593,6 +4765,18 @@ async def check_all_jobs_status():
 
         # Check instance status via provider-specific API.
         instance_status = _check_instance_status(job_data) if instance_id else None
+        preserved_remote_status = await _should_preserve_job_from_remote_status(job_data, instance_status)
+        if preserved_remote_status:
+            updates.append(
+                JobStatusUpdate(
+                    job_id=job_id,
+                    old_status=old_status,
+                    new_status=old_status,
+                    instance_status=preserved_remote_status,
+                    reason=f"Provider status stale; remote process is {preserved_remote_status}",
+                )
+            )
+            continue
 
         if instance_status is None:
             # Instance not found (deleted or API error)
@@ -4785,6 +4969,7 @@ async def start_training_provision_operation(request: JobCreateRequest):
     accepted = await operations.create(user_id=user_id, request=request)
     request_data = request.model_dump()
     request_data["job_id"] = str(uuid.uuid4())
+    request_data["provision_operation_id"] = accepted.operation_id
     asyncio.create_task(
         _run_training_provision_operation(
             operation_id=accepted.operation_id,

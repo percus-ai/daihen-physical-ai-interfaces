@@ -1,5 +1,7 @@
 """Training job models."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
@@ -55,6 +57,7 @@ class JobInfo(BaseModel):
     # SSH connection info
     ssh_user: str = "root"
     ssh_private_key: str = "~/.ssh/id_rsa"
+    ssh_port: Optional[int] = Field(None, ge=1, le=65535, description="SSH port")
     remote_base_dir: str = "/root"
 
     # Checkpoint
@@ -88,6 +91,7 @@ class JobDetailResponse(BaseModel):
     """Response for job detail endpoint."""
 
     job: JobInfo
+    provision_operation: Optional["TrainingProvisionOperationStatusResponse"] = None
     remote_status: Optional[str] = None
     progress: Optional[dict] = None
     latest_train_metrics: Optional[dict] = None
@@ -489,6 +493,7 @@ class JobReviveResponse(BaseModel):
     ip: str
     ssh_user: str = "root"
     ssh_private_key: str
+    ssh_port: Optional[int] = Field(None, ge=1, le=65535, description="SSH port")
     location: str
     message: str
 
