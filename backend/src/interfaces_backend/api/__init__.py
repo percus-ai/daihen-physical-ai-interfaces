@@ -10,6 +10,7 @@ from interfaces_backend.api.inference import router as inference_router
 from interfaces_backend.api.operate import router as operate_router
 from interfaces_backend.api.platform import router as platform_router
 from interfaces_backend.api.profiles import router as profiles_router
+from interfaces_backend.api.realtime import router as realtime_router
 from interfaces_backend.api.recording import router as recording_router
 from interfaces_backend.api.startup import router as startup_router
 from interfaces_backend.api.storage import router as storage_router
@@ -31,6 +32,7 @@ __all__ = [
     "operate_router",
     "platform_router",
     "profiles_router",
+    "realtime_router",
     "recording_router",
     "startup_router",
     "storage_router",
