@@ -10,15 +10,15 @@
   import { toStore } from 'svelte/store';
 
   import { api } from '$lib/api/client';
-  import { getTabRealtimeClient, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerTabRealtimeContributor, setTabRealtimeRoute, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   let { children }: { children?: Snippet } = $props();
   let mobileOpen = $state(false);
-  let authenticated = $state(false);
   let switchingProfile = $state(false);
   let profileError = $state('');
   let profilesReady = $state(false);
+  const authenticated = $derived(Boolean(page.data.authenticated));
 
   type VlaborStatus = { dashboard_url?: string; status?: string };
   const vlaborStatusQuery = createQuery<VlaborStatus>(
@@ -32,7 +32,6 @@
   const immersiveView = $derived(
     page.url.pathname.startsWith('/record/sessions/') || page.url.pathname.startsWith('/operate/sessions/')
   );
-  let lastPath = '';
 
   type VlaborProfile = {
     name: string;
@@ -76,23 +75,6 @@
     mobileOpen = false;
   };
 
-  const refreshAuth = async () => {
-    try {
-      const status = await api.auth.status();
-      authenticated = Boolean(status.authenticated);
-    } catch {
-      authenticated = false;
-    }
-  };
-
-  $effect(() => {
-    const currentPath = page.url.pathname + page.url.search;
-    if (currentPath !== lastPath) {
-      lastPath = currentPath;
-      refreshAuth();
-    }
-  });
-
   $effect(() => {
     if (immersiveView && mobileOpen) {
       mobileOpen = false;
@@ -104,11 +86,7 @@
     if (!browser || !authenticated) {
       return;
     }
-    const client = getTabRealtimeClient();
-    if (!client) {
-      return;
-    }
-    client.setRoute({
+    setTabRealtimeRoute({
       id: page.url.pathname,
       url: `${page.url.pathname}${page.url.search}`,
       params: page.params
@@ -131,13 +109,8 @@
       return;
     }
 
-    const client = getTabRealtimeClient();
-    if (!client) {
-      return;
-    }
-
     if (profileContributor === null) {
-      profileContributor = client.registerContributor({
+      profileContributor = registerTabRealtimeContributor({
         contributorId: 'app-shell.profiles.active',
         subscriptions: [
           {
@@ -148,6 +121,9 @@
         ],
         onEvent: handleProfileRealtimeEvent
       });
+      if (!profileContributor) {
+        return;
+      }
       return;
     }
 

@@ -628,6 +628,25 @@ export type TrainingProvisionOperationStatusResponse = {
 
 let refreshPromise: Promise<boolean> | null = null;
 
+function withJsonHeaders(options: RequestInit = {}): RequestInit {
+  const method = (options.method ?? 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD') {
+    return {
+      ...options,
+      headers: {
+        ...options.headers
+      }
+    };
+  }
+  return {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers
+    }
+  };
+}
+
 async function baseFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const baseUrl = getBackendUrl();
   return fetch(`${baseUrl}${path}`, {
@@ -659,13 +678,7 @@ async function parseApiError(response: Response): Promise<string> {
 }
 
 async function fetchJsonNoRefresh<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await baseFetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers
-    }
-  });
+  const response = await baseFetch(path, withJsonHeaders(options));
 
   if (!response.ok) {
     throw new ApiError(response.status, await parseApiError(response));
