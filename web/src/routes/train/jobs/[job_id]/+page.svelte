@@ -132,7 +132,6 @@
   let checkpointUploadResult: RemoteCheckpointUploadResult | null = $state(null);
 
   type MetricPoint = { step?: number; loss?: number; ts?: string };
-  const REALTIME_DEFAULT_TAIL_LINES = 400;
   let activeLogSnapshotKey = $state('');
 
   const jobInfo = $derived($jobQuery.data?.job);
@@ -208,7 +207,7 @@
     create_instance: 'クラウド上でインスタンスを作成しています。数分かかることがあります。',
     job_created: 'ジョブは作成済みです。これ以降の準備はこの画面で追跡できます。',
     wait_ip: 'インスタンスの起動完了とネットワーク割り当てを待っています。',
-    connect_ssh: 'インスタンスへの接続確認をしています。完了まで少し待ってください。',
+    connect_ssh: 'インスタンスへの接続確認をしています。これには数十秒から数分程度かかる場合があります。',
     deploy_files: '学習に必要なファイルをインスタンスへ転送しています。',
     setup_env: '学習環境をセットアップしています。これには数分から10分程度かかる場合があります。',
     start_training: 'まもなく学習が始まります。開始後はログや loss が更新されます。',
@@ -679,11 +678,7 @@
     streamStatus = 'connecting';
     realtimeContributor = client.registerContributor({
       contributorId: `train.job.${currentJobId}.${currentLogsType}`,
-      subscriptions: buildRealtimeSubscriptions(
-        currentJobId,
-        currentLogsType,
-        REALTIME_DEFAULT_TAIL_LINES
-      ),
+      subscriptions: buildRealtimeSubscriptions(currentJobId, currentLogsType, logLines),
       onEvent: (event) => handleRealtimeEvent(currentJobId, registrationKey, event)
     });
 
