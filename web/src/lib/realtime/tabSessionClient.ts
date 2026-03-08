@@ -4,6 +4,13 @@ import { getBackendUrl } from '$lib/config';
 
 const TAB_SESSION_ID_KEY = 'percus.realtime.tab_session_id';
 const TAB_SESSION_REVISION_KEY = 'percus.realtime.tab_session_revision';
+const TAB_SESSION_BROADCAST_CHANNEL = 'percus.realtime.tab_session';
+
+type TabSessionPresenceMessage = {
+  type: 'announce' | 'ack';
+  tabSessionId: string;
+  instanceId: string;
+};
 
 type RealtimeSourceMeta = {
   subscription_id?: string;
@@ -29,6 +36,17 @@ type ContributorState = {
   id: string;
   subscriptions: TabSessionSubscription[];
   onEvent?: (event: TabRealtimeEvent) => void;
+};
+
+type ComposedState = {
+  state: Omit<TabSessionStateRequest, 'revision'>;
+  stateKey: string;
+  subscriptionOwners: Map<string, string>;
+};
+
+type InFlightState = {
+  revision: number;
+  composed: ComposedState;
 };
 
 export type TabRealtimeContributor = {
@@ -68,6 +86,13 @@ const createTabSessionId = () => {
   return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
+const createClientInstanceId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `instance-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 const readTabSessionId = () => {
   if (!browser) return '';
   const existing = sessionStorage.getItem(TAB_SESSION_ID_KEY);
@@ -85,30 +110,56 @@ const writeTabSessionId = (tabSessionId: string) => {
 const filterRouteParams = (params: Record<string, string | undefined>) => {
   const entries = Object.entries(params)
     .map(([key, value]) => [key.trim(), String(value ?? '').trim()] as const)
-    .filter(([key, value]) => key && value);
+    .filter(([key, value]) => key && value)
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
   return Object.fromEntries(entries);
 };
 
+const normalizeJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeJsonValue(item));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, nestedValue]) => nestedValue !== undefined)
+        .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+        .map(([key, nestedValue]) => [key, normalizeJsonValue(nestedValue)])
+    );
+  }
+  return value;
+};
+
+const cloneSubscription = (subscription: TabSessionSubscription): TabSessionSubscription =>
+  normalizeJsonValue(subscription) as TabSessionSubscription;
+
 class TabRealtimeClient {
+  private instanceId = createClientInstanceId();
   private tabSessionId = readTabSessionId();
-  private revision = readStoredRevision();
+  private appliedRevision = readStoredRevision();
   private route: TabSessionRoute = buildDefaultRoute();
   private lifecycle: TabSessionLifecycle = {
     visibility: document.visibilityState === 'hidden' ? 'background' : 'foreground'
   };
   private contributors = new Map<string, ContributorState>();
-  private subscriptionOwners = new Map<string, string>();
+  private appliedSubscriptionOwners = new Map<string, string>();
   private source: EventSource | null = null;
   private syncInFlight: Promise<void> | null = null;
   private syncQueued = false;
+  private syncKeepaliveRequested = false;
+  private deleteAfterSyncRequested = false;
   private streamReconnectTimer: number | null = null;
   private disposed = false;
   private lastHandledStreamSeq = 0;
+  private appliedStateKey = '';
+  private inFlightState: InFlightState | null = null;
+  private presenceChannel: BroadcastChannel | null = null;
 
   constructor() {
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     window.addEventListener('online', this.handleOnline);
     window.addEventListener('pagehide', this.handlePageHide);
+    this.initializePresenceChannel();
   }
 
   registerContributor(input: TabRealtimeContributor): TabRealtimeContributorHandle {
@@ -154,19 +205,29 @@ class TabRealtimeClient {
 
   async close(): Promise<void> {
     if (this.disposed) return;
-    this.disposed = true;
-    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
-    window.removeEventListener('online', this.handleOnline);
-    window.removeEventListener('pagehide', this.handlePageHide);
-    this.closeStream();
-    if (this.streamReconnectTimer !== null) {
-      window.clearTimeout(this.streamReconnectTimer);
-      this.streamReconnectTimer = null;
-    }
+    this.lifecycle = {
+      visibility: 'closing',
+      reason: 'close'
+    };
     try {
-      await api.realtime.deleteTabSession(this.tabSessionId);
+      this.scheduleSync({ deleteAfterSync: true });
+      while (this.syncInFlight) {
+        await this.syncInFlight;
+      }
     } catch {
       // Ignore close-time failures. The backend TTL will eventually clean up.
+    } finally {
+      this.disposed = true;
+      document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+      window.removeEventListener('online', this.handleOnline);
+      window.removeEventListener('pagehide', this.handlePageHide);
+      this.presenceChannel?.close();
+      this.presenceChannel = null;
+      this.closeStream();
+      if (this.streamReconnectTimer !== null) {
+        window.clearTimeout(this.streamReconnectTimer);
+        this.streamReconnectTimer = null;
+      }
     }
   }
 
@@ -187,49 +248,14 @@ class TabRealtimeClient {
       visibility: 'closing',
       reason: 'pagehide'
     };
-    void this.flushClosingState();
+    this.closeStream();
+    this.scheduleSync({ keepalive: true, deleteAfterSync: true });
   };
 
-  private async flushClosingState() {
-    this.closeStream();
-    const state = this.buildState(this.revision + 1);
-    const baseUrl = getBackendUrl();
-    const stateUrl = new URL(
-      `/api/realtime/tab-sessions/${encodeURIComponent(this.tabSessionId)}/state`,
-      baseUrl
-    );
-    const sessionUrl = new URL(
-      `/api/realtime/tab-sessions/${encodeURIComponent(this.tabSessionId)}`,
-      baseUrl
-    );
-
-    try {
-      await fetch(stateUrl.toString(), {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(state),
-        keepalive: true
-      });
-    } catch {
-      // Ignore; we still try to delete the session.
-    }
-
-    try {
-      await fetch(sessionUrl.toString(), {
-        method: 'DELETE',
-        credentials: 'include',
-        keepalive: true
-      });
-    } catch {
-      // Ignore close-time failures.
-    }
-  }
-
-  private buildState(nextRevision: number): TabSessionStateRequest {
+  private composeState(): ComposedState {
     const subscriptions: TabSessionSubscription[] = [];
     const seen = new Set<string>();
-    this.subscriptionOwners.clear();
+    const subscriptionOwners = new Map<string, string>();
 
     for (const contributor of this.contributors.values()) {
       for (const subscription of contributor.subscriptions) {
@@ -237,21 +263,84 @@ class TabRealtimeClient {
           throw new Error(`Duplicate realtime subscription_id: ${subscription.subscription_id}`);
         }
         seen.add(subscription.subscription_id);
-        this.subscriptionOwners.set(subscription.subscription_id, contributor.id);
-        subscriptions.push(subscription);
+        subscriptionOwners.set(subscription.subscription_id, contributor.id);
+        subscriptions.push(cloneSubscription(subscription));
       }
     }
 
-    return {
-      revision: nextRevision,
-      lifecycle: this.lifecycle,
-      route: this.route,
+    subscriptions.sort((left, right) => left.subscription_id.localeCompare(right.subscription_id));
+
+    const state: Omit<TabSessionStateRequest, 'revision'> = {
+      lifecycle: normalizeJsonValue(this.lifecycle) as TabSessionLifecycle,
+      route: normalizeJsonValue(this.route) as TabSessionRoute,
       subscriptions
+    };
+
+    return {
+      state,
+      stateKey: this.buildStateKey(state),
+      subscriptionOwners
     };
   }
 
-  private scheduleSync() {
+  private buildStateKey(state: Omit<TabSessionStateRequest, 'revision'>) {
+    return JSON.stringify(normalizeJsonValue(state));
+  }
+
+  private buildRequest(composed: ComposedState, revision: number): TabSessionStateRequest {
+    return {
+      revision,
+      lifecycle: composed.state.lifecycle,
+      route: composed.state.route,
+      subscriptions: composed.state.subscriptions
+    };
+  }
+
+  private composeStateFromResponse(response: {
+    lifecycle: TabSessionLifecycle;
+    route: TabSessionRoute;
+    subscriptions: TabSessionSubscription[];
+  }): ComposedState {
+    const desiredOwners = this.composeState().subscriptionOwners;
+    const subscriptionOwners = new Map<string, string>();
+    const subscriptions = response.subscriptions
+      .map((subscription) => {
+        const ownerId = desiredOwners.get(subscription.subscription_id);
+        if (ownerId) {
+          subscriptionOwners.set(subscription.subscription_id, ownerId);
+        }
+        return cloneSubscription(subscription);
+      })
+      .sort((left, right) => left.subscription_id.localeCompare(right.subscription_id));
+
+    const state: Omit<TabSessionStateRequest, 'revision'> = {
+      lifecycle: normalizeJsonValue(response.lifecycle) as TabSessionLifecycle,
+      route: normalizeJsonValue(response.route) as TabSessionRoute,
+      subscriptions
+    };
+
+    return {
+      state,
+      stateKey: this.buildStateKey(state),
+      subscriptionOwners
+    };
+  }
+
+  private adoptAppliedState(composed: ComposedState, revision: number) {
+    this.appliedRevision = revision;
+    this.appliedStateKey = composed.stateKey;
+    this.appliedSubscriptionOwners = composed.subscriptionOwners;
+    writeStoredRevision(this.appliedRevision);
+  }
+
+  private scheduleSync(options: { keepalive?: boolean; deleteAfterSync?: boolean } = {}) {
     if (this.disposed) return;
+    if (options.keepalive) {
+      this.syncKeepaliveRequested = true;
+    }
+    if (options.deleteAfterSync) {
+      this.deleteAfterSyncRequested = true;
+    }
     if (this.syncInFlight) {
       this.syncQueued = true;
       return;
@@ -269,23 +358,60 @@ class TabRealtimeClient {
       });
   }
 
-  private async syncState() {
-    let attempts = 0;
-    while (attempts < 2) {
-      attempts += 1;
-      const state = this.buildState(this.revision + 1);
+  private async syncState(options: { keepalive?: boolean; deleteAfterSync?: boolean } = {}) {
+    const keepaliveRequested = options.keepalive ?? this.syncKeepaliveRequested;
+    const deleteAfterSync = options.deleteAfterSync ?? this.deleteAfterSyncRequested;
+    this.syncKeepaliveRequested = false;
+    this.deleteAfterSyncRequested = false;
+
+    for (let attempts = 0; attempts < 8; attempts += 1) {
+      const desired = this.composeState();
+      if (desired.stateKey === this.appliedStateKey) {
+        if (deleteAfterSync) {
+          await this.deleteTabSession(this.tabSessionId, { keepalive: keepaliveRequested });
+        }
+        this.ensureStream();
+        return;
+      }
+
+      const syncTabSessionId = this.tabSessionId;
+      const revision = this.appliedRevision + 1;
+      const request = this.buildRequest(desired, revision);
+      this.inFlightState = { revision, composed: desired };
+
       try {
-        const result = await api.realtime.putTabSessionState(this.tabSessionId, state);
-        this.revision = result.revision;
-        writeStoredRevision(this.revision);
+        const result = await this.putTabSessionState(syncTabSessionId, request, {
+          keepalive: keepaliveRequested
+        });
+        this.inFlightState = null;
+        if (syncTabSessionId !== this.tabSessionId) {
+          continue;
+        }
+        this.adoptAppliedState(desired, result.revision);
+        if (deleteAfterSync) {
+          await this.deleteTabSession(syncTabSessionId, { keepalive: keepaliveRequested });
+        }
         this.ensureStream();
         return;
       } catch (error) {
+        this.inFlightState = null;
         const status = typeof error === 'object' && error && 'status' in error ? Number((error as { status?: number }).status) : 0;
         if (status === 409) {
-          const current = await api.realtime.tabSessionState(this.tabSessionId);
-          this.revision = current.revision;
-          writeStoredRevision(this.revision);
+          const current = await api.realtime.tabSessionState(syncTabSessionId);
+          if (syncTabSessionId !== this.tabSessionId) {
+            continue;
+          }
+          const currentComposed = this.composeStateFromResponse(current);
+          this.adoptAppliedState(currentComposed, current.revision);
+
+          const latestDesired = this.composeState();
+          if (latestDesired.stateKey === currentComposed.stateKey) {
+            if (deleteAfterSync) {
+              await this.deleteTabSession(syncTabSessionId, { keepalive: keepaliveRequested });
+            }
+            this.ensureStream();
+            return;
+          }
           continue;
         }
         if (status === 404) {
@@ -300,10 +426,13 @@ class TabRealtimeClient {
         return;
       }
     }
+
+    console.error('tab realtime state sync exhausted retries');
   }
 
   private ensureStream() {
     if (this.disposed || this.source || !this.tabSessionId) return;
+    if (this.lifecycle.visibility === 'closing') return;
     const baseUrl = getBackendUrl();
     const url = new URL(
       `/api/realtime/tab-sessions/${encodeURIComponent(this.tabSessionId)}/stream`,
@@ -342,6 +471,13 @@ class TabRealtimeClient {
   }
 
   private dispatchEvent(event: TabRealtimeEvent) {
+    if (
+      typeof event.config_revision === 'number' &&
+      event.config_revision < this.appliedRevision
+    ) {
+      return;
+    }
+
     const subscriptionId = event.source?.subscription_id;
     if (!subscriptionId) {
       if (event.op === 'control' && event.payload.type === 'session_deleted') {
@@ -350,7 +486,16 @@ class TabRealtimeClient {
       }
       return;
     }
-    const ownerId = this.subscriptionOwners.get(subscriptionId);
+
+    const ownerMap =
+      event.config_revision === this.appliedRevision
+        ? this.appliedSubscriptionOwners
+        : event.config_revision === this.inFlightState?.revision
+          ? this.inFlightState.composed.subscriptionOwners
+          : null;
+    if (!ownerMap) return;
+
+    const ownerId = ownerMap.get(subscriptionId);
     if (!ownerId) return;
     const contributor = this.contributors.get(ownerId);
     contributor?.onEvent?.(event);
@@ -365,10 +510,110 @@ class TabRealtimeClient {
   private resetSessionIdentity() {
     this.closeStream();
     this.lastHandledStreamSeq = 0;
-    this.revision = 0;
+    this.appliedStateKey = '';
+    this.appliedRevision = 0;
+    this.appliedSubscriptionOwners = new Map();
+    this.inFlightState = null;
+    this.syncKeepaliveRequested = false;
+    this.deleteAfterSyncRequested = false;
     writeStoredRevision(0);
     this.tabSessionId = createTabSessionId();
     writeTabSessionId(this.tabSessionId);
+    this.broadcastPresence('announce');
+  }
+
+  private async putTabSessionState(
+    tabSessionId: string,
+    payload: TabSessionStateRequest,
+    options: { keepalive: boolean }
+  ) {
+    if (!options.keepalive) {
+      return api.realtime.putTabSessionState(tabSessionId, payload);
+    }
+
+    const response = await fetch(
+      new URL(`/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}/state`, getBackendUrl()).toString(),
+      {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true
+      }
+    );
+
+    if (!response.ok) {
+      const message = await response.text().catch(() => '');
+      throw { status: response.status, message };
+    }
+
+    return response.json() as Promise<{ revision: number }>;
+  }
+
+  private async deleteTabSession(tabSessionId: string, options: { keepalive: boolean }) {
+    if (!options.keepalive) {
+      await api.realtime.deleteTabSession(tabSessionId);
+      return;
+    }
+
+    const response = await fetch(
+      new URL(`/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}`, getBackendUrl()).toString(),
+      {
+        method: 'DELETE',
+        credentials: 'include',
+        keepalive: true
+      }
+    );
+
+    if (!response.ok && response.status !== 404) {
+      const message = await response.text().catch(() => '');
+      throw { status: response.status, message };
+    }
+  }
+
+  private initializePresenceChannel() {
+    if (typeof BroadcastChannel === 'undefined') {
+      return;
+    }
+    const channel = new BroadcastChannel(TAB_SESSION_BROADCAST_CHANNEL);
+    channel.onmessage = (message) => {
+      this.handlePresenceMessage(message.data as TabSessionPresenceMessage);
+    };
+    this.presenceChannel = channel;
+    this.broadcastPresence('announce');
+  }
+
+  private broadcastPresence(type: TabSessionPresenceMessage['type']) {
+    if (!this.presenceChannel) {
+      return;
+    }
+    this.presenceChannel.postMessage({
+      type,
+      tabSessionId: this.tabSessionId,
+      instanceId: this.instanceId
+    } satisfies TabSessionPresenceMessage);
+  }
+
+  private handlePresenceMessage(message: TabSessionPresenceMessage) {
+    if (
+      !message ||
+      typeof message !== 'object' ||
+      message.instanceId === this.instanceId ||
+      message.tabSessionId !== this.tabSessionId
+    ) {
+      return;
+    }
+
+    if (message.type === 'announce') {
+      this.broadcastPresence('ack');
+    }
+
+    if (this.instanceId.localeCompare(message.instanceId) < 0) {
+      return;
+    }
+
+    this.resetSessionIdentity();
+    this.scheduleSync();
   }
 }
 
