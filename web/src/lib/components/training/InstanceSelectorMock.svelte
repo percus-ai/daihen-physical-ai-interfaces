@@ -2,6 +2,7 @@
   import { Button, Dialog } from 'bits-ui';
   import toast from 'svelte-french-toast';
   import { GPU_MODELS, getGpuModelLabel } from '$lib/policies';
+  import { preventModalAutoFocus } from '$lib/components/modal/focus';
 
   type Provider = 'verda' | 'vast';
   type Availability = 'available' | 'checking' | 'blocked';
@@ -409,6 +410,8 @@
     <Dialog.Overlay class="fixed inset-0 z-40 bg-slate-900/45 backdrop-blur-[1px]" />
     <Dialog.Content
       class="fixed inset-x-3 bottom-3 top-3 z-[41] outline-none modal:bottom-auto modal:left-1/2 modal:right-auto modal:top-[6.5rem] modal:-translate-x-1/2"
+      onOpenAutoFocus={preventModalAutoFocus}
+      onCloseAutoFocus={preventModalAutoFocus}
     >
       <div class="flex h-full w-full flex-col overflow-hidden rounded-[26px] border border-slate-200/90 bg-white shadow-[0_32px_72px_-40px_rgba(15,23,42,0.28)] modal:h-[788px] modal:w-[960px] modal:max-w-[calc(100vw-96px)]">
         <div class="flex items-center justify-between gap-6 border-b border-slate-200/80 px-4 pb-3 pt-4 modal:px-8 modal:pb-3 modal:pt-6">

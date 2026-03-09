@@ -5,14 +5,17 @@
   import { AlertDialog, Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import { preventModalAutoFocus } from '$lib/components/modal/focus';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
 
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
+  import { renderSessionPanelClass, renderSessionStatusClass, scrollIntoViewSoon, speakSessionMessage } from '$lib/session/sessionUx';
 
   type RunnerStatus = {
     active?: boolean;
     session_id?: string;
+    state?: string;
     task?: string;
     last_error?: string;
     recording_dataset_id?: string | null;
@@ -67,9 +70,12 @@
   let continueModalOpen = $state(false);
   let continueDecisionPending = $state(false);
   let continueDecisionError = $state('');
+  let editorAnchor = $state<HTMLElement | null>(null);
+  let lastAnnouncedState = $state('');
 
   onMount(() => {
     mounted = true;
+    scrollIntoViewSoon(editorAnchor, 180);
   });
 
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
@@ -139,6 +145,27 @@
   };
 
   const sessionLabel = $derived(KIND_LABELS[resolvedKind] ?? 'セッション');
+  const sessionState = $derived(
+    resolvedKind === 'inference'
+      ? runnerStatus.state
+        ? runnerStatus.state
+        : runnerStatus.active
+          ? 'running'
+          : runnerStatus.last_error
+            ? 'failed'
+            : vlaborStatus.state ?? 'idle'
+      : vlaborStatus.state ?? 'idle'
+  );
+  const sessionStateLabel = $derived.by(() => {
+    if (resolvedKind === 'inference') {
+      if (runnerStatus.awaiting_continue_confirmation) return '継続確認待ち';
+      if (runnerStatus.state === 'resetting' || runnerStatus.state === 'resetting_paused') return 'リセット中';
+      if (runnerStatus.state === 'recording') return '追加収録中';
+      if (runnerStatus.active) return '推論中';
+      if (runnerStatus.last_error) return '推論エラー';
+    }
+    return vlaborStatus.state ?? '待機';
+  });
 
   const handleContinueDecision = async (continueRecording: boolean) => {
     if (continueDecisionPending) return;
@@ -164,6 +191,38 @@
     }
     continueModalOpen = Boolean(runnerStatus.awaiting_continue_confirmation);
   });
+
+  $effect(() => {
+    if (!mounted) return;
+    const next = String(sessionState ?? '').trim();
+    if (!next) return;
+    if (!lastAnnouncedState) {
+      lastAnnouncedState = next;
+      return;
+    }
+    if (lastAnnouncedState === next) return;
+    lastAnnouncedState = next;
+
+    if (runnerStatus.awaiting_continue_confirmation) {
+      speakSessionMessage('エピソード保存完了です。継続収録を確認してください。');
+      return;
+    }
+    if (next === 'resetting' || next === 'resetting_paused') {
+      speakSessionMessage('リセット環境です。');
+      return;
+    }
+    if (next === 'running') {
+      speakSessionMessage('推論を開始しました。');
+      return;
+    }
+    if (next === 'failed') {
+      speakSessionMessage('推論でエラーが発生しました。');
+      return;
+    }
+    if (next === 'stopped' || next === 'inactive') {
+      speakSessionMessage('推論を停止しました。');
+    }
+  });
 </script>
 
 <section class="card-strong p-6">
@@ -187,6 +246,8 @@
     <AlertDialog.Overlay class="fixed inset-0 z-40 bg-slate-900/50 backdrop-blur-[1px]" />
     <AlertDialog.Content
       class="fixed left-1/2 top-1/2 z-50 w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-200 bg-white p-5 shadow-xl"
+      onOpenAutoFocus={preventModalAutoFocus}
+      onCloseAutoFocus={preventModalAutoFocus}
     >
       <AlertDialog.Title class="text-base font-semibold text-slate-900">
         追加収録を開始しますか？
@@ -227,6 +288,28 @@
   </AlertDialog.Portal>
 </AlertDialog.Root>
 
+<section class={`card mt-6 border p-5 ${renderSessionPanelClass(sessionState)}`}>
+  <div class="flex flex-wrap items-center gap-2">
+    <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderSessionStatusClass(sessionState)}`}>
+      {sessionStateLabel}
+    </span>
+    <span class="chip">kind: {sessionLabel}</span>
+    <span class="chip">session: {sessionId}</span>
+    {#if resolvedKind === 'inference'}
+      <span class="chip">recording dataset: {inferenceRecordingSessionId || '-'}</span>
+      <span class="chip">task: {runnerStatus.task || '-'}</span>
+      {#if runnerStatus.num_episodes != null}
+        <span class="chip">episodes: {runnerStatus.episode_count ?? 0} / {runnerStatus.num_episodes}</span>
+      {/if}
+    {/if}
+    <span class="chip">vlabor: {vlaborStatus.state ?? '-'}</span>
+  </div>
+  {#if runnerStatus.last_error}
+    <p class="mt-3 text-sm text-rose-600">{runnerStatus.last_error}</p>
+  {/if}
+</section>
+
+<div class="mt-6" bind:this={editorAnchor}>
 <SessionLayoutEditor
   blueprintSessionId={sessionId}
   blueprintSessionKind={blueprintKind}
@@ -236,3 +319,4 @@
   viewSource="ros"
   {editMode}
 />
+</div>

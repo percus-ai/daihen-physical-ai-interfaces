@@ -4,6 +4,7 @@
   import { AlertDialog, Button } from 'bits-ui';
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
+  import { preventModalAutoFocus } from '$lib/components/modal/focus';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
@@ -552,6 +553,8 @@
     <AlertDialog.Overlay class="fixed inset-0 z-40 bg-slate-900/50 backdrop-blur-[1px]" />
     <AlertDialog.Content
       class="fixed left-1/2 top-1/2 z-50 w-[min(92vw,28rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-200 bg-white p-5 shadow-xl"
+      onOpenAutoFocus={preventModalAutoFocus}
+      onCloseAutoFocus={preventModalAutoFocus}
     >
       <AlertDialog.Title class="text-base font-semibold text-slate-900">{confirmTitle}</AlertDialog.Title>
       <AlertDialog.Description class="mt-2 text-sm text-slate-600">{confirmDescription}</AlertDialog.Description>
@@ -582,6 +585,8 @@
     <AlertDialog.Overlay class="fixed inset-0 z-40 bg-slate-900/45 backdrop-blur-[1px]" />
     <AlertDialog.Content
       class="fixed left-1/2 top-1/2 z-50 w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-200 bg-white p-5 shadow-xl"
+      onOpenAutoFocus={preventModalAutoFocus}
+      onCloseAutoFocus={preventModalAutoFocus}
     >
       <AlertDialog.Title class="text-base font-semibold text-slate-900">アップロード進捗</AlertDialog.Title>
       <AlertDialog.Description class="mt-2 text-sm text-slate-600">

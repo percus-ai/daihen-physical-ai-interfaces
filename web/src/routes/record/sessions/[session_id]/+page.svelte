@@ -1,13 +1,52 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
 
   import { Button } from 'bits-ui';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
+  import { renderSessionPanelClass, renderSessionStatusClass, scrollIntoViewSoon, speakSessionMessage } from '$lib/session/sessionUx';
 
   const sessionId = $derived(page.params.session_id ?? '');
+  const STATUS_TOPIC = '/lerobot_recorder/status';
+  const STATUS_LABELS: Record<string, string> = {
+    idle: '待機',
+    warming: '準備中',
+    recording: '録画中',
+    paused: '一時停止',
+    resetting: 'リセット中',
+    inactive: '停止',
+    completed: '完了',
+    failed: '失敗'
+  };
 
-  let editMode = $state(true);
+  type RecorderStatus = {
+    state?: string;
+    dataset_id?: string;
+    episode_index?: number | null;
+    num_episodes?: number | null;
+    frame_count?: number | null;
+    episode_frame_count?: number | null;
+    last_frame_at?: string | null;
+  };
+
+  let editMode = $state(false);
+  let rosbridgeStatus = $state<'idle' | 'connecting' | 'connected' | 'disconnected' | 'error'>('idle');
+  let recorderStatus = $state<RecorderStatus | null>(null);
+  let editorAnchor = $state<HTMLElement | null>(null);
+  let lastAnnouncedState = $state('');
+
+  const parseRecorderPayload = (msg: Record<string, unknown>): RecorderStatus => {
+    if (typeof msg.data === 'string') {
+      try {
+        return JSON.parse(msg.data) as RecorderStatus;
+      } catch {
+        return { state: 'unknown' };
+      }
+    }
+    return msg as RecorderStatus;
+  };
+
   const toggleEditMode = () => {
     editMode = !editMode;
   };
@@ -18,6 +57,58 @@
       // ignore; connection status handles UI fallback
     });
   };
+
+  const recorderState = $derived(recorderStatus?.state ?? rosbridgeStatus);
+  const recorderStateLabel = $derived(STATUS_LABELS[recorderStatus?.state ?? ''] ?? recorderStatus?.state ?? rosbridgeStatus);
+  const activeEpisode = $derived(
+    recorderStatus?.episode_index != null ? Number(recorderStatus.episode_index) + 1 : null
+  );
+
+  onMount(() => {
+    scrollIntoViewSoon(editorAnchor, 180);
+    const client = getRosbridgeClient();
+    const unsubscribe = client.subscribe(STATUS_TOPIC, (message) => {
+      recorderStatus = parseRecorderPayload(message);
+    });
+    const offStatus = client.onStatusChange((next) => {
+      rosbridgeStatus = next;
+    });
+    rosbridgeStatus = client.getStatus();
+    return () => {
+      unsubscribe();
+      offStatus();
+    };
+  });
+
+  $effect(() => {
+    const state = String(recorderStatus?.state ?? '').trim();
+    if (!state) return;
+    if (!lastAnnouncedState) {
+      lastAnnouncedState = state;
+      return;
+    }
+    if (lastAnnouncedState === state) return;
+    lastAnnouncedState = state;
+    if (state === 'resetting') {
+      speakSessionMessage('リセット環境です。');
+      return;
+    }
+    if (state === 'recording') {
+      speakSessionMessage('録画中です。');
+      return;
+    }
+    if (state === 'completed') {
+      speakSessionMessage('エピソードを保存しました。');
+      return;
+    }
+    if (state === 'failed') {
+      speakSessionMessage('録画でエラーが発生しました。');
+      return;
+    }
+    if (state === 'paused') {
+      speakSessionMessage('一時停止です。');
+    }
+  });
 </script>
 
 <section class="card-strong p-6">
@@ -37,6 +128,26 @@
   </div>
 </section>
 
+<section class={`card mt-6 border p-5 ${renderSessionPanelClass(recorderState)}`}>
+  <div class="flex flex-wrap items-center gap-2">
+    <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderSessionStatusClass(recorderState)}`}>
+      {recorderStateLabel}
+    </span>
+    <span class="chip">rosbridge: {rosbridgeStatus}</span>
+    <span class="chip">dataset: {recorderStatus?.dataset_id ?? sessionId}</span>
+    {#if activeEpisode}
+      <span class="chip">episode: {activeEpisode}{recorderStatus?.num_episodes ? ` / ${recorderStatus.num_episodes}` : ''}</span>
+    {/if}
+    {#if recorderStatus?.episode_frame_count != null}
+      <span class="chip">episode frames: {recorderStatus.episode_frame_count}</span>
+    {/if}
+    {#if recorderStatus?.frame_count != null}
+      <span class="chip">total frames: {recorderStatus.frame_count}</span>
+    {/if}
+  </div>
+</section>
+
+<div class="mt-6" bind:this={editorAnchor}>
 <SessionLayoutEditor
   blueprintSessionId={sessionId}
   blueprintSessionKind="recording"
@@ -46,3 +157,4 @@
   viewSource="ros"
   {editMode}
 />
+</div>

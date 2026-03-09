@@ -2,8 +2,8 @@
   import { browser } from '$app/environment';
   import { AlertDialog, Button } from 'bits-ui';
   import { goto } from '$app/navigation';
-
-import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { preventModalAutoFocus } from '$lib/components/modal/focus';
+  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import type { DatasetMergeJobStatus } from '$lib/api/client';
   import { formatBytes } from '$lib/format';
@@ -104,6 +104,7 @@ import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type
     completedNotifiedForJobId = jobId;
     onCompleted?.(resultDatasetId);
   });
+
 </script>
 
 <AlertDialog.Root bind:open={open}>
@@ -111,6 +112,8 @@ import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type
     <AlertDialog.Overlay class="fixed inset-0 z-40 bg-slate-900/45 backdrop-blur-[1px]" />
     <AlertDialog.Content
       class="fixed left-1/2 top-1/2 z-50 w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-200 bg-white p-5 shadow-xl"
+      onOpenAutoFocus={preventModalAutoFocus}
+      onCloseAutoFocus={preventModalAutoFocus}
     >
       <AlertDialog.Title class="text-base font-semibold text-slate-900">マージ進捗</AlertDialog.Title>
       <AlertDialog.Description class="mt-2 text-sm text-slate-600">
