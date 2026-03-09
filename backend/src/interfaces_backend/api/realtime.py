@@ -21,7 +21,7 @@ from interfaces_backend.services.tab_realtime import (
     get_tab_realtime_registry,
 )
 from interfaces_backend.services.tab_realtime_sources import get_tab_realtime_source_registry
-from percus_ai.db import get_current_user_id
+from percus_ai.db import get_current_user_id, get_supabase_session
 
 router = APIRouter(prefix="/api/realtime", tags=["realtime"])
 
@@ -74,11 +74,13 @@ async def put_tab_session_state(tab_session_id: str, request: TabSessionStateReq
     user_id = _require_user_id()
     normalized_tab_session_id = _normalize_tab_session_id(tab_session_id)
     registry = get_tab_realtime_registry()
+    auth_session = get_supabase_session()
     try:
         result = registry.apply_state(
             user_id=user_id,
             tab_session_id=normalized_tab_session_id,
             state=request,
+            auth_session=auth_session,
         )
     except TabSessionRevisionConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -116,6 +118,7 @@ async def stream_tab_session(request: Request, tab_session_id: str):
     normalized_tab_session_id = _normalize_tab_session_id(tab_session_id)
     last_event_id = _parse_last_event_id(request)
     registry = get_tab_realtime_registry()
+    auth_session = get_supabase_session()
 
     try:
         handle = registry.open_stream(
@@ -123,6 +126,7 @@ async def stream_tab_session(request: Request, tab_session_id: str):
             tab_session_id=normalized_tab_session_id,
             last_event_id=last_event_id,
             source_registry=get_tab_realtime_source_registry(),
+            auth_session=auth_session,
         )
     except TabSessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

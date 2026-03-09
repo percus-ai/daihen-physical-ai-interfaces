@@ -133,6 +133,15 @@ class _TabSession:
         self._deleted = False
         self._last_touched_mono = time.monotonic()
         self._last_applied_at = _utc_now_iso()
+        self._auth_session: dict[str, Any] | None = None
+
+    def update_auth_session(self, auth_session: dict[str, Any] | None) -> None:
+        if auth_session is None:
+            return
+        normalized = dict(auth_session)
+        normalized["user_id"] = str(normalized.get("user_id") or self.user_id).strip() or self.user_id
+        with self._lock:
+            self._auth_session = normalized
 
     def _touch_unlocked(self) -> None:
         self._last_touched_mono = time.monotonic()
@@ -346,7 +355,8 @@ class _TabSession:
                     )
 
         for subscription_id, generation, subscription, source_state in pending:
-            token = set_request_session({"user_id": self.user_id})
+            auth_session = self._auth_session or {"user_id": self.user_id}
+            token = set_request_session(auth_session)
             try:
                 result = await source_registry.poll(subscription, source_state)
             finally:
@@ -491,6 +501,7 @@ class TabRealtimeRegistry:
         user_id: str,
         tab_session_id: str,
         state: TabSessionStateRequest,
+        auth_session: dict[str, Any] | None = None,
     ) -> TabSessionApplyResult:
         self._cleanup_expired_sessions()
         with self._lock:
@@ -499,6 +510,7 @@ class TabRealtimeRegistry:
             if session is None:
                 session = _TabSession(user_id=user_id, tab_session_id=tab_session_id)
                 self._sessions[key] = session
+        session.update_auth_session(auth_session)
         return session.apply_state(state)
 
     def get_state(self, *, user_id: str, tab_session_id: str) -> TabSessionStateResponse:
@@ -517,6 +529,7 @@ class TabRealtimeRegistry:
         tab_session_id: str,
         last_event_id: int | None,
         source_registry: _SourceRegistryProtocol,
+        auth_session: dict[str, Any] | None = None,
     ) -> TabSessionStreamHandle:
         self._cleanup_expired_sessions()
         with self._lock:
@@ -524,6 +537,7 @@ class TabRealtimeRegistry:
             session = self._sessions.get(key)
         if session is None:
             raise TabSessionNotFoundError(f"Tab session not found: {tab_session_id}")
+        session.update_auth_session(auth_session)
         connection_id, replay = session.open_stream(last_event_id=last_event_id)
         return TabSessionStreamHandle(
             session=session,
