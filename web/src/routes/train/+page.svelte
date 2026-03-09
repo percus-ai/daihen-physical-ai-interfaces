@@ -30,9 +30,14 @@
   type TrainingJob = {
     job_id: string;
     job_name?: string;
+    owner_user_id?: string;
+    owner_email?: string;
+    owner_name?: string;
     dataset_id?: string;
+    dataset_name?: string;
     policy_type?: string;
     status?: string;
+    created_at?: string;
     updated_at?: string;
   };
 
@@ -40,10 +45,18 @@
     jobs?: TrainingJob[];
     total?: number;
   };
+  type UserConfigResponse = {
+    user_id?: string;
+    email?: string;
+  };
 
   const jobsQuery = createQuery<JobListResponse>({
     queryKey: ['training', 'jobs'],
     queryFn: api.training.jobs
+  });
+  const userConfigQuery = createQuery<UserConfigResponse>({
+    queryKey: ['user', 'config'],
+    queryFn: () => api.user.config() as Promise<UserConfigResponse>
   });
 
 	  let provider = $state<StorageProvider>('verda');
@@ -84,6 +97,11 @@
 
 	  const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.value));
 	  let activeTab = $state<'availability' | 'jobs' | 'storage'>('jobs');
+  let jobSortKey = $state<'created_at' | 'updated_at' | 'job_name' | 'status'>('created_at');
+  let jobSortOrder = $state<'desc' | 'asc'>('desc');
+  let jobOwnerFilter = $state('all');
+  let jobSearch = $state('');
+  let jobOwnerFilterInitialized = $state(false);
 
 	  const storageItems = $derived(
 	    (
@@ -124,6 +142,79 @@
 	    const query = storageProvider === 'verda' ? verdaStorageQuery : vastStorageQuery;
 	    void get(query).refetch?.();
 	  });
+  const jobs = $derived($jobsQuery.data?.jobs ?? []);
+  const displayDatasetName = (datasetId?: string | null) => {
+    const normalized = String(datasetId ?? '').trim();
+    if (!normalized) return '-';
+    return normalized;
+  };
+  const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
+  const compareText = (left?: string | null, right?: string | null) =>
+    normalizeText(left).localeCompare(normalizeText(right), 'ja');
+  const compareDate = (left?: string | null, right?: string | null) =>
+    (new Date(left ?? 0).getTime() || 0) - (new Date(right ?? 0).getTime() || 0);
+  const creatorLabel = (value?: string | null) => {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return '-';
+    if (normalized.length <= 24) return normalized;
+    return `${normalized.slice(0, 20)}...`;
+  };
+  const ownerLabel = (job: TrainingJob) =>
+    creatorLabel(job.owner_name ?? job.owner_email ?? job.owner_user_id);
+  const jobOwnerOptions = $derived.by(() => {
+    const options = new Map<string, string>();
+    for (const job of jobs) {
+      const ownerId = String(job.owner_user_id ?? '').trim();
+      if (!ownerId) continue;
+      options.set(ownerId, ownerLabel(job));
+    }
+    return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
+  });
+  const currentUserId = $derived(String($userConfigQuery.data?.user_id ?? '').trim());
+  const displayedJobs = $derived.by(() => {
+    const query = normalizeText(jobSearch);
+    const sorted = jobs
+      .filter((job) => {
+        if (jobOwnerFilter !== 'all' && String(job.owner_user_id ?? '') !== jobOwnerFilter) return false;
+        if (!query) return true;
+        return [
+          job.job_id,
+          job.job_name,
+          job.dataset_name ?? job.dataset_id,
+          job.policy_type,
+          job.status,
+          job.owner_name,
+          job.owner_email
+        ].some((value) => normalizeText(value).includes(query));
+      })
+      .slice();
+
+    sorted.sort((a, b) => {
+      const direction = jobSortOrder === 'asc' ? 1 : -1;
+      switch (jobSortKey) {
+        case 'job_name':
+          return compareText(a.job_name ?? a.job_id, b.job_name ?? b.job_id) * direction;
+        case 'status':
+          return compareText(a.status, b.status) * direction;
+        case 'updated_at':
+          return compareDate(a.updated_at, b.updated_at) * direction;
+        case 'created_at':
+        default:
+          return compareDate(a.created_at, b.created_at) * direction;
+      }
+    });
+    return sorted;
+  });
+  $effect(() => {
+    if (jobOwnerFilterInitialized) return;
+    if (!currentUserId) return;
+    if (!jobOwnerOptions.some((option) => option.id === currentUserId)) {
+      jobOwnerFilterInitialized = true;
+      return;
+    }
+    jobOwnerFilter = currentUserId;
+    jobOwnerFilterInitialized = true;
+  });
 
   const toggleVolume = (id: string) => {
     if (selectedVolumeIds.includes(id)) {
@@ -243,27 +334,65 @@
 
     <Tabs.Content value="jobs" class="mt-4">
       <h2 class="text-xl font-semibold text-slate-900">学習ジョブ一覧</h2>
-      <div class="mt-4 space-y-3 text-sm text-slate-600">
+      <div class="mt-4 grid gap-3 md:grid-cols-4">
+        <label class="block">
+          <span class="label">検索</span>
+          <input class="input mt-2" type="text" bind:value={jobSearch} placeholder="job / dataset / user" />
+        </label>
+        <label class="block">
+          <span class="label">作成者</span>
+          <select class="input mt-2" bind:value={jobOwnerFilter}>
+            <option value="all">全員</option>
+            {#each jobOwnerOptions as owner}
+              <option value={owner.id}>{owner.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="block">
+          <span class="label">並び替え</span>
+          <select class="input mt-2" bind:value={jobSortKey}>
+            <option value="created_at">作成日時</option>
+            <option value="updated_at">更新日時</option>
+            <option value="job_name">ジョブ名</option>
+            <option value="status">状態</option>
+          </select>
+        </label>
+        <label class="block">
+          <span class="label">順序</span>
+          <select class="input mt-2" bind:value={jobSortOrder}>
+            <option value="desc">降順</option>
+            <option value="asc">昇順</option>
+          </select>
+        </label>
+      </div>
+      <div class="mt-4 space-y-2 text-sm text-slate-600">
         {#if $jobsQuery.isLoading}
           <p>読み込み中...</p>
-        {:else if $jobsQuery.data?.jobs?.length}
-          {#each $jobsQuery.data.jobs as job}
+        {:else if displayedJobs.length}
+          {#each displayedJobs as job}
             <a
-              class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3 transition hover:border-brand/40 hover:bg-white"
+              class="flex items-center justify-between gap-3 rounded-xl border border-slate-200/60 bg-white/70 px-3 py-2 transition hover:border-brand/40 hover:bg-white"
               href={`/train/jobs/${job.job_id}`}
             >
-              <div>
-                <p class="font-semibold text-slate-800">{job.job_name}</p>
-                <p class="text-xs text-slate-500">{job.dataset_id ?? '-'} / {job.policy_type ?? '-'}</p>
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold text-slate-800">{job.job_name}</p>
+                <p class="mt-0.5 truncate text-[11px] text-slate-500">
+                  {job.dataset_name ?? displayDatasetName(job.dataset_id)} / {job.policy_type ?? '-'}
+                </p>
+                <p class="mt-0.5 truncate text-[10px] text-slate-400">
+                  creator: {ownerLabel(job)} / created: {formatDate(job.created_at)}
+                </p>
               </div>
-              <span class="chip">{job.status}</span>
+              <span class="shrink-0 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+                {job.status}
+              </span>
             </a>
           {/each}
         {:else}
-          <p>学習ジョブがありません。</p>
+          <p>条件に合う学習ジョブがありません。</p>
         {/if}
       </div>
-      <div class="mt-4 text-xs text-slate-500">最終更新: {formatDate($jobsQuery.data?.jobs?.[0]?.updated_at)}</div>
+      <div class="mt-4 text-xs text-slate-500">最終更新: {formatDate(displayedJobs[0]?.updated_at)}</div>
     </Tabs.Content>
 
     <Tabs.Content value="storage" class="mt-4">

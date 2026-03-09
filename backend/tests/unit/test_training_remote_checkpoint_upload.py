@@ -641,7 +641,7 @@ def test_check_all_jobs_status_keeps_vast_running_when_recent_metrics_exist(monk
     assert not archived_jobs
 
 
-def test_list_jobs_uses_request_user_id_hint(monkeypatch):
+def test_list_jobs_passes_owner_user_id_filter(monkeypatch):
     captured: dict = {}
 
     async def fake_list_jobs(days: int = 365, owner_user_id: str | None = None):
@@ -650,9 +650,8 @@ def test_list_jobs_uses_request_user_id_hint(monkeypatch):
         return []
 
     monkeypatch.setattr(training, "_list_jobs", fake_list_jobs)
-    monkeypatch.setattr(training, "extract_request_user_id_hint", lambda _request: "user-123")
 
-    response = asyncio.run(training.list_jobs(object(), days=30))
+    response = asyncio.run(training.list_jobs(days=30, owner_user_id="user-123"))
     assert response.total == 0
     assert captured == {"days": 30, "owner_user_id": "user-123"}
 

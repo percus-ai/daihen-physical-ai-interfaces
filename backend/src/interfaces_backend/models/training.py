@@ -42,10 +42,14 @@ class JobInfo(BaseModel):
 
     job_id: str
     job_name: str
+    owner_user_id: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_name: Optional[str] = None
     instance_id: str
     ip: Optional[str] = None
     status: JobStatus
     dataset_id: Optional[str] = None
+    dataset_name: Optional[str] = None
     profile_instance_id: Optional[str] = None
     profile_snapshot: Optional[dict] = None
     policy_type: Optional[str] = None

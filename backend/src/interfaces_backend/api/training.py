@@ -22,7 +22,6 @@ from fastapi import (
     BackgroundTasks,
     HTTPException,
     Query,
-    Request,
     Response,
     WebSocket,
     WebSocketDisconnect,
@@ -36,7 +35,6 @@ from interfaces_backend.core.request_auth import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
     build_session_from_tokens,
-    extract_request_user_id_hint,
     is_session_expired,
     refresh_session_from_refresh_token,
 )
@@ -104,6 +102,7 @@ from interfaces_backend.services.training_provision_operations import (
     cleanup_provision_instance,
     get_training_provision_operations_service,
 )
+from interfaces_backend.services.user_directory import resolve_user_directory_entries
 
 logger = logging.getLogger(__name__)
 
@@ -1938,6 +1937,39 @@ async def _list_jobs(days: int = 365, owner_user_id: Optional[str] = None) -> li
 
     filtered.sort(key=lambda j: j.get("created_at", ""), reverse=True)
     return filtered
+
+
+async def _resolve_dataset_names(dataset_ids: list[str]) -> dict[str, str]:
+    normalized_ids = [str(dataset_id).strip() for dataset_id in dataset_ids if str(dataset_id).strip()]
+    if not normalized_ids:
+        return {}
+
+    async def _fetch_with(client: AsyncClient) -> list[dict]:
+        response = (
+            await client.table("datasets")
+            .select("id,name")
+            .in_("id", list(dict.fromkeys(normalized_ids)))
+            .execute()
+        )
+        return response.data or []
+
+    client = await get_supabase_async_client()
+    try:
+        rows = await _fetch_with(client)
+    except Exception as exc:
+        if not _is_jwt_expired_error(exc):
+            raise
+        service_client = await _get_service_db_client()
+        if service_client is None:
+            raise
+        logger.warning("JWT expired while resolving dataset names; retrying with service key")
+        rows = await _fetch_with(service_client)
+
+    return {
+        str(row.get("id") or "").strip(): str(row.get("name") or row.get("id") or "").strip()
+        for row in rows
+        if str(row.get("id") or "").strip()
+    }
 
 
 # --- SSH utilities for job monitoring (uses SSHConnection) ---
@@ -4018,14 +4050,19 @@ async def websocket_verda_storage(websocket: WebSocket):
 
 
 @router.get("/jobs", response_model=JobListResponse)
-async def list_jobs(request: Request, days: int = Query(365, ge=1, le=365)):
+async def list_jobs(days: int = Query(365, ge=1, le=365), owner_user_id: Optional[str] = Query(None)):
     """List training jobs.
 
     Args:
         days: Return jobs from past N days (running jobs always included)
     """
-    owner_user_id = extract_request_user_id_hint(request)
     jobs_data = await _list_jobs(days, owner_user_id=owner_user_id)
+    owner_directory = await resolve_user_directory_entries(
+        [str(job.get("owner_user_id") or "").strip() for job in jobs_data]
+    )
+    dataset_name_map = await _resolve_dataset_names(
+        [str(job.get("dataset_id") or "").strip() for job in jobs_data]
+    )
 
     def _coerce_jobinfo_fields(record: dict) -> dict:
         coerced = dict(record or {})
@@ -4043,6 +4080,12 @@ async def list_jobs(request: Request, days: int = Query(365, ge=1, le=365)):
             cloud_port = cloud_cfg.get("ssh_port")
             if cloud_port is not None:
                 coerced["ssh_port"] = cloud_port
+        owner_id = str(coerced.get("owner_user_id") or "").strip()
+        dataset_id = str(coerced.get("dataset_id") or "").strip()
+        owner_entry = owner_directory.get(owner_id)
+        coerced["owner_email"] = owner_entry.email or None if owner_entry else None
+        coerced["owner_name"] = owner_entry.name or None if owner_entry else None
+        coerced["dataset_name"] = dataset_name_map.get(dataset_id) or None
         return coerced
 
     jobs = [JobInfo(**_coerce_jobinfo_fields(j)) for j in jobs_data]
