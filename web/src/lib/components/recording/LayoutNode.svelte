@@ -5,6 +5,7 @@
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
   import type { BlueprintNode } from '$lib/recording/blueprint';
   import { getViewDefinition } from '$lib/recording/viewRegistry';
+  import { hasEditableFocus, isEditableTarget } from '$lib/recording/keyboard';
   import PlaceholderView from '$lib/components/recording/views/PlaceholderView.svelte';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
@@ -40,6 +41,7 @@
 
   const handleKeydown = (event: KeyboardEvent) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (isEditableTarget(event.target) || hasEditableFocus()) return;
     event.preventDefault();
     handleSelect(event);
   };

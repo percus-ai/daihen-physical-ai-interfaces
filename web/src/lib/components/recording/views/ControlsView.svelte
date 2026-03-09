@@ -8,6 +8,7 @@
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
+  import { hasEditableFocus, isEditableTarget } from '$lib/recording/keyboard';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -337,12 +338,6 @@
     return Boolean(sessionId);
   });
 
-  const isEditableTarget = (target: EventTarget | null) => {
-    if (!(target instanceof HTMLElement)) return false;
-    const tag = target.tagName.toLowerCase();
-    return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
-  };
-
   $effect(() => {
     if (typeof window === 'undefined') return;
     const handleKeydown = (event: KeyboardEvent) => {
@@ -350,7 +345,7 @@
       if (confirmOpen || uploadModalOpen) return;
       if (event.defaultPrevented || event.repeat) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-      if (isEditableTarget(event.target)) return;
+      if (isEditableTarget(event.target) || hasEditableFocus()) return;
 
       if (event.key === 'ArrowRight') {
         if (!canNext || Boolean(actionBusy)) return;
