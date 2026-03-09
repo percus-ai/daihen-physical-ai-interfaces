@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getContext } from 'svelte';
   import {
+    getRecorderDisplayEpisodeNumber,
     subscribeRecorderStatus,
     type RecorderStatus,
     type RosbridgeStatus
@@ -85,10 +86,9 @@
   });
   const episodeDisplayNumber = $derived.by(() => {
     if (numEpisodes <= 0) return '-';
-    const state = String(statusState);
-    const base = Math.max(episodeCountValue, 0);
-    const value = state === 'recording' || state === 'paused' ? base + 1 : base;
-    return String(Math.min(Math.max(value, 1), numEpisodes));
+    const next = getRecorderDisplayEpisodeNumber(status);
+    if (next == null) return '-';
+    return String(Math.min(Math.max(next, 1), numEpisodes));
   });
   const progress = $derived(numEpisodes > 0 ? Math.min(episodeCountValue / numEpisodes, 1) : 0);
   const connectionWarning = $derived(
