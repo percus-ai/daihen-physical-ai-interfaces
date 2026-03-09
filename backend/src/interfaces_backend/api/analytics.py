@@ -48,20 +48,6 @@ def _get_dir_size(path: Path) -> float:
     return total
 
 
-def _extract_profile_name(snapshot: object) -> str:
-    if not isinstance(snapshot, dict):
-        return ""
-    name = snapshot.get("name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-    profile = snapshot.get("profile")
-    if isinstance(profile, dict):
-        nested_name = profile.get("name")
-        if isinstance(nested_name, str):
-            return nested_name.strip()
-    return ""
-
-
 async def _get_profile_stats() -> list[dict]:
     """Collect statistics for VLAbor profiles from DB snapshots."""
     client = await get_supabase_async_client()
@@ -70,12 +56,12 @@ async def _get_profile_stats() -> list[dict]:
     ).data or []
     dataset_rows = (
         await client.table("datasets")
-        .select("profile_snapshot,episode_count,size_bytes,updated_at,status")
+        .select("profile_name,episode_count,size_bytes,updated_at,status")
         .execute()
     ).data or []
     model_rows = (
         await client.table("models")
-        .select("profile_snapshot,size_bytes,updated_at,status")
+        .select("profile_name,size_bytes,updated_at,status")
         .execute()
     ).data or []
 
@@ -96,7 +82,7 @@ async def _get_profile_stats() -> list[dict]:
     for row in dataset_rows:
         if row.get("status") and row.get("status") != "active":
             continue
-        profile_name = _extract_profile_name(row.get("profile_snapshot"))
+        profile_name = str(row.get("profile_name") or "").strip()
         if not profile_name:
             continue
         entry = stats.setdefault(
@@ -120,7 +106,7 @@ async def _get_profile_stats() -> list[dict]:
     for row in model_rows:
         if row.get("status") and row.get("status") != "active":
             continue
-        profile_name = _extract_profile_name(row.get("profile_snapshot"))
+        profile_name = str(row.get("profile_name") or "").strip()
         if not profile_name:
             continue
         entry = stats.setdefault(

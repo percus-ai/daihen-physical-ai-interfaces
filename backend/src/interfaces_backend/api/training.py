@@ -86,6 +86,7 @@ from interfaces_backend.models.training import (
     RemoteCheckpointUploadRequest,
     RemoteCheckpointUploadResponse,
 )
+from interfaces_backend.services.profile_snapshot import extract_profile_name
 from percus_ai.storage import get_project_root, get_models_dir
 from percus_ai.db import (
     get_current_user_id,
@@ -1781,6 +1782,7 @@ async def _upsert_model_for_job(job_data: dict) -> None:
         "name": resolved_model_name,
         "dataset_id": job_data.get("dataset_id"),
         "profile_instance_id": profile_instance_id,
+        "profile_name": extract_profile_name(profile_snapshot),
         "profile_snapshot": profile_snapshot,
         "policy_type": policy_type,
         "training_steps": training_steps,

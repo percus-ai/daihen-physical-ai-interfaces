@@ -35,6 +35,24 @@ class DatasetListResponse(BaseModel):
     total: int
 
 
+StorageSortOrder = Literal["asc", "desc"]
+DatasetListSortBy = Literal["created_at", "updated_at", "name", "size_bytes", "episode_count"]
+ModelListSortBy = Literal["created_at", "updated_at", "name", "size_bytes", "policy_type"]
+
+
+class DatasetListQuery(BaseModel):
+    include_archived: bool = Field(False, description="Include archived datasets when status filter is omitted")
+    profile_name: Optional[str] = Field(None, description="Filter by profile name")
+    owner_user_id: Optional[str] = Field(None, description="Filter by owner user id")
+    status: Optional[str] = Field(None, description="Filter by dataset status")
+    dataset_type: Optional[str] = Field(None, description="Filter by dataset type")
+    search: Optional[str] = Field(None, description="Search dataset id and name")
+    limit: Optional[int] = Field(None, ge=1, le=500, description="Maximum number of results to return")
+    offset: int = Field(0, ge=0, description="Number of matching rows to skip")
+    sort_by: DatasetListSortBy = Field("created_at", description="Dataset list sort field")
+    sort_order: StorageSortOrder = Field("desc", description="Sort direction")
+
+
 class DatasetMergeRequest(BaseModel):
     """Request to merge multiple datasets into one."""
 
@@ -121,6 +139,20 @@ class ModelListResponse(BaseModel):
 
     models: List[ModelInfo]
     total: int
+
+
+class ModelListQuery(BaseModel):
+    include_archived: bool = Field(False, description="Include archived models when status filter is omitted")
+    profile_name: Optional[str] = Field(None, description="Filter by profile name")
+    owner_user_id: Optional[str] = Field(None, description="Filter by owner user id")
+    status: Optional[str] = Field(None, description="Filter by model status")
+    policy_type: Optional[str] = Field(None, description="Filter by policy type")
+    dataset_id: Optional[str] = Field(None, description="Filter by source dataset id")
+    search: Optional[str] = Field(None, description="Search model id and name")
+    limit: Optional[int] = Field(None, ge=1, le=500, description="Maximum number of results to return")
+    offset: int = Field(0, ge=0, description="Number of matching rows to skip")
+    sort_by: ModelListSortBy = Field("created_at", description="Model list sort field")
+    sort_order: StorageSortOrder = Field("desc", description="Sort direction")
 
 
 ModelSyncJobState = Literal["queued", "running", "completed", "failed", "cancelled"]

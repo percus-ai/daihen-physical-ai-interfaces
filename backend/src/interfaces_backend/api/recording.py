@@ -122,6 +122,7 @@ class RecordingInfo(BaseModel):
     continue_block_reason: Optional[str] = None
     size_bytes: int = 0
     is_local: bool = False
+    is_uploaded: bool = False
 
 
 class RecordingListResponse(BaseModel):
@@ -166,20 +167,6 @@ def _build_bulk_action_response(results: list[BulkActionResult], requested: int 
 # -- helpers ------------------------------------------------------------------
 
 
-def _extract_profile_name(profile_snapshot: Optional[dict]) -> Optional[str]:
-    if not isinstance(profile_snapshot, dict):
-        return None
-    name = profile_snapshot.get("name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-    profile = profile_snapshot.get("profile")
-    if isinstance(profile, dict):
-        name = profile.get("name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
-    return None
-
-
 def _to_int(value: Any, *, default: int = 0) -> int:
     try:
         return int(value)
@@ -198,7 +185,7 @@ def _build_continue_plan_from_row(row: dict) -> RecordingContinuePlanResponse:
     recording_id = str(row.get("id") or "").strip()
     dataset_name = str(row.get("name") or "").strip()
     task = str(row.get("task_detail") or "").strip()
-    profile_name = _extract_profile_name(row.get("profile_snapshot"))
+    profile_name = str(row.get("profile_name") or "").strip() or None
     episode_count = max(_to_int(row.get("episode_count"), default=0), 0)
     target_total_episodes = max(_to_int(row.get("target_total_episodes"), default=0), 0)
     episode_time_s = _to_float(row.get("episode_time_s"), default=0.0)
@@ -250,7 +237,7 @@ async def _fetch_recording_row(recording_id: str) -> dict:
     rows = (
         await client.table("datasets")
         .select(
-            "id,name,task_detail,profile_snapshot,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status"
+            "id,name,task_detail,profile_name,profile_snapshot,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status,content_hash"
         )
         .eq("id", recording_id)
         .limit(1)
@@ -919,7 +906,7 @@ async def _list_recordings() -> list[dict]:
     rows = (
         await client.table("datasets")
         .select(
-            "id,name,task_detail,profile_snapshot,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status,owner_user_id"
+            "id,name,task_detail,profile_name,profile_snapshot,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status,owner_user_id,content_hash"
         )
         .eq("dataset_type", "recorded")
         .execute()
@@ -944,7 +931,7 @@ async def list_recordings():
                 recording_id=str(row.get("id")),
                 dataset_name=str(row.get("name") or row.get("id")),
                 task=str(row.get("task_detail") or ""),
-                profile_name=_extract_profile_name(row.get("profile_snapshot")),
+                profile_name=str(row.get("profile_name") or "").strip() or None,
                 owner_user_id=row.get("owner_user_id"),
                 owner_email=owner_entry.email or None if owner_entry else None,
                 owner_name=owner_entry.name or None if owner_entry else None,
@@ -958,6 +945,7 @@ async def list_recordings():
                 continue_block_reason=plan.reason,
                 size_bytes=row.get("size_bytes") or 0,
                 is_local=(get_datasets_dir() / str(row.get("id"))).exists(),
+                is_uploaded=bool(str(row.get("content_hash") or "").strip()),
             )
         )
     return RecordingListResponse(recordings=recordings, total=len(recordings))
@@ -983,7 +971,7 @@ async def get_recording(recording_id: str):
         recording_id=str(row.get("id")),
         dataset_name=str(row.get("name") or row.get("id")),
         task=str(row.get("task_detail") or ""),
-        profile_name=_extract_profile_name(row.get("profile_snapshot")),
+        profile_name=str(row.get("profile_name") or "").strip() or None,
         owner_user_id=row.get("owner_user_id"),
         owner_email=owner_entry.email or None if owner_entry else None,
         owner_name=owner_entry.name or None if owner_entry else None,
@@ -997,6 +985,7 @@ async def get_recording(recording_id: str):
         continue_block_reason=plan.reason,
         size_bytes=row.get("size_bytes") or 0,
         is_local=(get_datasets_dir() / str(row.get("id"))).exists(),
+        is_uploaded=bool(str(row.get("content_hash") or "").strip()),
     )
 
 

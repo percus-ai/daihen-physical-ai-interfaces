@@ -20,6 +20,7 @@ from supabase import create_async_client
 from supabase._async.client import AsyncClient
 
 from interfaces_backend.models.inference import InferenceModelSyncStatus
+from interfaces_backend.services.profile_snapshot import extract_profile_name
 from percus_ai.db import get_supabase_async_client, upsert_with_owner
 from percus_ai.storage.paths import get_datasets_dir, get_user_config_path
 from percus_ai.storage.r2_db_sync import R2DBSyncService
@@ -73,6 +74,7 @@ class DatasetLifecycle:
             "status": status,
             "task_detail": task,
             "profile_instance_id": None,
+            "profile_name": extract_profile_name(profile_snapshot),
             "profile_snapshot": profile_snapshot,
         }
         if target_total_episodes is not None:

@@ -44,23 +44,29 @@ from interfaces_backend.models.storage import (
     DatasetMergeJobAcceptedResponse,
     DatasetMergeJobStatus,
     DatasetInfo,
+    DatasetListQuery,
     DatasetListResponse,
+    DatasetListSortBy,
     HuggingFaceDatasetImportRequest,
     HuggingFaceExportRequest,
     HuggingFaceModelImportRequest,
     HuggingFaceTransferResponse,
     ModelInfo,
+    ModelListQuery,
     ModelListResponse,
+    ModelListSortBy,
     ModelSyncJobAcceptedResponse,
     ModelSyncJobCancelResponse,
     ModelSyncJobListResponse,
     ModelSyncJobStatus,
+    StorageSortOrder,
     StorageUsageResponse,
 )
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.dataset_merge_jobs import get_dataset_merge_jobs_service
 from interfaces_backend.services.dataset_sync_jobs import get_dataset_sync_jobs_service
 from interfaces_backend.services.model_sync_jobs import get_model_sync_jobs_service
+from interfaces_backend.services.profile_snapshot import extract_profile_name
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
 from interfaces_backend.services.storage_bulk_actions import (
@@ -305,20 +311,6 @@ def _is_missing_column_error(exc: APIError, *, table_name: str, column_name: str
     return table_name.lower() in message and column_name.lower() in message
 
 
-def _extract_profile_name(snapshot: object) -> Optional[str]:
-    if not isinstance(snapshot, dict):
-        return None
-    name = snapshot.get("name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-    profile = snapshot.get("profile")
-    if isinstance(profile, dict):
-        nested_name = profile.get("name")
-        if isinstance(nested_name, str) and nested_name.strip():
-            return nested_name.strip()
-    return None
-
-
 def _dataset_row_to_info(row: dict) -> DatasetInfo:
     profile_snapshot = row.get("profile_snapshot")
     return DatasetInfo(
@@ -326,7 +318,7 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
         name=row.get("name") or row.get("id"),
         owner_user_id=row.get("owner_user_id"),
         owner_email=None,
-        profile_name=_extract_profile_name(profile_snapshot),
+        profile_name=_normalize_optional_text(row.get("profile_name")),
         profile_snapshot=profile_snapshot if isinstance(profile_snapshot, dict) else None,
         source=row.get("source") or "r2",
         status=row.get("status") or "active",
@@ -352,7 +344,7 @@ def _model_row_to_info(row: dict) -> ModelInfo:
         owner_user_id=row.get("owner_user_id"),
         owner_email=None,
         dataset_id=row.get("dataset_id"),
-        profile_name=_extract_profile_name(profile_snapshot),
+        profile_name=_normalize_optional_text(row.get("profile_name")),
         profile_snapshot=profile_snapshot if isinstance(profile_snapshot, dict) else None,
         policy_type=row.get("policy_type"),
         training_steps=row.get("training_steps"),
@@ -379,20 +371,111 @@ def _build_bulk_action_response(results: list[BulkActionResult], requested: int 
     )
 
 
-@router.get("/datasets", response_model=DatasetListResponse)
-async def list_datasets(
-    include_archived: bool = Query(False, description="Include archived datasets"),
-    profile_name: Optional[str] = Query(None, description="Filter by profile name"),
-):
-    """List datasets from DB."""
-    client = await get_supabase_async_client()
-    query = client.table("datasets").select("*")
-    if not include_archived:
-        query = query.eq("status", "active")
-    rows = (await query.execute()).data or []
-    if profile_name:
-        rows = [row for row in rows if _extract_profile_name(row.get("profile_snapshot")) == profile_name]
+def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or "").strip()
+    return normalized or None
 
+
+def _apply_common_storage_list_filters(query, *, include_archived: bool, status: Optional[str], owner_user_id: Optional[str], search: Optional[str]):
+    status = _normalize_optional_text(status)
+    owner_user_id = _normalize_optional_text(owner_user_id)
+    search = _normalize_optional_text(search)
+    if status:
+        query = query.eq("status", status)
+    elif not include_archived:
+        query = query.eq("status", "active")
+    if owner_user_id:
+        query = query.eq("owner_user_id", owner_user_id)
+    if search:
+        escaped = search.replace(",", "\\,")
+        query = query.or_(f"id.ilike.%{escaped}%,name.ilike.%{escaped}%")
+    return query
+
+
+def _apply_dataset_list_filters(query, list_query: DatasetListQuery):
+    query = _apply_common_storage_list_filters(
+        query,
+        include_archived=list_query.include_archived,
+        status=list_query.status,
+        owner_user_id=list_query.owner_user_id,
+        search=list_query.search,
+    )
+    profile_name = _normalize_optional_text(list_query.profile_name)
+    dataset_type = _normalize_optional_text(list_query.dataset_type)
+    if profile_name:
+        query = query.eq("profile_name", profile_name)
+    if dataset_type:
+        query = query.eq("dataset_type", dataset_type)
+    return query
+
+
+def _apply_model_list_filters(query, list_query: ModelListQuery):
+    query = _apply_common_storage_list_filters(
+        query,
+        include_archived=list_query.include_archived,
+        status=list_query.status,
+        owner_user_id=list_query.owner_user_id,
+        search=list_query.search,
+    )
+    profile_name = _normalize_optional_text(list_query.profile_name)
+    policy_type = _normalize_optional_text(list_query.policy_type)
+    dataset_id = _normalize_optional_text(list_query.dataset_id)
+    if profile_name:
+        query = query.eq("profile_name", profile_name)
+    if policy_type:
+        query = query.eq("policy_type", policy_type)
+    if dataset_id:
+        query = query.eq("dataset_id", dataset_id)
+    return query
+
+
+def _apply_storage_list_sort_and_paging(query, *, sort_by: str, sort_order: StorageSortOrder, offset: int, limit: Optional[int]):
+    query = query.order(sort_by, desc=sort_order == "desc")
+    if offset > 0:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    return query
+
+
+async def _load_dataset_rows(list_query: DatasetListQuery) -> tuple[list[dict], int]:
+    client = await get_supabase_async_client()
+    query = client.table("datasets").select("*", count="exact")
+    query = _apply_dataset_list_filters(query, list_query)
+
+    query = _apply_storage_list_sort_and_paging(
+        query,
+        sort_by=list_query.sort_by,
+        sort_order=list_query.sort_order,
+        offset=list_query.offset,
+        limit=list_query.limit,
+    )
+    result = await query.execute()
+    rows = result.data or []
+    total = int(getattr(result, "count", len(rows)) or 0)
+    return rows, total
+
+
+async def _load_model_rows(list_query: ModelListQuery) -> tuple[list[dict], int]:
+    client = await get_supabase_async_client()
+    query = client.table("models").select("*", count="exact")
+    query = _apply_model_list_filters(query, list_query)
+
+    query = _apply_storage_list_sort_and_paging(
+        query,
+        sort_by=list_query.sort_by,
+        sort_order=list_query.sort_order,
+        offset=list_query.offset,
+        limit=list_query.limit,
+    )
+    result = await query.execute()
+    rows = result.data or []
+    total = int(getattr(result, "count", len(rows)) or 0)
+    return rows, total
+
+
+async def _list_datasets(list_query: DatasetListQuery) -> DatasetListResponse:
+    rows, total = await _load_dataset_rows(list_query)
     owner_directory = await resolve_user_directory_entries([str(row.get("owner_user_id") or "").strip() for row in rows])
     datasets = []
     for row in rows:
@@ -402,7 +485,51 @@ async def list_datasets(
         dataset.owner_email = owner_entry.email or None if owner_entry else None
         dataset.owner_name = owner_entry.name or None if owner_entry else None
         datasets.append(dataset)
-    return DatasetListResponse(datasets=datasets, total=len(datasets))
+    return DatasetListResponse(datasets=datasets, total=total)
+
+
+async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
+    rows, total = await _load_model_rows(list_query)
+    owner_directory = await resolve_user_directory_entries([str(row.get("owner_user_id") or "").strip() for row in rows])
+    models = []
+    for row in rows:
+        model = _model_row_to_info(row)
+        owner_user_id = str(row.get("owner_user_id") or "").strip()
+        owner_entry = owner_directory.get(owner_user_id)
+        model.owner_email = owner_entry.email or None if owner_entry else None
+        model.owner_name = owner_entry.name or None if owner_entry else None
+        models.append(model)
+    return ModelListResponse(models=models, total=total)
+
+
+@router.get("/datasets", response_model=DatasetListResponse)
+async def list_datasets(
+    include_archived: bool = Query(False, description="Include archived datasets"),
+    profile_name: Optional[str] = Query(None, description="Filter by profile name"),
+    owner_user_id: Optional[str] = Query(None, description="Filter by owner user id"),
+    status: Optional[str] = Query(None, description="Filter by dataset status"),
+    dataset_type: Optional[str] = Query(None, description="Filter by dataset type"),
+    search: Optional[str] = Query(None, description="Search dataset id and name"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+    sort_by: DatasetListSortBy = Query("created_at", description="Sort field"),
+    sort_order: StorageSortOrder = Query("desc", description="Sort direction"),
+):
+    """List datasets from DB."""
+    return await _list_datasets(
+        DatasetListQuery(
+            include_archived=include_archived,
+            profile_name=profile_name,
+            owner_user_id=owner_user_id,
+            status=status,
+            dataset_type=dataset_type,
+            search=search,
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    )
 
 
 async def _merge_datasets(
@@ -441,7 +568,7 @@ async def _merge_datasets(
     profile_names = {
         profile_name
         for row in source_rows
-        for profile_name in [_extract_profile_name(row.get("profile_snapshot"))]
+        for profile_name in [_normalize_optional_text(row.get("profile_name"))]
         if profile_name
     }
     if len(profile_names) > 1:
@@ -509,6 +636,7 @@ async def _merge_datasets(
     payload = {
         "id": merged_dataset_id,
         "name": request.dataset_name,
+        "profile_name": extract_profile_name(profile_snapshot),
         "profile_snapshot": profile_snapshot,
         "episode_count": episode_count,
         "dataset_type": "merged",
@@ -1103,25 +1231,32 @@ async def cancel_dataset_sync_job(job_id: str):
 async def list_models(
     include_archived: bool = Query(False, description="Include archived models"),
     profile_name: Optional[str] = Query(None, description="Filter by profile name"),
+    owner_user_id: Optional[str] = Query(None, description="Filter by owner user id"),
+    status: Optional[str] = Query(None, description="Filter by model status"),
+    policy_type: Optional[str] = Query(None, description="Filter by policy type"),
+    dataset_id: Optional[str] = Query(None, description="Filter by source dataset id"),
+    search: Optional[str] = Query(None, description="Search model id and name"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+    sort_by: ModelListSortBy = Query("created_at", description="Sort field"),
+    sort_order: StorageSortOrder = Query("desc", description="Sort direction"),
 ):
     """List models from DB."""
-    client = await get_supabase_async_client()
-    query = client.table("models").select("*")
-    if not include_archived:
-        query = query.eq("status", "active")
-    rows = (await query.execute()).data or []
-    if profile_name:
-        rows = [row for row in rows if _extract_profile_name(row.get("profile_snapshot")) == profile_name]
-    owner_directory = await resolve_user_directory_entries([str(row.get("owner_user_id") or "").strip() for row in rows])
-    models = []
-    for row in rows:
-        model = _model_row_to_info(row)
-        owner_user_id = str(row.get("owner_user_id") or "").strip()
-        owner_entry = owner_directory.get(owner_user_id)
-        model.owner_email = owner_entry.email or None if owner_entry else None
-        model.owner_name = owner_entry.name or None if owner_entry else None
-        models.append(model)
-    return ModelListResponse(models=models, total=len(models))
+    return await _list_models(
+        ModelListQuery(
+            include_archived=include_archived,
+            profile_name=profile_name,
+            owner_user_id=owner_user_id,
+            status=status,
+            policy_type=policy_type,
+            dataset_id=dataset_id,
+            search=search,
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    )
 
 
 @router.get("/models/{model_id}", response_model=ModelInfo)
@@ -1405,6 +1540,7 @@ async def _upsert_dataset_from_hf(
     payload = {
         "id": dataset_id,
         "name": name,
+        "profile_name": extract_profile_name(profile_snapshot),
         "profile_snapshot": profile_snapshot,
         "dataset_type": "huggingface",
         "source": "huggingface",
@@ -1424,6 +1560,7 @@ async def _upsert_model_from_hf(
         "id": model_id,
         "name": name,
         "dataset_id": dataset_id,
+        "profile_name": extract_profile_name(profile_snapshot),
         "profile_snapshot": profile_snapshot,
         "policy_type": policy_type,
         "model_type": "huggingface",
