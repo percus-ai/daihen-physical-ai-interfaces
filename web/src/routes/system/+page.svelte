@@ -1,6 +1,6 @@
 <script lang="ts">
   import { browser } from '$app/environment';
-  import { afterNavigate, goto } from '$app/navigation';
+  import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { Tabs } from 'bits-ui';
@@ -11,12 +11,16 @@
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
   import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import {
+    buildSystemTabHref,
+    normalizeSystemTab,
+    reconcileSystemTabState,
+    type SystemTab
+  } from '$lib/system/systemTabRouting';
   import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
   import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
   import type { FeaturesRepoSuggestions, SystemSettings, UserSettings } from '$lib/types/settings';
   import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
-
-  type SystemTab = 'status' | 'profile' | 'runtime' | 'settings';
 
   type OperateNetworkStatus = {
     status?: string;
@@ -38,16 +42,7 @@
     network?: OperateNetworkStatus;
   };
 
-  const TABS: SystemTab[] = ['status', 'profile', 'runtime', 'settings'];
-
-  const normalizeTab = (value: string | null | undefined): SystemTab => {
-    if (value && TABS.includes(value as SystemTab)) {
-      return value as SystemTab;
-    }
-    return 'status';
-  };
-
-  let activeTab = $state<SystemTab>(normalizeTab(page.url.searchParams.get('tab')));
+  let activeTab = $state<SystemTab>(normalizeSystemTab(page.url.searchParams.get('tab')));
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let networkStatus = $state<OperateNetworkStatus | null>(null);
   let bundledTorchSnapshot = $state<BundledTorchBuildSnapshot | null>(null);
@@ -69,15 +64,38 @@
   let featuresRepoSuggestionsAbort = $state<AbortController | null>(null);
   let pendingTabNavigation = $state<SystemTab | null>(null);
 
-  afterNavigate(() => {
-    const nextTab = normalizeTab(page.url.searchParams.get('tab'));
-    if (pendingTabNavigation !== null && nextTab === pendingTabNavigation) {
-      pendingTabNavigation = null;
+  $effect(() => {
+    const nextState = reconcileSystemTabState({
+      activeTab,
+      urlTab: normalizeSystemTab(page.url.searchParams.get('tab')),
+      pendingTabNavigation
+    });
+
+    if (nextState.pendingTabNavigation !== pendingTabNavigation) {
+      pendingTabNavigation = nextState.pendingTabNavigation;
     }
-    if (nextTab !== activeTab) {
-      activeTab = nextTab;
+    if (nextState.activeTab !== activeTab) {
+      activeTab = nextState.activeTab;
     }
   });
+
+  const handleTabChange = (nextValue: string) => {
+    const nextTab = normalizeSystemTab(nextValue);
+    if (nextTab === activeTab) {
+      return;
+    }
+
+    activeTab = nextTab;
+    pendingTabNavigation = nextTab;
+
+    void goto(buildSystemTabHref(page.url, nextTab), {
+      keepFocus: true,
+      noScroll: true,
+      invalidateAll: false
+    }).catch(() => {
+      pendingTabNavigation = null;
+    });
+  };
 
   const renderStatusLabel = (value?: string) => {
     switch (value) {
@@ -394,33 +412,6 @@
     if (!browser) {
       return;
     }
-    if (pendingTabNavigation === activeTab) {
-      return;
-    }
-    const currentUrl = new URL(page.url);
-    const targetUrl = new URL(page.url);
-    if (activeTab === 'status') {
-      targetUrl.searchParams.delete('tab');
-    } else {
-      targetUrl.searchParams.set('tab', activeTab);
-    }
-    if (`${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}` === `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`) {
-      return;
-    }
-    pendingTabNavigation = activeTab;
-    void goto(`${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`, {
-      keepFocus: true,
-      noScroll: true,
-      invalidateAll: false,
-    }).catch(() => {
-      pendingTabNavigation = null;
-    });
-  });
-
-  $effect(() => {
-    if (!browser) {
-      return;
-    }
 
     if (realtimeContributor === null) {
       realtimeContributor = registerTabRealtimeContributor({
@@ -459,7 +450,7 @@
 </section>
 
 <section class="card p-6">
-  <Tabs.Root bind:value={activeTab}>
+  <Tabs.Root value={activeTab} onValueChange={handleTabChange}>
     <div class="flex flex-wrap items-center justify-between gap-3">
       <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1 md:grid-cols-4">
         <Tabs.Trigger value="status" class="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
