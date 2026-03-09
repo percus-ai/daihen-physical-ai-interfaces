@@ -36,6 +36,32 @@ export const parseRecorderPayload = (msg: Record<string, unknown>): RecorderStat
   return msg as RecorderStatus;
 };
 
+const asFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+export const getRecorderDisplayEpisodeNumber = (
+  status: RecorderStatus | Record<string, unknown> | null | undefined
+): number | null => {
+  const payload = (status ?? {}) as Record<string, unknown>;
+  const state = String(payload.state ?? payload.status ?? '').trim().toLowerCase();
+  const episodeIndex = asFiniteNumber(payload.episode_index);
+  const episodeCount = asFiniteNumber(payload.episode_count);
+
+  if (state === 'resetting' || state === 'resetting_paused') {
+    return Math.max(episodeCount ?? 0, 0) + 1;
+  }
+  if (episodeIndex != null) {
+    return Math.max(episodeIndex, 0) + 1;
+  }
+  if (state === 'warming' || state === 'recording' || state === 'paused') {
+    return Math.max(episodeCount ?? 0, 0) + 1;
+  }
+  return null;
+};
+
 export const subscribeRecorderStatus = (handlers: {
   onStatus: (status: RecorderStatus) => void;
   onConnectionChange?: (status: RosbridgeStatus) => void;

@@ -2,6 +2,7 @@
   import { getContext } from 'svelte';
   import type { DatasetPlaybackController, DatasetPlaybackState } from '$lib/recording/datasetPlayback';
   import {
+    getRecorderDisplayEpisodeNumber,
     subscribeRecorderStatus,
     type RecorderStatus,
     type RosbridgeStatus
@@ -78,7 +79,7 @@
   const statusPhase = $derived(sessionStatus.phase);
   const statusDetail = $derived(sessionStatus.lastError);
   const finalizeElapsed = $derived(asNumber((status as Record<string, unknown>)?.finalize_elapsed_s ?? 0));
-  const episodeIndex = $derived((status as Record<string, unknown>)?.episode_index ?? null);
+  const displayEpisodeNumber = $derived(getRecorderDisplayEpisodeNumber(status));
   const episodeTotal = $derived(asNumber((status as Record<string, unknown>)?.num_episodes ?? 0));
   const episodeTime = $derived(asNumber((status as Record<string, unknown>)?.episode_time_s ?? 0));
   const episodeElapsed = $derived(asNumber((status as Record<string, unknown>)?.episode_elapsed_s ?? 0));
@@ -301,8 +302,8 @@
       <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
         <span>録画タイムライン</span>
         <span>
-          {#if episodeIndex != null}
-            エピソード {Number(episodeIndex) + 1}{episodeTotal ? ` / ${episodeTotal}` : ''}
+          {#if displayEpisodeNumber != null}
+            エピソード {displayEpisodeNumber}{episodeTotal ? ` / ${episodeTotal}` : ''}
           {:else}
             エピソード待機中
           {/if}

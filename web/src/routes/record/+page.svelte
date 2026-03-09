@@ -11,6 +11,7 @@
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import DatasetUploadProgressModal from '$lib/components/storage/DatasetUploadProgressModal.svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
+  import { getRecorderDisplayEpisodeNumber } from '$lib/recording/recorderStatus';
   import {
     createPendingRecordingUploadStatus,
     shouldIgnoreIdleUploadSnapshot
@@ -426,9 +427,7 @@
   const activeSessionId = $derived(recorderStatus?.dataset_id ?? '');
   const activeSessionState = $derived(recorderStatus?.state ?? 'unknown');
   const activeSessionLabel = $derived(STATUS_LABELS[activeSessionState] ?? activeSessionState);
-  const activeEpisodeIndex = $derived(
-    recorderStatus?.episode_index != null ? recorderStatus.episode_index + 1 : null
-  );
+  const activeEpisodeIndex = $derived(getRecorderDisplayEpisodeNumber(recorderStatus));
   const activeEpisodeTotal = $derived(recorderStatus?.num_episodes ?? null);
   const activeFrameCount = $derived(recorderStatus?.frame_count ?? null);
   const activeEpisodeFrameCount = $derived(recorderStatus?.episode_frame_count ?? null);
