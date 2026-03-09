@@ -24,6 +24,7 @@ from interfaces_backend.models.user import (
 )
 from interfaces_backend.models.settings import UserSettingsModel, UserSettingsUpdateRequest
 from interfaces_backend.services.settings_service import get_user_secrets_service
+from interfaces_backend.services.user_directory import get_user_directory_entry, update_user_profile
 from percus_ai.db import get_supabase_session
 from percus_ai.storage import get_user_config_path, get_user_devices_path
 
@@ -306,8 +307,15 @@ async def get_user_settings():
     user_id = str(session.get("user_id") or "").strip()
     if not user_id:
         raise HTTPException(status_code=401, detail="Login required")
+    profile = await get_user_directory_entry(user_id)
     return UserSettingsModel(
         user_id=user_id,
+        profile={
+            "username": profile.username or None,
+            "first_name": profile.first_name or None,
+            "last_name": profile.last_name or None,
+            "updated_at": profile.updated_at,
+        },
         huggingface=get_user_secrets_service().get_huggingface_status(user_id),
     )
 
@@ -318,16 +326,40 @@ async def update_user_settings(request: UserSettingsUpdateRequest):
     user_id = str(session.get("user_id") or "").strip()
     if not user_id:
         raise HTTPException(status_code=401, detail="Login required")
+    if (
+        request.username is not None
+        or request.first_name is not None
+        or request.last_name is not None
+    ):
+        try:
+            profile = await update_user_profile(
+                user_id,
+                username=request.username,
+                first_name=request.first_name,
+                last_name=request.last_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        profile = await get_user_directory_entry(user_id)
     if request.clear_huggingface_token:
         status = get_user_secrets_service().set_huggingface_token(user_id, None, clear=True)
-    else:
+    elif request.huggingface_token is not None:
         status = get_user_secrets_service().set_huggingface_token(
             user_id,
             request.huggingface_token,
             clear=False,
         )
+    else:
+        status = get_user_secrets_service().get_huggingface_status(user_id)
     return UserSettingsModel(
         user_id=user_id,
+        profile={
+            "username": profile.username or None,
+            "first_name": profile.first_name or None,
+            "last_name": profile.last_name or None,
+            "updated_at": profile.updated_at,
+        },
         huggingface=status,
     )
 

@@ -44,11 +44,22 @@ def test_user_settings(client):
 
         resp = client.put(
             "/api/user/settings",
+            json={"username": "tanaka.tarou", "first_name": "Tarou", "last_name": "Tanaka"},
+        )
+        assert resp.status_code == 200
+        profile_payload = resp.json()["profile"]
+        assert profile_payload["username"] == "tanaka.tarou"
+        assert profile_payload["first_name"] == "Tarou"
+        assert profile_payload["last_name"] == "Tanaka"
+
+        resp = client.put(
+            "/api/user/settings",
             json={"huggingface_token": "hf_1234567890abcdef"},
         )
         assert resp.status_code == 200
         payload = resp.json()
         assert payload["user_id"] == "user-1"
+        assert payload["profile"]["username"] == "tanaka.tarou"
         assert payload["huggingface"]["has_token"] is True
         assert payload["huggingface"]["token_preview"] == "hf_123...cdef"
 

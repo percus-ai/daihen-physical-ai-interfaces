@@ -64,15 +64,28 @@ class HuggingFaceSecretStatusModel(BaseModel):
     updated_at: str | None = Field(None, description="Last update timestamp")
 
 
+class UserProfileSettingsModel(BaseModel):
+    """User profile settings."""
+
+    username: str | None = Field(None, description="Username")
+    first_name: str | None = Field(None, description="First name")
+    last_name: str | None = Field(None, description="Last name")
+    updated_at: str | None = Field(None, description="Last update timestamp")
+
+
 class UserSettingsModel(BaseModel):
     """User-scoped settings."""
 
     user_id: str = Field(..., description="Current authenticated user id")
+    profile: UserProfileSettingsModel = Field(default_factory=UserProfileSettingsModel)
     huggingface: HuggingFaceSecretStatusModel = Field(default_factory=HuggingFaceSecretStatusModel)
 
 
 class UserSettingsUpdateRequest(BaseModel):
     """User-scoped settings update request."""
 
+    username: str | None = Field(None, description="Username")
+    first_name: str | None = Field(None, description="First name")
+    last_name: str | None = Field(None, description="Last name")
     huggingface_token: str | None = Field(None, description="New HF token")
     clear_huggingface_token: bool = Field(False, description="Clear stored HF token")

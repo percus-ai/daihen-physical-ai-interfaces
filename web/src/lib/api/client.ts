@@ -876,6 +876,9 @@ export const api = {
     devices: () => fetchApi('/api/user/devices'),
     settings: () => fetchApi<UserSettings>('/api/user/settings'),
     updateSettings: (payload: {
+      username?: string | null;
+      first_name?: string | null;
+      last_name?: string | null;
       huggingface_token?: string | null;
       clear_huggingface_token?: boolean;
     }) =>

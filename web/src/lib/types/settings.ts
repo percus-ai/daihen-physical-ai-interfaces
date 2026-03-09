@@ -35,7 +35,15 @@ export type HuggingFaceSecretStatus = {
   updated_at?: string | null;
 };
 
+export type UserProfileSettings = {
+  username?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  updated_at?: string | null;
+};
+
 export type UserSettings = {
   user_id: string;
+  profile: UserProfileSettings;
   huggingface: HuggingFaceSecretStatus;
 };

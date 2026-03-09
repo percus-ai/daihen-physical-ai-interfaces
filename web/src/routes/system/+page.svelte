@@ -306,6 +306,9 @@
   });
 
   const saveUserSettings = async (payload: {
+    username?: string;
+    firstName?: string;
+    lastName?: string;
     huggingfaceToken?: string;
     clear?: boolean;
   }) => {
@@ -314,10 +317,21 @@
     userSettingsSuccess = '';
     try {
       userSettings = await api.user.updateSettings({
-        huggingface_token: payload.clear ? null : payload.huggingfaceToken?.trim() ?? null,
+        username: payload.username !== undefined ? payload.username.trim() : undefined,
+        first_name: payload.firstName !== undefined ? payload.firstName.trim() : undefined,
+        last_name: payload.lastName !== undefined ? payload.lastName.trim() : undefined,
+        huggingface_token: payload.clear
+          ? null
+          : payload.huggingfaceToken !== undefined
+            ? payload.huggingfaceToken.trim()
+            : undefined,
         clear_huggingface_token: Boolean(payload.clear)
       });
-      userSettingsSuccess = payload.clear ? 'HF token を削除しました。' : 'HF token を更新しました。';
+      userSettingsSuccess = payload.clear
+        ? 'HF token を削除しました。'
+        : payload.huggingfaceToken !== undefined
+          ? 'HF token を更新しました。'
+          : 'ユーザープロフィールを更新しました。';
     } catch (error) {
       userSettingsError =
         error instanceof Error ? error.message : 'user settings の更新に失敗しました。';

@@ -42,6 +42,9 @@
       repoCommit?: string;
     }) => void | Promise<void>;
     onSaveUserSettings: (payload: {
+      username?: string;
+      firstName?: string;
+      lastName?: string;
       huggingfaceToken?: string;
       clear?: boolean;
     }) => void | Promise<void>;
@@ -58,12 +61,16 @@
   let systemFeaturesRepoUrl = $state('');
   let systemFeaturesRepoRef = $state('');
   let systemFeaturesRepoCommit = $state('');
+  let userProfileUsername = $state('');
+  let userProfileFirstName = $state('');
+  let userProfileLastName = $state('');
   let userHuggingFaceToken = $state('');
   let branchOpen = $state(false);
   let commitOpen = $state(false);
   let selectedBranchValue = $state('');
   let selectedCommitValue = $state('');
   let lastHydratedSystemSettingsKey = $state('');
+  let lastHydratedUserSettingsKey = $state('');
 
   $effect(() => {
     const nextKey = JSON.stringify({
@@ -88,11 +95,37 @@
     lastHydratedSystemSettingsKey = nextKey;
   });
 
+  $effect(() => {
+    const nextKey = JSON.stringify({
+      user_id: userSettings?.user_id ?? null,
+      username: userSettings?.profile?.username ?? '',
+      first_name: userSettings?.profile?.first_name ?? '',
+      last_name: userSettings?.profile?.last_name ?? '',
+      updated_at: userSettings?.profile?.updated_at ?? null
+    });
+    if (!userSettings || nextKey === lastHydratedUserSettingsKey) {
+      return;
+    }
+
+    userProfileUsername = userSettings.profile?.username ?? '';
+    userProfileFirstName = userSettings.profile?.first_name ?? '';
+    userProfileLastName = userSettings.profile?.last_name ?? '';
+    lastHydratedUserSettingsKey = nextKey;
+  });
+
   const saveUserToken = async () => {
     const token = userHuggingFaceToken.trim();
     if (!token) return;
     await onSaveUserSettings({ huggingfaceToken: token, clear: false });
     userHuggingFaceToken = '';
+  };
+
+  const saveUserProfile = async () => {
+    await onSaveUserSettings({
+      username: userProfileUsername,
+      firstName: userProfileFirstName,
+      lastName: userProfileLastName,
+    });
   };
 
   const visualStatus = (state: 'ready' | 'pending' | 'missing' | 'error') => {
@@ -138,7 +171,8 @@
         ? 'error'
         : userPending
           ? 'pending'
-          : userSettings?.huggingface?.has_token
+          : userSettings?.huggingface?.has_token ||
+              Boolean(userSettings?.profile?.username || userSettings?.profile?.first_name || userSettings?.profile?.last_name)
             ? 'ready'
             : 'missing'
     )
@@ -212,6 +246,52 @@
         <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${userVisual.chip}`}>{userVisual.label}</span>
         <span class="chip">{userSettings?.user_id ?? '-'}</span>
       </div>
+    </div>
+
+    <div class="mt-5 rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+      <p class="label">Profile</p>
+      <div class="mt-3 space-y-2 text-sm text-slate-600">
+        <p>username: {userSettings?.profile?.username ?? '-'}</p>
+        <p>姓: {userSettings?.profile?.last_name ?? '-'}</p>
+        <p>名: {userSettings?.profile?.first_name ?? '-'}</p>
+        <p>updated: {userSettings?.profile?.updated_at ?? '-'}</p>
+      </div>
+    </div>
+
+    <div class="mt-4 grid gap-3 md:grid-cols-3">
+      <label class="text-sm text-slate-600">
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Username</span>
+        <input
+          bind:value={userProfileUsername}
+          class={`w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none ${userVisual.input}`}
+          placeholder="tanaka.tarou"
+          disabled={userPending}
+        />
+      </label>
+      <label class="text-sm text-slate-600">
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">姓</span>
+        <input
+          bind:value={userProfileLastName}
+          class={`w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none ${userVisual.input}`}
+          placeholder="田中"
+          disabled={userPending}
+        />
+      </label>
+      <label class="text-sm text-slate-600">
+        <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">名</span>
+        <input
+          bind:value={userProfileFirstName}
+          class={`w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none ${userVisual.input}`}
+          placeholder="太郎"
+          disabled={userPending}
+        />
+      </label>
+    </div>
+
+    <div class="mt-4 flex flex-wrap gap-2">
+      <button class="btn-primary" type="button" onclick={saveUserProfile} disabled={userPending}>
+        プロフィールを保存
+      </button>
     </div>
 
     <div class="mt-5 rounded-2xl border border-slate-200/70 bg-white/80 p-4">
