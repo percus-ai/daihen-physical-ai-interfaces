@@ -4,18 +4,22 @@
   import toast from 'svelte-french-toast';
 
   import BlueprintCombobox from '$lib/components/blueprints/BlueprintCombobox.svelte';
-  import { loadBlueprintDraft, saveBlueprintDraft, type BlueprintSessionKind } from '$lib/blueprints/draftStorage';
+  import { saveBlueprintDraft, type BlueprintSessionKind } from '$lib/blueprints/draftStorage';
   import {
     createBlueprintManager,
+    listBlueprintSummaries,
     type WebuiBlueprintDetail,
     type WebuiBlueprintSummary
   } from '$lib/blueprints/blueprintManager';
+  import { getBlueprintSessionSignature, materializeSessionBlueprintState } from '$lib/blueprints/sessionBlueprintState';
   import type { BlueprintNode } from '$lib/recording/blueprint';
 
   let {
     sessionId = '',
     sessionKind = '' as BlueprintSessionKind | '',
     blueprint,
+    currentBlueprintId = '',
+    currentBlueprintName = '',
     persistDraft = true,
     disabled = false,
     onApplyBlueprintDetail = undefined
@@ -23,6 +27,8 @@
     sessionId?: string;
     sessionKind?: BlueprintSessionKind | '';
     blueprint: BlueprintNode;
+    currentBlueprintId?: string;
+    currentBlueprintName?: string;
     persistDraft?: boolean;
     disabled?: boolean;
     onApplyBlueprintDetail?: (detail: { id: string; name: string; blueprint: BlueprintNode }) => void;
@@ -33,7 +39,8 @@
   let savedBlueprints = $state<WebuiBlueprintSummary[]>([]);
   let blueprintBusy = $state(false);
   let blueprintActionPending = $state(false);
-  let lastResolveSignature = $state('');
+  let lastListSignature = '';
+  let lastSyncedBlueprintSignature = '';
 
   const notifyError = (message: string) => {
     if (!message || typeof window === 'undefined') return;
@@ -46,19 +53,26 @@
   };
 
   const applyBlueprintDetail = (detail: WebuiBlueprintDetail, useDraft: boolean, kind: BlueprintSessionKind) => {
-    activeBlueprintId = detail.id;
-    activeBlueprintName = detail.name;
+    const nextState = useDraft
+      ? materializeSessionBlueprintState({
+          detail,
+          persistDraft,
+          sessionKind: kind,
+          sessionId
+        })
+      : {
+          id: detail.id,
+          name: detail.name,
+          blueprint: detail.blueprint
+        };
 
-    let nextBlueprint = detail.blueprint;
-    if (persistDraft && useDraft && sessionId) {
-      const draft = loadBlueprintDraft(kind, sessionId, detail.id);
-      if (draft) nextBlueprint = draft;
-    }
+    activeBlueprintId = nextState.id;
+    activeBlueprintName = nextState.name;
 
     onApplyBlueprintDetail?.({
-      id: detail.id,
-      name: detail.name,
-      blueprint: nextBlueprint
+      id: nextState.id,
+      name: nextState.name,
+      blueprint: nextState.blueprint
     });
   };
 
@@ -85,8 +99,6 @@
     },
     applyBlueprintDetail
   });
-
-  const resolveSessionBlueprint = blueprintManager.resolveSessionBlueprint;
   const handleOpenBlueprint = blueprintManager.openBlueprint;
   const handleSaveBlueprint = blueprintManager.saveBlueprint;
   const handleDuplicateBlueprint = blueprintManager.duplicateBlueprint;
@@ -107,14 +119,26 @@
   };
 
   $effect(() => {
+    const signature = currentBlueprintId ? `${currentBlueprintId}:${currentBlueprintName}` : '';
+    if (!signature || signature === lastSyncedBlueprintSignature) return;
+    lastSyncedBlueprintSignature = signature;
+    activeBlueprintId = currentBlueprintId;
+    activeBlueprintName = currentBlueprintName;
+  });
+
+  $effect(() => {
     const nextDisabled = disabled || blueprintBusy || blueprintActionPending || !sessionKind;
-    // When disabled, don't auto-resolve or auto-save.
     if (nextDisabled) return;
-    if (!sessionId || !sessionKind) return;
-    const signature = `${sessionKind}:${sessionId}`;
-    if (signature === lastResolveSignature) return;
-    lastResolveSignature = signature;
-    void resolveSessionBlueprint();
+    const signature = getBlueprintSessionSignature(sessionKind, sessionId);
+    if (!signature || signature === lastListSignature) return;
+    lastListSignature = signature;
+    void listBlueprintSummaries()
+      .then((items) => {
+        savedBlueprints = items;
+      })
+      .catch((error) => {
+        notifyError(error instanceof Error ? error.message : 'ブループリント一覧の取得に失敗しました。');
+      });
   });
 
   $effect(() => {
@@ -189,4 +213,3 @@
     {persistDraft ? '編集中の内容はローカルに自動保存されます。' : 'ドラフトの自動保存は無効です。'}
   </p>
 </div>
-

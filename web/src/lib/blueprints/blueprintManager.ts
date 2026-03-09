@@ -13,7 +13,7 @@ export type WebuiBlueprintDetail = WebuiBlueprintSummary & {
   blueprint: BlueprintNode;
 };
 
-type WebuiBlueprintResolveResponse = {
+export type WebuiBlueprintResolveResponse = {
   blueprint: WebuiBlueprintDetail;
   resolved_by: 'binding' | 'last_used' | 'latest' | 'default_created';
 };
@@ -28,7 +28,7 @@ type WebuiBlueprintDeleteResponse = {
   rebound_session_count?: number;
 };
 
-type WebuiBlueprintListResponse = {
+export type WebuiBlueprintListResponse = {
   blueprints?: WebuiBlueprintSummary[];
   last_used_blueprint_id?: string | null;
 };
@@ -55,6 +55,21 @@ type BlueprintManagerOptions = {
 const toErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
+export const listBlueprintSummaries = async () => {
+  const response = (await api.webuiBlueprints.list()) as WebuiBlueprintListResponse;
+  return response.blueprints ?? [];
+};
+
+export const resolveBlueprintForSession = async (
+  sessionKind: BlueprintSessionKind,
+  sessionId: string
+) => {
+  return (await api.webuiBlueprints.resolveSession({
+    session_kind: sessionKind,
+    session_id: sessionId
+  })) as WebuiBlueprintResolveResponse;
+};
+
 export const createBlueprintManager = (options: BlueprintManagerOptions) => {
   const resetMessages = () => {
     options.setError('');
@@ -62,8 +77,7 @@ export const createBlueprintManager = (options: BlueprintManagerOptions) => {
   };
 
   const refreshBlueprintList = async () => {
-    const response = (await api.webuiBlueprints.list()) as WebuiBlueprintListResponse;
-    options.setSavedBlueprints(response.blueprints ?? []);
+    options.setSavedBlueprints(await listBlueprintSummaries());
   };
 
   const resolveSessionBlueprint = async () => {
@@ -74,10 +88,7 @@ export const createBlueprintManager = (options: BlueprintManagerOptions) => {
     options.setBusy(true);
     resetMessages();
     try {
-      const resolved = (await api.webuiBlueprints.resolveSession({
-        session_kind: sessionKind,
-        session_id: sessionId
-      })) as WebuiBlueprintResolveResponse;
+      const resolved = await resolveBlueprintForSession(sessionKind, sessionId);
       options.applyBlueprintDetail(resolved.blueprint, true, sessionKind);
       await refreshBlueprintList();
       if (resolved.resolved_by === 'default_created') {

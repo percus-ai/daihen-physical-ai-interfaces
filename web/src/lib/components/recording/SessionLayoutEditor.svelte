@@ -4,7 +4,10 @@
   import { toStore } from 'svelte/store';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
+  import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
+  import { resolveBlueprintForSession } from '$lib/blueprints/blueprintManager';
+  import { getBlueprintSessionSignature, materializeSessionBlueprintState } from '$lib/blueprints/sessionBlueprintState';
   import { VIEWER_RUNTIME, type ViewerRuntime, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
   import LayoutNode from '$lib/components/recording/LayoutNode.svelte';
@@ -152,6 +155,8 @@
 
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
   let selectedId = $state('');
+  let activeBlueprintId = $state('');
+  let activeBlueprintName = $state('');
   let mounted = $state(false);
   let filledDefaults = $state(false);
   let editInspectorTab = $state<string>('blueprint');
@@ -161,6 +166,8 @@
   let editorContentEl = $state<HTMLDivElement | null>(null);
   let editorRightPaneWidth = $state(420);
   let editorViewScale = $state(1);
+  let lastResolvedBlueprintSignature = '';
+  let activeBlueprintResolveRequestId = 0;
 
   $effect(() => {
     if (!selectedId && blueprint?.id) {
@@ -208,10 +215,44 @@
   });
 
   const applyBlueprintFromWorkspace = (detail: { id: string; name: string; blueprint: BlueprintNode }) => {
+    activeBlueprintId = detail.id;
+    activeBlueprintName = detail.name;
     blueprint = detail.blueprint;
     selectedId = ensureValidSelection(blueprint, selectedId);
     filledDefaults = false;
   };
+
+  $effect(() => {
+    if (!mounted) return;
+    const currentSessionKind = blueprintSessionKind;
+    const currentSessionId = blueprintSessionId;
+    const signature = getBlueprintSessionSignature(currentSessionKind, currentSessionId);
+    if (!signature || signature === lastResolvedBlueprintSignature) return;
+    lastResolvedBlueprintSignature = signature;
+    if (!currentSessionKind || !currentSessionId) return;
+
+    const requestId = activeBlueprintResolveRequestId + 1;
+    activeBlueprintResolveRequestId = requestId;
+
+    void resolveBlueprintForSession(currentSessionKind, currentSessionId)
+      .then((resolved) => {
+        if (requestId !== activeBlueprintResolveRequestId) return;
+        const nextState = materializeSessionBlueprintState({
+          detail: resolved.blueprint,
+          persistDraft: persistBlueprintDraft,
+          sessionKind: currentSessionKind,
+          sessionId: currentSessionId
+        });
+        applyBlueprintFromWorkspace(nextState);
+      })
+      .catch((error) => {
+        if (requestId !== activeBlueprintResolveRequestId) return;
+        const message = error instanceof Error ? error.message : 'ブループリントの読み込みに失敗しました。';
+        if (typeof window !== 'undefined') {
+          toast.error(message);
+        }
+      });
+  });
 
   $effect(() => {
     if (filledDefaults) return;
@@ -389,6 +430,8 @@
             sessionId={blueprintSessionId}
             sessionKind={blueprintSessionKind}
             {blueprint}
+            currentBlueprintId={activeBlueprintId}
+            currentBlueprintName={activeBlueprintName}
             persistDraft={persistBlueprintDraft}
             disabled={!mounted}
             onApplyBlueprintDetail={applyBlueprintFromWorkspace}

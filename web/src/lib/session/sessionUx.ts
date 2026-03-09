@@ -78,9 +78,58 @@ export const speakSessionMessage = (message: string) => {
   }
 };
 
+export const computeScrollTargetTop = (options: {
+  currentScrollY: number;
+  elementBottom: number;
+  viewportHeight: number;
+  marginPx?: number;
+}) => {
+  const { currentScrollY, elementBottom, viewportHeight, marginPx = 24 } = options;
+  const overflow = elementBottom - viewportHeight + marginPx;
+  if (overflow <= 0) return currentScrollY;
+  return Math.max(0, Math.ceil(currentScrollY + overflow));
+};
+
 export const scrollIntoViewSoon = (element: HTMLElement | null, delayMs = 120) => {
-  if (typeof window === 'undefined' || !element) return;
-  window.setTimeout(() => {
-    element.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+  if (typeof window === 'undefined' || !element) return () => {};
+
+  let timeoutId: number | null = null;
+  let observer: ResizeObserver | null = null;
+
+  const syncScroll = () => {
+    if (!element.isConnected) {
+      cleanup();
+      return;
+    }
+    const targetTop = computeScrollTargetTop({
+      currentScrollY: window.scrollY,
+      elementBottom: element.getBoundingClientRect().bottom,
+      viewportHeight: window.innerHeight
+    });
+    if (Math.abs(targetTop - window.scrollY) > 1) {
+      window.scrollTo({ top: targetTop, behavior: 'auto' });
+    }
+  };
+
+  const cleanup = () => {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    observer?.disconnect();
+    observer = null;
+  };
+
+  timeoutId = window.setTimeout(() => {
+    syncScroll();
   }, delayMs);
+
+  if (typeof ResizeObserver !== 'undefined') {
+    observer = new ResizeObserver(() => {
+      syncScroll();
+    });
+    observer.observe(element);
+  }
+
+  return cleanup;
 };

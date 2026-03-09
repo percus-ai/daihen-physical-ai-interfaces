@@ -10,7 +10,7 @@
   import { queryClient } from '$lib/queryClient';
 
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
-  import { renderSessionPanelClass, renderSessionStatusClass, scrollIntoViewSoon, speakSessionMessage } from '$lib/session/sessionUx';
+  import { scrollIntoViewSoon, speakSessionMessage } from '$lib/session/sessionUx';
 
   type RunnerStatus = {
     active?: boolean;
@@ -75,7 +75,10 @@
 
   onMount(() => {
     mounted = true;
-    scrollIntoViewSoon(editorAnchor, 180);
+    const stopAutoScroll = scrollIntoViewSoon(editorAnchor, 180);
+    return () => {
+      stopAutoScroll();
+    };
   });
 
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
@@ -156,17 +159,6 @@
             : vlaborStatus.state ?? 'idle'
       : vlaborStatus.state ?? 'idle'
   );
-  const sessionStateLabel = $derived.by(() => {
-    if (resolvedKind === 'inference') {
-      if (runnerStatus.awaiting_continue_confirmation) return '継続確認待ち';
-      if (runnerStatus.state === 'resetting' || runnerStatus.state === 'resetting_paused') return 'リセット中';
-      if (runnerStatus.state === 'recording') return '追加収録中';
-      if (runnerStatus.active) return '推論中';
-      if (runnerStatus.last_error) return '推論エラー';
-    }
-    return vlaborStatus.state ?? '待機';
-  });
-
   const handleContinueDecision = async (continueRecording: boolean) => {
     if (continueDecisionPending) return;
     continueDecisionPending = true;
@@ -287,27 +279,6 @@
     </AlertDialog.Content>
   </AlertDialog.Portal>
 </AlertDialog.Root>
-
-<section class={`card mt-6 border p-5 ${renderSessionPanelClass(sessionState)}`}>
-  <div class="flex flex-wrap items-center gap-2">
-    <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderSessionStatusClass(sessionState)}`}>
-      {sessionStateLabel}
-    </span>
-    <span class="chip">kind: {sessionLabel}</span>
-    <span class="chip">session: {sessionId}</span>
-    {#if resolvedKind === 'inference'}
-      <span class="chip">recording dataset: {inferenceRecordingSessionId || '-'}</span>
-      <span class="chip">task: {runnerStatus.task || '-'}</span>
-      {#if runnerStatus.num_episodes != null}
-        <span class="chip">episodes: {runnerStatus.episode_count ?? 0} / {runnerStatus.num_episodes}</span>
-      {/if}
-    {/if}
-    <span class="chip">vlabor: {vlaborStatus.state ?? '-'}</span>
-  </div>
-  {#if runnerStatus.last_error}
-    <p class="mt-3 text-sm text-rose-600">{runnerStatus.last_error}</p>
-  {/if}
-</section>
 
 <div class="mt-6" bind:this={editorAnchor}>
 <SessionLayoutEditor

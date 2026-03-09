@@ -5,7 +5,7 @@
 
   import { Button } from 'bits-ui';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
-  import { renderSessionPanelClass, renderSessionStatusClass, scrollIntoViewSoon, speakSessionMessage } from '$lib/session/sessionUx';
+  import { scrollIntoViewSoon, speakSessionMessage } from '$lib/session/sessionUx';
 
   const sessionId = $derived(page.params.session_id ?? '');
   const STATUS_TOPIC = '/lerobot_recorder/status';
@@ -59,13 +59,9 @@
   };
 
   const recorderState = $derived(recorderStatus?.state ?? rosbridgeStatus);
-  const recorderStateLabel = $derived(STATUS_LABELS[recorderStatus?.state ?? ''] ?? recorderStatus?.state ?? rosbridgeStatus);
-  const activeEpisode = $derived(
-    recorderStatus?.episode_index != null ? Number(recorderStatus.episode_index) + 1 : null
-  );
 
   onMount(() => {
-    scrollIntoViewSoon(editorAnchor, 180);
+    const stopAutoScroll = scrollIntoViewSoon(editorAnchor, 180);
     const client = getRosbridgeClient();
     const unsubscribe = client.subscribe(STATUS_TOPIC, (message) => {
       recorderStatus = parseRecorderPayload(message);
@@ -75,6 +71,7 @@
     });
     rosbridgeStatus = client.getStatus();
     return () => {
+      stopAutoScroll();
       unsubscribe();
       offStatus();
     };
@@ -125,25 +122,6 @@
       <Button.Root class="btn-ghost" href="/record/new">新規データセット</Button.Root>
       <Button.Root class="btn-ghost" type="button" onclick={handleReconnect}>再接続</Button.Root>
     </div>
-  </div>
-</section>
-
-<section class={`card mt-6 border p-5 ${renderSessionPanelClass(recorderState)}`}>
-  <div class="flex flex-wrap items-center gap-2">
-    <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderSessionStatusClass(recorderState)}`}>
-      {recorderStateLabel}
-    </span>
-    <span class="chip">rosbridge: {rosbridgeStatus}</span>
-    <span class="chip">dataset: {recorderStatus?.dataset_id ?? sessionId}</span>
-    {#if activeEpisode}
-      <span class="chip">episode: {activeEpisode}{recorderStatus?.num_episodes ? ` / ${recorderStatus.num_episodes}` : ''}</span>
-    {/if}
-    {#if recorderStatus?.episode_frame_count != null}
-      <span class="chip">episode frames: {recorderStatus.episode_frame_count}</span>
-    {/if}
-    {#if recorderStatus?.frame_count != null}
-      <span class="chip">total frames: {recorderStatus.frame_count}</span>
-    {/if}
   </div>
 </section>
 
