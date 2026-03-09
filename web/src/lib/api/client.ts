@@ -525,6 +525,37 @@ export type ModelSyncJobCancelResponse = {
   message: string;
 };
 
+export type StorageSortOrder = 'asc' | 'desc';
+export type StorageDatasetSortBy = 'created_at' | 'updated_at' | 'name' | 'size_bytes' | 'episode_count';
+export type StorageModelSortBy = 'created_at' | 'updated_at' | 'name' | 'size_bytes' | 'policy_type';
+
+export type StorageDatasetListQuery = {
+  includeArchived?: boolean;
+  profileName?: string;
+  ownerUserId?: string;
+  status?: string;
+  datasetType?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+  sortBy?: StorageDatasetSortBy;
+  sortOrder?: StorageSortOrder;
+};
+
+export type StorageModelListQuery = {
+  includeArchived?: boolean;
+  profileName?: string;
+  ownerUserId?: string;
+  status?: string;
+  policyType?: string;
+  datasetId?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+  sortBy?: StorageModelSortBy;
+  sortOrder?: StorageSortOrder;
+};
+
 export type BulkActionResultStatus = 'succeeded' | 'failed' | 'skipped';
 
 export type BulkActionResult = {
@@ -773,6 +804,16 @@ export async function fetchApi<T>(path: string, options: RequestInit = {}): Prom
 
 export async function fetchText(path: string, options: RequestInit = {}): Promise<string> {
   return withAuthRetry(() => fetchTextNoRefresh(path, options));
+}
+
+function buildQueryString(params: Record<string, string | number | boolean | null | undefined>): string {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    searchParams.set(key, String(value));
+  }
+  const query = searchParams.toString();
+  return query ? `?${query}` : '';
 }
 
 export async function fetchForm<T>(
@@ -1075,10 +1116,37 @@ export const api = {
       fetchApi(`/api/recording/sessions/${sessionId}/upload-status`)
   },
   storage: {
-    datasets: (profileName?: string) =>
-      fetchApi(`/api/storage/datasets${profileName ? `?profile_name=${profileName}` : ''}`),
-    models: (profileName?: string) =>
-      fetchApi(`/api/storage/models${profileName ? `?profile_name=${profileName}` : ''}`),
+    datasets: (query: StorageDatasetListQuery = {}) =>
+      fetchApi(
+        `/api/storage/datasets${buildQueryString({
+          include_archived: query.includeArchived,
+          profile_name: query.profileName,
+          owner_user_id: query.ownerUserId,
+          status: query.status,
+          dataset_type: query.datasetType,
+          search: query.search,
+          limit: query.limit,
+          offset: query.offset,
+          sort_by: query.sortBy,
+          sort_order: query.sortOrder
+        })}`
+      ),
+    models: (query: StorageModelListQuery = {}) =>
+      fetchApi(
+        `/api/storage/models${buildQueryString({
+          include_archived: query.includeArchived,
+          profile_name: query.profileName,
+          owner_user_id: query.ownerUserId,
+          status: query.status,
+          policy_type: query.policyType,
+          dataset_id: query.datasetId,
+          search: query.search,
+          limit: query.limit,
+          offset: query.offset,
+          sort_by: query.sortBy,
+          sort_order: query.sortOrder
+        })}`
+      ),
     dataset: (datasetId: string) => fetchApi(`/api/storage/datasets/${datasetId}`),
     datasetViewer: (datasetId: string) =>
       fetchApi<DatasetViewerResponse>(`/api/storage/dataset-viewer/datasets/${datasetId}`),

@@ -1,20 +1,26 @@
+import type { StorageDatasetListQuery, StorageModelListQuery } from '$lib/api/client';
+
 // Centralized TanStack Query keys to prevent cache fragmentation across pages/modals.
 // Keep these stable and repo-wide to avoid duplicate fetches and state skew.
+
+function normalizeQuery<T extends Record<string, unknown>>(query: T = {} as T): T {
+  const entries = Object.entries(query).filter(([, value]) => value !== undefined);
+  return Object.fromEntries(entries) as T;
+}
 
 export const qk = {
   storage: {
     usage: () => ['storage', 'usage'] as const,
     usagePage: () => ['storage', 'usage', 'page'] as const,
 
-    datasets: () => ['storage', 'datasets'] as const,
-    datasetsAll: () => ['storage', 'datasets', 'all'] as const,
-    datasetsManage: () => ['storage', 'datasets', 'manage'] as const,
-    datasetsLookup: () => ['storage', 'datasets', 'lookup'] as const,
-    datasetsByProfile: (profileName: string) => ['storage', 'datasets', 'profile', profileName] as const,
+    datasetsPrefix: () => ['storage', 'datasets'] as const,
+    datasets: (query: StorageDatasetListQuery = {}) =>
+      ['storage', 'datasets', normalizeQuery(query)] as const,
     dataset: (datasetId: string) => ['storage', 'dataset', datasetId] as const,
 
-    models: () => ['storage', 'models'] as const,
-    modelsManage: () => ['storage', 'models', 'manage'] as const,
+    modelsPrefix: () => ['storage', 'models'] as const,
+    models: (query: StorageModelListQuery = {}) =>
+      ['storage', 'models', normalizeQuery(query)] as const,
     model: (modelId: string) => ['storage', 'model', modelId] as const,
 
     archiveManage: () => ['storage', 'archive', 'manage'] as const,

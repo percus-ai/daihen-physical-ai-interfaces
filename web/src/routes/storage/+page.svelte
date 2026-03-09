@@ -7,19 +7,23 @@
 
   type DatasetSummary = {
     id: string;
+    name?: string;
     status?: string;
     size_bytes?: number;
     source?: string;
     dataset_type?: string;
     episode_count?: number;
+    created_at?: string;
   };
 
   type ModelSummary = {
     id: string;
+    name?: string;
     status?: string;
     size_bytes?: number;
     policy_type?: string;
     dataset_id?: string;
+    created_at?: string;
   };
 
   type DatasetListResponse = {
@@ -32,15 +36,30 @@
     total?: number;
   };
 
+  const latestDatasetQuery = {
+    limit: 3,
+    sortBy: 'created_at',
+    sortOrder: 'desc'
+  } as const;
+
+  const latestModelQuery = {
+    limit: 3,
+    sortBy: 'created_at',
+    sortOrder: 'desc'
+  } as const;
+
   const datasetsQuery = createQuery<DatasetListResponse>({
-    queryKey: qk.storage.datasets(),
-    queryFn: () => api.storage.datasets()
+    queryKey: qk.storage.datasets(latestDatasetQuery),
+    queryFn: () => api.storage.datasets(latestDatasetQuery)
   });
 
   const modelsQuery = createQuery<ModelListResponse>({
-    queryKey: qk.storage.models(),
-    queryFn: () => api.storage.models()
+    queryKey: qk.storage.models(latestModelQuery),
+    queryFn: () => api.storage.models(latestModelQuery)
   });
+
+  const displayDatasetLabel = (dataset: DatasetSummary) => dataset.name ?? dataset.id;
+  const displayModelLabel = (model: ModelSummary) => model.name ?? model.id;
 </script>
 
 <section class="card-strong p-8">
@@ -70,10 +89,10 @@
       {#if $datasetsQuery.isLoading}
         <p>読み込み中...</p>
       {:else if $datasetsQuery.data?.datasets?.length}
-        {#each $datasetsQuery.data.datasets.slice(0, 3) as dataset}
+        {#each $datasetsQuery.data.datasets as dataset}
           <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <span class="min-w-0 break-all font-semibold text-slate-800">{dataset.id}</span>
+              <span class="min-w-0 break-all font-semibold text-slate-800">{displayDatasetLabel(dataset)}</span>
               <span class="chip">{dataset.status}</span>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
@@ -84,8 +103,8 @@
             </div>
           </div>
         {/each}
-        {#if $datasetsQuery.data.datasets.length > 3}
-          <p class="text-xs text-slate-400">ほか {($datasetsQuery.data.datasets.length - 3)} 件</p>
+        {#if ($datasetsQuery.data.total ?? 0) > ($datasetsQuery.data.datasets.length ?? 0)}
+          <p class="text-xs text-slate-400">ほか {($datasetsQuery.data.total ?? 0) - ($datasetsQuery.data.datasets.length ?? 0)} 件</p>
         {/if}
       {:else}
         <p>データセットがありません。</p>
@@ -107,10 +126,10 @@
       {#if $modelsQuery.isLoading}
         <p>読み込み中...</p>
       {:else if $modelsQuery.data?.models?.length}
-        {#each $modelsQuery.data.models.slice(0, 3) as model}
+        {#each $modelsQuery.data.models as model}
           <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <span class="min-w-0 break-all font-semibold text-slate-800">{model.id}</span>
+              <span class="min-w-0 break-all font-semibold text-slate-800">{displayModelLabel(model)}</span>
               <span class="chip">{model.status}</span>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
@@ -120,8 +139,8 @@
             </div>
           </div>
         {/each}
-        {#if $modelsQuery.data.models.length > 3}
-          <p class="text-xs text-slate-400">ほか {($modelsQuery.data.models.length - 3)} 件</p>
+        {#if ($modelsQuery.data.total ?? 0) > ($modelsQuery.data.models.length ?? 0)}
+          <p class="text-xs text-slate-400">ほか {($modelsQuery.data.total ?? 0) - ($modelsQuery.data.models.length ?? 0)} 件</p>
         {/if}
       {:else}
         <p>モデルがありません。</p>

@@ -49,8 +49,8 @@
 
   const candidatesQuery = createQuery<DatasetListResponse>(
     toStore(() => ({
-      queryKey: qk.storage.datasetsByProfile(profileName),
-      queryFn: () => api.storage.datasets(profileName) as Promise<DatasetListResponse>,
+      queryKey: qk.storage.datasets({ profileName }),
+      queryFn: () => api.storage.datasets({ profileName }) as Promise<DatasetListResponse>,
       enabled: Boolean(profileName)
     }))
   );
@@ -162,7 +162,7 @@
   const refetchCandidates = async () => {
     if (!profileName) return;
     await queryClient.invalidateQueries({
-      queryKey: qk.storage.datasetsByProfile(profileName)
+      queryKey: qk.storage.datasets({ profileName })
     });
   };
 

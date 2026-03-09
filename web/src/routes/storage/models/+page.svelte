@@ -9,6 +9,7 @@
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import ModelSyncProgressModal from '$lib/components/storage/ModelSyncProgressModal.svelte';
   import StorageArchiveConfirmDialog from '$lib/components/storage/StorageArchiveConfirmDialog.svelte';
+  import { presentModelSyncStatus } from '$lib/storage/transferStatus';
 
   type ModelSummary = {
     id: string;
@@ -30,7 +31,7 @@
   };
 
   const modelsQuery = createQuery<ModelListResponse>({
-    queryKey: qk.storage.modelsManage(),
+    queryKey: qk.storage.models(),
     queryFn: () => api.storage.models()
   });
   const queryClient = useQueryClient();
@@ -646,14 +647,14 @@
               />
             </div>
           </th>
-          <th class="pb-3">ID</th>
+          <th class="pb-3">名前</th>
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
           <th class="pb-3">ポリシー</th>
           <th class="pb-3">データセット</th>
           <th class="pb-3">サイズ</th>
           <th class="pb-3">作成日時</th>
-          <th class="pb-3">同期状態</th>
+          <th class="pb-3 text-center">同期状態</th>
           <th class="pb-3 text-right">操作</th>
         </tr>
       </thead>
@@ -663,7 +664,7 @@
         {:else if displayedModels.length}
           {#each displayedModels as model}
             {@const activeJob = activeJobOf(model.id)}
-            {@const progressPercent = Number(activeJob?.progress_percent ?? 0)}
+            {@const syncStatus = presentModelSyncStatus(activeJob, Boolean(model.is_local))}
             <tr class="border-t border-slate-200/60">
               <td class="w-12 py-3 align-middle">
                 <div class="flex justify-center">
@@ -698,18 +699,20 @@
               </td>
               <td class="py-3">{formatBytes(model.size_bytes ?? 0)}</td>
               <td class="py-3">{formatDate(model.created_at)}</td>
-              <td class="py-3">
-                {#if activeJob}
-                  <button
-                    class="text-xs font-semibold text-brand hover:underline"
-                    type="button"
-                    onclick={() => openModelSyncModal(activeJob.job_id)}
-                  >
-                    同期中 ({Math.round(progressPercent)}%)
-                  </button>
-                {:else}
-                  <span class="chip">{model.is_local ? '同期済' : '未同期'}</span>
-                {/if}
+              <td class="py-3 text-center">
+                <div class="flex justify-center">
+                  {#if syncStatus.kind === 'progress' && activeJob}
+                    <button
+                      class="text-xs font-semibold text-brand hover:underline"
+                      type="button"
+                      onclick={() => openModelSyncModal(activeJob.job_id)}
+                    >
+                      {syncStatus.label}
+                    </button>
+                  {:else}
+                    <span class="chip">{syncStatus.label}</span>
+                  {/if}
+                </div>
               </td>
               <td class="py-3 text-right">
                 <DropdownMenu.Root>

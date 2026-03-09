@@ -28,7 +28,7 @@
   };
 
   const datasetsQuery = createQuery<DatasetListResponse>({
-    queryKey: qk.storage.datasetsManage(),
+    queryKey: qk.storage.datasets(),
     queryFn: () => api.storage.datasets()
   });
 
@@ -94,7 +94,7 @@
   });
 
   const refetchDatasets = async () => {
-    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetsManage() });
+    await queryClient.invalidateQueries({ queryKey: qk.storage.datasetsPrefix() });
     await $datasetsQuery?.refetch?.();
   };
   const removeArchivedDatasetsFromCache = (response: BulkActionResponse) => {
@@ -103,7 +103,7 @@
     );
     if (archivedIds.size === 0) return;
     queryClient.setQueryData(
-      qk.storage.datasetsManage(),
+      qk.storage.datasets(),
       (current: DatasetListResponse | undefined) => {
         if (!current) return current;
         const nextDatasets = (current.datasets ?? []).filter((dataset) => !archivedIds.has(dataset.id));
@@ -465,7 +465,7 @@
               />
             </div>
           </th>
-          <th class="pb-3">ID</th>
+          <th class="pb-3">名前</th>
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
           <th class="pb-3">サイズ</th>

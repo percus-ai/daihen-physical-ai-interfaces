@@ -114,7 +114,7 @@
 
   const datasetsQuery = createQuery<DatasetListResponse>(
     toStore(() => ({
-      queryKey: qk.storage.datasetsAll(),
+      queryKey: qk.storage.datasets(),
       queryFn: () => api.storage.datasets() as Promise<DatasetListResponse>
     }))
   );
