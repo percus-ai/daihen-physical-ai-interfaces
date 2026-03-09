@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +43,15 @@ async def _emit_recording_control_event(
     details: dict[str, object] | None = None,
 ) -> None:
     return None
+
+
+def _recorder_error_detail(result: dict[str, Any], fallback: str) -> str:
+    detail = result.get("error") or result.get("message")
+    if isinstance(detail, str):
+        detail = detail.strip()
+        if detail:
+            return detail
+    return fallback
 
 
 # -- Request / Response models ------------------------------------------------
@@ -694,58 +702,18 @@ async def update_session(request: RecordingSessionUpdateRequest):
     return response
 
 
-@router.post("/episode/redo", response_model=RecordingSessionActionResponse)
-async def redo_episode():
-    require_user_id()
-    recorder = get_recorder_bridge()
-    result = recorder.redo_episode()
-    if not result.get("success", False):
-        raise HTTPException(status_code=500, detail=result.get("error") or "Recorder redo failed")
-    response = RecordingSessionActionResponse(
-        success=True,
-        message="Episode redo requested",
-        dataset_id=result.get("dataset_id"),
-        status=result,
-    )
-    await _emit_recording_control_event(
-        action="episode_redo",
-        phase="completed",
-        session_id=str(result.get("dataset_id") or "").strip() or "global",
-        success=True,
-        message=response.message,
-    )
-    return response
-
-
-@router.post("/episode/redo-previous", response_model=RecordingSessionActionResponse)
-async def redo_previous_episode():
+@router.post("/episode/retake-previous", response_model=RecordingSessionActionResponse)
+async def retake_previous_episode():
     require_user_id()
     recorder = get_recorder_bridge()
     status = recorder.status()
-    state = status.get("state")
     dataset_id = status.get("dataset_id")
     if not dataset_id:
         raise HTTPException(status_code=400, detail="No active session")
-    if state == "paused":
-        raise HTTPException(status_code=400, detail="Cannot redo while paused")
 
-    if state == "recording":
-        cancel = recorder.cancel_episode()
-        if not cancel.get("success", False):
-            raise HTTPException(
-                status_code=500, detail=cancel.get("error") or "Recorder episode cancel failed"
-            )
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            status = recorder.status()
-            state = status.get("state")
-            if state not in ("recording", "paused"):
-                break
-            time.sleep(0.1)
-
-    result = recorder.redo_episode()
+    result = recorder.retake_previous_episode()
     if not result.get("success", False):
-        raise HTTPException(status_code=500, detail=result.get("error") or "Recorder redo failed")
+        raise HTTPException(status_code=500, detail=_recorder_error_detail(result, "Recorder retake failed"))
 
     response = RecordingSessionActionResponse(
         success=True,
@@ -754,7 +722,7 @@ async def redo_previous_episode():
         status=result,
     )
     await _emit_recording_control_event(
-        action="episode_redo_previous",
+        action="episode_retake_previous",
         phase="completed",
         session_id=str(dataset_id or "").strip() or "global",
         success=True,

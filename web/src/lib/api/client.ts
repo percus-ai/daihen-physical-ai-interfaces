@@ -1090,12 +1090,8 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(payload)
       }),
-    redoEpisode: () =>
-      fetchApi('/api/recording/episode/redo', {
-        method: 'POST'
-      }),
-    redoPreviousEpisode: () =>
-      fetchApi('/api/recording/episode/redo-previous', {
+    retakePreviousEpisode: () =>
+      fetchApi('/api/recording/episode/retake-previous', {
         method: 'POST'
       }),
     cancelEpisode: () =>

@@ -133,7 +133,7 @@
       description: '直前に保存したエピソードを取り消して、録画し直します。',
       actionLabel: '取り直す',
       action: () =>
-        runAction('直前取り直し', () => api.recording.redoPreviousEpisode(), {
+        runAction('直前取り直し', () => api.recording.retakePreviousEpisode(), {
           successToast: '直前エピソードの取り直しを受け付けました。'
         })
     });

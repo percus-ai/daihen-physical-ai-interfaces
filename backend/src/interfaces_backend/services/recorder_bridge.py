@@ -108,8 +108,8 @@ class RecorderBridge:
 
         return latest_status
 
-    def redo_episode(self) -> dict:
-        return self._call("/api/episode/redo", {})
+    def retake_previous_episode(self) -> dict:
+        return self._call("/api/episode/retake-previous", {})
 
     def cancel_episode(self) -> dict:
         return self._call("/api/episode/cancel", {})
