@@ -274,14 +274,29 @@ class _FakeRecorderForUpdate:
         return {"success": True, "message": "session updated", "dataset_id": self.status_payload["dataset_id"]}
 
 
+class _FakeRecordingManager:
+    def __init__(self, session_state=None):
+        self._session_state = session_state
+
+    def status(self, _dataset_id: str):
+        return self._session_state
+
+
 def test_update_session_rejects_when_dataset_id_does_not_match_active(monkeypatch):
     recorder = _FakeRecorderForUpdate(dataset_id="dataset-active", state="recording")
 
     async def _fake_emit(**_kwargs):
         return None
 
+    async def _fake_fetch(recording_id: str) -> dict:
+        row = _base_row()
+        row["id"] = recording_id
+        return row
+
     monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
     monkeypatch.setattr(recording_api, "get_recorder_bridge", lambda: recorder)
+    monkeypatch.setattr(recording_api, "get_recording_session_manager", lambda: _FakeRecordingManager())
+    monkeypatch.setattr(recording_api, "_fetch_recording_row", _fake_fetch)
     monkeypatch.setattr(recording_api, "_emit_recording_control_event", _fake_emit)
 
     request = recording_api.RecordingSessionUpdateRequest(
@@ -324,8 +339,15 @@ def test_update_session_updates_when_dataset_id_matches_active(monkeypatch):
     async def _fake_supabase_client():
         return _FakeClient()
 
+    async def _fake_fetch(_recording_id: str) -> dict:
+        row = _base_row()
+        row["id"] = "dataset-active"
+        return row
+
     monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
     monkeypatch.setattr(recording_api, "get_recorder_bridge", lambda: recorder)
+    monkeypatch.setattr(recording_api, "get_recording_session_manager", lambda: _FakeRecordingManager())
+    monkeypatch.setattr(recording_api, "_fetch_recording_row", _fake_fetch)
     monkeypatch.setattr(recording_api, "_emit_recording_control_event", _fake_emit)
     monkeypatch.setattr(recording_api, "get_supabase_async_client", _fake_supabase_client)
 
@@ -347,3 +369,140 @@ def test_update_session_updates_when_dataset_id_matches_active(monkeypatch):
             "reset_time_s": 5.0,
         }
     ]
+
+
+def test_update_session_updates_pending_session_without_active_recorder(monkeypatch):
+    recorder = _FakeRecorderForUpdate(dataset_id="", state="idle")
+    session_state = type(
+        "State",
+        (),
+        {
+            "status": "created",
+            "extras": {
+                "task": "before update",
+                "target_total_episodes": 8,
+                "recorder_payload": {
+                    "task": "before update",
+                    "num_episodes": 8,
+                    "episode_time_s": 60.0,
+                    "reset_time_s": 10.0,
+                    "metadata": {
+                        "num_episodes": 8,
+                        "target_total_episodes": 8,
+                        "episode_time_s": 60.0,
+                        "reset_time_s": 10.0,
+                    },
+                },
+            },
+        },
+    )()
+
+    class _FakeTable:
+        def update(self, _payload):
+            return self
+
+        def eq(self, _key, _value):
+            return self
+
+        async def execute(self):
+            return type("Resp", (), {"data": []})()
+
+    class _FakeClient:
+        def table(self, _name):
+            return _FakeTable()
+
+    async def _fake_emit(**_kwargs):
+        return None
+
+    async def _fake_supabase_client():
+        return _FakeClient()
+
+    async def _fake_fetch(_recording_id: str) -> dict:
+        row = _base_row()
+        row["id"] = "dataset-pending"
+        row["target_total_episodes"] = 8
+        return row
+
+    monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(recording_api, "get_recorder_bridge", lambda: recorder)
+    monkeypatch.setattr(
+        recording_api,
+        "get_recording_session_manager",
+        lambda: _FakeRecordingManager(session_state=session_state),
+    )
+    monkeypatch.setattr(recording_api, "_fetch_recording_row", _fake_fetch)
+    monkeypatch.setattr(recording_api, "_emit_recording_control_event", _fake_emit)
+    monkeypatch.setattr(recording_api, "get_supabase_async_client", _fake_supabase_client)
+
+    request = recording_api.RecordingSessionUpdateRequest(
+        dataset_id="dataset-pending",
+        task="updated task with spaces",
+        episode_time_s=42.5,
+        reset_time_s=3.5,
+    )
+
+    response = asyncio.run(recording_api.update_session(request))
+
+    assert response.success is True
+    assert response.dataset_id == "dataset-pending"
+    assert recorder.update_calls == []
+    assert session_state.extras["task"] == "updated task with spaces"
+    assert session_state.extras["recorder_payload"]["task"] == "updated task with spaces"
+    assert session_state.extras["recorder_payload"]["episode_time_s"] == 42.5
+    assert session_state.extras["recorder_payload"]["reset_time_s"] == 3.5
+    assert response.status["state"] == "created"
+    assert response.status["task"] == "updated task with spaces"
+
+
+def test_get_session_status_returns_pending_settings_when_recorder_inactive(monkeypatch):
+    recorder = _FakeRecorderForUpdate(dataset_id="", state="idle")
+    session_state = type(
+        "State",
+        (),
+        {
+            "status": "created",
+            "extras": {
+                "task": "assemble parts",
+                "target_total_episodes": 12,
+                "recorder_payload": {
+                    "task": "assemble parts",
+                    "num_episodes": 12,
+                    "episode_time_s": 75.0,
+                    "reset_time_s": 8.0,
+                    "metadata": {
+                        "num_episodes": 12,
+                        "target_total_episodes": 12,
+                        "episode_time_s": 75.0,
+                        "reset_time_s": 8.0,
+                    },
+                },
+            },
+        },
+    )()
+
+    async def _fake_fetch(_recording_id: str) -> dict:
+        row = _base_row()
+        row["id"] = "dataset-pending"
+        row["task_detail"] = "assemble parts"
+        row["target_total_episodes"] = 12
+        row["episode_time_s"] = 75.0
+        row["reset_time_s"] = 8.0
+        return row
+
+    monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(recording_api, "get_recorder_bridge", lambda: recorder)
+    monkeypatch.setattr(
+        recording_api,
+        "get_recording_session_manager",
+        lambda: _FakeRecordingManager(session_state=session_state),
+    )
+    monkeypatch.setattr(recording_api, "_fetch_recording_row", _fake_fetch)
+
+    response = asyncio.run(recording_api.get_session_status("dataset-pending"))
+
+    assert response.dataset_id == "dataset-pending"
+    assert response.status["state"] == "created"
+    assert response.status["task"] == "assemble parts"
+    assert response.status["episode_time_s"] == 75.0
+    assert response.status["reset_time_s"] == 8.0
+    assert response.status["num_episodes"] == 12

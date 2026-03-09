@@ -32,11 +32,23 @@
     runner_status?: RunnerStatus;
   };
 
+  type RecordingSessionStatusResponse = {
+    dataset_id?: string;
+    status?: Record<string, unknown>;
+  };
+
   const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>(
     toStore(() => ({
       queryKey: ['inference', 'runner', 'status', sessionKind],
       queryFn: api.inference.runnerStatus,
       enabled: sessionKind === 'inference'
+    }))
+  );
+  const recordingSessionStatusQuery = createQuery<RecordingSessionStatusResponse>(
+    toStore(() => ({
+      queryKey: ['recording', 'session', 'status', sessionId],
+      queryFn: () => api.recording.sessionStatus(sessionId),
+      enabled: sessionKind === 'recording' && Boolean(sessionId)
     }))
   );
 
@@ -48,6 +60,7 @@
   let denoisingStepsInput = $state('');
   let applyPending = $state(false);
   let applyError = $state('');
+  let settingsDirty = $state(false);
   let lastSyncedSignature = '';
 
   const asNumber = (value: unknown, fallback = 0) => {
@@ -82,19 +95,22 @@
     if (!sessionId) return true;
     return statusDatasetId === sessionId;
   });
+  const persistedStatus = $derived(($recordingSessionStatusQuery.data?.status ?? {}) as Record<string, unknown>);
+  const liveStatus = $derived(statusMatches ? ((status as Record<string, unknown>) ?? {}) : {});
+  const effectiveStatus = $derived.by(() => ({
+    ...persistedStatus,
+    ...liveStatus
+  }));
 
   const currentTask = $derived.by(() => {
-    if (!statusMatches) return '';
-    const value = (status as Record<string, unknown>)?.task;
+    const value = effectiveStatus?.task;
     return typeof value === 'string' ? value : '';
   });
   const currentEpisodeTime = $derived.by(() => {
-    if (!statusMatches) return 0;
-    return asNumber((status as Record<string, unknown>)?.episode_time_s ?? 0, 0);
+    return asNumber(effectiveStatus?.episode_time_s ?? 0, 0);
   });
   const currentResetTime = $derived.by(() => {
-    if (!statusMatches) return 0;
-    return asNumber((status as Record<string, unknown>)?.reset_time_s ?? 0, 0);
+    return asNumber(effectiveStatus?.reset_time_s ?? 0, 0);
   });
   const currentDenoisingSteps = $derived.by(() => {
     const value = $inferenceRunnerStatusQuery.data?.runner_status?.denoising_steps;
@@ -111,7 +127,7 @@
       String(currentResetTime),
       String(currentDenoisingSteps ?? '')
     ].join('|');
-    if (signature === lastSyncedSignature || applyPending) return;
+    if (signature === lastSyncedSignature || applyPending || settingsDirty) return;
     taskInput = currentTask;
     episodeTimeInput = currentEpisodeTime > 0 ? String(currentEpisodeTime) : '';
     resetTimeInput = currentResetTime >= 0 ? String(currentResetTime) : '';
@@ -127,6 +143,11 @@
   const connectionWarning = $derived(
     rosbridgeStatus !== 'connected' ? 'rosbridge が切断されています。現在値は更新されません。' : ''
   );
+
+  const markDirty = () => {
+    settingsDirty = true;
+    applyError = '';
+  };
 
   const handleApply = async () => {
     if (!canApply || applyPending) return;
@@ -169,7 +190,10 @@
           episode_time_s: episodeTime,
           reset_time_s: resetTime
         });
+        await $recordingSessionStatusQuery.refetch?.();
       }
+      settingsDirty = false;
+      lastSyncedSignature = '';
       toast.success('設定を反映しました。');
     } catch (error) {
       applyError = error instanceof Error ? error.message : '設定の反映に失敗しました。';
@@ -194,7 +218,13 @@
     <div class="grid gap-3">
       <label class="text-xs font-semibold text-slate-600">
         <span class="label">Task</span>
-        <input class="input mt-2" type="text" bind:value={taskInput} disabled={!canApply || applyPending} />
+        <input
+          class="input mt-2"
+          type="text"
+          bind:value={taskInput}
+          oninput={markDirty}
+          disabled={!canApply || applyPending}
+        />
         <p class="mt-1 text-[11px] text-slate-400">現在値: {currentTask || '-'}</p>
       </label>
 
@@ -207,6 +237,7 @@
             min="0.1"
             step="0.1"
             bind:value={episodeTimeInput}
+            oninput={markDirty}
             disabled={!canApply || applyPending}
           />
           <p class="mt-1 text-[11px] text-slate-400">現在値: {currentEpisodeTime || '-'}s</p>
@@ -220,6 +251,7 @@
             min="0"
             step="0.1"
             bind:value={resetTimeInput}
+            oninput={markDirty}
             disabled={!canApply || applyPending}
           />
           <p class="mt-1 text-[11px] text-slate-400">現在値: {currentResetTime || '-'}s</p>
@@ -235,6 +267,7 @@
             min="1"
             step="1"
             bind:value={denoisingStepsInput}
+            oninput={markDirty}
             disabled={!canApply || applyPending}
           />
           <p class="mt-1 text-[11px] text-slate-400">

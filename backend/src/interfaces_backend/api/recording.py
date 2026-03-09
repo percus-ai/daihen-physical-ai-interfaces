@@ -30,6 +30,7 @@ from percus_ai.storage.paths import get_datasets_dir
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/recording", tags=["recording"])
+_RECORDING_MUTABLE_STATES = {"warming", "recording", "paused", "resetting", "resetting_paused"}
 
 
 async def _emit_recording_control_event(
@@ -258,6 +259,117 @@ async def _fetch_recording_row(recording_id: str) -> dict:
     if not rows:
         raise HTTPException(status_code=404, detail=f"Recording not found: {recording_id}")
     return rows[0]
+
+
+def _build_recording_session_snapshot(
+    *,
+    session_id: str,
+    active_dataset_id: str,
+    session_state: Any | None,
+    recording_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "state": "inactive",
+        "dataset_id": session_id,
+        "active_dataset_id": active_dataset_id or None,
+    }
+
+    if recording_row is not None:
+        plan = _build_continue_plan_from_row(recording_row)
+        snapshot.update(
+            {
+                "task": plan.task,
+                "episode_count": plan.episode_count,
+                "num_episodes": plan.target_total_episodes,
+                "episode_time_s": plan.episode_time_s,
+                "reset_time_s": plan.reset_time_s,
+            }
+        )
+
+    if session_state is None:
+        return snapshot
+
+    recorder_payload = session_state.extras.get("recorder_payload")
+    if not isinstance(recorder_payload, dict):
+        recorder_payload = {}
+    metadata = recorder_payload.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    episode_count = snapshot.get("episode_count")
+    target_total_episodes = session_state.extras.get("target_total_episodes")
+    if target_total_episodes is None:
+        target_total_episodes = metadata.get("target_total_episodes")
+    if target_total_episodes is None:
+        recorder_num_episodes = recorder_payload.get("num_episodes")
+        if recording_row is not None:
+            target_total_episodes = _to_int(recorder_num_episodes, default=0) + _to_int(episode_count, default=0)
+        else:
+            target_total_episodes = recorder_num_episodes
+
+    snapshot.update(
+        {
+            "state": str(session_state.status or snapshot["state"]).strip() or snapshot["state"],
+            "task": str(
+                session_state.extras.get("task")
+                or recorder_payload.get("task")
+                or snapshot.get("task")
+                or ""
+            ).strip(),
+            "episode_count": _to_int(episode_count, default=0),
+            "num_episodes": max(_to_int(target_total_episodes, default=0), 0),
+            "episode_time_s": _to_float(
+                recorder_payload.get("episode_time_s", metadata.get("episode_time_s", snapshot.get("episode_time_s"))),
+                default=0.0,
+            ),
+            "reset_time_s": _to_float(
+                recorder_payload.get("reset_time_s", metadata.get("reset_time_s", snapshot.get("reset_time_s"))),
+                default=0.0,
+            ),
+        }
+    )
+    return snapshot
+
+
+def _apply_recording_session_updates(
+    *,
+    session_state: Any | None,
+    payload: dict[str, Any],
+    recording_row: dict[str, Any] | None,
+) -> None:
+    if session_state is None:
+        return
+
+    recorder_payload = session_state.extras.get("recorder_payload")
+    if not isinstance(recorder_payload, dict):
+        recorder_payload = {}
+        session_state.extras["recorder_payload"] = recorder_payload
+
+    metadata = recorder_payload.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        recorder_payload["metadata"] = metadata
+
+    if "task" in payload:
+        session_state.extras["task"] = payload["task"]
+        recorder_payload["task"] = payload["task"]
+
+    if "episode_time_s" in payload:
+        recorder_payload["episode_time_s"] = payload["episode_time_s"]
+        metadata["episode_time_s"] = payload["episode_time_s"]
+
+    if "reset_time_s" in payload:
+        recorder_payload["reset_time_s"] = payload["reset_time_s"]
+        metadata["reset_time_s"] = payload["reset_time_s"]
+
+    if "num_episodes" in payload:
+        target_total_episodes = int(payload["num_episodes"])
+        recorded_episode_count = _to_int((recording_row or {}).get("episode_count"), default=0)
+        remaining_episodes = max(target_total_episodes - recorded_episode_count, 0)
+        session_state.extras["target_total_episodes"] = target_total_episodes
+        recorder_payload["num_episodes"] = remaining_episodes if recording_row is not None else target_total_episodes
+        metadata["num_episodes"] = recorder_payload["num_episodes"]
+        metadata["target_total_episodes"] = target_total_episodes
 
 
 # -- Session endpoints --------------------------------------------------------
@@ -493,11 +605,20 @@ async def update_session(request: RecordingSessionUpdateRequest):
         raise HTTPException(status_code=400, detail="No update fields provided")
 
     recorder = get_recorder_bridge()
+    manager = get_recording_session_manager()
+    recording_row: dict[str, Any] | None = None
+    active_dataset_id = ""
+    active_state = ""
+    result: dict[str, Any] = {}
+
     if target_dataset_id:
+        recording_row = await _fetch_recording_row(target_dataset_id)
         status = recorder.status()
         active_dataset_id = str(status.get("dataset_id") or "").strip()
         active_state = str(status.get("state") or "").strip().lower()
-        if active_dataset_id != target_dataset_id:
+        is_active_target = active_dataset_id == target_dataset_id and active_state in _RECORDING_MUTABLE_STATES
+        is_active_other = active_dataset_id != target_dataset_id and active_state in _RECORDING_MUTABLE_STATES
+        if is_active_other:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -505,24 +626,39 @@ async def update_session(request: RecordingSessionUpdateRequest):
                     f"(requested={target_dataset_id}, active={active_dataset_id or 'none'})"
                 ),
             )
-        if active_state in {"idle", "completed", ""}:
+        if is_active_target:
+            result = recorder.update(payload)
+            if not result.get("success", False):
+                raise HTTPException(
+                    status_code=500,
+                    detail=result.get("error") or result.get("message") or "Recorder update failed",
+                )
+        else:
+            result = {
+                "success": True,
+                "message": "Recording session settings updated",
+                "dataset_id": target_dataset_id,
+            }
+    else:
+        result = recorder.update(payload)
+        if not result.get("success", False):
             raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Requested dataset is not currently mutable "
-                    f"(dataset_id={target_dataset_id}, state={active_state or 'unknown'})"
-                ),
+                status_code=500,
+                detail=result.get("error") or result.get("message") or "Recorder update failed",
             )
+        active_dataset_id = str(result.get("dataset_id") or "").strip()
 
-    result = recorder.update(payload)
-    if not result.get("success", False):
-        raise HTTPException(
-            status_code=500,
-            detail=result.get("error") or result.get("message") or "Recorder update failed",
-        )
-
-    dataset_id = str(result.get("dataset_id") or "").strip() or None
+    dataset_id = str(result.get("dataset_id") or target_dataset_id or active_dataset_id).strip() or None
     if dataset_id:
+        session_state = manager.status(dataset_id)
+        if recording_row is None:
+            try:
+                recording_row = await _fetch_recording_row(dataset_id)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                recording_row = None
+        _apply_recording_session_updates(session_state=session_state, payload=payload, recording_row=recording_row)
         db_updates: dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
         if "task" in payload:
             db_updates["task_detail"] = payload["task"]
@@ -537,6 +673,22 @@ async def update_session(request: RecordingSessionUpdateRequest):
             await client.table("datasets").update(db_updates).eq("id", dataset_id).execute()
         except Exception as exc:
             logger.warning("Failed to persist recording settings update: %s", exc)
+        if not result.get("status") and target_dataset_id:
+            next_row = dict(recording_row or {})
+            if "task_detail" in db_updates:
+                next_row["task_detail"] = db_updates["task_detail"]
+            if "episode_time_s" in db_updates:
+                next_row["episode_time_s"] = db_updates["episode_time_s"]
+            if "reset_time_s" in db_updates:
+                next_row["reset_time_s"] = db_updates["reset_time_s"]
+            if "target_total_episodes" in db_updates:
+                next_row["target_total_episodes"] = db_updates["target_total_episodes"]
+            result["status"] = _build_recording_session_snapshot(
+                session_id=dataset_id,
+                active_dataset_id=active_dataset_id,
+                session_state=session_state,
+                recording_row=next_row or None,
+            )
 
     response = RecordingSessionActionResponse(
         success=True,
@@ -727,17 +879,25 @@ async def cancel_session(dataset_id: Optional[str] = None):
 async def get_session_status(session_id: str):
     require_user_id()
     recorder = get_recorder_bridge()
+    manager = get_recording_session_manager()
     status = recorder.status()
-    active_id = status.get("dataset_id")
-    if not active_id or active_id != session_id:
-        return RecordingSessionStatusResponse(
-            dataset_id=session_id,
-            status={
-                "state": "inactive",
-                "active_dataset_id": active_id,
-            },
-        )
-    return RecordingSessionStatusResponse(dataset_id=active_id, status=status)
+    active_id = str(status.get("dataset_id") or "").strip()
+    session_state = manager.status(session_id)
+    recording_row: dict[str, Any] | None = None
+    try:
+        recording_row = await _fetch_recording_row(session_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+    snapshot = _build_recording_session_snapshot(
+        session_id=session_id,
+        active_dataset_id=active_id,
+        session_state=session_state,
+        recording_row=recording_row,
+    )
+    if active_id and active_id == session_id:
+        return RecordingSessionStatusResponse(dataset_id=active_id, status={**snapshot, **status})
+    return RecordingSessionStatusResponse(dataset_id=session_id, status=snapshot)
 
 
 @router.get(
