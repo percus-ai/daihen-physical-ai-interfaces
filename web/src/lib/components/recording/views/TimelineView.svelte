@@ -6,6 +6,7 @@
     type RecorderStatus,
     type RosbridgeStatus
   } from '$lib/recording/recorderStatus';
+  import { resolveSessionRecorderStatus } from '$lib/recording/recorderStatusView';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
   let {
@@ -73,17 +74,9 @@
   });
 
   const status = $derived(recorderStatus ?? {});
-  const statusDatasetId = $derived.by(() => {
-    const value = (status as Record<string, unknown>)?.dataset_id;
-    return typeof value === 'string' ? value : '';
-  });
-  const rawStatusPhase = $derived(String((status as Record<string, unknown>)?.phase ?? 'wait'));
-  const statusPhase = $derived.by(() => {
-    if (!sessionId) return rawStatusPhase;
-    if (!statusDatasetId || statusDatasetId !== sessionId) return 'wait';
-    return rawStatusPhase;
-  });
-  const statusDetail = $derived(String((status as Record<string, unknown>)?.last_error ?? ''));
+  const sessionStatus = $derived(resolveSessionRecorderStatus(status, sessionId));
+  const statusPhase = $derived(sessionStatus.phase);
+  const statusDetail = $derived(sessionStatus.lastError);
   const finalizeElapsed = $derived(asNumber((status as Record<string, unknown>)?.finalize_elapsed_s ?? 0));
   const episodeIndex = $derived((status as Record<string, unknown>)?.episode_index ?? null);
   const episodeTotal = $derived(asNumber((status as Record<string, unknown>)?.num_episodes ?? 0));

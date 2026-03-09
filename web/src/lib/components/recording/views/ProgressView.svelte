@@ -5,6 +5,7 @@
     type RecorderStatus,
     type RosbridgeStatus
   } from '$lib/recording/recorderStatus';
+  import { resolveSessionRecorderStatus } from '$lib/recording/recorderStatusView';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
 
   let {
@@ -50,15 +51,37 @@
   const episodeRemaining = $derived(asNumber((status as Record<string, unknown>)?.episode_remaining_s ?? 0, 0));
   const resetElapsed = $derived(asNumber((status as Record<string, unknown>)?.reset_elapsed_s ?? 0, 0));
   const resetRemaining = $derived(asNumber((status as Record<string, unknown>)?.reset_remaining_s ?? 0, 0));
-  const statusDatasetId = $derived.by(() => {
-    const value = (status as Record<string, unknown>)?.dataset_id;
-    return typeof value === 'string' ? value : '';
-  });
-  const statusState = $derived.by(() => {
-    const state = (status as Record<string, unknown>)?.state ?? (status as Record<string, unknown>)?.status ?? '';
-    if (!sessionId) return String(state);
-    if (!statusDatasetId || statusDatasetId !== sessionId) return 'inactive';
-    return String(state);
+  const sessionStatus = $derived(resolveSessionRecorderStatus(status, sessionId));
+  const statusPhase = $derived(sessionStatus.phase);
+  const statusState = $derived(sessionStatus.state);
+  const isFinalizing = $derived(sessionStatus.isFinalizing);
+  const stateTone = $derived.by(() => {
+    if (isFinalizing) {
+      return {
+        card: 'border-sky-300/80 bg-sky-100',
+        label: 'text-sky-800/80',
+        value: 'text-sky-950'
+      };
+    }
+    if (statusState === 'resetting') {
+      return {
+        card: 'border-amber-300/90 bg-amber-100',
+        label: 'text-amber-800/80',
+        value: 'text-amber-950'
+      };
+    }
+    if (statusState === 'recording') {
+      return {
+        card: 'border-brand/40 bg-brand/15',
+        label: 'text-brand/80',
+        value: 'text-brand'
+      };
+    }
+    return {
+      card: 'border-slate-300/80 bg-slate-100/90',
+      label: 'text-slate-500',
+      value: 'text-slate-800'
+    };
   });
   const episodeDisplayNumber = $derived.by(() => {
     if (numEpisodes <= 0) return '-';
@@ -144,23 +167,23 @@
       </div>
       <div class="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
-          <p class="label">frame</p>
+          <p class="label text-slate-500">frame</p>
           <p class="mt-1 text-sm font-semibold text-slate-800">{frameCount}</p>
           <p class="text-[11px] text-slate-500">current ep: {episodeFrameCount} ({fpsDisplay} fps)</p>
         </div>
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
-          <p class="label">episode time</p>
+          <p class="label text-slate-500">episode time</p>
           <p class="mt-1 text-sm font-semibold text-slate-800">{episodeTime || '-'}s</p>
           <p class="text-[11px] text-slate-500">{episodeElapsed.toFixed(1)}s / 残り{episodeRemaining.toFixed(1)}s</p>
         </div>
         <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
-          <p class="label">reset</p>
+          <p class="label text-slate-500">reset</p>
           <p class="mt-1 text-sm font-semibold text-slate-800">{resetTime || '-'}s</p>
           <p class="text-[11px] text-slate-500">{resetElapsed.toFixed(1)}s / 残り{resetRemaining.toFixed(1)}s</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
-          <p class="label">state</p>
-          <p class="mt-1 text-sm font-semibold text-slate-800">{statusState || '-'}</p>
+        <div class={`rounded-xl border p-2 ${stateTone.card}`}>
+          <p class={`label ${stateTone.label}`}>state</p>
+          <p class={`mt-1 text-sm font-semibold ${stateTone.value}`}>{statusState || '-'}</p>
         </div>
       </div>
     </div>
