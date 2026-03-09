@@ -10,6 +10,11 @@
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import { hasEditableFocus, isEditableTarget } from '$lib/recording/keyboard';
   import {
+    createPendingRecordingUploadStatus,
+    shouldIgnoreIdleUploadSnapshot,
+    type RecordingUploadStatus
+  } from '$lib/recording/uploadStatus';
+  import {
     subscribeRecorderStatus,
     type RecorderStatus,
     type RosbridgeStatus
@@ -40,18 +45,8 @@
   let previousStatusState = '';
   let finalizingToastId: string | null = null;
   let uploadModalOpen = $state(false);
-  let uploadStatus = $state<{
-    dataset_id: string;
-    status: string;
-    phase: string;
-    progress_percent: number;
-    message?: string;
-    files_done?: number;
-    total_files?: number;
-    current_file?: string | null;
-    error?: string | null;
-    updated_at?: string | null;
-  } | null>(null);
+  let uploadDatasetId = $state('');
+  let uploadStatus = $state<RecordingUploadStatus | null>(null);
   let uploadContributor: TabRealtimeContributorHandle | null = null;
 
   const runAction = async (
@@ -234,34 +229,35 @@
 
   const startUploadModal = (datasetIdForStatus: string) => {
     if (typeof window === 'undefined') return;
+    uploadDatasetId = datasetIdForStatus;
     uploadModalOpen = true;
-    uploadStatus = {
-      dataset_id: datasetIdForStatus,
-      status: 'running',
-      phase: 'starting',
-      progress_percent: 0,
-      message: 'アップロード準備中...'
-    };
+    uploadStatus = createPendingRecordingUploadStatus(datasetIdForStatus);
+  };
+
+  const handleUploadStatusEvent = (event: TabRealtimeEvent) => {
+    if (event.op !== 'snapshot' || event.source?.kind !== 'recording.upload-status') return;
+    const targetDatasetId = String(uploadDatasetId || '').trim();
+    if (!targetDatasetId) return;
+
+    const nextStatus = event.payload as RecordingUploadStatus;
+    if (String(nextStatus.dataset_id || '').trim() !== targetDatasetId) return;
+    if (shouldIgnoreIdleUploadSnapshot(uploadStatus, nextStatus, targetDatasetId)) return;
+    uploadStatus = nextStatus;
   };
 
   const retryUpload = async () => {
-    const targetDatasetId = String(uploadStatus?.dataset_id || datasetId || sessionId || '').trim();
+    const targetDatasetId = String(uploadDatasetId || uploadStatus?.dataset_id || datasetId || sessionId || '').trim();
     if (!targetDatasetId) return;
     const success = await runAction('再アップロード', () => api.storage.reuploadDataset(targetDatasetId), {
       successToast: '再アップロードを受け付けました。'
     });
     if (!success) return;
-    uploadStatus = {
-      dataset_id: targetDatasetId,
-      status: 'running',
-      phase: 'starting',
-      progress_percent: 0,
-      message: 'アップロード準備中...'
-    };
+    uploadDatasetId = targetDatasetId;
+    uploadStatus = createPendingRecordingUploadStatus(targetDatasetId);
   };
 
   const openDatasetViewer = () => {
-    const targetDatasetId = String(uploadStatus?.dataset_id || datasetId || sessionId || '').trim();
+    const targetDatasetId = String(uploadDatasetId || uploadStatus?.dataset_id || datasetId || sessionId || '').trim();
     if (!targetDatasetId) return;
     sessionViewer.open({ datasetId: targetDatasetId });
   };
@@ -435,30 +431,27 @@
 
   $effect(() => {
     if (!browser) return;
-    const targetDatasetId = String(uploadStatus?.dataset_id || '').trim();
+    if (uploadContributor === null) {
+      uploadContributor = registerTabRealtimeContributor({
+        contributorId: 'recording.controls.upload-modal',
+        subscriptions: [],
+        onEvent: handleUploadStatusEvent
+      });
+    }
+    uploadContributor?.setEventHandler(handleUploadStatusEvent);
+
+    const targetDatasetId = String(uploadDatasetId || '').trim();
     if (!uploadModalOpen || !targetDatasetId) {
-      disposeUploadContributor();
+      uploadContributor?.setSubscriptions([]);
       return;
     }
-    disposeUploadContributor();
-    uploadContributor = registerTabRealtimeContributor({
-      subscriptions: [
-        {
-          subscription_id: `recording.controls.upload.${targetDatasetId}`,
-          kind: 'recording.upload-status',
-          params: { session_id: targetDatasetId }
-        }
-      ],
-      onEvent: (event: TabRealtimeEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'recording.upload-status') return;
-        if (String(uploadStatus?.dataset_id || '').trim() !== targetDatasetId) return;
-        uploadStatus = event.payload as typeof uploadStatus;
+    uploadContributor?.setSubscriptions([
+      {
+        subscription_id: `recording.controls.upload.${targetDatasetId}`,
+        kind: 'recording.upload-status',
+        params: { session_id: targetDatasetId }
       }
-    });
-
-    return () => {
-      disposeUploadContributor();
-    };
+    ]);
   });
 
   $effect(() => {
@@ -619,7 +612,8 @@
           type="button"
           onclick={() => {
             uploadModalOpen = false;
-            disposeUploadContributor();
+            uploadDatasetId = '';
+            uploadStatus = null;
           }}
         >
           閉じる

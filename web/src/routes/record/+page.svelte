@@ -9,7 +9,13 @@
   import { formatBytes, formatDate } from '$lib/format';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
+  import DatasetUploadProgressModal from '$lib/components/storage/DatasetUploadProgressModal.svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
+  import {
+    createPendingRecordingUploadStatus,
+    shouldIgnoreIdleUploadSnapshot
+  } from '$lib/recording/uploadStatus';
+  import { presentRecordingUploadStatus } from '$lib/storage/transferStatus';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
@@ -33,6 +39,7 @@
     continue_block_reason?: string;
     size_bytes?: number;
     is_local?: boolean;
+    is_uploaded?: boolean;
   };
 
   type RecordingListResponse = {
@@ -115,6 +122,8 @@
   let uploadStatusMap = $state<Record<string, RecordingUploadStatus>>({});
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let uploadModalOpen = $state(false);
+  let selectedUploadDatasetId = $state('');
 
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
     idle: '未開始',
@@ -177,6 +186,12 @@
       return `${label} (${progress})`;
     }
     return label;
+  };
+  const openUploadProgressModal = (datasetId: string) => {
+    const normalized = String(datasetId || '').trim();
+    if (!normalized) return;
+    selectedUploadDatasetId = normalized;
+    uploadModalOpen = true;
   };
   const creatorLabel = (value?: string | null) => {
     const normalized = String(value ?? '').trim();
@@ -271,12 +286,7 @@
     if (!recordingId || !recording.is_local || isReuploadBusy(recordingId)) return;
     setUploadStatus(
       recordingId,
-      normalizeUploadStatus(recordingId, {
-        status: 'running',
-        phase: 'starting',
-        progress_percent: 0,
-        message: 'Re-uploading dataset to R2...'
-      })
+      normalizeUploadStatus(recordingId, createPendingRecordingUploadStatus(recordingId, 'Re-uploading dataset to R2...'))
     );
     setReuploadBusy(recordingId, true);
     try {
@@ -465,6 +475,9 @@
             const payload = event.payload as RecordingUploadStatus;
             const recordingId = String(payload.dataset_id || '').trim();
             if (!recordingId) return;
+            if (shouldIgnoreIdleUploadSnapshot(uploadStatusMap[recordingId] ?? null, payload, recordingId)) {
+              return;
+            }
             setUploadStatus(recordingId, normalizeUploadStatus(recordingId, payload));
           }
         }
@@ -641,7 +654,7 @@
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
           <th class="pb-3">エピソード</th>
-          <th class="pb-3">アップロード</th>
+          <th class="pb-3 text-center">送信状態</th>
           <th class="pb-3">サイズ</th>
           <th class="pb-3">作成日時</th>
           <th class="pb-3 text-right">操作</th>
@@ -652,6 +665,10 @@
           <tr><td class="py-3" colspan="9">読み込み中...</td></tr>
         {:else if displayedRecordings.length}
           {#each displayedRecordings as recording}
+            {@const uploadCellStatus = presentRecordingUploadStatus(
+              uploadStatusMap[recording.recording_id] ?? null,
+              Boolean(recording.is_uploaded)
+            )}
             <tr class="border-t border-slate-200/60">
               <td class="w-12 py-3 align-middle">
                 <div class="flex justify-center">
@@ -678,39 +695,33 @@
               <td class="py-3">{ownerLabel(recording)}</td>
               <td class="py-3">{recording.profile_name ?? '-'}</td>
               <td class="py-3">{recording.episode_count ?? '-'}</td>
-              <td class="py-3">
-                <div class="flex flex-col gap-1">
-                  <span
-                    class={`text-xs font-semibold ${
-                      uploadStatusMap[recording.recording_id]?.status === 'failed'
-                        ? 'text-rose-600'
-                        : uploadStatusMap[recording.recording_id]?.status === 'completed'
-                          ? 'text-emerald-600'
-                          : uploadStatusMap[recording.recording_id]?.status === 'running'
-                            ? 'text-amber-600'
+              <td class="py-3 text-center">
+                <div class="flex flex-col items-center gap-1">
+                  {#if uploadCellStatus.kind === 'progress'}
+                    <button
+                      class="text-xs font-semibold text-brand hover:underline"
+                      type="button"
+                      onclick={() => openUploadProgressModal(recording.recording_id)}
+                    >
+                      {uploadCellStatus.label}
+                    </button>
+                  {:else}
+                    <span
+                      class={`text-xs font-semibold ${
+                        uploadCellStatus.tone === 'error'
+                          ? 'text-rose-600'
+                          : uploadCellStatus.tone === 'success'
+                            ? 'text-emerald-600'
                             : 'text-slate-500'
-                    }`}
-                  >
-                    {uploadStatusLabel(recording.recording_id)}
-                  </span>
-                  {#if uploadStatusMap[recording.recording_id]?.status === 'running' && uploadStatusMap[recording.recording_id]?.current_file}
-                    <span class="max-w-[200px] truncate text-[10px] text-slate-400">
-                      {uploadStatusMap[recording.recording_id]?.current_file}
+                      }`}
+                    >
+                      {uploadCellStatus.label}
                     </span>
                   {/if}
                   {#if uploadStatusMap[recording.recording_id]?.status === 'failed' && uploadStatusMap[recording.recording_id]?.error}
                     <span class="max-w-[260px] truncate text-[10px] text-rose-500">
                       {uploadStatusMap[recording.recording_id]?.error}
                     </span>
-                  {/if}
-                  {#if uploadStatusMap[recording.recording_id]?.status === 'completed'}
-                    <button
-                      class="btn-ghost w-fit px-2 py-1 text-[10px]"
-                      type="button"
-                      onclick={() => openDatasetViewer(recording.recording_id)}
-                    >
-                      ビューアで開く
-                    </button>
                   {/if}
                 </div>
               </td>
@@ -784,5 +795,7 @@
     </table>
   </div>
 </section>
+
+<DatasetUploadProgressModal bind:open={uploadModalOpen} datasetId={selectedUploadDatasetId} />
 
 <OperateStatusCards snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />
