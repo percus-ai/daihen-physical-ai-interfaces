@@ -116,6 +116,7 @@ class _DummyConn:
 def _job() -> dict:
     return {
         "job_id": "job-1",
+        "job_name": "pick_place_train_20260309",
         "dataset_id": "dataset-1",
         "policy_type": "pi0",
         "training_config": {"policy": {"type": "pi0"}, "dataset": {"id": "dataset-1"}},
@@ -141,6 +142,11 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
         upserted.append(dict(job_data))
 
     monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(
+        training,
+        "_refresh_job_ssh_target_if_needed",
+        lambda job_data: asyncio.sleep(0, result=job_data),
+    )
     monkeypatch.setattr(training, "_get_ssh_connection_for_job", lambda *_args, **_kwargs: conn)
     monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: manager)
     monkeypatch.setattr(training, "_register_job_for_checkpoint_if_needed", lambda *_args, **_kwargs: None)
@@ -185,6 +191,11 @@ def test_upload_selected_remote_checkpoint_reports_db_failure(monkeypatch):
         raise RuntimeError("db unavailable")
 
     monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(
+        training,
+        "_refresh_job_ssh_target_if_needed",
+        lambda job_data: asyncio.sleep(0, result=job_data),
+    )
     monkeypatch.setattr(training, "_get_ssh_connection_for_job", lambda *_args, **_kwargs: conn)
     monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: manager)
     monkeypatch.setattr(training, "_register_job_for_checkpoint_if_needed", lambda *_args, **_kwargs: None)
@@ -230,6 +241,11 @@ def test_upload_selected_remote_checkpoint_skips_r2_reupload_if_step_exists(monk
         assert False, "SSH should not be used when checkpoint already exists in R2 index"
 
     monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(
+        training,
+        "_refresh_job_ssh_target_if_needed",
+        lambda job_data: asyncio.sleep(0, result=job_data),
+    )
     monkeypatch.setattr(training, "_get_ssh_connection_for_job", fail_if_called)
     monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: manager)
     monkeypatch.setattr(
@@ -798,6 +814,47 @@ def test_upsert_model_for_job_includes_checkpoint_size_and_latest_step(monkeypat
     assert captured["size_bytes"] == int(18.5 * 1024 * 1024)
 
 
+def test_upsert_model_for_job_resolves_checkpoint_by_job_name(monkeypatch):
+    captured: dict = {}
+
+    class _Entry:
+        latest_step = 2000
+        size_mb = 5.0
+
+    class _CheckpointMgr:
+        @staticmethod
+        def get_job_info(job_name: str):
+            if job_name == "pick_place_train_20260309":
+                return _Entry()
+            return None
+
+    async def fake_upsert_with_owner(_table: str, _key: str, payload: dict):
+        captured.update(payload)
+
+    async def fake_load_existing_model_name(_model_id: str):
+        return None
+
+    monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: _CheckpointMgr())
+    monkeypatch.setattr(training, "_load_existing_model_name", fake_load_existing_model_name)
+    monkeypatch.setattr(training, "upsert_with_owner", fake_upsert_with_owner)
+
+    job_data = {
+        "job_id": "job-1",
+        "job_name": "pick_place_train_20260309",
+        "dataset_id": "dataset-1",
+        "policy_type": "pi0",
+        "training_config": {"training": {"steps": 9999, "batch_size": 4}},
+        "profile_instance_id": "profile-1",
+        "profile_snapshot": {"name": "so101_dual_teleop"},
+    }
+    asyncio.run(training._upsert_model_for_job(job_data))
+
+    assert captured["id"] == "job-1"
+    assert captured["name"] == "pick_place_train_20260309"
+    assert captured["training_steps"] == 2000
+    assert captured["size_bytes"] == int(5.0 * 1024 * 1024)
+
+
 def test_upsert_model_for_job_skips_size_when_checkpoint_missing(monkeypatch):
     captured: dict = {}
 
@@ -865,6 +922,54 @@ def test_upsert_model_for_job_preserves_custom_existing_name(monkeypatch):
     assert captured["name"] == "custom_name"
 
 
+def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatch):
+    manager = _DummyCheckpointManager(existing_steps=[])
+    conn = _DummyConn()
+    captured: dict = {}
+    progress: list[dict] = []
+
+    async def fake_load_job(_job_id: str, include_deleted: bool = False):
+        assert include_deleted is True
+        return _job()
+
+    async def fake_save_job(_job_data: dict):
+        return None
+
+    async def fake_upsert_model(_job_data: dict):
+        return None
+
+    def fake_ensure_model_artifact(_checkpoint_mgr, *, checkpoint_job_name: str, model_id: str, step: int):
+        captured["checkpoint_job_name"] = checkpoint_job_name
+        captured["model_id"] = model_id
+        captured["step"] = step
+        return "s3://daihen/v2/models/job-1", 1234, True
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(
+        training,
+        "_refresh_job_ssh_target_if_needed",
+        lambda job_data: asyncio.sleep(0, result=job_data),
+    )
+    monkeypatch.setattr(training, "_get_ssh_connection_for_job", lambda *_args, **_kwargs: conn)
+    monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: manager)
+    monkeypatch.setattr(training, "_register_job_for_checkpoint_if_needed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(training, "_ensure_model_artifact_in_r2_from_checkpoint", fake_ensure_model_artifact)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
+
+    result = asyncio.run(
+        training._upload_selected_remote_checkpoint_with_progress(
+            "job-1",
+            "001000",
+            progress.append,
+        )
+    )
+
+    assert manager.upload_calls[0]["job_name"] == "pick_place_train_20260309"
+    assert captured["checkpoint_job_name"] == "pick_place_train_20260309"
+    assert result["r2_step_path"] == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000"
+
+
 def test_ensure_model_artifact_in_r2_from_checkpoint_skips_when_model_exists():
     class _CopyClient:
         calls: list[tuple[dict, str, str]] = []
@@ -895,7 +1000,7 @@ def test_ensure_model_artifact_in_r2_from_checkpoint_skips_when_model_exists():
 
     path, size_bytes, copied = training._ensure_model_artifact_in_r2_from_checkpoint(
         _Mgr(),
-        job_id="job-1",
+        checkpoint_job_name="pick_place_train_20260309",
         model_id="job-1",
         step=1000,
     )
@@ -922,10 +1027,16 @@ def test_ensure_model_artifact_in_r2_from_checkpoint_copies_from_checkpoint():
         def list_objects(path: str):
             if path == "s3://daihen/v2/models/job-1/":
                 return []
-            if path == "s3://daihen/v2/checkpoints/job-1/step_001000/pretrained_model/":
+            if path == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/":
                 return [
-                    {"Key": "v2/checkpoints/job-1/step_001000/pretrained_model/config.json", "Size": 3},
-                    {"Key": "v2/checkpoints/job-1/step_001000/pretrained_model/model.safetensors", "Size": 7},
+                    {
+                        "Key": "v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/config.json",
+                        "Size": 3,
+                    },
+                    {
+                        "Key": "v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/model.safetensors",
+                        "Size": 7,
+                    },
                 ]
             return []
 
@@ -946,7 +1057,7 @@ def test_ensure_model_artifact_in_r2_from_checkpoint_copies_from_checkpoint():
     mgr = _Mgr()
     path, size_bytes, copied = training._ensure_model_artifact_in_r2_from_checkpoint(
         mgr,
-        job_id="job-1",
+        checkpoint_job_name="pick_place_train_20260309",
         model_id="job-1",
         step=1000,
     )

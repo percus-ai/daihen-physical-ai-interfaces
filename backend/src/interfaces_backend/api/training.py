@@ -646,7 +646,7 @@ def _build_pipeline_config(request: "JobCreateRequest", job_id: str) -> dict:
         "validation": validation or {"enable": False},
         "early_stopping": early_stopping or {"enable": False},
         "output": {
-            "job_name": job_id,
+            "job_name": str(request.job_name or "").strip() or job_id,
         },
         "rename_map": {},
         "seed": 1000,
@@ -1748,6 +1748,7 @@ async def _upsert_model_for_job(job_data: dict) -> None:
         checkpoint_mgr = _get_checkpoint_index_manager()
         lookup_names: list[str] = []
         for candidate in (
+            str(job_data.get("job_name") or "").strip(),
             str(job_data.get("job_id") or "").strip(),
             str(job_data.get("model_id") or "").strip(),
             str(model_id or "").strip(),
@@ -2071,8 +2072,9 @@ def _register_job_for_checkpoint_if_needed(
     job_id = str(job_data.get("job_id") or job_data.get("id") or "").strip()
     if not job_id:
         raise RuntimeError("job_id is missing")
+    job_name = str(job_data.get("job_name") or "").strip() or job_id
 
-    existing = checkpoint_mgr.get_job_info(job_id)
+    existing = checkpoint_mgr.get_job_info(job_name)
     if existing:
         return
 
@@ -2094,7 +2096,7 @@ def _register_job_for_checkpoint_if_needed(
     dataset_info = _get_dataset_info_from_manifest(dataset_id)
 
     ok = checkpoint_mgr.register_job(
-        job_name=job_id,
+        job_name=job_name,
         policy_type=policy_type,
         dataset_id=dataset_id,
         pretrained_path=pretrained_path,
@@ -2120,7 +2122,7 @@ def _list_r2_file_objects(s3_manager: object, s3_path: str) -> list[dict]:
 def _ensure_model_artifact_in_r2_from_checkpoint(
     checkpoint_mgr: "CheckpointIndexManager",
     *,
-    job_id: str,
+    checkpoint_job_name: str,
     model_id: str,
     step: int,
 ) -> tuple[str, int, bool]:
@@ -2128,7 +2130,7 @@ def _ensure_model_artifact_in_r2_from_checkpoint(
     sync = checkpoint_mgr.sync
     bucket = sync.bucket
     prefix = sync._get_prefix()
-    source_prefix = f"{prefix}checkpoints/{job_id}/step_{step:06d}/pretrained_model/"
+    source_prefix = f"{prefix}checkpoints/{checkpoint_job_name}/step_{step:06d}/pretrained_model/"
     target_prefix = f"{prefix}models/{model_id}/"
     source_path = f"s3://{bucket}/{source_prefix}"
     target_path = f"s3://{bucket}/{target_prefix}"
@@ -2183,13 +2185,14 @@ async def _upload_selected_remote_checkpoint_with_progress(
 
     step = int(checkpoint_name)
     model_id = str(job_data.get("model_id") or job_id).strip()
+    checkpoint_job_name = str(job_data.get("job_name") or "").strip() or job_id
     if not model_id:
         raise HTTPException(
             status_code=500,
             detail="model_id を生成できないためDB登録できませんでした。",
         )
     checkpoint_mgr = _get_checkpoint_index_manager()
-    existing_steps = checkpoint_mgr.get_job_steps(job_id)
+    existing_steps = checkpoint_mgr.get_job_steps(checkpoint_job_name)
 
     if step not in existing_steps:
         checkpoint_root = _get_remote_checkpoint_root(job_data)
@@ -2231,7 +2234,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
 
             emit_progress({"type": "uploading", "message": "R2へアップロード中..."})
             ok, msg = checkpoint_mgr.upload_step_checkpoint(
-                job_name=job_id,
+                job_name=checkpoint_job_name,
                 step=step,
                 local_checkpoint_path=local_checkpoint_path,
                 update_last=True,
@@ -2257,7 +2260,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
 
     prefix = checkpoint_mgr.sync._get_prefix()
     r2_step_path = (
-        f"s3://{checkpoint_mgr.sync.bucket}/{prefix}checkpoints/{job_id}/step_{step:06d}"
+        f"s3://{checkpoint_mgr.sync.bucket}/{prefix}checkpoints/{checkpoint_job_name}/step_{step:06d}"
     )
     emit_progress(
         {
@@ -2276,7 +2279,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
     try:
         model_r2_path, model_size_bytes, copied_model = _ensure_model_artifact_in_r2_from_checkpoint(
             checkpoint_mgr,
-            job_id=job_id,
+            checkpoint_job_name=checkpoint_job_name,
             model_id=model_id,
             step=step,
         )

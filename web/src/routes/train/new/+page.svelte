@@ -176,7 +176,7 @@
     }
 
     if (policyId === 'pi05') {
-      validationEvalFreq = Math.min(500, steps);
+      validationEvalFreq = 100;
       earlyStoppingMinDelta = 0.002;
     }
   };
@@ -330,7 +330,6 @@
       training: {
         steps,
         batch_size: batchSize,
-        save_freq: saveFreq,
         log_freq: logFreq,
         num_workers: numWorkers,
         save_checkpoint: saveCheckpoint
@@ -375,6 +374,10 @@
     };
 
     const policyPayload = payload.policy as Record<string, unknown>;
+    const trainingPayload = payload.training as Record<string, unknown>;
+    if (saveCheckpoint) {
+      trainingPayload.save_freq = saveFreq;
+    }
     if (supportsScratchInitialization) {
       policyPayload.initialization = usesScratchInitialization ? 'scratch' : 'pretrained';
     }
@@ -691,7 +694,14 @@
         </label>
         <label class="text-sm font-semibold text-slate-700">
           <HelpLabel text="保存頻度" help={PARAMETER_HELP.save_freq} />
-          <input class="input mt-2" type="number" min="50" bind:value={saveFreq} title={PARAMETER_HELP.save_freq} />
+          <input
+            class="input mt-2 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+            type="number"
+            min="50"
+            bind:value={saveFreq}
+            disabled={!saveCheckpoint}
+            title={PARAMETER_HELP.save_freq}
+          />
         </label>
       </div>
       <div class="mt-4 grid gap-4 sm:grid-cols-3">
