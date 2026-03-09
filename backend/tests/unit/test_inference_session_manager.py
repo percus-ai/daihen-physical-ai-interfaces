@@ -2,20 +2,64 @@ import asyncio
 import os
 from types import SimpleNamespace
 
+import pytest
 from fastapi import HTTPException
 
 os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
 
+import interfaces_backend.services.inference_session as inference_session
+import interfaces_backend.services.session_manager as session_manager
+from interfaces_backend.services.inference_model_compatibility import (
+    InferenceModelCompatibilityError,
+    InferenceModelProfileCompatibility,
+)
 from interfaces_backend.services.inference_session import InferenceSessionManager
 from interfaces_backend.services.session_manager import SessionState
 
 
+@pytest.fixture(autouse=True)
+def _silence_inference_session_logger(monkeypatch):
+    monkeypatch.setattr(inference_session.logger, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(inference_session.logger, "warning", lambda *args, **kwargs: None)
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(inference_session.asyncio, "to_thread", fake_to_thread)
+
+
 class _FakeRuntime:
-    def __init__(self):
+    def __init__(self, *, startable_error: RuntimeError | None = None):
+        self.call_order: list[str] = []
+        self.ensure_startable_calls = 0
+        self.prepare_calls: list[str] = []
+        self.start_calls: list[dict] = []
         self.stop_calls: list[str | None] = []
         self.pause_calls: list[tuple[str, bool]] = []
         self.task_calls: list[tuple[str, str]] = []
         self.policy_calls: list[tuple[str, int | None]] = []
+        self.startable_error = startable_error
+
+    def ensure_startable(self) -> None:
+        self.ensure_startable_calls += 1
+        if self.startable_error is not None:
+            raise self.startable_error
+
+    def prepare_environment(self, *, policy_type: str, progress_callback=None) -> str:
+        self.call_order.append("prepare_environment")
+        self.prepare_calls.append(policy_type)
+        if progress_callback is not None:
+            progress_callback(
+                "prepare_env",
+                90.0,
+                "推論実行環境の準備が完了しました。",
+                {"env_name": policy_type},
+            )
+        return f".venv-{policy_type}"
+
+    def start(self, **kwargs) -> str:
+        self.call_order.append("start")
+        self.start_calls.append(kwargs)
+        return "worker-1"
 
     def stop(self, session_id: str | None = None) -> bool:
         self.stop_calls.append(session_id)
@@ -64,8 +108,26 @@ class _FakeRecorder:
 
 class _FakeDataset:
     def __init__(self):
+        self.ensured_models: list[str] = []
         self.marked: list[str] = []
         self.uploaded: list[str] = []
+
+    async def ensure_model_local(self, model_id: str, sync_status_callback=None) -> None:
+        self.ensured_models.append(model_id)
+        if sync_status_callback is not None:
+            sync_status_callback(
+                SimpleNamespace(
+                    status="completed",
+                    progress_percent=100.0,
+                    message="completed",
+                    files_done=1,
+                    total_files=1,
+                    transferred_bytes=10,
+                    total_bytes=10,
+                    current_file="config.json",
+                    error=None,
+                )
+            )
 
     async def mark_active(self, dataset_id: str) -> None:
         self.marked.append(dataset_id)
@@ -280,3 +342,244 @@ def test_any_active_prefers_latest_session_with_worker_session_id() -> None:
 
     assert active is not None
     assert active.id == "session-active"
+
+
+def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) -> None:
+    async def fake_resolve_profile(self, _profile):
+        return SimpleNamespace(
+            name="profile-a",
+            source_path="profiles/profile-a.yaml",
+            snapshot={"profile": {"lerobot": {}}},
+        )
+
+    async def fake_save_session_profile_binding(**_kwargs):
+        return None
+
+    runtime = _FakeRuntime()
+    recorder = _FakeRecorder()
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = InferenceSessionManager(
+        runtime=runtime,
+        recorder=recorder,
+        dataset=dataset,
+        recording_sessions=recording_sessions,
+    )
+
+    monkeypatch.setattr(InferenceSessionManager, "_resolve_profile", fake_resolve_profile)
+    monkeypatch.setattr(session_manager, "get_current_user_id", lambda: "user-1")
+    monkeypatch.setattr(session_manager, "save_session_profile_binding", fake_save_session_profile_binding)
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_joint_names",
+        lambda _snapshot: [f"left_arm_joint{i}" for i in range(1, 8)],
+    )
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_camera_aliases",
+        lambda _snapshot: {"top_camera": "top_camera"},
+    )
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_bridge_config",
+        lambda _snapshot: {
+            "arm_streams": [
+                {
+                    "namespace": "left_arm",
+                    "state_topic": "/left_arm/joint_states_single",
+                    "action_topic": "/left_arm/joint_ctrl_single",
+                }
+            ],
+            "camera_streams": [{"name": "top_camera", "topic": "/top"}],
+        },
+    )
+    monkeypatch.setattr(inference_session, "get_models_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        inference_session,
+        "validate_inference_model_profile_compatibility",
+        lambda **_kwargs: InferenceModelProfileCompatibility(
+            policy_type="pi05",
+            config_path=tmp_path / "model-1" / "config.json",
+            joint_names=[f"left_arm_joint{i}" for i in range(1, 8)],
+            state_dim=7,
+            action_dim=7,
+            model_image_keys=["cam_high"],
+            resolved_camera_keys=["cam_high"],
+        ),
+    )
+
+    progress_events: list[str] = []
+
+    def progress_callback(phase: str, _percent: float, _message: str, _detail):
+        progress_events.append(phase)
+
+    state = asyncio.run(
+        manager.create(
+            session_id="session-1",
+            model_id="model-1",
+            device="cpu",
+            task="pick-and-place",
+            progress_callback=progress_callback,
+        )
+    )
+
+    assert dataset.ensured_models == ["model-1"]
+    assert runtime.ensure_startable_calls == 1
+    assert runtime.call_order == ["prepare_environment", "start"]
+    assert runtime.prepare_calls == ["pi05"]
+    assert runtime.start_calls[0]["model_id"] == "model-1"
+    assert progress_events.index("prepare_env") < progress_events.index("launch_worker")
+    assert runtime.pause_calls == [("worker-1", True)]
+    assert state.extras["worker_session_id"] == "worker-1"
+
+
+def test_create_blocks_worker_start_on_model_profile_mismatch(monkeypatch, tmp_path) -> None:
+    async def fake_resolve_profile(self, _profile):
+        return SimpleNamespace(
+            name="profile-a",
+            source_path="profiles/profile-a.yaml",
+            snapshot={"profile": {"lerobot": {}}},
+        )
+
+    async def fake_save_session_profile_binding(**_kwargs):
+        return None
+
+    runtime = _FakeRuntime()
+    recorder = _FakeRecorder()
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = InferenceSessionManager(
+        runtime=runtime,
+        recorder=recorder,
+        dataset=dataset,
+        recording_sessions=recording_sessions,
+    )
+
+    monkeypatch.setattr(InferenceSessionManager, "_resolve_profile", fake_resolve_profile)
+    monkeypatch.setattr(session_manager, "get_current_user_id", lambda: "user-1")
+    monkeypatch.setattr(session_manager, "save_session_profile_binding", fake_save_session_profile_binding)
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_joint_names",
+        lambda _snapshot: [f"left_arm_joint{i}" for i in range(1, 8)],
+    )
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_camera_aliases",
+        lambda _snapshot: {"top_camera": "top_camera"},
+    )
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_bridge_config",
+        lambda _snapshot: {
+            "arm_streams": [
+                {
+                    "namespace": "left_arm",
+                    "state_topic": "/left_arm/joint_states_single",
+                    "action_topic": "/left_arm/joint_ctrl_single",
+                }
+            ],
+            "camera_streams": [{"name": "top_camera", "topic": "/top"}],
+        },
+    )
+    monkeypatch.setattr(inference_session, "get_models_dir", lambda: tmp_path)
+
+    def fail_compatibility(**_kwargs):
+        raise InferenceModelCompatibilityError(
+            "model expects observation.state=6 but active profile resolves 7 joints "
+            "(left_arm_joint1, left_arm_joint2, left_arm_joint3, left_arm_joint4, "
+            "left_arm_joint5, left_arm_joint6, left_arm_joint7)"
+        )
+
+    monkeypatch.setattr(
+        inference_session,
+        "validate_inference_model_profile_compatibility",
+        fail_compatibility,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            manager.create(
+                session_id="session-1",
+                model_id="model-1",
+                device="cpu",
+                task="pick-and-place",
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "model expects observation.state=6 but active profile resolves 7 joints" in str(
+        exc_info.value.detail
+    )
+    assert dataset.ensured_models == ["model-1"]
+    assert runtime.ensure_startable_calls == 1
+    assert runtime.prepare_calls == []
+    assert runtime.start_calls == []
+
+
+def test_create_rejects_when_worker_already_running_before_sync(monkeypatch) -> None:
+    async def fake_resolve_profile(self, _profile):
+        return SimpleNamespace(
+            name="profile-a",
+            source_path="profiles/profile-a.yaml",
+            snapshot={"profile": {"lerobot": {}}},
+        )
+
+    async def fake_save_session_profile_binding(**_kwargs):
+        return None
+
+    runtime = _FakeRuntime(startable_error=RuntimeError("Inference worker already running"))
+    recorder = _FakeRecorder()
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = InferenceSessionManager(
+        runtime=runtime,
+        recorder=recorder,
+        dataset=dataset,
+        recording_sessions=recording_sessions,
+    )
+
+    monkeypatch.setattr(InferenceSessionManager, "_resolve_profile", fake_resolve_profile)
+    monkeypatch.setattr(session_manager, "get_current_user_id", lambda: "user-1")
+    monkeypatch.setattr(session_manager, "save_session_profile_binding", fake_save_session_profile_binding)
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_joint_names",
+        lambda _snapshot: [f"left_arm_joint{i}" for i in range(1, 8)],
+    )
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_camera_aliases",
+        lambda _snapshot: {"top_camera": "top_camera"},
+    )
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_bridge_config",
+        lambda _snapshot: {
+            "arm_streams": [
+                {
+                    "namespace": "left_arm",
+                    "state_topic": "/left_arm/joint_states_single",
+                    "action_topic": "/left_arm/joint_ctrl_single",
+                }
+            ],
+            "camera_streams": [{"name": "top_camera", "topic": "/top"}],
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            manager.create(
+                session_id="session-1",
+                model_id="model-1",
+                device="cpu",
+                task="pick-and-place",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Inference worker already running"
+    assert runtime.ensure_startable_calls == 1
+    assert dataset.ensured_models == []
+    assert runtime.prepare_calls == []
+    assert runtime.start_calls == []
