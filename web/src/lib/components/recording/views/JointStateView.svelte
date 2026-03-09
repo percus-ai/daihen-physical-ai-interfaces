@@ -66,31 +66,30 @@
   let lastRawPositions = $state<number[]>([]);
   let index = $state(0);
   let status = $state('idle');
-  let plotWidth = $state(0);
-  let posHeight = $state(0);
-  let velHeight = $state(0);
   let unsubscribe: (() => void) | null = null;
   let pendingSample: PendingSample | null = null;
   let animationFrameId: number | null = null;
   let lastRenderAt = 0;
-	  let datasetError = $state('');
-	  let lastDatasetSignature = $state('');
-	  let activeDatasetRequestId = $state(0);
-	  let datasetTimestamps = $state<number[]>([]);
-	  let datasetTimestampsSorted = $state(true);
-	  let datasetSeriesFps = $state<number | null>(null);
-	  let playbackState = $state<DatasetPlaybackState>({
-	    playing: false,
-	    currentTime: 0,
-	    duration: 0,
+  let datasetError = $state('');
+  let datasetTimestamps = $state<number[]>([]);
+  let datasetTimestampsSorted = $state(true);
+  let datasetSeriesFps = $state<number | null>(null);
+  let playbackState = $state<DatasetPlaybackState>({
+    playing: false,
+    currentTime: 0,
+    duration: 0,
     rate: 1,
     ready: false
   });
+  let lastDatasetSignature = '';
+  let activeDatasetRequestId = 0;
   const normalizedRenderFps = $derived(
     Math.min(Math.max(Number(renderFps) || 24, 1), 60)
   );
   const renderIntervalMs = $derived(1000 / normalizedRenderFps);
   const sourceText = $derived(isDataset ? label || topic || 'dataset series' : topic || 'no topic');
+  const positionPlotHeight = $derived(showVelocity ? 176 : 248);
+  const velocityPlotHeight = $derived(176);
 
   const buildRing = (names: string[]): RingSeries[] =>
     names.map((name, idx) => ({
@@ -227,9 +226,9 @@
     status = 'dataset';
   };
 
-	  const findNearestIndex = (values: number[], target: number, isSorted: boolean) => {
-	    if (!values.length) return null;
-	    if (!Number.isFinite(target)) return 0;
+  const findNearestIndex = (values: number[], target: number, isSorted: boolean) => {
+    if (!values.length) return null;
+    if (!Number.isFinite(target)) return 0;
 
     if (!isSorted) {
       let best = 0;
@@ -255,67 +254,67 @@
       if (value < target) lo = mid;
       else hi = mid;
     }
-	    return target - values[lo] <= values[hi] - target ? lo : hi;
-	  };
+    return target - values[lo] <= values[hi] - target ? lo : hi;
+  };
 
-	  const datasetTimeAxisS = $derived.by(() => {
-	    if (!datasetTimestamps.length) return [];
-	    const t0 = Number(datasetTimestamps[0] ?? 0);
-	    const deltas = datasetTimestamps.map((value) => (Number(value) || 0) - (Number.isFinite(t0) ? t0 : 0));
-	    if (!deltas.length) return [];
+  const datasetTimeAxisS = $derived.by(() => {
+    if (!datasetTimestamps.length) return [];
+    const t0 = Number(datasetTimestamps[0] ?? 0);
+    const deltas = datasetTimestamps.map((value) => (Number(value) || 0) - (Number.isFinite(t0) ? t0 : 0));
+    if (!deltas.length) return [];
 
-	    const span = deltas[deltas.length - 1] ?? 0;
-	    const fps = datasetSeriesFps ?? null;
-	    if (fps && Number.isFinite(fps) && fps > 0 && Number.isFinite(span) && span > 0) {
-	      const expected = (deltas.length - 1) / fps;
-	      const scales = [1, 1e-3, 1e-6, 1e-9];
-	      let bestScale = 1;
-	      let bestError = Number.POSITIVE_INFINITY;
-	      for (const scale of scales) {
-	        const error = Math.abs(span * scale - expected);
-	        if (error < bestError) {
-	          bestError = error;
-	          bestScale = scale;
-	        }
-	      }
-	      return deltas.map((value) => value * bestScale);
-	    }
-	    return deltas;
-	  });
+    const span = deltas[deltas.length - 1] ?? 0;
+    const fps = datasetSeriesFps ?? null;
+    if (fps && Number.isFinite(fps) && fps > 0 && Number.isFinite(span) && span > 0) {
+      const expected = (deltas.length - 1) / fps;
+      const scales = [1, 1e-3, 1e-6, 1e-9];
+      let bestScale = 1;
+      let bestError = Number.POSITIVE_INFINITY;
+      for (const scale of scales) {
+        const error = Math.abs(span * scale - expected);
+        if (error < bestError) {
+          bestError = error;
+          bestScale = scale;
+        }
+      }
+      return deltas.map((value) => value * bestScale);
+    }
+    return deltas;
+  });
 
-	  const playheadSampleIndex = $derived.by(() => {
-	    if (!isDataset) return null;
-	    if (runtime.kind !== 'dataset') return null;
-	    if (!runtime.playback) return null;
-	    if (!playbackState.ready) return null;
-	    if (!datasetTimeAxisS.length) return null;
-	    const nearest = findNearestIndex(datasetTimeAxisS, playbackState.currentTime, datasetTimestampsSorted);
-	    if (nearest == null) return null;
-	    return nearest + 1;
-	  });
+  const playheadSampleIndex = $derived.by(() => {
+    if (!isDataset) return null;
+    if (runtime.kind !== 'dataset') return null;
+    if (!runtime.playback) return null;
+    if (!playbackState.ready) return null;
+    if (!datasetTimeAxisS.length) return null;
+    const nearest = findNearestIndex(datasetTimeAxisS, playbackState.currentTime, datasetTimestampsSorted);
+    if (nearest == null) return null;
+    return nearest + 1;
+  });
   const playheadData = $derived(
     typeof playheadSampleIndex === 'number' && playheadSampleIndex > 0 ? [{ i: playheadSampleIndex }] : []
   );
 
-	  const loadDatasetSeries = async (
-	    signalKey: string,
-	    datasetIdValue: string,
-	    episode: number,
-	    requestId: number
-	  ) => {
-	    datasetError = '';
-	    status = 'loading';
-	    resetViewState();
-	    datasetSeriesFps = null;
-	    try {
-	      const payload = await api.storage.datasetViewerSignalSeries(datasetIdValue, episode, signalKey);
-	      if (requestId !== activeDatasetRequestId) return;
-	      datasetSeriesFps = Number(payload.fps) || null;
-	      buildDatasetSeries({
-	        names: payload.names,
-	        positions: payload.positions,
-	        timestamps: payload.timestamps
-	      });
+  const loadDatasetSeries = async (
+    signalKey: string,
+    datasetIdValue: string,
+    episode: number,
+    requestId: number
+  ) => {
+    datasetError = '';
+    status = 'loading';
+    resetViewState();
+    datasetSeriesFps = null;
+    try {
+      const payload = await api.storage.datasetViewerSignalSeries(datasetIdValue, episode, signalKey);
+      if (requestId !== activeDatasetRequestId) return;
+      datasetSeriesFps = Number(payload.fps) || null;
+      buildDatasetSeries({
+        names: payload.names,
+        positions: payload.positions,
+        timestamps: payload.timestamps
+      });
     } catch (err) {
       if (requestId !== activeDatasetRequestId) return;
       const message =
@@ -453,12 +452,12 @@
           </span>
         {/each}
       </div>
-      <div class="mt-2 flex min-h-0 flex-1 flex-col gap-3" bind:clientWidth={plotWidth}>
+      <div class="mt-2 flex min-h-0 flex-1 flex-col gap-3">
         <div class="flex min-h-0 flex-1 flex-col">
           <div class="text-[10px] uppercase tracking-widest text-slate-400">Position</div>
-          <div class="min-h-0 flex-1" bind:clientHeight={posHeight}>
-            {#if plotWidth && posHeight}
-              <Plot width={plotWidth} height={posHeight} grid>
+          <div class="min-h-0 flex-1">
+            <div class="h-full w-full overflow-hidden">
+              <Plot height={positionPlotHeight} grid>
                 <GridY />
                 <AxisX tickCount={4} />
                 <AxisY tickCount={4} />
@@ -469,15 +468,15 @@
                   <RuleX data={playheadData} x="i" stroke="#0ea5e9" strokeWidth={2} strokeOpacity={0.9} />
                 {/if}
               </Plot>
-            {/if}
+            </div>
           </div>
         </div>
         {#if showVelocity}
           <div class="flex min-h-0 flex-1 flex-col">
             <div class="text-[10px] uppercase tracking-widest text-slate-400">Velocity</div>
-            <div class="min-h-0 flex-1" bind:clientHeight={velHeight}>
-              {#if plotWidth && velHeight}
-                <Plot width={plotWidth} height={velHeight} grid>
+            <div class="min-h-0 flex-1">
+              <div class="h-full w-full overflow-hidden">
+                <Plot height={velocityPlotHeight} grid>
                   <GridY />
                   <AxisX tickCount={4} />
                   <AxisY tickCount={4} />
@@ -495,7 +494,7 @@
                     <RuleX data={playheadData} x="i" stroke="#0ea5e9" strokeWidth={2} strokeOpacity={0.9} />
                   {/if}
                 </Plot>
-              {/if}
+              </div>
             </div>
           </div>
         {/if}

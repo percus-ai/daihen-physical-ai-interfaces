@@ -147,8 +147,8 @@
 		    return [];
 		  });
 
-		  let lastDatasetPlaybackSignature = $state('');
-		  let lastDatasetAutoplayNonce = $state(0);
+  let lastDatasetPlaybackSignature = '';
+  let lastDatasetAutoplayNonce = 0;
 
   let blueprint: BlueprintNode = $state(createDefaultBlueprint());
   let selectedId = $state('');
