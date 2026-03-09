@@ -352,6 +352,12 @@ class InferenceRuntimeManager:
             )
         return env_name
 
+    def ensure_startable(self) -> None:
+        self._refresh_state_from_worker()
+        with self._lock:
+            if self._worker_proc and self._worker_proc.poll() is None:
+                raise RuntimeError("Inference worker already running")
+
     # --------------------------------------------------------------------- #
     # Lifecycle control
     # --------------------------------------------------------------------- #
@@ -366,10 +372,6 @@ class InferenceRuntimeManager:
         bridge_stream_config: Optional[dict[str, Any]] = None,
         progress_callback: Optional[Callable[[str, float, str, Optional[dict[str, Any]]], None]] = None,
     ) -> str:
-        with self._lock:
-            if self._worker_proc and self._worker_proc.poll() is None:
-                raise RuntimeError("Inference worker already running")
-
         model_dir = get_models_dir() / model_id
         if not model_dir.exists():
             raise FileNotFoundError(f"Model not found: {model_id}")

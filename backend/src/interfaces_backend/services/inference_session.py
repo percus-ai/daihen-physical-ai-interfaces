@@ -302,6 +302,10 @@ class InferenceSessionManager(BaseSessionManager):
                 profile_source=getattr(state.profile, "source_path", "unknown"),
                 bridge_stream_config=bridge_stream_config,
             )
+            try:
+                self._runtime.ensure_startable()
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
             # Download model from R2
             self._emit_progress(

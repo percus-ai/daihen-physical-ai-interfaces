@@ -12,8 +12,8 @@ from interfaces_backend.services.vlabor_profiles import (
     build_inference_joint_names,
     extract_camera_specs,
 )
+from interfaces_backend.services.inference_runtime import _resolve_model_config_path
 from percus_ai.inference.camera_maps import get_camera_key_map
-from percus_ai.storage.hub import find_model_config
 
 
 class InferenceModelCompatibilityError(ValueError):
@@ -32,7 +32,7 @@ class InferenceModelProfileCompatibility:
 
 
 def _load_model_config(model_dir: Path) -> tuple[Path, dict[str, Any]]:
-    config_path, _ = find_model_config(model_dir)
+    config_path = _resolve_model_config_path(model_dir)
     if config_path is None:
         raise InferenceModelCompatibilityError(f"config.json not found under model: {model_dir.name}")
     try:
@@ -55,7 +55,7 @@ def _read_shape_dim(features: Any, feature_key: str) -> int | None:
     if not isinstance(feature, dict):
         return None
     shape = feature.get("shape")
-    if not isinstance(shape, list | tuple) or not shape:
+    if not isinstance(shape, (list, tuple)) or not shape:
         return None
     try:
         return int(shape[0])

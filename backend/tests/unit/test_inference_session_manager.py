@@ -28,14 +28,21 @@ def _silence_inference_session_logger(monkeypatch):
 
 
 class _FakeRuntime:
-    def __init__(self):
+    def __init__(self, *, startable_error: RuntimeError | None = None):
         self.call_order: list[str] = []
+        self.ensure_startable_calls = 0
         self.prepare_calls: list[str] = []
         self.start_calls: list[dict] = []
         self.stop_calls: list[str | None] = []
         self.pause_calls: list[tuple[str, bool]] = []
         self.task_calls: list[tuple[str, str]] = []
         self.policy_calls: list[tuple[str, int | None]] = []
+        self.startable_error = startable_error
+
+    def ensure_startable(self) -> None:
+        self.ensure_startable_calls += 1
+        if self.startable_error is not None:
+            raise self.startable_error
 
     def prepare_environment(self, *, policy_type: str, progress_callback=None) -> str:
         self.call_order.append("prepare_environment")
@@ -417,6 +424,7 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
     )
 
     assert dataset.ensured_models == ["model-1"]
+    assert runtime.ensure_startable_calls == 1
     assert runtime.call_order == ["prepare_environment", "start"]
     assert runtime.prepare_calls == ["pi05"]
     assert runtime.start_calls[0]["model_id"] == "model-1"
@@ -504,5 +512,74 @@ def test_create_blocks_worker_start_on_model_profile_mismatch(monkeypatch, tmp_p
         exc_info.value.detail
     )
     assert dataset.ensured_models == ["model-1"]
+    assert runtime.ensure_startable_calls == 1
+    assert runtime.prepare_calls == []
+    assert runtime.start_calls == []
+
+
+def test_create_rejects_when_worker_already_running_before_sync(monkeypatch) -> None:
+    async def fake_resolve_profile(self, _profile):
+        return SimpleNamespace(
+            name="profile-a",
+            source_path="profiles/profile-a.yaml",
+            snapshot={"profile": {"lerobot": {}}},
+        )
+
+    async def fake_save_session_profile_binding(**_kwargs):
+        return None
+
+    runtime = _FakeRuntime(startable_error=RuntimeError("Inference worker already running"))
+    recorder = _FakeRecorder()
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = InferenceSessionManager(
+        runtime=runtime,
+        recorder=recorder,
+        dataset=dataset,
+        recording_sessions=recording_sessions,
+    )
+
+    monkeypatch.setattr(InferenceSessionManager, "_resolve_profile", fake_resolve_profile)
+    monkeypatch.setattr(session_manager, "get_current_user_id", lambda: "user-1")
+    monkeypatch.setattr(session_manager, "save_session_profile_binding", fake_save_session_profile_binding)
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_joint_names",
+        lambda _snapshot: [f"left_arm_joint{i}" for i in range(1, 8)],
+    )
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_camera_aliases",
+        lambda _snapshot: {"top_camera": "top_camera"},
+    )
+    monkeypatch.setattr(
+        inference_session,
+        "build_inference_bridge_config",
+        lambda _snapshot: {
+            "arm_streams": [
+                {
+                    "namespace": "left_arm",
+                    "state_topic": "/left_arm/joint_states_single",
+                    "action_topic": "/left_arm/joint_ctrl_single",
+                }
+            ],
+            "camera_streams": [{"name": "top_camera", "topic": "/top"}],
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            manager.create(
+                session_id="session-1",
+                model_id="model-1",
+                device="cpu",
+                task="pick-and-place",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Inference worker already running"
+    assert runtime.ensure_startable_calls == 1
+    assert dataset.ensured_models == []
     assert runtime.prepare_calls == []
     assert runtime.start_calls == []

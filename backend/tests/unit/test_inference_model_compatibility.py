@@ -123,3 +123,32 @@ def test_validate_inference_model_profile_compatibility_blocks_missing_required_
         == "model requires cameras [arm_camera_1, top_camera] "
         "but active profile resolves [d405_color, top_camera]"
     )
+
+
+def test_validate_inference_model_profile_compatibility_uses_runtime_config_resolution(tmp_path):
+    model_dir = tmp_path / "model-act"
+    model_dir.mkdir()
+    pretrained_dir = model_dir / "pretrained_model"
+    pretrained_dir.mkdir()
+
+    root_config = {
+        "type": "act",
+        "input_features": {"observation.state": {"shape": [7]}},
+        "output_features": {"action": {"shape": [7]}},
+    }
+    nested_config = {
+        "type": "act",
+        "input_features": {"observation.state": {"shape": [6]}},
+        "output_features": {"action": {"shape": [6]}},
+    }
+    (model_dir / "config.json").write_text(json.dumps(root_config), encoding="utf-8")
+    (pretrained_dir / "config.json").write_text(json.dumps(nested_config), encoding="utf-8")
+
+    result = validate_inference_model_profile_compatibility(
+        model_dir=model_dir,
+        profile_snapshot=_build_profile_snapshot(camera_specs=[]),
+    )
+
+    assert result.config_path == model_dir / "config.json"
+    assert result.state_dim == 7
+    assert result.action_dim == 7
