@@ -13,6 +13,9 @@ class DatasetInfo(BaseModel):
 
     id: str = Field(..., description="Dataset ID")
     name: str = Field(..., description="Dataset name")
+    owner_user_id: Optional[str] = Field(None, description="Owner user id")
+    owner_email: Optional[str] = Field(None, description="Owner email")
+    owner_name: Optional[str] = Field(None, description="Owner name")
     profile_name: Optional[str] = Field(None, description="VLAbor profile name")
     profile_snapshot: Optional[dict] = Field(None, description="Profile snapshot")
     source: str = Field("r2", description="Data source")
@@ -96,6 +99,9 @@ class ModelInfo(BaseModel):
 
     id: str = Field(..., description="Model ID")
     name: str = Field(..., description="Model name")
+    owner_user_id: Optional[str] = Field(None, description="Owner user id")
+    owner_email: Optional[str] = Field(None, description="Owner email")
+    owner_name: Optional[str] = Field(None, description="Owner name")
     dataset_id: Optional[str] = Field(None, description="Dataset ID")
     profile_name: Optional[str] = Field(None, description="VLAbor profile name")
     profile_snapshot: Optional[dict] = Field(None, description="Profile snapshot")
@@ -343,6 +349,34 @@ class ArchiveBulkResponse(BaseModel):
     restored: List[str] = Field(default_factory=list)
     deleted: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
+
+
+BulkActionResultStatus = Literal["succeeded", "failed", "skipped"]
+
+
+class BulkActionRequest(BaseModel):
+    """Request for bulk item operations."""
+
+    ids: List[str] = Field(default_factory=list)
+
+
+class BulkActionResult(BaseModel):
+    """Per-item result for a bulk operation."""
+
+    id: str
+    status: BulkActionResultStatus
+    message: str = ""
+    job_id: Optional[str] = None
+
+
+class BulkActionResponse(BaseModel):
+    """Summary response for a bulk operation."""
+
+    requested: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    skipped: int = 0
+    results: List[BulkActionResult] = Field(default_factory=list)
 
 
 class HuggingFaceDatasetImportRequest(BaseModel):

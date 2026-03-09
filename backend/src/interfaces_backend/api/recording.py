@@ -15,7 +15,13 @@ from interfaces_backend.services.recorder_bridge import get_recorder_bridge
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.recording_session import get_recording_session_manager
 from interfaces_backend.services.session_manager import require_user_id
+from interfaces_backend.services.storage_bulk_actions import (
+    archive_dataset_for_bulk,
+    reupload_dataset_for_bulk,
+)
 from interfaces_backend.services.startup_operations import get_startup_operations_service
+from interfaces_backend.services.user_directory import resolve_user_directory_entries
+from interfaces_backend.models.storage import BulkActionRequest, BulkActionResponse, BulkActionResult
 from interfaces_backend.models.startup import StartupOperationAcceptedResponse
 from percus_ai.db import get_supabase_async_client
 from percus_ai.storage.naming import validate_dataset_name
@@ -102,6 +108,9 @@ class RecordingInfo(BaseModel):
     dataset_name: str
     task: str = ""
     profile_name: Optional[str] = None
+    owner_user_id: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_name: Optional[str] = None
     created_at: Optional[str] = None
     episode_count: int = 0
     target_total_episodes: int = 0
@@ -138,6 +147,19 @@ class RecordingContinuePlanResponse(BaseModel):
     reset_time_s: float = 0.0
     continuable: bool = False
     reason: Optional[str] = None
+
+
+def _build_bulk_action_response(results: list[BulkActionResult], requested: int | None = None) -> BulkActionResponse:
+    succeeded = sum(1 for result in results if result.status == "succeeded")
+    failed = sum(1 for result in results if result.status == "failed")
+    skipped = sum(1 for result in results if result.status == "skipped")
+    return BulkActionResponse(
+        requested=requested if requested is not None else len(results),
+        succeeded=succeeded,
+        failed=failed,
+        skipped=skipped,
+        results=results,
+    )
 
 
 # -- helpers ------------------------------------------------------------------
@@ -737,7 +759,7 @@ async def _list_recordings() -> list[dict]:
     rows = (
         await client.table("datasets")
         .select(
-            "id,name,task_detail,profile_snapshot,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status"
+            "id,name,task_detail,profile_snapshot,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status,owner_user_id"
         )
         .eq("dataset_type", "recorded")
         .execute()
@@ -748,17 +770,24 @@ async def _list_recordings() -> list[dict]:
 @router.get("/recordings", response_model=RecordingListResponse)
 async def list_recordings():
     recordings_data = await _list_recordings()
+    owner_directory = await resolve_user_directory_entries(
+        [str(row.get("owner_user_id") or "").strip() for row in recordings_data]
+    )
     recordings: list[RecordingInfo] = []
     for row in recordings_data:
         if not row.get("id"):
             continue
         plan = _build_continue_plan_from_row(row)
+        owner_entry = owner_directory.get(str(row.get("owner_user_id") or "").strip())
         recordings.append(
             RecordingInfo(
                 recording_id=str(row.get("id")),
                 dataset_name=str(row.get("name") or row.get("id")),
                 task=str(row.get("task_detail") or ""),
                 profile_name=_extract_profile_name(row.get("profile_snapshot")),
+                owner_user_id=row.get("owner_user_id"),
+                owner_email=owner_entry.email or None if owner_entry else None,
+                owner_name=owner_entry.name or None if owner_entry else None,
                 created_at=row.get("created_at"),
                 episode_count=row.get("episode_count") or 0,
                 target_total_episodes=plan.target_total_episodes,
@@ -786,12 +815,18 @@ async def get_recording_continue_plan(recording_id: str):
 @router.get("/recordings/{recording_id:path}", response_model=RecordingInfo)
 async def get_recording(recording_id: str):
     row = await _fetch_recording_row(recording_id)
+    owner_user_id = str(row.get("owner_user_id") or "").strip()
+    owner_directory = await resolve_user_directory_entries([owner_user_id])
+    owner_entry = owner_directory.get(owner_user_id)
     plan = _build_continue_plan_from_row(row)
     return RecordingInfo(
         recording_id=str(row.get("id")),
         dataset_name=str(row.get("name") or row.get("id")),
         task=str(row.get("task_detail") or ""),
         profile_name=_extract_profile_name(row.get("profile_snapshot")),
+        owner_user_id=row.get("owner_user_id"),
+        owner_email=owner_entry.email or None if owner_entry else None,
+        owner_name=owner_entry.name or None if owner_entry else None,
         created_at=row.get("created_at"),
         episode_count=row.get("episode_count") or 0,
         target_total_episodes=plan.target_total_episodes,
@@ -825,6 +860,24 @@ async def validate_recording(recording_id: str):
         is_valid=len(errors) == 0,
         errors=errors,
     )
+
+
+@router.post("/recordings/bulk/archive", response_model=BulkActionResponse)
+async def bulk_archive_recordings(request: BulkActionRequest):
+    require_user_id()
+    results: list[BulkActionResult] = []
+    for recording_id in request.ids:
+        results.append(await archive_dataset_for_bulk(recording_id))
+    return _build_bulk_action_response(results, requested=len(request.ids))
+
+
+@router.post("/recordings/bulk/reupload", response_model=BulkActionResponse)
+async def bulk_reupload_recordings(request: BulkActionRequest):
+    require_user_id()
+    results: list[BulkActionResult] = []
+    for recording_id in request.ids:
+        results.append(await reupload_dataset_for_bulk(recording_id))
+    return _build_bulk_action_response(results, requested=len(request.ids))
 
 
 @router.delete("/recordings/{recording_id:path}")

@@ -5,7 +5,7 @@
   import { createQuery } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
-  import { api, type TabSessionSubscription } from '$lib/api/client';
+  import { api, type BulkActionResponse, type TabSessionSubscription } from '$lib/api/client';
   import { formatBytes, formatDate } from '$lib/format';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
@@ -20,6 +20,9 @@
     dataset_name?: string;
     task?: string;
     profile_name?: string;
+    owner_user_id?: string;
+    owner_email?: string;
+    owner_name?: string;
     created_at?: string;
     episode_count?: number;
     target_total_episodes?: number;
@@ -35,6 +38,10 @@
   type RecordingListResponse = {
     recordings?: RecordingSummary[];
     total?: number;
+  };
+  type UserConfigResponse = {
+    user_id?: string;
+    email?: string;
   };
 
   type RecordingUploadStatus = {
@@ -81,8 +88,28 @@
     queryKey: ['operate', 'status'],
     queryFn: api.operate.status
   });
+  const userConfigQuery = createQuery<UserConfigResponse>({
+    queryKey: ['user', 'config'],
+    queryFn: () => api.user.config() as Promise<UserConfigResponse>
+  });
 
   const recordings = $derived($recordingsQuery.data?.recordings ?? []);
+  const sortDateValue = (value?: string) => new Date(value ?? 0).getTime() || 0;
+  const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
+  const compareText = (left?: string | null, right?: string | null) =>
+    normalizeText(left).localeCompare(normalizeText(right), 'ja');
+  const compareNumber = (left?: number | null, right?: number | null) => Number(left ?? 0) - Number(right ?? 0);
+
+  let recordingSortKey = $state<'created_at' | 'dataset_name' | 'episode_count' | 'status'>('created_at');
+  let recordingSortOrder = $state<'desc' | 'asc'>('desc');
+  let recordingOwnerFilter = $state('all');
+  let recordingSearch = $state('');
+  let selectedRecordingIds = $state<string[]>([]);
+  let recordingOwnerFilterInitialized = $state(false);
+  let bulkPending = $state(false);
+  let bulkMessage = $state('');
+  let bulkError = $state('');
+
   let reuploadBusy = $state<Record<string, boolean>>({});
   let archiveBusy = $state<Record<string, boolean>>({});
   let uploadStatusMap = $state<Record<string, RecordingUploadStatus>>({});
@@ -151,6 +178,87 @@
     }
     return label;
   };
+  const creatorLabel = (value?: string | null) => {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return '-';
+    if (normalized.length <= 24) return normalized;
+    return `${normalized.slice(0, 20)}...`;
+  };
+  const ownerLabel = (recording: RecordingSummary) =>
+    creatorLabel(recording.owner_name ?? recording.owner_email ?? recording.owner_user_id);
+  const recordingOwnerOptions = $derived.by(() => {
+    const options = new Map<string, string>();
+    for (const recording of recordings) {
+      const ownerId = String(recording.owner_user_id ?? '').trim();
+      if (!ownerId) continue;
+      options.set(ownerId, ownerLabel(recording));
+    }
+    return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
+  });
+  const currentUserId = $derived(String($userConfigQuery.data?.user_id ?? '').trim());
+  const displayedRecordings = $derived.by(() => {
+    const query = normalizeText(recordingSearch);
+    const sorted = recordings
+      .filter((recording) => {
+        if (recordingOwnerFilter !== 'all' && String(recording.owner_user_id ?? '') !== recordingOwnerFilter) return false;
+        if (!query) return true;
+        return [
+          recording.dataset_name,
+          recording.recording_id,
+          recording.task,
+          recording.profile_name,
+          recording.owner_name,
+          recording.owner_email
+        ].some((value) => normalizeText(value).includes(query));
+      })
+      .slice();
+
+    sorted.sort((a, b) => {
+      const direction = recordingSortOrder === 'asc' ? 1 : -1;
+      switch (recordingSortKey) {
+        case 'dataset_name':
+          return compareText(a.dataset_name ?? a.recording_id, b.dataset_name ?? b.recording_id) * direction;
+        case 'episode_count':
+          return compareNumber(a.episode_count, b.episode_count) * direction;
+        case 'status':
+          return compareText(uploadStatusMap[a.recording_id]?.status, uploadStatusMap[b.recording_id]?.status) * direction;
+        case 'created_at':
+        default:
+          return (sortDateValue(a.created_at) - sortDateValue(b.created_at)) * direction;
+      }
+    });
+    return sorted;
+  });
+  const allDisplayedRecordingIds = $derived(displayedRecordings.map((recording) => recording.recording_id));
+  const allDisplayedRecordingsSelected = $derived(
+    allDisplayedRecordingIds.length > 0 && allDisplayedRecordingIds.every((id) => selectedRecordingIds.includes(id))
+  );
+  const toggleSelectAllDisplayedRecordings = () => {
+    if (allDisplayedRecordingsSelected) {
+      selectedRecordingIds = selectedRecordingIds.filter((id) => !allDisplayedRecordingIds.includes(id));
+      return;
+    }
+    selectedRecordingIds = Array.from(new Set([...selectedRecordingIds, ...allDisplayedRecordingIds]));
+  };
+  const clearRecordingSelection = () => {
+    selectedRecordingIds = [];
+  };
+  const selectedRecordings = $derived(recordings.filter((recording) => selectedRecordingIds.includes(recording.recording_id)));
+  const selectedLocalRecordings = $derived(selectedRecordings.filter((recording) => Boolean(recording.is_local)));
+  const canBulkReupload = $derived(selectedLocalRecordings.length > 0 && !bulkPending);
+  const canBulkArchive = $derived(selectedRecordingIds.length > 0 && !bulkPending);
+  const applyBulkResponseMessage = (response: BulkActionResponse, label: string) => {
+    const parts = [`成功 ${response.succeeded}`, `失敗 ${response.failed}`];
+    if (response.skipped > 0) {
+      parts.push(`スキップ ${response.skipped}`);
+    }
+    bulkMessage = `${label}: ${parts.join(' / ')}`;
+    const failedMessages = response.results
+      .filter((result) => result.status === 'failed')
+      .slice(0, 3)
+      .map((result) => `${result.id}: ${result.message}`);
+    bulkError = failedMessages.join(' / ');
+  };
 
   const openDatasetViewer = (datasetId: string) => {
     const normalized = String(datasetId || '').trim();
@@ -208,6 +316,51 @@
       toast.error(message);
     } finally {
       setArchiveBusy(recordingId, false);
+    }
+  };
+
+  const bulkReuploadRecordings = async () => {
+    bulkMessage = '';
+    bulkError = '';
+    if (!selectedLocalRecordings.length) {
+      bulkError = '再アップロード対象を選択してください。';
+      return;
+    }
+    const confirmed = confirm(`${selectedLocalRecordings.length}件をR2へ再アップロードしますか？`);
+    if (!confirmed) return;
+    bulkPending = true;
+    try {
+      const response = await api.recording.bulkReupload(selectedLocalRecordings.map((recording) => recording.recording_id));
+      applyBulkResponseMessage(response, '再アップロードを実行しました');
+      await $recordingsQuery.refetch?.();
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : '再アップロードに失敗しました。';
+    } finally {
+      bulkPending = false;
+    }
+  };
+
+  const bulkArchiveRecordings = async () => {
+    bulkMessage = '';
+    bulkError = '';
+    if (!selectedRecordingIds.length) {
+      bulkError = 'アーカイブ対象を選択してください。';
+      return;
+    }
+    const confirmed = confirm(`${selectedRecordingIds.length}件をアーカイブしますか？`);
+    if (!confirmed) return;
+    bulkPending = true;
+    try {
+      const response = await api.recording.bulkArchive([...selectedRecordingIds]);
+      applyBulkResponseMessage(response, 'アーカイブを実行しました');
+      if (response.failed === 0) {
+        clearRecordingSelection();
+      }
+      await $recordingsQuery.refetch?.();
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : 'アーカイブに失敗しました。';
+    } finally {
+      bulkPending = false;
     }
   };
 
@@ -270,6 +423,17 @@
   const activeFrameCount = $derived(recorderStatus?.frame_count ?? null);
   const activeEpisodeFrameCount = $derived(recorderStatus?.episode_frame_count ?? null);
   const rawStatus = $derived(recorderStatus ? JSON.stringify(recorderStatus, null, 2) : '');
+
+  $effect(() => {
+    if (recordingOwnerFilterInitialized) return;
+    if (!currentUserId) return;
+    if (!recordingOwnerOptions.some((option) => option.id === currentUserId)) {
+      recordingOwnerFilterInitialized = true;
+      return;
+    }
+    recordingOwnerFilter = currentUserId;
+    recordingOwnerFilterInitialized = true;
+  });
 
   $effect(() => {
     const currentIds = new Set(recordings.map((recording) => String(recording.recording_id || '').trim()));
@@ -387,11 +551,94 @@
     </div>
     <Button.Root class="btn-ghost" type="button" onclick={() => $recordingsQuery.refetch?.()}>更新</Button.Root>
   </div>
+  <p class="mt-3 text-xs text-slate-500">選択中: {selectedRecordingIds.length} 件</p>
+  <div class="mt-4 grid gap-3 md:grid-cols-4">
+    <label class="block">
+      <span class="label">検索</span>
+      <input class="input mt-2" type="text" bind:value={recordingSearch} placeholder="dataset / task / user" />
+    </label>
+    <label class="block">
+      <span class="label">作成者</span>
+      <select class="input mt-2" bind:value={recordingOwnerFilter}>
+        <option value="all">全員</option>
+        {#each recordingOwnerOptions as owner}
+          <option value={owner.id}>{owner.label}</option>
+        {/each}
+      </select>
+    </label>
+    <label class="block">
+      <span class="label">並び替え</span>
+      <select class="input mt-2" bind:value={recordingSortKey}>
+        <option value="created_at">作成日時</option>
+        <option value="dataset_name">名前</option>
+        <option value="episode_count">エピソード数</option>
+        <option value="status">アップロード状態</option>
+      </select>
+    </label>
+    <label class="block">
+      <span class="label">順序</span>
+      <select class="input mt-2" bind:value={recordingSortOrder}>
+        <option value="desc">降順</option>
+        <option value="asc">昇順</option>
+      </select>
+    </label>
+  </div>
+  {#if selectedRecordingIds.length > 0}
+    <div class="mt-4 rounded-2xl border border-slate-200/80 bg-slate-50/90 p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-slate-900">選択中: {selectedRecordingIds.length} 件</p>
+          {#if selectedRecordingIds.length !== selectedLocalRecordings.length}
+            <p class="mt-1 text-xs text-slate-500">
+              再アップロードはローカルデータがある {selectedLocalRecordings.length} 件のみ対象です。
+            </p>
+          {/if}
+        </div>
+        <button class="btn-ghost" type="button" onclick={clearRecordingSelection}>選択解除</button>
+      </div>
+      <div class="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          class={`btn-primary ${canBulkReupload ? '' : 'opacity-50 cursor-not-allowed'}`}
+          type="button"
+          disabled={!canBulkReupload}
+          onclick={bulkReuploadRecordings}
+        >
+          再アップロード
+        </button>
+        <button
+          class={`btn-ghost ${canBulkArchive ? '' : 'opacity-50 cursor-not-allowed'}`}
+          type="button"
+          disabled={!canBulkArchive}
+          onclick={bulkArchiveRecordings}
+        >
+          アーカイブ
+        </button>
+      </div>
+    </div>
+  {/if}
+  {#if bulkMessage}
+    <p class="mt-3 text-sm text-emerald-600">{bulkMessage}</p>
+  {/if}
+  {#if bulkError}
+    <p class="mt-2 text-sm text-rose-600">{bulkError}</p>
+  {/if}
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">
         <tr>
+          <th class="w-12 pb-3 align-middle">
+            <div class="flex justify-center">
+              <input
+                type="checkbox"
+                class="block h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/40"
+                checked={allDisplayedRecordingsSelected}
+                aria-label="表示中の録画を全選択"
+                onchange={toggleSelectAllDisplayedRecordings}
+              />
+            </div>
+          </th>
           <th class="pb-3">データセット</th>
+          <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
           <th class="pb-3">エピソード</th>
           <th class="pb-3">アップロード</th>
@@ -402,10 +649,20 @@
       </thead>
       <tbody class="text-slate-600">
         {#if $recordingsQuery.isLoading}
-          <tr><td class="py-3" colspan="7">読み込み中...</td></tr>
-        {:else if recordings.length}
-          {#each recordings as recording}
+          <tr><td class="py-3" colspan="9">読み込み中...</td></tr>
+        {:else if displayedRecordings.length}
+          {#each displayedRecordings as recording}
             <tr class="border-t border-slate-200/60">
+              <td class="w-12 py-3 align-middle">
+                <div class="flex justify-center">
+                  <input
+                    type="checkbox"
+                    class="block h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/40"
+                    bind:group={selectedRecordingIds}
+                    value={recording.recording_id}
+                  />
+                </div>
+              </td>
               <td class="py-3">
                 {#if recording.continuable}
                   <a class="text-brand underline" href={`/record/sessions/${encodeURIComponent(recording.recording_id)}`}>
@@ -418,6 +675,7 @@
                   {/if}
                 {/if}
               </td>
+              <td class="py-3">{ownerLabel(recording)}</td>
               <td class="py-3">{recording.profile_name ?? '-'}</td>
               <td class="py-3">{recording.episode_count ?? '-'}</td>
               <td class="py-3">
@@ -472,6 +730,7 @@
                       class="z-50 min-w-[180px] rounded-xl border border-slate-200/80 bg-white/95 p-2 text-xs text-slate-700 shadow-lg backdrop-blur"
                       sideOffset={6}
                       align="end"
+                      preventScroll={false}
                     >
                       <DropdownMenu.Item
                         class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
@@ -519,7 +778,7 @@
             </tr>
           {/each}
         {:else}
-          <tr><td class="py-3" colspan="7">録画がありません。</td></tr>
+          <tr><td class="py-3" colspan="9">条件に合う録画がありません。</td></tr>
         {/if}
       </tbody>
     </table>

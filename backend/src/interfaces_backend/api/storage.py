@@ -21,6 +21,9 @@ from interfaces_backend.models.storage import (
     ArchiveBulkRequest,
     ArchiveBulkResponse,
     ArchiveResponse,
+    BulkActionRequest,
+    BulkActionResponse,
+    BulkActionResult,
     DatasetViewerCameraInfo,
     DatasetViewerEpisode,
     DatasetViewerEpisodeListResponse,
@@ -60,6 +63,14 @@ from interfaces_backend.services.dataset_sync_jobs import get_dataset_sync_jobs_
 from interfaces_backend.services.model_sync_jobs import get_model_sync_jobs_service
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
+from interfaces_backend.services.storage_bulk_actions import (
+    archive_dataset_for_bulk,
+    archive_model_for_bulk,
+    reupload_dataset_for_bulk,
+    set_dataset_status,
+    sync_model_for_bulk,
+)
+from interfaces_backend.services.user_directory import resolve_user_directory_entries
 from interfaces_backend.services.vlabor_profiles import resolve_profile_spec
 from percus_ai.db import (
     get_supabase_async_client,
@@ -313,6 +324,8 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
     return DatasetInfo(
         id=row.get("id"),
         name=row.get("name") or row.get("id"),
+        owner_user_id=row.get("owner_user_id"),
+        owner_email=None,
         profile_name=_extract_profile_name(profile_snapshot),
         profile_snapshot=profile_snapshot if isinstance(profile_snapshot, dict) else None,
         source=row.get("source") or "r2",
@@ -336,6 +349,8 @@ def _model_row_to_info(row: dict) -> ModelInfo:
     return ModelInfo(
         id=model_id,
         name=row.get("name") or model_id,
+        owner_user_id=row.get("owner_user_id"),
+        owner_email=None,
         dataset_id=row.get("dataset_id"),
         profile_name=_extract_profile_name(profile_snapshot),
         profile_snapshot=profile_snapshot if isinstance(profile_snapshot, dict) else None,
@@ -348,6 +363,19 @@ def _model_row_to_info(row: dict) -> ModelInfo:
         status=row.get("status") or "active",
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+    )
+
+
+def _build_bulk_action_response(results: list[BulkActionResult], requested: int | None = None) -> BulkActionResponse:
+    succeeded = sum(1 for result in results if result.status == "succeeded")
+    failed = sum(1 for result in results if result.status == "failed")
+    skipped = sum(1 for result in results if result.status == "skipped")
+    return BulkActionResponse(
+        requested=requested if requested is not None else len(results),
+        succeeded=succeeded,
+        failed=failed,
+        skipped=skipped,
+        results=results,
     )
 
 
@@ -365,7 +393,15 @@ async def list_datasets(
     if profile_name:
         rows = [row for row in rows if _extract_profile_name(row.get("profile_snapshot")) == profile_name]
 
-    datasets = [_dataset_row_to_info(row) for row in rows]
+    owner_directory = await resolve_user_directory_entries([str(row.get("owner_user_id") or "").strip() for row in rows])
+    datasets = []
+    for row in rows:
+        dataset = _dataset_row_to_info(row)
+        owner_user_id = str(row.get("owner_user_id") or "").strip()
+        owner_entry = owner_directory.get(owner_user_id)
+        dataset.owner_email = owner_entry.email or None if owner_entry else None
+        dataset.owner_name = owner_entry.name or None if owner_entry else None
+        datasets.append(dataset)
     return DatasetListResponse(datasets=datasets, total=len(datasets))
 
 
@@ -923,27 +959,21 @@ async def get_dataset_viewer(dataset_id: str):
 @router.delete("/datasets/{dataset_id:path}", response_model=ArchiveResponse)
 async def archive_dataset(dataset_id: str):
     """Archive (soft delete) a dataset."""
-    client = await get_supabase_async_client()
-    existing = (
-        await client.table("datasets").select("id").eq("id", dataset_id).execute()
-    ).data or []
-    if not existing:
-        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
-    await client.table("datasets").update({"status": "archived"}).eq("id", dataset_id).execute()
-    return ArchiveResponse(id=dataset_id, success=True, message="Dataset archived", status="archived")
+    require_user_id()
+    status, changed = await set_dataset_status(dataset_id, status="archived")
+    if not changed:
+        return ArchiveResponse(id=dataset_id, success=True, message="Dataset already archived", status="archived")
+    return ArchiveResponse(id=dataset_id, success=True, message="Dataset archived", status=status)
 
 
 @router.post("/datasets/{dataset_id:path}/restore", response_model=ArchiveResponse)
 async def restore_dataset(dataset_id: str):
     """Restore dataset from archive."""
-    client = await get_supabase_async_client()
-    existing = (
-        await client.table("datasets").select("id").eq("id", dataset_id).execute()
-    ).data or []
-    if not existing:
-        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
-    await client.table("datasets").update({"status": "active"}).eq("id", dataset_id).execute()
-    return ArchiveResponse(id=dataset_id, success=True, message="Dataset restored", status="active")
+    require_user_id()
+    status, changed = await set_dataset_status(dataset_id, status="active")
+    if not changed:
+        return ArchiveResponse(id=dataset_id, success=True, message="Dataset already active", status="active")
+    return ArchiveResponse(id=dataset_id, success=True, message="Dataset restored", status=status)
 
 
 @router.post("/datasets/{dataset_id:path}/reupload", response_model=DatasetReuploadResponse)
@@ -968,6 +998,24 @@ async def reupload_dataset(dataset_id: str):
         success=True,
         message="Dataset re-upload completed",
     )
+
+
+@router.post("/bulk/datasets/archive", response_model=BulkActionResponse)
+async def bulk_archive_datasets(request: BulkActionRequest):
+    require_user_id()
+    results: list[BulkActionResult] = []
+    for dataset_id in request.ids:
+        results.append(await archive_dataset_for_bulk(dataset_id))
+    return _build_bulk_action_response(results, requested=len(request.ids))
+
+
+@router.post("/bulk/datasets/reupload", response_model=BulkActionResponse)
+async def bulk_reupload_datasets(request: BulkActionRequest):
+    require_user_id()
+    results: list[BulkActionResult] = []
+    for dataset_id in request.ids:
+        results.append(await reupload_dataset_for_bulk(dataset_id))
+    return _build_bulk_action_response(results, requested=len(request.ids))
 
 
 async def _run_dataset_sync_job(*, job_id: str, dataset_id: str) -> None:
@@ -1064,7 +1112,15 @@ async def list_models(
     rows = (await query.execute()).data or []
     if profile_name:
         rows = [row for row in rows if _extract_profile_name(row.get("profile_snapshot")) == profile_name]
-    models = [_model_row_to_info(row) for row in rows]
+    owner_directory = await resolve_user_directory_entries([str(row.get("owner_user_id") or "").strip() for row in rows])
+    models = []
+    for row in rows:
+        model = _model_row_to_info(row)
+        owner_user_id = str(row.get("owner_user_id") or "").strip()
+        owner_entry = owner_directory.get(owner_user_id)
+        model.owner_email = owner_entry.email or None if owner_entry else None
+        model.owner_name = owner_entry.name or None if owner_entry else None
+        models.append(model)
     return ModelListResponse(models=models, total=len(models))
 
 
@@ -1075,7 +1131,13 @@ async def get_model(model_id: str):
     rows = (await client.table("models").select("*").eq("id", model_id).execute()).data or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
-    return _model_row_to_info(rows[0])
+    model = _model_row_to_info(rows[0])
+    owner_user_id = str(rows[0].get("owner_user_id") or "").strip()
+    owner_directory = await resolve_user_directory_entries([owner_user_id])
+    owner_entry = owner_directory.get(owner_user_id)
+    model.owner_email = owner_entry.email or None if owner_entry else None
+    model.owner_name = owner_entry.name or None if owner_entry else None
+    return model
 
 
 @router.post("/models/{model_id}/sync", response_model=ModelSyncJobAcceptedResponse, status_code=202)
@@ -1136,6 +1198,24 @@ async def archive_model(model_id: str):
         raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
     await client.table("models").update({"status": "archived"}).eq("id", model_id).execute()
     return ArchiveResponse(id=model_id, success=True, message="Model archived", status="archived")
+
+
+@router.post("/bulk/models/sync", response_model=BulkActionResponse, status_code=202)
+async def bulk_sync_models(request: BulkActionRequest):
+    user_id = require_user_id()
+    results: list[BulkActionResult] = []
+    for model_id in request.ids:
+        results.append(await sync_model_for_bulk(user_id=user_id, model_id=model_id))
+    return _build_bulk_action_response(results, requested=len(request.ids))
+
+
+@router.post("/bulk/models/archive", response_model=BulkActionResponse)
+async def bulk_archive_models(request: BulkActionRequest):
+    user_id = require_user_id()
+    results: list[BulkActionResult] = []
+    for model_id in request.ids:
+        results.append(await archive_model_for_bulk(user_id=user_id, model_id=model_id))
+    return _build_bulk_action_response(results, requested=len(request.ids))
 
 
 @router.post("/models/{model_id}/restore", response_model=ArchiveResponse)

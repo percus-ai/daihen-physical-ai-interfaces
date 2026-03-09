@@ -120,6 +120,7 @@ class _FakeTableQuery:
         self._op = "select"
         self._payload = None
         self._filters: list[tuple[str, str]] = []
+        self._limit: int | None = None
 
     def select(self, _fields: str):
         self._op = "select"
@@ -138,7 +139,12 @@ class _FakeTableQuery:
         self._filters.append((key, value))
         return self
 
+    def limit(self, value: int):
+        self._limit = value
+        return self
+
     async def execute(self):
+        _ = self._limit
         self._client.calls.append(
             {
                 "table": self._table_name,
@@ -165,6 +171,12 @@ class _FakeTableQuery:
             dataset_id = next((value for key, value in self._filters if key == "id"), "")
             row = self._client.dataset_rows.get(dataset_id)
             return SimpleNamespace(data=[row] if row else [])
+        if self._op == "update" and self._table_name == "datasets":
+            dataset_id = next((value for key, value in self._filters if key == "id"), "")
+            row = self._client.dataset_rows.get(dataset_id)
+            if row is not None and self._payload is not None and not self._client.skip_dataset_updates:
+                row.update(self._payload)
+            return SimpleNamespace(data=[row] if row else [])
         return SimpleNamespace(data=[])
 
 
@@ -173,6 +185,7 @@ class _FakeStorageDbClient:
         self.dataset_rows: dict[str, dict] = {}
         self.calls: list[dict] = []
         self.missing_new_dataset_id_column = False
+        self.skip_dataset_updates = False
 
     def table(self, table_name: str):
         return _FakeTableQuery(self, table_name)
@@ -268,3 +281,20 @@ def test_delete_archived_items_ignores_missing_new_dataset_id_column(monkeypatch
     assert response.success is True
     assert response.deleted == ["dataset-1"]
     assert response.errors == []
+
+
+def test_archive_dataset_raises_when_update_not_persisted(monkeypatch):
+    monkeypatch.setattr(storage_api, "require_user_id", lambda: "user-1")
+    
+    async def _fake_set_dataset_status(dataset_id: str, *, status: str):
+        assert dataset_id == "dataset-1"
+        assert status == "archived"
+        raise HTTPException(status_code=500, detail="Dataset archive was not persisted")
+
+    monkeypatch.setattr(storage_api, "set_dataset_status", _fake_set_dataset_status)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(storage_api.archive_dataset("dataset-1"))
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Dataset archive was not persisted"

@@ -525,6 +525,23 @@ export type ModelSyncJobCancelResponse = {
   message: string;
 };
 
+export type BulkActionResultStatus = 'succeeded' | 'failed' | 'skipped';
+
+export type BulkActionResult = {
+  id: string;
+  status: BulkActionResultStatus;
+  message?: string;
+  job_id?: string | null;
+};
+
+export type BulkActionResponse = {
+  requested: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  results: BulkActionResult[];
+};
+
 export type TrainingReviveResult = {
   job_id: string;
   old_instance_id: string;
@@ -978,6 +995,16 @@ export const api = {
   },
   recording: {
     list: () => fetchApi('/api/recording/recordings'),
+    bulkArchive: (ids: string[]) =>
+      fetchApi<BulkActionResponse>('/api/recording/recordings/bulk/archive', {
+        method: 'POST',
+        body: JSON.stringify({ ids })
+      }),
+    bulkReupload: (ids: string[]) =>
+      fetchApi<BulkActionResponse>('/api/recording/recordings/bulk/reupload', {
+        method: 'POST',
+        body: JSON.stringify({ ids })
+      }),
     createSession: (payload: {
       dataset_name: string;
       task: string;
@@ -1101,12 +1128,27 @@ export const api = {
     archive: () => fetchApi('/api/storage/archive'),
     archiveDataset: (datasetId: string) =>
       fetchApi(`/api/storage/datasets/${datasetId}`, { method: 'DELETE' }),
+    bulkArchiveDatasets: (ids: string[]) =>
+      fetchApi<BulkActionResponse>('/api/storage/bulk/datasets/archive', {
+        method: 'POST',
+        body: JSON.stringify({ ids })
+      }),
     restoreDataset: (datasetId: string) =>
       fetchApi(`/api/storage/datasets/${datasetId}/restore`, { method: 'POST' }),
     reuploadDataset: (datasetId: string) =>
       fetchApi(`/api/storage/datasets/${datasetId}/reupload`, { method: 'POST' }),
+    bulkReuploadDatasets: (ids: string[]) =>
+      fetchApi<BulkActionResponse>('/api/storage/bulk/datasets/reupload', {
+        method: 'POST',
+        body: JSON.stringify({ ids })
+      }),
     syncModel: (modelId: string) =>
       fetchApi<ModelSyncJobAcceptedResponse>(`/api/storage/models/${modelId}/sync`, { method: 'POST' }),
+    bulkSyncModels: (ids: string[]) =>
+      fetchApi<BulkActionResponse>('/api/storage/bulk/models/sync', {
+        method: 'POST',
+        body: JSON.stringify({ ids })
+      }),
     modelSyncJobs: (includeTerminal = false) =>
       fetchApi<ModelSyncJobListResponse>(
         `/api/storage/model-sync/jobs${includeTerminal ? '?include_terminal=true' : ''}`
@@ -1120,6 +1162,11 @@ export const api = {
       ),
     archiveModel: (modelId: string) =>
       fetchApi(`/api/storage/models/${modelId}`, { method: 'DELETE' }),
+    bulkArchiveModels: (ids: string[]) =>
+      fetchApi<BulkActionResponse>('/api/storage/bulk/models/archive', {
+        method: 'POST',
+        body: JSON.stringify({ ids })
+      }),
     restoreModel: (modelId: string) =>
       fetchApi(`/api/storage/models/${modelId}/restore`, { method: 'POST' }),
     restoreArchive: (payload: { dataset_ids: string[]; model_ids: string[] }) =>
