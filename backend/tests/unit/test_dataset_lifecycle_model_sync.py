@@ -24,21 +24,21 @@ class _FakeSyncDownloaded:
             "total_size": 4000,
         })
         progress_callback({"type": "complete", "total_files": 4, "total_size": 4000})
-        return SimpleNamespace(success=True, message="Downloaded", skipped=False)
+        return SimpleNamespace(success=True, message="Downloaded", skipped=False, cancelled=False)
 
 
 class _FakeSyncCacheHit:
     async def ensure_model_local(self, _model_id, auto_download=True, progress_callback=None):
         assert auto_download is True
         assert progress_callback is not None
-        return SimpleNamespace(success=True, message="Cache hit", skipped=True)
+        return SimpleNamespace(success=True, message="Cache hit", skipped=True, cancelled=False)
 
 
 class _FakeSyncFailure:
     async def ensure_model_local(self, _model_id, auto_download=True, progress_callback=None):
         assert auto_download is True
         assert progress_callback is not None
-        return SimpleNamespace(success=False, message="not found", skipped=False)
+        return SimpleNamespace(success=False, message="not found", skipped=False, cancelled=False)
 
 
 class _FakeSyncPhasedProgress:
@@ -81,7 +81,7 @@ class _FakeSyncPhasedProgress:
             "total_files": 2,
             "total_size": 1000,
         })
-        return SimpleNamespace(success=True, message="Downloaded", skipped=False)
+        return SimpleNamespace(success=True, message="Downloaded", skipped=False, cancelled=False)
 
 
 class _FakeSyncUploadResult:
@@ -217,3 +217,87 @@ def test_reupload_fails_when_metadata_refresh_fails():
     status = lifecycle.get_dataset_upload_status("dataset-1")
     assert status["status"] == "failed"
     assert status["phase"] == "failed"
+
+
+class _FakeDatasetTableQuery:
+    def __init__(self, client, table_name: str):
+        self._client = client
+        self._table_name = table_name
+        self._op = "select"
+        self._payload = None
+        self._filters: list[tuple[str, str]] = []
+        self._limit: int | None = None
+
+    def select(self, _fields: str):
+        self._op = "select"
+        return self
+
+    def update(self, payload: dict):
+        self._op = "update"
+        self._payload = payload
+        return self
+
+    def eq(self, key: str, value: str):
+        self._filters.append((key, value))
+        return self
+
+    def limit(self, value: int):
+        self._limit = value
+        return self
+
+    async def execute(self):
+        _ = self._limit
+        dataset_id = next((value for key, value in self._filters if key == "id"), "")
+        row = self._client.dataset_rows.get(dataset_id)
+        if self._table_name == "datasets" and self._op == "update" and row is not None and self._payload is not None:
+            row.update(self._payload)
+        return SimpleNamespace(data=[row] if row else [])
+
+
+class _FakeDatasetDbClient:
+    def __init__(self):
+        self.dataset_rows: dict[str, dict] = {}
+
+    def table(self, table_name: str):
+        return _FakeDatasetTableQuery(self, table_name)
+
+
+def test_update_stats_preserves_archived_status(monkeypatch, tmp_path):
+    lifecycle = DatasetLifecycle()
+    dataset_root = tmp_path / "dataset-1" / "meta"
+    dataset_root.mkdir(parents=True, exist_ok=True)
+    (dataset_root / "info.json").write_text('{"total_episodes": 4}', encoding="utf-8")
+
+    fake_client = _FakeDatasetDbClient()
+    fake_client.dataset_rows["dataset-1"] = {"id": "dataset-1", "status": "archived"}
+
+    monkeypatch.setattr(
+        lifecycle,
+        "_get_internal_db_client",
+        lambda: asyncio.sleep(0, result=fake_client),
+    )
+    monkeypatch.setattr(
+        "interfaces_backend.services.dataset_lifecycle.get_datasets_dir",
+        lambda: tmp_path,
+    )
+
+    asyncio.run(lifecycle.update_stats("dataset-1"))
+
+    assert fake_client.dataset_rows["dataset-1"]["status"] == "archived"
+    assert fake_client.dataset_rows["dataset-1"]["episode_count"] == 4
+
+
+def test_mark_active_does_not_restore_archived_dataset(monkeypatch):
+    lifecycle = DatasetLifecycle()
+    fake_client = _FakeDatasetDbClient()
+    fake_client.dataset_rows["dataset-1"] = {"id": "dataset-1", "status": "archived"}
+
+    monkeypatch.setattr(
+        lifecycle,
+        "_get_internal_db_client",
+        lambda: asyncio.sleep(0, result=fake_client),
+    )
+
+    asyncio.run(lifecycle.mark_active("dataset-1"))
+
+    assert fake_client.dataset_rows["dataset-1"]["status"] == "archived"

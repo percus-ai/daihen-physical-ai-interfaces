@@ -110,15 +110,19 @@ class DatasetLifecycle:
         payload = {
             "episode_count": episode_count,
             "size_bytes": size_bytes,
-            "status": "active",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         client = await self._get_internal_db_client()
         await client.table("datasets").update(payload).eq("id", dataset_id).execute()
 
     async def mark_active(self, dataset_id: str) -> None:
-        """Set datasets.status to 'active'."""
+        """Set datasets.status to 'active' unless the dataset was explicitly archived."""
         client = await self._get_internal_db_client()
+        rows = (
+            await client.table("datasets").select("status").eq("id", dataset_id).limit(1).execute()
+        ).data or []
+        if rows and rows[0].get("status") == "archived":
+            return
         await (
             client.table("datasets")
             .update(
