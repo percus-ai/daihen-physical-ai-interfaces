@@ -111,6 +111,11 @@ def check_system_info() -> Dict[str, Any]:
         torchvision_path = str(bundled_torch / "torchvision")
         env["PYTHONPATH"] = f"{pytorch_path}:{torchvision_path}:{env.get('PYTHONPATH', '')}"
 
+    # Prefer bundled-torch build venv when present. The CLI may run under a
+    # different Python (e.g. system Python), which cannot import cp310 extensions.
+    probe_python = bundled_torch / ".venv" / "bin" / "python"
+    python_exe = str(probe_python) if probe_python.exists() else sys.executable
+
     # Python code to run in subprocess
     torch_check_code = '''
 import json
@@ -137,7 +142,7 @@ print(json.dumps(info))
 
     try:
         result = subprocess.run(
-            [sys.executable, "-c", torch_check_code],
+            [python_exe, "-c", torch_check_code],
             capture_output=True,
             text=True,
             timeout=10,
@@ -146,7 +151,7 @@ print(json.dumps(info))
         if result.returncode == 0 and result.stdout.strip():
             info = json.loads(result.stdout.strip())
         else:
-            info["error"] = "PyTorch not installed"
+            info["error"] = (result.stderr or result.stdout or "").strip() or "PyTorch not installed"
     except subprocess.TimeoutExpired:
         info["error"] = "Timeout checking PyTorch"
     except Exception as e:

@@ -900,6 +900,36 @@ print(json.dumps({"nodes": nodes, "topics": topics, "all_topics": topic_names}))
             group.details.error = f"env python not found: {python_path}"
             return group
 
+        if platform.pytorch_build_required and bundled_torch_present:
+            # bundled-torch extensions are built for a specific Python minor version.
+            # If the runtime env uses a different Python, importing via PYTHONPATH will fail.
+            expected_python_minor = "3.10"
+            actual_python_minor: str | None = None
+            try:
+                result = subprocess.run(
+                    [
+                        str(python_path),
+                        "-c",
+                        "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    actual_python_minor = (result.stdout or "").strip() or None
+            except Exception:
+                actual_python_minor = None
+
+            if actual_python_minor != expected_python_minor:
+                group.level = "error"
+                group.details.error = (
+                    "bundled-torch requires Python "
+                    f"{expected_python_minor}, but env '{env_name}' uses "
+                    f"{actual_python_minor or 'unknown'}: {python_path}"
+                )
+                return group
+
         probe_env = os.environ.copy()
         if platform.pytorch_build_required and bundled_torch_present:
             extra_paths = [

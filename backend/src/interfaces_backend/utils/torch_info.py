@@ -46,13 +46,20 @@ def get_torch_info(use_cache: bool = True) -> Dict[str, Any]:
         "error": None,
     }
 
-    # Build PYTHONPATH with bundled-torch if it exists
+    # Build PYTHONPATH with bundled-torch if it exists.
+    # Note: bundled-torch extensions are Python-minor-version specific.
     bundled_torch = Path.home() / ".cache" / "daihen-physical-ai" / "bundled-torch"
     env = os.environ.copy()
     if (bundled_torch / "pytorch").is_dir():
         pytorch_path = str(bundled_torch / "pytorch")
         torchvision_path = str(bundled_torch / "torchvision")
         env["PYTHONPATH"] = f"{pytorch_path}:{torchvision_path}:{env.get('PYTHONPATH', '')}"
+
+    # Prefer the bundled-torch build venv when present. The backend may run under a
+    # different Python (e.g. system Python 3.12), which cannot import cp310
+    # extensions built for bundled-torch.
+    probe_python = bundled_torch / ".venv" / "bin" / "python"
+    python_exe = str(probe_python) if probe_python.exists() else sys.executable
 
     # Python code to run in subprocess
     torch_check_code = '''
@@ -97,7 +104,7 @@ print(json.dumps(info))
 
     try:
         result = subprocess.run(
-            [sys.executable, "-c", torch_check_code],
+            [python_exe, "-c", torch_check_code],
             capture_output=True,
             text=True,
             timeout=15,
@@ -106,7 +113,7 @@ print(json.dumps(info))
         if result.returncode == 0 and result.stdout.strip():
             info = json.loads(result.stdout.strip())
         else:
-            info["error"] = "Failed to get PyTorch info"
+            info["error"] = (result.stderr or result.stdout or "").strip() or "Failed to get PyTorch info"
     except subprocess.TimeoutExpired:
         info["error"] = "Timeout checking PyTorch"
     except Exception as e:
