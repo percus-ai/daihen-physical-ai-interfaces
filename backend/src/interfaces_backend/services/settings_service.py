@@ -41,8 +41,8 @@ class SystemSettingsService:
         bundled = data.get("bundled_torch") or {}
         return SystemSettingsModel(
             bundled_torch=BundledTorchDefaultsModel(
-                pytorch_version=str(bundled.get("pytorch_version") or "v2.8.0"),
-                torchvision_version=str(bundled.get("torchvision_version") or "v0.23.0"),
+                pytorch_version=str(bundled.get("pytorch_version") or "v2.10.0"),
+                torchvision_version=str(bundled.get("torchvision_version") or "v0.25.0"),
             ),
             features_repo=FeaturesRepoSettingsModel(
                 repo_url=str(

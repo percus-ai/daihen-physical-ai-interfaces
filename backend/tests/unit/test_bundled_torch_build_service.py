@@ -43,8 +43,8 @@ class _FakeBuilder:
         if self.__class__.built:
             return _FakeBuildStatus(
                 exists=True,
-                pytorch_version="v2.8.0",
-                torchvision_version="v0.23.0",
+                pytorch_version="v2.10.0",
+                torchvision_version="v0.25.0",
                 numpy_version="2.1.0",
                 pytorch_path="/tmp/pytorch",
                 torchvision_path="/tmp/vision",
@@ -70,8 +70,8 @@ class _InvalidBuilder:
     def get_status(self):
         return _FakeBuildStatus(
             exists=True,
-            pytorch_version="v2.8.0",
-            torchvision_version="v0.23.0",
+            pytorch_version="v2.10.0",
+            torchvision_version="v0.25.0",
             is_valid=False,
         )
 
@@ -134,7 +134,7 @@ async def test_start_build_updates_completed_snapshot(monkeypatch):
     )
 
     service = BundledTorchBuildService()
-    await service.start_build(pytorch_version="v2.8.0", torchvision_version="v0.23.0")
+    await service.start_build(pytorch_version="v2.10.0", torchvision_version="v0.25.0")
 
     task = service._active_task
     assert task is not None
@@ -145,8 +145,8 @@ async def test_start_build_updates_completed_snapshot(monkeypatch):
     assert snapshot.current_action is None
     assert snapshot.install.exists is True
     assert snapshot.install.is_valid is True
-    assert snapshot.requested_pytorch_version == "v2.8.0"
-    assert snapshot.requested_torchvision_version == "v0.23.0"
+    assert snapshot.requested_pytorch_version == "v2.10.0"
+    assert snapshot.requested_torchvision_version == "v0.25.0"
     assert snapshot.can_build is True
     assert snapshot.can_clean is True
     assert any(entry.type == "log" for entry in snapshot.logs)
@@ -260,8 +260,8 @@ def test_invalid_install_sets_warning_message():
             update={
                 "install": BundledTorchInstallStatus(
                     exists=True,
-                    pytorch_version="v2.8.0",
-                    torchvision_version="v0.23.0",
+                    pytorch_version="v2.10.0",
+                    torchvision_version="v0.25.0",
                     is_valid=False,
                 ),
                 "state": "idle",

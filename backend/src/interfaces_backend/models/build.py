@@ -42,6 +42,9 @@ class BundledTorchLogEntry(BaseModel):
 class BundledTorchBuildSnapshot(BaseModel):
     platform: BundledTorchPlatformInfo
     install: BundledTorchInstallStatus = Field(default_factory=BundledTorchInstallStatus)
+    recommended_pytorch_version: str | None = None
+    recommended_torchvision_version: str | None = None
+    recommended_reason: str | None = None
     state: BundledTorchState = "idle"
     current_action: BundledTorchAction | None = None
     current_step: str | None = None

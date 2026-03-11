@@ -8,8 +8,8 @@ from pydantic import BaseModel, Field
 class BundledTorchDefaultsModel(BaseModel):
     """Bundled torch default versions."""
 
-    pytorch_version: str = Field("v2.8.0", description="Default PyTorch version")
-    torchvision_version: str = Field("v0.23.0", description="Default torchvision version")
+    pytorch_version: str = Field("v2.10.0", description="Default PyTorch version")
+    torchvision_version: str = Field("v0.25.0", description="Default torchvision version")
 
 
 class FeaturesRepoSettingsModel(BaseModel):

@@ -20,10 +20,37 @@ from interfaces_backend.models.build import (
 from percus_ai.environment import Platform, TorchBuilder
 
 _LOG_LIMIT = 400
+_RECOMMENDED_PYTORCH_VERSION = "v2.10.0"
+_RECOMMENDED_TORCHVISION_VERSION = "v0.25.0"
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _cuda_major(cuda_version: str | None) -> int | None:
+    text = str(cuda_version or "").strip()
+    if not text:
+        return None
+    head = text.split(".", 1)[0]
+    if not head.isdigit():
+        return None
+    return int(head)
+
+
+def _recommend_bundled_torch_versions(platform: Platform) -> tuple[str, str, str]:
+    pytorch_version = _RECOMMENDED_PYTORCH_VERSION
+    torchvision_version = _RECOMMENDED_TORCHVISION_VERSION
+    reason = "recommended"
+
+    major = _cuda_major(platform.cuda_version)
+    model = str(platform.jetson_model or "").lower()
+    if major is not None and major >= 13:
+        reason = "cuda>=13"
+    elif "thor" in model:
+        reason = "thor"
+
+    return pytorch_version, torchvision_version, reason
 
 
 class BundledTorchBuildService:
@@ -52,6 +79,10 @@ class BundledTorchBuildService:
             snapshot = self._snapshot.model_copy(deep=True)
             snapshot.platform = self._platform_info(platform)
             snapshot.install = install
+            rec_torch, rec_vision, rec_reason = _recommend_bundled_torch_versions(platform)
+            snapshot.recommended_pytorch_version = rec_torch
+            snapshot.recommended_torchvision_version = rec_vision
+            snapshot.recommended_reason = rec_reason
             snapshot.updated_at = _now_iso()
             self._snapshot = self._with_capabilities(self._with_install_warning(snapshot))
         await self.publish_snapshot()
@@ -87,6 +118,10 @@ class BundledTorchBuildService:
 
             snapshot = self._snapshot.model_copy(deep=True)
             snapshot.platform = self._platform_info(platform)
+            rec_torch, rec_vision, rec_reason = _recommend_bundled_torch_versions(platform)
+            snapshot.recommended_pytorch_version = rec_torch
+            snapshot.recommended_torchvision_version = rec_vision
+            snapshot.recommended_reason = rec_reason
             snapshot.state = "building"
             snapshot.current_action = "rebuild" if force else "build"
             snapshot.current_step = "clean" if force else "clone_pytorch"
@@ -121,6 +156,10 @@ class BundledTorchBuildService:
 
             snapshot = self._snapshot.model_copy(deep=True)
             snapshot.platform = self._platform_info(platform)
+            rec_torch, rec_vision, rec_reason = _recommend_bundled_torch_versions(platform)
+            snapshot.recommended_pytorch_version = rec_torch
+            snapshot.recommended_torchvision_version = rec_vision
+            snapshot.recommended_reason = rec_reason
             snapshot.state = "cleaning"
             snapshot.current_action = "clean"
             snapshot.current_step = "clean"
@@ -301,9 +340,13 @@ class BundledTorchBuildService:
         builder = TorchBuilder()
         install = self._install_status(builder)
         platform = self._detect_platform_for_install_status(install, current_state="idle")
+        rec_torch, rec_vision, rec_reason = _recommend_bundled_torch_versions(platform)
         return BundledTorchBuildSnapshot(
             platform=self._platform_info(platform),
             install=install,
+            recommended_pytorch_version=rec_torch,
+            recommended_torchvision_version=rec_vision,
+            recommended_reason=rec_reason,
             state="idle",
             updated_at=_now_iso(),
         )

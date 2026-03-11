@@ -8,8 +8,8 @@ def test_system_settings_service_round_trip(tmp_path):
     service = SystemSettingsService(path=tmp_path / "system-settings.json")
 
     initial = service.get_settings()
-    assert initial.bundled_torch.pytorch_version == "v2.8.0"
-    assert initial.bundled_torch.torchvision_version == "v0.23.0"
+    assert initial.bundled_torch.pytorch_version == "v2.10.0"
+    assert initial.bundled_torch.torchvision_version == "v0.25.0"
     assert initial.features_repo.repo_url == "https://github.com/percus-ai/physical-ai-features.git"
     assert initial.features_repo.repo_ref == "main"
     assert initial.features_repo.repo_commit is None

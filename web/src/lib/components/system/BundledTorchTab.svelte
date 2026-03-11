@@ -142,11 +142,27 @@
 
   $effect(() => {
     const defaults = systemSettings?.bundled_torch;
-    if (defaults && !pytorchVersion) {
-      pytorchVersion = defaults.pytorch_version;
+    const recommendedTorch = snapshot?.recommended_pytorch_version ?? null;
+    const recommendedVision = snapshot?.recommended_torchvision_version ?? null;
+
+    const nextTorch = recommendedTorch || defaults?.pytorch_version;
+    const nextVision = recommendedVision || defaults?.torchvision_version;
+
+    if (nextTorch) {
+      const shouldOverride =
+        !pytorchVersion ||
+        (recommendedTorch && defaults?.pytorch_version && pytorchVersion === defaults.pytorch_version);
+      if (shouldOverride) {
+        pytorchVersion = nextTorch;
+      }
     }
-    if (defaults && !torchvisionVersion) {
-      torchvisionVersion = defaults.torchvision_version;
+    if (nextVision) {
+      const shouldOverride =
+        !torchvisionVersion ||
+        (recommendedVision && defaults?.torchvision_version && torchvisionVersion === defaults.torchvision_version);
+      if (shouldOverride) {
+        torchvisionVersion = nextVision;
+      }
     }
   });
 
@@ -270,7 +286,7 @@
             <input
               bind:value={pytorchVersion}
               class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
-              placeholder={systemSettings?.bundled_torch?.pytorch_version ?? 'v2.8.0'}
+              placeholder={systemSettings?.bundled_torch?.pytorch_version ?? 'v2.10.0'}
               disabled={actionPending || bundledBusy}
             />
           </label>
@@ -279,7 +295,7 @@
             <input
               bind:value={torchvisionVersion}
               class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
-              placeholder={systemSettings?.bundled_torch?.torchvision_version ?? 'v0.23.0'}
+              placeholder={systemSettings?.bundled_torch?.torchvision_version ?? 'v0.25.0'}
               disabled={actionPending || bundledBusy}
             />
           </label>

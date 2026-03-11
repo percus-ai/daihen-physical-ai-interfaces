@@ -110,7 +110,7 @@ class BuildMenu(BaseMenu):
                     return MenuResult.CONTINUE
 
             # Version selection
-            print(f"\n{Colors.muted('Leave empty to use latest version.')}")
+            print(f"\n{Colors.muted('Leave empty to use server default versions.')}")
 
             pytorch_version = inquirer.text(
                 message="PyTorch version (e.g., v2.1.0):",
@@ -126,8 +126,8 @@ class BuildMenu(BaseMenu):
 
             # Confirmation
             print(f"\n{Colors.CYAN}Build Configuration:{Colors.RESET}")
-            print(f"  PyTorch: {pytorch_version or 'latest'}")
-            print(f"  torchvision: {torchvision_version or 'latest'}")
+            print(f"  PyTorch: {pytorch_version or 'default'}")
+            print(f"  torchvision: {torchvision_version or 'default'}")
             print(f"\n{Colors.warning('Warning:')} Building PyTorch from source may take several hours.")
 
             confirm = inquirer.confirm(

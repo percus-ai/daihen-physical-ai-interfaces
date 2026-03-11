@@ -32,6 +32,9 @@ export type BundledTorchLogEntry = {
 export type BundledTorchBuildSnapshot = {
   platform: BundledTorchPlatformInfo;
   install: BundledTorchInstallStatus;
+  recommended_pytorch_version?: string | null;
+  recommended_torchvision_version?: string | null;
+  recommended_reason?: string | null;
   state: BundledTorchState;
   current_action?: BundledTorchAction | null;
   current_step?: string | null;
