@@ -3,12 +3,14 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import { toStore } from 'svelte/store';
+  import toast from 'svelte-french-toast';
   import { api, type ArchiveBulkResponse, type BulkActionResponse } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import { formatBytes, formatDate } from '$lib/format';
   import DatasetMergeProgressModal from '$lib/components/storage/DatasetMergeProgressModal.svelte';
   import StorageArchiveConfirmDialog from '$lib/components/storage/StorageArchiveConfirmDialog.svelte';
+  import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
 
   type DatasetSummary = {
     id: string;
@@ -47,6 +49,10 @@
   let archiveTarget = $state<DatasetSummary | null>(null);
   let archivePendingId = $state('');
   let archiveDialogError = $state('');
+  let renameDialogOpen = $state(false);
+  let renameTarget = $state<DatasetSummary | null>(null);
+  let renamePending = $state(false);
+  let renameError = $state('');
   let rowPendingId = $state('');
   let rowPendingAction = $state<DatasetRowAction>('');
   let datasetSortKey = $state<'created_at' | 'name' | 'episode_count' | 'size_bytes'>('created_at');
@@ -170,6 +176,12 @@
     archiveDialogError = '';
   };
 
+  const resetRenameDialog = () => {
+    renameDialogOpen = false;
+    renameTarget = null;
+    renameError = '';
+  };
+
   const removeSelectedIds = (ids: string[]) => {
     if (!ids.length) return;
     const idSet = new Set(ids);
@@ -244,15 +256,23 @@
     mergeName = '';
     resetMessages();
     resetArchiveDialog();
+    resetRenameDialog();
     rowPendingId = '';
     rowPendingAction = '';
   };
 
   const openArchiveDialog = (dataset: DatasetSummary) => {
-    if (datasetStatusTab !== 'active' || actionLoading || archivePendingId || rowPendingId) return;
+    if (datasetStatusTab !== 'active' || actionLoading || archivePendingId || rowPendingId || renamePending) return;
     archiveDialogError = '';
     archiveTarget = dataset;
     archiveDialogOpen = true;
+  };
+
+  const openRenameDialog = (dataset: DatasetSummary) => {
+    if (actionLoading || archivePendingId || rowPendingId || renamePending) return;
+    renameError = '';
+    renameTarget = dataset;
+    renameDialogOpen = true;
   };
 
   const startMergeJob = async (payload: { dataset_name: string; source_dataset_ids: string[] }) => {
@@ -489,10 +509,36 @@
     }
   }
 
+  async function handleRenameTarget(nextName: string) {
+    renameError = '';
+
+    const target = renameTarget;
+    if (!target?.id || actionLoading || archivePendingId || rowPendingId) return;
+
+    renamePending = true;
+    try {
+      await api.storage.renameDataset(target.id, { name: nextName });
+      await queryClient.invalidateQueries({ queryKey: qk.storage.dataset(target.id) });
+      await refetchDatasets();
+      resetRenameDialog();
+      toast.success('名前を更新しました。');
+    } catch (err) {
+      renameError = err instanceof Error ? err.message : '名前変更に失敗しました。';
+    } finally {
+      renamePending = false;
+    }
+  }
+
   $effect(() => {
     if (archiveDialogOpen || archivePendingId) return;
     archiveTarget = null;
     archiveDialogError = '';
+  });
+
+  $effect(() => {
+    if (renameDialogOpen || renamePending) return;
+    renameTarget = null;
+    renameError = '';
   });
 </script>
 
@@ -514,6 +560,15 @@
   pending={Boolean(archivePendingId)}
   errorMessage={archiveDialogError}
   onConfirm={handleArchiveTarget}
+/>
+
+<StorageRenameDialog
+  bind:open={renameDialogOpen}
+  itemKind="dataset"
+  currentName={renameTarget ? displayDatasetLabel(renameTarget) : ''}
+  pending={renamePending}
+  errorMessage={renameError}
+  onConfirm={handleRenameTarget}
 />
 
 <section class="card-strong p-8">
@@ -738,10 +793,17 @@
                       >
                         詳細を開く
                       </DropdownMenu.Item>
+                      <DropdownMenu.Item
+                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                        disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                        onSelect={() => openRenameDialog(dataset)}
+                      >
+                        名前変更
+                      </DropdownMenu.Item>
                       {#if isArchiveTab}
                         <DropdownMenu.Item
                           class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
                           onSelect={() => {
                             void handleRestoreTarget(dataset);
                           }}
@@ -754,7 +816,7 @@
                         </DropdownMenu.Item>
                         <DropdownMenu.Item
                           class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
                           onSelect={() => {
                             void handleDeleteTarget(dataset);
                           }}
@@ -768,7 +830,7 @@
                       {:else}
                         <DropdownMenu.Item
                           class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
                           onSelect={() => openArchiveDialog(dataset)}
                         >
                           {#if isArchivePending(dataset.id)}

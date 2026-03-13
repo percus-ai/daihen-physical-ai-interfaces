@@ -60,6 +60,7 @@ from interfaces_backend.models.storage import (
     ModelSyncJobListResponse,
     ModelSyncJobStatus,
     StorageSortOrder,
+    StorageRenameRequest,
     StorageUsageResponse,
 )
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
@@ -358,6 +359,16 @@ def _model_row_to_info(row: dict) -> ModelInfo:
     )
 
 
+async def _resolve_model_info(row: dict) -> ModelInfo:
+    model = _model_row_to_info(row)
+    owner_user_id = str(row.get("owner_user_id") or "").strip()
+    owner_directory = await resolve_user_directory_entries([owner_user_id])
+    owner_entry = owner_directory.get(owner_user_id)
+    model.owner_email = owner_entry.email or None if owner_entry else None
+    model.owner_name = owner_entry.name or None if owner_entry else None
+    return model
+
+
 def _build_bulk_action_response(results: list[BulkActionResult], requested: int | None = None) -> BulkActionResponse:
     succeeded = sum(1 for result in results if result.status == "succeeded")
     failed = sum(1 for result in results if result.status == "failed")
@@ -500,6 +511,31 @@ async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
         model.owner_name = owner_entry.name or None if owner_entry else None
         models.append(model)
     return ModelListResponse(models=models, total=total)
+
+
+async def _require_dataset_row(client, dataset_id: str) -> dict:
+    rows = (await client.table("datasets").select("*").eq("id", dataset_id).execute()).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+    return rows[0]
+
+
+async def _require_model_row(client, model_id: str) -> dict:
+    rows = (await client.table("models").select("*").eq("id", model_id).execute()).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
+    return rows[0]
+
+
+def _validate_storage_name_or_raise(name: str) -> str:
+    normalized_name = str(name).strip()
+    if not normalized_name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    is_valid, errors = validate_dataset_name(normalized_name)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    return normalized_name
 
 
 @router.get("/datasets", response_model=DatasetListResponse)
@@ -708,10 +744,19 @@ async def get_dataset_merge_job(job_id: str):
 async def get_dataset(dataset_id: str):
     """Get dataset details from DB."""
     client = await get_supabase_async_client()
-    rows = (await client.table("datasets").select("*").eq("id", dataset_id).execute()).data or []
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
-    return _dataset_row_to_info(rows[0])
+    return _dataset_row_to_info(await _require_dataset_row(client, dataset_id))
+
+
+@router.patch("/datasets/{dataset_id:path}", response_model=DatasetInfo)
+async def rename_dataset(dataset_id: str, request: StorageRenameRequest):
+    """Rename dataset display name without changing dataset_id."""
+    require_user_id()
+    normalized_name = _validate_storage_name_or_raise(request.name)
+
+    client = await get_supabase_async_client()
+    await _require_dataset_row(client, dataset_id)
+    await client.table("datasets").update({"name": normalized_name}).eq("id", dataset_id).execute()
+    return _dataset_row_to_info(await _require_dataset_row(client, dataset_id))
 
 
 @router.get(
@@ -1263,16 +1308,19 @@ async def list_models(
 async def get_model(model_id: str):
     """Get model details from DB."""
     client = await get_supabase_async_client()
-    rows = (await client.table("models").select("*").eq("id", model_id).execute()).data or []
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
-    model = _model_row_to_info(rows[0])
-    owner_user_id = str(rows[0].get("owner_user_id") or "").strip()
-    owner_directory = await resolve_user_directory_entries([owner_user_id])
-    owner_entry = owner_directory.get(owner_user_id)
-    model.owner_email = owner_entry.email or None if owner_entry else None
-    model.owner_name = owner_entry.name or None if owner_entry else None
-    return model
+    return await _resolve_model_info(await _require_model_row(client, model_id))
+
+
+@router.patch("/models/{model_id}", response_model=ModelInfo)
+async def rename_model(model_id: str, request: StorageRenameRequest):
+    """Rename model display name without changing model_id."""
+    require_user_id()
+    normalized_name = _validate_storage_name_or_raise(request.name)
+
+    client = await get_supabase_async_client()
+    await _require_model_row(client, model_id)
+    await client.table("models").update({"name": normalized_name}).eq("id", model_id).execute()
+    return await _resolve_model_info(await _require_model_row(client, model_id))
 
 
 @router.post("/models/{model_id}/sync", response_model=ModelSyncJobAcceptedResponse, status_code=202)

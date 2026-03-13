@@ -4,12 +4,14 @@
   import { get, toStore } from 'svelte/store';
   import { page } from '$app/state';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import toast from 'svelte-french-toast';
   import { api, type DatasetViewerEpisodeVideoWindowResponse } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import DatasetMergeProgressModal from '$lib/components/storage/DatasetMergeProgressModal.svelte';
+  import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
   type DatasetInfo = {
@@ -69,12 +71,16 @@
   let mergeModalOpen = $state(false);
   let mergeJobId = $state('');
   let lastMergePayload = $state<null | { dataset_name: string; source_dataset_ids: string[] }>(null);
+  let renameDialogOpen = $state(false);
+  let renamePending = $state(false);
+  let renameError = $state('');
 
   const mergeDefaultName = $derived(
     datasetId
       ? `${dataset?.name ?? datasetId}_merged`
       : ''
   );
+  const displayName = $derived(dataset?.name ?? datasetId);
   const canMerge = $derived(!isArchived && mergeSelection.length > 0 && !actionLoading);
 
   const openViewerModal = () => {
@@ -163,6 +169,29 @@
     await queryClient.invalidateQueries({
       queryKey: qk.storage.datasets({ profileName })
     });
+  };
+
+  const resetRenameDialog = () => {
+    renameDialogOpen = false;
+    renameError = '';
+  };
+
+  const handleRename = async (nextName: string) => {
+    if (!datasetId) return;
+    renameError = '';
+    renamePending = true;
+
+    try {
+      await api.storage.renameDataset(datasetId, { name: nextName });
+      resetRenameDialog();
+      toast.success('名前を更新しました。');
+      await queryClient.invalidateQueries({ queryKey: qk.storage.datasetsPrefix() });
+      await refetchDataset();
+    } catch (err) {
+      renameError = err instanceof Error ? err.message : '名前変更に失敗しました。';
+    } finally {
+      renamePending = false;
+    }
   };
 
   const startMergeJob = async (payload: { dataset_name: string; source_dataset_ids: string[] }) => {
@@ -287,6 +316,15 @@
   }}
 />
 
+<StorageRenameDialog
+  bind:open={renameDialogOpen}
+  itemKind="dataset"
+  currentName={displayName}
+  pending={renamePending}
+  errorMessage={renameError}
+  onConfirm={handleRename}
+/>
+
 <section class="card-strong p-8">
   <p class="section-title">Storage</p>
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
@@ -304,11 +342,28 @@
 <section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">基本情報</h2>
+    {#if dataset}
+      <button
+        class="btn-ghost"
+        type="button"
+        disabled={actionLoading || renamePending}
+        onclick={() => {
+          renameError = '';
+          renameDialogOpen = true;
+        }}
+      >
+        名前変更
+      </button>
+    {/if}
   </div>
   {#if $datasetQuery.isLoading}
     <p class="mt-4 text-sm text-slate-600">読み込み中...</p>
   {:else if dataset}
     <div class="mt-4 grid gap-4 text-sm text-slate-600 lg:grid-cols-2">
+      <div>
+        <p class="label">名前</p>
+        <p class="text-base font-semibold text-slate-800">{displayName}</p>
+      </div>
       <div>
         <p class="label">ID</p>
         <p class="text-base font-semibold text-slate-800">{dataset.id}</p>

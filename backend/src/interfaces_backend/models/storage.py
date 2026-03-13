@@ -155,6 +155,10 @@ class ModelListQuery(BaseModel):
     sort_order: StorageSortOrder = Field("desc", description="Sort direction")
 
 
+class StorageRenameRequest(BaseModel):
+    name: str = Field(..., description="Display name")
+
+
 ModelSyncJobState = Literal["queued", "running", "completed", "failed", "cancelled"]
 
 

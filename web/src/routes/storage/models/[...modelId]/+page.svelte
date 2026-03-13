@@ -3,8 +3,10 @@
   import { toStore } from 'svelte/store';
   import { page } from '$app/state';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
+  import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
   type ModelInfo = {
@@ -37,10 +39,37 @@
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
+  let renameDialogOpen = $state(false);
+  let renamePending = $state(false);
+  let renameError = $state('');
+  const displayName = $derived(model?.name ?? modelId);
 
   const refetchModel = async () => {
     if (!modelId) return;
     await queryClient.invalidateQueries({ queryKey: qk.storage.model(modelId) });
+  };
+
+  const resetRenameDialog = () => {
+    renameDialogOpen = false;
+    renameError = '';
+  };
+
+  const handleRename = async (nextName: string) => {
+    if (!modelId) return;
+    renameError = '';
+    renamePending = true;
+
+    try {
+      await api.storage.renameModel(modelId, { name: nextName });
+      resetRenameDialog();
+      toast.success('名前を更新しました。');
+      await queryClient.invalidateQueries({ queryKey: qk.storage.modelsPrefix() });
+      await refetchModel();
+    } catch (err) {
+      renameError = err instanceof Error ? err.message : '名前変更に失敗しました。';
+    } finally {
+      renamePending = false;
+    }
   };
 
   async function handleArchive() {
@@ -84,6 +113,15 @@
   }
 </script>
 
+<StorageRenameDialog
+  bind:open={renameDialogOpen}
+  itemKind="model"
+  currentName={displayName}
+  pending={renamePending}
+  errorMessage={renameError}
+  onConfirm={handleRename}
+/>
+
 <section class="card-strong p-8">
   <p class="section-title">Storage</p>
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
@@ -101,11 +139,28 @@
 <section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">基本情報</h2>
+    {#if model}
+      <button
+        class="btn-ghost"
+        type="button"
+        disabled={actionLoading || renamePending}
+        onclick={() => {
+          renameError = '';
+          renameDialogOpen = true;
+        }}
+      >
+        名前変更
+      </button>
+    {/if}
   </div>
   {#if $modelQuery.isLoading}
     <p class="mt-4 text-sm text-slate-600">読み込み中...</p>
   {:else if model}
     <div class="mt-4 grid gap-4 text-sm text-slate-600 lg:grid-cols-2">
+      <div>
+        <p class="label">名前</p>
+        <p class="text-base font-semibold text-slate-800">{displayName}</p>
+      </div>
       <div>
         <p class="label">ID</p>
         <p class="text-base font-semibold text-slate-800">{model.id}</p>

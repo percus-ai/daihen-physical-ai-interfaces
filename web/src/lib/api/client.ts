@@ -556,6 +556,10 @@ export type StorageModelListQuery = {
   sortOrder?: StorageSortOrder;
 };
 
+export type StorageRenameRequest = {
+  name: string;
+};
+
 export type BulkActionResultStatus = 'succeeded' | 'failed' | 'skipped';
 
 export type BulkActionResult = {
@@ -1151,6 +1155,11 @@ export const api = {
         })}`
       ),
     dataset: (datasetId: string) => fetchApi(`/api/storage/datasets/${datasetId}`),
+    renameDataset: (datasetId: string, payload: StorageRenameRequest) =>
+      fetchApi(`/api/storage/datasets/${datasetId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }),
     datasetViewer: (datasetId: string) =>
       fetchApi<DatasetViewerResponse>(`/api/storage/dataset-viewer/datasets/${datasetId}`),
     datasetViewerEpisodes: (datasetId: string) =>
@@ -1195,6 +1204,11 @@ export const api = {
     datasetMergeJob: (jobId: string) =>
       fetchApi<DatasetMergeJobStatus>(`/api/storage/dataset-merge/jobs/${encodeURIComponent(jobId)}`),
     model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),
+    renameModel: (modelId: string, payload: StorageRenameRequest) =>
+      fetchApi(`/api/storage/models/${modelId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }),
     usage: () => fetchApi('/api/storage/usage'),
     archiveDataset: (datasetId: string) =>
       fetchApi(`/api/storage/datasets/${datasetId}`, { method: 'DELETE' }),

@@ -4,6 +4,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import { toStore } from 'svelte/store';
+  import toast from 'svelte-french-toast';
   import {
     api,
     type ArchiveBulkResponse,
@@ -21,6 +22,7 @@
   } from '$lib/realtime/tabSessionClient';
   import ModelSyncProgressModal from '$lib/components/storage/ModelSyncProgressModal.svelte';
   import StorageArchiveConfirmDialog from '$lib/components/storage/StorageArchiveConfirmDialog.svelte';
+  import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
   import { presentModelSyncStatus } from '$lib/storage/transferStatus';
 
   type ModelSummary = {
@@ -68,6 +70,10 @@
   let archiveTarget = $state<ModelSummary | null>(null);
   let archivePendingId = $state('');
   let archiveDialogError = $state('');
+  let renameDialogOpen = $state(false);
+  let renameTarget = $state<ModelSummary | null>(null);
+  let renamePending = $state(false);
+  let renameError = $state('');
   let rowPendingId = $state('');
   let rowPendingAction = $state<ModelRowAction>('');
 
@@ -179,6 +185,12 @@
     archiveDialogError = '';
   };
 
+  const resetRenameDialog = () => {
+    renameDialogOpen = false;
+    renameTarget = null;
+    renameError = '';
+  };
+
   const removeSelectedIds = (ids: string[]) => {
     if (!ids.length) return;
     const idSet = new Set(ids);
@@ -249,15 +261,23 @@
     clearSelection();
     resetMessages();
     resetArchiveDialog();
+    resetRenameDialog();
     rowPendingId = '';
     rowPendingAction = '';
   };
 
   const openArchiveDialog = (model: ModelSummary) => {
-    if (modelStatusTab !== 'active' || bulkPending || syncAllPending || archivePendingId || rowPendingId) return;
+    if (modelStatusTab !== 'active' || bulkPending || syncAllPending || archivePendingId || rowPendingId || renamePending) return;
     archiveDialogError = '';
     archiveTarget = model;
     archiveDialogOpen = true;
+  };
+
+  const openRenameDialog = (model: ModelSummary) => {
+    if (bulkPending || syncAllPending || archivePendingId || rowPendingId || renamePending) return;
+    renameError = '';
+    renameTarget = model;
+    renameDialogOpen = true;
   };
 
   const normalizeJob = (job: ModelSyncJobStatus): ModelSyncJobStatus => {
@@ -655,6 +675,26 @@
     }
   }
 
+  async function handleRenameTarget(nextName: string) {
+    renameError = '';
+
+    const target = renameTarget;
+    if (!target?.id || bulkPending || syncAllPending || archivePendingId || rowPendingId) return;
+
+    renamePending = true;
+    try {
+      await api.storage.renameModel(target.id, { name: nextName });
+      await queryClient.invalidateQueries({ queryKey: qk.storage.model(target.id) });
+      await refetchModels();
+      resetRenameDialog();
+      toast.success('名前を更新しました。');
+    } catch (err) {
+      renameError = err instanceof Error ? err.message : '名前変更に失敗しました。';
+    } finally {
+      renamePending = false;
+    }
+  }
+
   const activeJobSubscriptions = $derived.by(() =>
     Object.keys(jobsById)
       .map((jobId) => jobsById[jobId])
@@ -710,6 +750,12 @@
     archiveTarget = null;
     archiveDialogError = '';
   });
+
+  $effect(() => {
+    if (renameDialogOpen || renamePending) return;
+    renameTarget = null;
+    renameError = '';
+  });
 </script>
 
 <ModelSyncProgressModal
@@ -725,6 +771,15 @@
   pending={Boolean(archivePendingId)}
   errorMessage={archiveDialogError}
   onConfirm={handleArchiveTarget}
+/>
+
+<StorageRenameDialog
+  bind:open={renameDialogOpen}
+  itemKind="model"
+  currentName={renameTarget ? displayModelLabel(renameTarget) : ''}
+  pending={renamePending}
+  errorMessage={renameError}
+  onConfirm={handleRenameTarget}
 />
 
 <section class="card-strong p-8">
@@ -962,10 +1017,17 @@
                       >
                         詳細を開く
                       </DropdownMenu.Item>
+                      <DropdownMenu.Item
+                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                        disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                        onSelect={() => openRenameDialog(model)}
+                      >
+                        名前変更
+                      </DropdownMenu.Item>
                       {#if isArchiveTab}
                         <DropdownMenu.Item
                           class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
                           onSelect={() => {
                             void handleRestoreTarget(model);
                           }}
@@ -978,7 +1040,7 @@
                         </DropdownMenu.Item>
                         <DropdownMenu.Item
                           class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
                           onSelect={() => {
                             void handleDeleteTarget(model);
                           }}
@@ -992,7 +1054,7 @@
                       {:else}
                         <DropdownMenu.Item
                           class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={isSyncButtonDisabled(model)}
+                          disabled={isSyncButtonDisabled(model) || renamePending}
                           onSelect={() => {
                             void handleSyncModel(model);
                           }}
@@ -1001,7 +1063,7 @@
                         </DropdownMenu.Item>
                         <DropdownMenu.Item
                           class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
                           onSelect={() => openArchiveDialog(model)}
                         >
                           {#if isArchivePending(model.id)}
