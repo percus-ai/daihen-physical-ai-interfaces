@@ -23,9 +23,6 @@ export const qk = {
       ['storage', 'models', normalizeQuery(query)] as const,
     model: (modelId: string) => ['storage', 'model', modelId] as const,
 
-    archiveManage: () => ['storage', 'archive', 'manage'] as const,
-    archiveItem: (itemType: string, itemId: string) => ['storage', 'archive', itemType, itemId] as const,
-
     datasetViewer: (datasetId: string) => ['storage', 'datasetViewer', datasetId] as const,
     datasetViewerEpisodes: (datasetId: string) => ['storage', 'datasetViewer', datasetId, 'episodes'] as const,
     datasetViewerSignalFields: (datasetId: string) => ['storage', 'datasetViewer', datasetId, 'signals'] as const,

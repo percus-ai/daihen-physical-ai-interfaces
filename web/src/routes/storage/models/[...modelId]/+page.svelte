@@ -2,7 +2,6 @@
   import { Button } from 'bits-ui';
   import { toStore } from 'svelte/store';
   import { page } from '$app/state';
-  import { goto } from '$app/navigation';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
@@ -160,7 +159,7 @@
           アーカイブ
         </button>
       {/if}
-      <button class="btn-ghost" type="button" onclick={() => goto('/storage/archive')}>アーカイブ一覧</button>
+      <Button.Root class="btn-ghost" href="/storage/models">モデル管理</Button.Root>
     </div>
   {:else}
     <p class="mt-4 text-sm text-slate-600">モデルが見つかりません。</p>

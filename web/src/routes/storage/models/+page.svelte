@@ -1,12 +1,24 @@
 <script lang="ts">
   import { browser } from '$app/environment';
-  import { Button, DropdownMenu } from 'bits-ui';
+  import { Button, DropdownMenu, Tabs } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
-  import { api, type BulkActionResponse, type ModelSyncJobState, type ModelSyncJobStatus, type TabSessionSubscription } from '$lib/api/client';
+  import { toStore } from 'svelte/store';
+  import {
+    api,
+    type ArchiveBulkResponse,
+    type BulkActionResponse,
+    type ModelSyncJobState,
+    type ModelSyncJobStatus,
+    type TabSessionSubscription
+  } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import {
+    registerTabRealtimeContributor,
+    type TabRealtimeContributorHandle,
+    type TabRealtimeEvent
+  } from '$lib/realtime/tabSessionClient';
   import ModelSyncProgressModal from '$lib/components/storage/ModelSyncProgressModal.svelte';
   import StorageArchiveConfirmDialog from '$lib/components/storage/StorageArchiveConfirmDialog.svelte';
   import { presentModelSyncStatus } from '$lib/storage/transferStatus';
@@ -30,33 +42,12 @@
     total?: number;
   };
 
-  const modelsQuery = createQuery<ModelListResponse>({
-    queryKey: qk.storage.models(),
-    queryFn: () => api.storage.models()
-  });
+  type ModelStatusTab = 'active' | 'archived';
+  type ModelRowAction = '' | 'restore' | 'delete';
+
   const queryClient = useQueryClient();
 
-  const models = $derived($modelsQuery.data?.models ?? []);
-  const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
-  const compareText = (left?: string | null, right?: string | null) =>
-    normalizeText(left).localeCompare(normalizeText(right), 'ja');
-  const compareNumber = (left?: number | null, right?: number | null) => Number(left ?? 0) - Number(right ?? 0);
-  const compareDate = (left?: string | null, right?: string | null) =>
-    (new Date(left ?? 0).getTime() || 0) - (new Date(right ?? 0).getTime() || 0);
-  const creatorLabel = (value?: string | null) => {
-    const normalized = String(value ?? '').trim();
-    if (!normalized) return '-';
-    if (normalized.length <= 24) return normalized;
-    return `${normalized.slice(0, 20)}...`;
-  };
-  const ownerLabel = (model: ModelSummary) =>
-    creatorLabel(model.owner_name ?? model.owner_email ?? model.owner_user_id);
-
-  const displayModelLabel = (model: ModelSummary) => model.name ?? model.id;
-  const isActiveJobState = (state?: ModelSyncJobState) => state === 'queued' || state === 'running';
-  const isTerminalJobState = (state?: ModelSyncJobState) =>
-    state === 'completed' || state === 'failed' || state === 'cancelled';
-
+  let modelStatusTab = $state<ModelStatusTab>('active');
   let syncAllPending = $state(false);
   let syncMessage = $state('');
   let syncError = $state('');
@@ -77,6 +68,50 @@
   let archiveTarget = $state<ModelSummary | null>(null);
   let archivePendingId = $state('');
   let archiveDialogError = $state('');
+  let rowPendingId = $state('');
+  let rowPendingAction = $state<ModelRowAction>('');
+
+  const modelsQuery = createQuery<ModelListResponse>(
+    toStore(() => {
+      const status = modelStatusTab;
+      return {
+        queryKey: qk.storage.models({ status }),
+        queryFn: () => api.storage.models({ status })
+      };
+    })
+  );
+
+  const models = $derived($modelsQuery.data?.models ?? []);
+  const isArchiveTab = $derived(modelStatusTab === 'archived');
+  const pageDescription = $derived(
+    isArchiveTab ? 'アーカイブ済みのモデルを一覧で確認できます。' : 'アクティブなモデルを一覧で確認できます。'
+  );
+  const helperText = $derived(
+    isArchiveTab ? '選択して復元または完全削除が可能です。' : '選択して一括操作が可能です。'
+  );
+  const emptyStateText = $derived(
+    isArchiveTab ? '条件に合うアーカイブ済みモデルがありません。' : '条件に合うモデルがありません。'
+  );
+  const modelTableColumnCount = $derived(isArchiveTab ? 9 : 10);
+
+  const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
+  const compareText = (left?: string | null, right?: string | null) =>
+    normalizeText(left).localeCompare(normalizeText(right), 'ja');
+  const compareNumber = (left?: number | null, right?: number | null) => Number(left ?? 0) - Number(right ?? 0);
+  const compareDate = (left?: string | null, right?: string | null) =>
+    (new Date(left ?? 0).getTime() || 0) - (new Date(right ?? 0).getTime() || 0);
+  const creatorLabel = (value?: string | null) => {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return '-';
+    if (normalized.length <= 24) return normalized;
+    return `${normalized.slice(0, 20)}...`;
+  };
+  const ownerLabel = (model: ModelSummary) =>
+    creatorLabel(model.owner_name ?? model.owner_email ?? model.owner_user_id);
+  const displayModelLabel = (model: ModelSummary) => model.name ?? model.id;
+  const isActiveJobState = (state?: ModelSyncJobState) => state === 'queued' || state === 'running';
+  const isTerminalJobState = (state?: ModelSyncJobState) =>
+    state === 'completed' || state === 'failed' || state === 'cancelled';
 
   const syncPending = $derived(syncAllPending);
   const modelOwnerOptions = $derived.by(() => {
@@ -126,6 +161,30 @@
   const allDisplayedModelsSelected = $derived(
     allDisplayedModelIds.length > 0 && allDisplayedModelIds.every((id) => selectedIds.includes(id))
   );
+
+  const clearSelection = () => {
+    selectedIds = [];
+  };
+
+  const resetMessages = () => {
+    syncMessage = '';
+    syncError = '';
+    bulkMessage = '';
+    bulkError = '';
+  };
+
+  const resetArchiveDialog = () => {
+    archiveDialogOpen = false;
+    archiveTarget = null;
+    archiveDialogError = '';
+  };
+
+  const removeSelectedIds = (ids: string[]) => {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    selectedIds = selectedIds.filter((id) => !idSet.has(id));
+  };
+
   const toggleSelectAllDisplayedModels = () => {
     if (allDisplayedModelsSelected) {
       selectedIds = selectedIds.filter((id) => !allDisplayedModelIds.includes(id));
@@ -133,9 +192,7 @@
     }
     selectedIds = Array.from(new Set([...selectedIds, ...allDisplayedModelIds]));
   };
-  const clearSelection = () => {
-    selectedIds = [];
-  };
+
   const applyBulkResponseMessage = (response: BulkActionResponse, label: string) => {
     const parts = [`成功 ${response.succeeded}`, `失敗 ${response.failed}`];
     if (response.skipped > 0) {
@@ -149,6 +206,17 @@
     bulkError = failedMessages.join(' / ');
   };
 
+  const applyArchiveBulkMessage = (
+    response: ArchiveBulkResponse,
+    label: string,
+    successIds: string[] | undefined
+  ) => {
+    const succeeded = successIds?.length ?? 0;
+    const failed = response.errors?.length ?? 0;
+    bulkMessage = `${label}: 成功 ${succeeded} / 失敗 ${failed}`;
+    bulkError = (response.errors ?? []).slice(0, 3).join(' / ');
+  };
+
   const activeJobOf = (modelId: string) => activeJobsByModelId[modelId] ?? null;
   const openModelSyncModal = (jobId: string) => {
     if (!jobId) return;
@@ -156,8 +224,37 @@
     modelSyncModalOpen = true;
   };
   const isArchivePending = (modelId: string) => archivePendingId === modelId;
+  const isRowPending = (modelId: string, action: ModelRowAction) =>
+    rowPendingId === modelId && rowPendingAction === action;
+  const tabTriggerClass = (value: ModelStatusTab) => {
+    const isActive = modelStatusTab === value;
+    if (value === 'active') {
+      return `rounded-full border px-4 py-2 text-sm font-semibold transition ${
+        isActive
+          ? 'border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm'
+          : 'border-transparent text-slate-600 hover:text-slate-900'
+      }`;
+    }
+    return `rounded-full border px-4 py-2 text-sm font-semibold transition ${
+      isActive
+        ? 'border-rose-200 bg-rose-50 text-rose-700 shadow-sm'
+        : 'border-transparent text-slate-600 hover:text-slate-900'
+    }`;
+  };
+
+  const handleModelTabChange = (nextValue: string) => {
+    const nextTab: ModelStatusTab = nextValue === 'archived' ? 'archived' : 'active';
+    if (nextTab === modelStatusTab) return;
+    modelStatusTab = nextTab;
+    clearSelection();
+    resetMessages();
+    resetArchiveDialog();
+    rowPendingId = '';
+    rowPendingAction = '';
+  };
+
   const openArchiveDialog = (model: ModelSummary) => {
-    if (bulkPending || syncAllPending || archivePendingId) return;
+    if (modelStatusTab !== 'active' || bulkPending || syncAllPending || archivePendingId || rowPendingId) return;
     archiveDialogError = '';
     archiveTarget = model;
     archiveDialogOpen = true;
@@ -187,6 +284,11 @@
     return nextTs >= prevTs;
   };
 
+  const refetchModels = async () => {
+    await queryClient.invalidateQueries({ queryKey: qk.storage.modelsPrefix() });
+    await $modelsQuery?.refetch?.();
+  };
+
   const applyJobSnapshot = (job: ModelSyncJobStatus) => {
     const normalized = normalizeJob(job);
     const previous = jobsById[normalized.job_id];
@@ -212,18 +314,16 @@
       activeJobsByModelId = next;
     }
     if (isTerminalJobState(normalized.state)) {
-      void refetchModels();
+      void queryClient.invalidateQueries({ queryKey: qk.storage.modelsPrefix() });
     }
-  };
-
-  const refetchModels = async () => {
-    await $modelsQuery?.refetch?.();
   };
 
   const selectedModels = $derived(models.filter((model) => selectedIds.includes(model.id)));
   const syncTargets = $derived(selectedModels.filter((model) => !model.is_local));
-  const canSyncSelected = $derived(syncTargets.length > 0 && !bulkPending && !syncAllPending);
-  const canArchiveSelected = $derived(selectedIds.length > 0 && !bulkPending && !syncAllPending);
+  const canSyncSelected = $derived(!isArchiveTab && syncTargets.length > 0 && !bulkPending && !syncAllPending);
+  const canArchiveSelected = $derived(!isArchiveTab && selectedIds.length > 0 && !bulkPending && !syncAllPending);
+  const canRestoreSelected = $derived(isArchiveTab && selectedIds.length > 0 && !bulkPending && !syncAllPending);
+  const canDeleteSelected = $derived(isArchiveTab && selectedIds.length > 0 && !bulkPending && !syncAllPending);
 
   const loadActiveJobs = async () => {
     const response = await api.storage.modelSyncJobs(false);
@@ -231,7 +331,6 @@
 
     const nextJobsById = { ...jobsById };
     const nextActive: Record<string, ModelSyncJobStatus> = {};
-    const activeJobIds = new Set<string>();
 
     const preferActiveJob = (next: ModelSyncJobStatus, prev: ModelSyncJobStatus | undefined) => {
       if (!prev) return true;
@@ -245,7 +344,6 @@
       if (preferActiveJob(job, nextActive[job.model_id])) {
         nextActive[job.model_id] = job;
       }
-      activeJobIds.add(job.job_id);
     }
 
     jobsById = nextJobsById;
@@ -266,26 +364,14 @@
     return snapshot;
   };
 
-  const waitForTerminalJob = async (jobId: string) => {
-    while (true) {
-      const snapshot = await api.storage.modelSyncJob(jobId);
-      applyJobSnapshot(snapshot);
-      if (isTerminalJobState(snapshot.state)) {
-        return snapshot;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  };
-
   const handleSyncModel = async (model: ModelSummary) => {
+    if (modelStatusTab !== 'active') return;
+
     const modelId = model.id;
     if (!modelId) return;
     const activeJob = activeJobOf(modelId);
 
-    syncMessage = '';
-    syncError = '';
-    bulkMessage = '';
-    bulkError = '';
+    resetMessages();
 
     if (activeJob) {
       try {
@@ -310,7 +396,7 @@
   };
 
   const handleSyncAll = async () => {
-    if (syncPending || bulkPending) return;
+    if (modelStatusTab !== 'active' || syncPending || bulkPending) return;
 
     const targets = models.filter((model) => !model.is_local);
     if (!targets.length) {
@@ -320,10 +406,7 @@
     }
 
     syncAllPending = true;
-    syncMessage = '';
-    syncError = '';
-    bulkMessage = '';
-    bulkError = '';
+    resetMessages();
 
     try {
       let enqueued = 0;
@@ -362,10 +445,11 @@
   };
 
   const handleRefresh = async () => {
-    syncError = '';
-    bulkError = '';
+    resetMessages();
     await refetchModels();
-    await loadActiveJobs();
+    if (modelStatusTab === 'active') {
+      await loadActiveJobs();
+    }
   };
 
   const syncButtonLabel = (model: ModelSummary) => {
@@ -385,10 +469,7 @@
   };
 
   async function handleSyncSelected() {
-    bulkMessage = '';
-    bulkError = '';
-    syncMessage = '';
-    syncError = '';
+    resetMessages();
 
     if (!syncTargets.length) {
       bulkError = '同期対象を選択してください。';
@@ -413,10 +494,7 @@
   }
 
   async function handleArchiveSelected() {
-    bulkMessage = '';
-    bulkError = '';
-    syncMessage = '';
-    syncError = '';
+    resetMessages();
 
     if (!selectedIds.length) {
       bulkError = 'アーカイブ対象を選択してください。';
@@ -432,9 +510,9 @@
     try {
       const response = await api.storage.bulkArchiveModels(ids);
       applyBulkResponseMessage(response, '一括アーカイブを実行しました');
-      if (response.failed === 0) {
-        clearSelection();
-      }
+      removeSelectedIds(
+        response.results.filter((result) => result.status === 'succeeded').map((result) => result.id)
+      );
       await refetchModels();
       await loadActiveJobs();
     } catch (err) {
@@ -444,24 +522,79 @@
     }
   }
 
+  async function handleRestoreSelected() {
+    resetMessages();
+
+    if (!selectedIds.length) {
+      bulkError = '復元対象を選択してください。';
+      return;
+    }
+
+    const confirmed = confirm(`${selectedIds.length}件を復元しますか？`);
+    if (!confirmed) return;
+
+    bulkPending = true;
+    const ids = [...selectedIds];
+
+    try {
+      const response = await api.storage.restoreArchive({
+        dataset_ids: [],
+        model_ids: ids
+      });
+      applyArchiveBulkMessage(response, '復元を実行しました', response.restored);
+      removeSelectedIds(response.restored ?? []);
+      await refetchModels();
+      await loadActiveJobs();
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : '復元に失敗しました。';
+    } finally {
+      bulkPending = false;
+    }
+  }
+
+  async function handleDeleteSelected() {
+    resetMessages();
+
+    if (!selectedIds.length) {
+      bulkError = '完全削除対象を選択してください。';
+      return;
+    }
+
+    const confirmed = confirm(`${selectedIds.length}件を完全に削除しますか？`);
+    if (!confirmed) return;
+
+    bulkPending = true;
+    const ids = [...selectedIds];
+
+    try {
+      const response = await api.storage.deleteArchive({
+        dataset_ids: [],
+        model_ids: ids
+      });
+      applyArchiveBulkMessage(response, '完全削除を実行しました', response.deleted);
+      removeSelectedIds(response.deleted ?? []);
+      await refetchModels();
+      await loadActiveJobs();
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : '完全削除に失敗しました。';
+    } finally {
+      bulkPending = false;
+    }
+  }
+
   async function handleArchiveTarget() {
-    bulkMessage = '';
-    bulkError = '';
-    syncMessage = '';
-    syncError = '';
+    resetMessages();
     archiveDialogError = '';
 
     const target = archiveTarget;
-    if (!target?.id || bulkPending || syncAllPending || archivePendingId) return;
+    if (!target?.id || bulkPending || syncAllPending || archivePendingId || rowPendingId) return;
 
     archivePendingId = target.id;
     try {
       await api.storage.archiveModel(target.id);
-      selectedIds = selectedIds.filter((id) => id !== target.id);
+      removeSelectedIds([target.id]);
       bulkMessage = `${displayModelLabel(target)} をアーカイブしました。`;
-      archiveDialogOpen = false;
-      archiveTarget = null;
-      await queryClient.invalidateQueries({ queryKey: qk.storage.archiveManage() });
+      resetArchiveDialog();
       await refetchModels();
       await loadActiveJobs();
     } catch (err) {
@@ -469,6 +602,56 @@
       bulkError = archiveDialogError;
     } finally {
       archivePendingId = '';
+    }
+  }
+
+  async function handleRestoreTarget(model: ModelSummary) {
+    resetMessages();
+
+    if (!model.id || bulkPending || syncAllPending || archivePendingId || rowPendingId) return;
+    const confirmed = confirm(`${displayModelLabel(model)} を復元しますか？`);
+    if (!confirmed) return;
+
+    bulkPending = true;
+    rowPendingId = model.id;
+    rowPendingAction = 'restore';
+    try {
+      await api.storage.restoreModel(model.id);
+      removeSelectedIds([model.id]);
+      bulkMessage = `${displayModelLabel(model)} を復元しました。`;
+      await refetchModels();
+      await loadActiveJobs();
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : '復元に失敗しました。';
+    } finally {
+      rowPendingId = '';
+      rowPendingAction = '';
+      bulkPending = false;
+    }
+  }
+
+  async function handleDeleteTarget(model: ModelSummary) {
+    resetMessages();
+
+    if (!model.id || bulkPending || syncAllPending || archivePendingId || rowPendingId) return;
+    const confirmed = confirm(`${displayModelLabel(model)} を完全に削除しますか？`);
+    if (!confirmed) return;
+
+    bulkPending = true;
+    rowPendingId = model.id;
+    rowPendingAction = 'delete';
+    try {
+      await api.storage.deleteArchivedModel(model.id);
+      removeSelectedIds([model.id]);
+      bulkMessage = `${displayModelLabel(model)} を完全に削除しました。`;
+      await refetchModels();
+      await loadActiveJobs();
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : '完全削除に失敗しました。';
+    } finally {
+      rowPendingId = '';
+      rowPendingAction = '';
+      bulkPending = false;
     }
   }
 
@@ -549,13 +732,15 @@
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1 class="text-3xl font-semibold text-slate-900">モデル管理</h1>
-      <p class="mt-2 text-sm text-slate-600">アクティブなモデルを一覧で確認できます。</p>
+      <p class="mt-2 text-sm text-slate-600">{pageDescription}</p>
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage">ビューに戻る</Button.Root>
-      <button class="btn-ghost" type="button" onclick={handleSyncAll} disabled={syncPending || bulkPending || !models.length}>
-        {syncAllPending ? '全て同期中...' : '全て同期'}
-      </button>
+      {#if !isArchiveTab}
+        <button class="btn-ghost" type="button" onclick={handleSyncAll} disabled={syncPending || bulkPending || !models.length}>
+          {syncAllPending ? '全て同期中...' : '全て同期'}
+        </button>
+      {/if}
       <button class="btn-ghost" type="button" onclick={handleRefresh} disabled={syncAllPending}>
         更新
       </button>
@@ -566,8 +751,24 @@
 <section class="card p-6">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-xl font-semibold text-slate-900">モデル一覧</h2>
-    <p class="text-xs text-slate-500">選択して一括操作が可能です。</p>
+    <Tabs.Root value={modelStatusTab} onValueChange={handleModelTabChange}>
+      <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+        <Tabs.Trigger
+          value="active"
+          class={tabTriggerClass('active')}
+        >
+          アクティブ
+        </Tabs.Trigger>
+        <Tabs.Trigger
+          value="archived"
+          class={tabTriggerClass('archived')}
+        >
+          アーカイブ
+        </Tabs.Trigger>
+      </Tabs.List>
+    </Tabs.Root>
   </div>
+  <p class="mt-2 text-xs text-slate-500">{helperText}</p>
   <div class="mt-4 grid gap-3 md:grid-cols-4">
     <label class="block">
       <span class="label">検索</span>
@@ -606,22 +807,41 @@
         <button class="btn-ghost" type="button" onclick={clearSelection}>選択解除</button>
       </div>
       <div class="mt-4 flex flex-wrap items-center gap-3">
-        <button
-          class={`btn-primary ${canSyncSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
-          type="button"
-          disabled={!canSyncSelected}
-          onclick={handleSyncSelected}
-        >
-          同期
-        </button>
-        <button
-          class={`btn-ghost ${canArchiveSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
-          type="button"
-          disabled={!canArchiveSelected}
-          onclick={handleArchiveSelected}
-        >
-          アーカイブ
-        </button>
+        {#if isArchiveTab}
+          <button
+            class={`btn-primary ${canRestoreSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
+            type="button"
+            disabled={!canRestoreSelected}
+            onclick={handleRestoreSelected}
+          >
+            復元
+          </button>
+          <button
+            class={`btn-ghost ${canDeleteSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
+            type="button"
+            disabled={!canDeleteSelected}
+            onclick={handleDeleteSelected}
+          >
+            完全削除
+          </button>
+        {:else}
+          <button
+            class={`btn-primary ${canSyncSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
+            type="button"
+            disabled={!canSyncSelected}
+            onclick={handleSyncSelected}
+          >
+            同期
+          </button>
+          <button
+            class={`btn-ghost ${canArchiveSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
+            type="button"
+            disabled={!canArchiveSelected}
+            onclick={handleArchiveSelected}
+          >
+            アーカイブ
+          </button>
+        {/if}
       </div>
     </div>
   {/if}
@@ -654,13 +874,15 @@
           <th class="pb-3">データセット</th>
           <th class="pb-3">サイズ</th>
           <th class="pb-3">作成日時</th>
-          <th class="pb-3 text-center">同期状態</th>
+          {#if !isArchiveTab}
+            <th class="pb-3 text-center">同期状態</th>
+          {/if}
           <th class="pb-3 text-right">操作</th>
         </tr>
       </thead>
       <tbody class="text-slate-600">
         {#if $modelsQuery.isLoading}
-          <tr><td class="py-3" colspan="10">読み込み中...</td></tr>
+          <tr><td class="py-3" colspan={modelTableColumnCount}>読み込み中...</td></tr>
         {:else if displayedModels.length}
           {#each displayedModels as model}
             {@const activeJob = activeJobOf(model.id)}
@@ -699,21 +921,23 @@
               </td>
               <td class="py-3">{formatBytes(model.size_bytes ?? 0)}</td>
               <td class="py-3">{formatDate(model.created_at)}</td>
-              <td class="py-3 text-center">
-                <div class="flex justify-center">
-                  {#if syncStatus.kind === 'progress' && activeJob}
-                    <button
-                      class="text-xs font-semibold text-brand hover:underline"
-                      type="button"
-                      onclick={() => openModelSyncModal(activeJob.job_id)}
-                    >
-                      {syncStatus.label}
-                    </button>
-                  {:else}
-                    <span class="chip">{syncStatus.label}</span>
-                  {/if}
-                </div>
-              </td>
+              {#if !isArchiveTab}
+                <td class="py-3 text-center">
+                  <div class="flex justify-center">
+                    {#if syncStatus.kind === 'progress' && activeJob}
+                      <button
+                        class="text-xs font-semibold text-brand hover:underline"
+                        type="button"
+                        onclick={() => openModelSyncModal(activeJob.job_id)}
+                      >
+                        {syncStatus.label}
+                      </button>
+                    {:else}
+                      <span class="chip">{syncStatus.label}</span>
+                    {/if}
+                  </div>
+                </td>
+              {/if}
               <td class="py-3 text-right">
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger
@@ -738,26 +962,55 @@
                       >
                         詳細を開く
                       </DropdownMenu.Item>
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                        disabled={isSyncButtonDisabled(model)}
-                        onSelect={() => {
-                          void handleSyncModel(model);
-                        }}
-                      >
-                        {syncButtonLabel(model)}
-                      </DropdownMenu.Item>
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                        disabled={bulkPending || syncAllPending || Boolean(archivePendingId)}
-                        onSelect={() => openArchiveDialog(model)}
-                      >
-                        {#if isArchivePending(model.id)}
-                          アーカイブ中...
-                        {:else}
-                          アーカイブ
-                        {/if}
-                      </DropdownMenu.Item>
+                      {#if isArchiveTab}
+                        <DropdownMenu.Item
+                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          onSelect={() => {
+                            void handleRestoreTarget(model);
+                          }}
+                        >
+                          {#if isRowPending(model.id, 'restore')}
+                            復元中...
+                          {:else}
+                            復元
+                          {/if}
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item
+                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          onSelect={() => {
+                            void handleDeleteTarget(model);
+                          }}
+                        >
+                          {#if isRowPending(model.id, 'delete')}
+                            完全削除中...
+                          {:else}
+                            完全削除
+                          {/if}
+                        </DropdownMenu.Item>
+                      {:else}
+                        <DropdownMenu.Item
+                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                          disabled={isSyncButtonDisabled(model)}
+                          onSelect={() => {
+                            void handleSyncModel(model);
+                          }}
+                        >
+                          {syncButtonLabel(model)}
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item
+                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId)}
+                          onSelect={() => openArchiveDialog(model)}
+                        >
+                          {#if isArchivePending(model.id)}
+                            アーカイブ中...
+                          {:else}
+                            アーカイブ
+                          {/if}
+                        </DropdownMenu.Item>
+                      {/if}
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>
                 </DropdownMenu.Root>
@@ -765,7 +1018,7 @@
             </tr>
           {/each}
         {:else}
-          <tr><td class="py-3" colspan="10">条件に合うモデルがありません。</td></tr>
+          <tr><td class="py-3" colspan={modelTableColumnCount}>{emptyStateText}</td></tr>
         {/if}
       </tbody>
     </table>

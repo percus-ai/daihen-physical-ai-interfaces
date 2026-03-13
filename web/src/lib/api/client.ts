@@ -573,6 +573,13 @@ export type BulkActionResponse = {
   results: BulkActionResult[];
 };
 
+export type ArchiveBulkResponse = {
+  success: boolean;
+  restored?: string[];
+  deleted?: string[];
+  errors?: string[];
+};
+
 export type TrainingReviveResult = {
   job_id: string;
   old_instance_id: string;
@@ -1189,7 +1196,6 @@ export const api = {
       fetchApi<DatasetMergeJobStatus>(`/api/storage/dataset-merge/jobs/${encodeURIComponent(jobId)}`),
     model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),
     usage: () => fetchApi('/api/storage/usage'),
-    archive: () => fetchApi('/api/storage/archive'),
     archiveDataset: (datasetId: string) =>
       fetchApi(`/api/storage/datasets/${datasetId}`, { method: 'DELETE' }),
     bulkArchiveDatasets: (ids: string[]) =>
@@ -1234,12 +1240,12 @@ export const api = {
     restoreModel: (modelId: string) =>
       fetchApi(`/api/storage/models/${modelId}/restore`, { method: 'POST' }),
     restoreArchive: (payload: { dataset_ids: string[]; model_ids: string[] }) =>
-      fetchApi('/api/storage/archive/restore', {
+      fetchApi<ArchiveBulkResponse>('/api/storage/archive/restore', {
         method: 'POST',
         body: JSON.stringify(payload)
       }),
     deleteArchive: (payload: { dataset_ids: string[]; model_ids: string[] }) =>
-      fetchApi('/api/storage/archive/delete', {
+      fetchApi<ArchiveBulkResponse>('/api/storage/archive/delete', {
         method: 'POST',
         body: JSON.stringify(payload)
       }),

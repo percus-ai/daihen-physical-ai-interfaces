@@ -30,7 +30,6 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage">戻る</Button.Root>
-      <Button.Root class="btn-ghost" href="/storage/archive">アーカイブ一覧</Button.Root>
     </div>
   </div>
 </section>
