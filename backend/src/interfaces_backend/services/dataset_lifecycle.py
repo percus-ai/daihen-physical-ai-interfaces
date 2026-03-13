@@ -162,6 +162,24 @@ class DatasetLifecycle:
             running_message="Uploading dataset to R2...",
         )
         if ok:
+            try:
+                # Datasets are not visible in storage / training views until status becomes "active".
+                await self.mark_active(dataset_id)
+            except Exception as exc:
+                logger.error(
+                    "Auto-upload completed but failed to mark dataset active for %s: %s",
+                    dataset_id,
+                    exc,
+                    exc_info=True,
+                )
+                self._set_dataset_upload_status(
+                    dataset_id=dataset_id,
+                    status="failed",
+                    phase="failed",
+                    message="Upload completed but dataset activation failed.",
+                    error=str(exc),
+                )
+                return
             logger.info("Auto-upload completed for dataset %s", dataset_id)
             return
         logger.error("Auto-upload failed for dataset %s: %s", dataset_id, error)

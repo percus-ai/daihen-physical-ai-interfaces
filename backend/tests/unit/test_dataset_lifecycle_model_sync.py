@@ -170,10 +170,45 @@ def test_ensure_model_local_applies_checking_and_hashing_progress_events():
 def test_auto_upload_logs_error_when_sync_returns_failure(caplog):
     lifecycle = DatasetLifecycle()
     lifecycle._sync = _FakeSyncUploadResult(False, "upload failed")
+    lifecycle._load_user_config = lambda: {"auto_upload_after_recording": True}  # type: ignore[method-assign]
 
     asyncio.run(lifecycle.auto_upload("dataset-1"))
 
     assert "Auto-upload failed for dataset dataset-1: upload failed" in caplog.text
+
+
+def test_auto_upload_marks_dataset_active_after_upload():
+    lifecycle = DatasetLifecycle()
+    lifecycle._sync = _FakeSyncUploadResult(True, "")
+    lifecycle._load_user_config = lambda: {"auto_upload_after_recording": True}  # type: ignore[method-assign]
+    calls: list[str] = []
+
+    async def _fake_mark_active(dataset_id: str):
+        calls.append(dataset_id)
+
+    lifecycle.mark_active = _fake_mark_active  # type: ignore[method-assign]
+
+    asyncio.run(lifecycle.auto_upload("dataset-1"))
+
+    assert calls == ["dataset-1"]
+
+
+def test_auto_upload_marks_failed_when_dataset_activation_fails():
+    lifecycle = DatasetLifecycle()
+    lifecycle._sync = _FakeSyncUploadResult(True, "")
+    lifecycle._load_user_config = lambda: {"auto_upload_after_recording": True}  # type: ignore[method-assign]
+
+    async def _fake_mark_active(_dataset_id: str):
+        raise RuntimeError("db activation failed")
+
+    lifecycle.mark_active = _fake_mark_active  # type: ignore[method-assign]
+
+    asyncio.run(lifecycle.auto_upload("dataset-1"))
+
+    status = lifecycle.get_dataset_upload_status("dataset-1")
+    assert status["status"] == "failed"
+    assert status["phase"] == "failed"
+    assert status["error"] == "db activation failed"
 
 
 def test_reupload_refreshes_dataset_metadata_after_upload():
