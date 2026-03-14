@@ -191,10 +191,15 @@
         >
           ☰
         </Button.Root>
-        <div>
+        <a
+          href="/"
+          class="group rounded-md px-1 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+          aria-label="ダッシュボードに戻る"
+          onclick={closeMobile}
+        >
           <p class="text-xs font-semibold tracking-[0.3em] text-slate-400">DAIHEN PhysicalAI EXecution</p>
-          <p class="text-lg font-semibold text-slate-900">DPEX Console</p>
-        </div>
+          <p class="text-lg font-semibold text-slate-900 underline-offset-4 group-hover:underline">DPEX Console</p>
+        </a>
       </div>
       <div class="hidden items-center gap-2 lg:flex">
         <div class="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-sm h-10">
