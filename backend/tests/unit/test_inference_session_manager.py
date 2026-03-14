@@ -109,6 +109,7 @@ class _FakeRecorder:
 class _FakeDataset:
     def __init__(self):
         self.ensured_models: list[str] = []
+        self.updated: list[str] = []
         self.marked: list[str] = []
         self.uploaded: list[str] = []
 
@@ -131,6 +132,9 @@ class _FakeDataset:
 
     async def mark_active(self, dataset_id: str) -> None:
         self.marked.append(dataset_id)
+
+    async def update_stats(self, dataset_id: str) -> None:
+        self.updated.append(dataset_id)
 
     async def auto_upload(self, dataset_id: str) -> None:
         self.uploaded.append(dataset_id)
@@ -194,6 +198,7 @@ def test_stop_treats_recorder_timeout_as_stopped_when_already_inactive() -> None
     assert runtime.stop_calls == ["worker-1"]
     assert recorder.stop_calls == 1
     assert recorder.wait_calls == 1
+    assert dataset.updated == ["dataset-1"]
     assert dataset.marked == ["dataset-1"]
     assert dataset.uploaded == ["dataset-1"]
     assert recording_sessions.unregistered == ["dataset-1"]
@@ -220,6 +225,7 @@ def test_stop_keeps_dataset_unmarked_when_recorder_may_still_be_active() -> None
     assert runtime.stop_calls == ["worker-1"]
     assert recorder.stop_calls == 1
     assert recorder.wait_calls == 1
+    assert dataset.updated == []
     assert dataset.marked == []
     assert dataset.uploaded == ["dataset-1"]
     assert recording_sessions.unregistered == ["dataset-1"]

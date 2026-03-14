@@ -524,6 +524,14 @@ class InferenceSessionManager(BaseSessionManager):
                 logger.warning("Failed to stop inference recording", exc_info=True)
             if recording_stopped:
                 try:
+                    await self._dataset.update_stats(dataset_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to refresh dataset stats: dataset_id=%s",
+                        dataset_id,
+                        exc_info=True,
+                    )
+                try:
                     await self._dataset.mark_active(dataset_id)
                 except Exception:
                     logger.warning(
