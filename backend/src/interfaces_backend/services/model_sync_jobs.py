@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from percus_ai.storage.r2_db_sync import ModelSyncCancelledError, R2DBSyncService
+from percus_ai.storage.r2_db_sync import R2DBSyncService, StorageSyncCancelledError
 
 from interfaces_backend.models.storage import (
     ModelSyncJobAcceptedResponse,
@@ -236,7 +236,7 @@ class ModelSyncJobsService:
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
             )
-        except ModelSyncCancelledError:
+        except StorageSyncCancelledError:
             jobs.cancelled(job_id=job_id)
             return
         except Exception as exc:

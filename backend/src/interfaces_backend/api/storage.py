@@ -1313,39 +1313,6 @@ async def bulk_reupload_datasets(request: BulkActionRequest):
     return _build_bulk_action_response(results, requested=len(request.ids))
 
 
-async def _run_dataset_sync_job(*, job_id: str, dataset_id: str) -> None:
-    jobs = get_dataset_sync_jobs_service()
-    sync_service = R2DBSyncService()
-    try:
-        jobs.set_running(
-            job_id=job_id,
-            progress_percent=5.0,
-            message="データセット同期を開始しました。",
-        )
-        result = await sync_service.ensure_dataset_local(dataset_id, auto_download=True)
-    except Exception as exc:
-        logger.exception("Dataset sync job failed unexpectedly: %s", job_id)
-        jobs.fail(
-            job_id=job_id,
-            message="データセット同期に失敗しました。",
-            error=str(exc),
-        )
-    else:
-        if result.success:
-            jobs.complete(
-                job_id=job_id,
-                message="ローカルキャッシュを利用しました。" if result.skipped else "データセット同期が完了しました。",
-            )
-            return
-        jobs.fail(
-            job_id=job_id,
-            message="データセット同期に失敗しました。",
-            error=result.message,
-        )
-    finally:
-        jobs.release_runtime_handles(job_id=job_id)
-
-
 @router.post("/dataset-sync/jobs", response_model=DatasetSyncJobAcceptedResponse, status_code=202)
 async def sync_dataset(request: DatasetSyncJobCreateRequest):
     """Start a background dataset sync job."""
@@ -1365,8 +1332,7 @@ async def sync_dataset(request: DatasetSyncJobCreateRequest):
 
     jobs = get_dataset_sync_jobs_service()
     accepted = jobs.create(user_id=user_id, dataset_id=dataset_id)
-    task = asyncio.create_task(_run_dataset_sync_job(job_id=accepted.job_id, dataset_id=dataset_id))
-    jobs.attach_task(user_id=user_id, job_id=accepted.job_id, task=task)
+    jobs.ensure_worker()
     return accepted
 
 

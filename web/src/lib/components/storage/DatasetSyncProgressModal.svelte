@@ -11,6 +11,8 @@
     type TabRealtimeEvent
   } from '$lib/realtime/tabSessionClient';
 
+  type ThroughputSample = { atMs: number; transferredBytes: number };
+
   type Props = {
     open?: boolean;
     jobId: string;
@@ -29,9 +31,83 @@
   let loadError = $state('');
   let cancelPending = $state(false);
 
+  const THROUGHPUT_WINDOW_MS = 8000;
+  let throughputSamples = $state<ThroughputSample[]>([]);
+
   const disconnect = () => {
     contributor?.dispose();
     contributor = null;
+  };
+
+  const resetThroughput = () => {
+    throughputSamples = [];
+  };
+
+  const recordThroughputSample = (nextStatus: DatasetSyncJobStatus) => {
+    const transferredBytes = Number(nextStatus.detail?.transferred_bytes ?? 0);
+    if (!Number.isFinite(transferredBytes) || transferredBytes < 0) return;
+    const now = Date.now();
+    const next: ThroughputSample = { atMs: now, transferredBytes };
+
+    let samples = throughputSamples;
+    const previous = samples.at(-1);
+    if (previous && transferredBytes < previous.transferredBytes) {
+      samples = [];
+    }
+    samples = [...samples, next].filter((sample) => now - sample.atMs <= THROUGHPUT_WINDOW_MS);
+    throughputSamples = samples;
+  };
+
+  const bytesPerSecond = $derived.by(() => {
+    if (throughputSamples.length < 2) return null;
+    const first = throughputSamples[0];
+    const last = throughputSamples.at(-1);
+    if (!last) return null;
+    const dtSeconds = (last.atMs - first.atMs) / 1000;
+    const deltaBytes = last.transferredBytes - first.transferredBytes;
+    if (dtSeconds < 0.8 || deltaBytes <= 0) return null;
+    return deltaBytes / dtSeconds;
+  });
+
+  const etaSeconds = $derived.by(() => {
+    const speed = bytesPerSecond;
+    const totalBytes = Number(status?.detail?.total_bytes ?? 0);
+    const transferredBytes = Number(status?.detail?.transferred_bytes ?? 0);
+    if (!speed || speed <= 0) return null;
+    if (!Number.isFinite(totalBytes) || totalBytes <= 0) return null;
+    if (!Number.isFinite(transferredBytes) || transferredBytes < 0) return null;
+    const remaining = totalBytes - transferredBytes;
+    if (remaining <= 0) return 0;
+    return remaining / speed;
+  });
+
+  const finishAt = $derived.by(() => {
+    if (etaSeconds === null) return null;
+    return new Date(Date.now() + etaSeconds * 1000);
+  });
+
+  const formatSpeed = (bytesPerSec: number | null) => {
+    if (!bytesPerSec || !Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return '-';
+    const mbps = (bytesPerSec * 8) / 1_000_000;
+    const mbpsLabel = mbps >= 100 ? mbps.toFixed(0) : mbps.toFixed(1);
+    return `${formatBytes(bytesPerSec)}/s (${mbpsLabel} Mbps)`;
+  };
+
+  const formatEta = (seconds: number | null) => {
+    if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return '-';
+    const rounded = Math.max(Math.round(seconds), 0);
+    const s = rounded % 60;
+    const minutesTotal = Math.floor(rounded / 60);
+    const m = minutesTotal % 60;
+    const h = Math.floor(minutesTotal / 60);
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  };
+
+  const formatFinishAt = (date: Date | null) => {
+    if (!date) return '-';
+    return date.toLocaleString('ja-JP', { hour12: false });
   };
 
   const clampPercent = (value: unknown) => {
@@ -50,6 +126,7 @@
     loadError = '';
     try {
       status = await api.storage.datasetSyncJob(jobId);
+      if (status) recordThroughputSample(status);
     } catch (error) {
       loadError = error instanceof Error ? error.message : '同期ジョブ状態の取得に失敗しました。';
     } finally {
@@ -80,6 +157,7 @@
     if (!jobId) return;
 
     status = null;
+    resetThroughput();
     void loadSnapshot();
     disconnect();
 
@@ -94,6 +172,7 @@
       onEvent: (event: TabRealtimeEvent) => {
         if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-sync') return;
         status = event.payload as DatasetSyncJobStatus;
+        if (status) recordThroughputSample(status);
       }
     });
 
@@ -140,6 +219,12 @@
                 bytes: {formatBytes(status.detail?.transferred_bytes ?? 0)} / {formatBytes(status.detail?.total_bytes ?? 0)}
               </p>
             {/if}
+            {#if bytesPerSecond}
+              <p>speed: {formatSpeed(bytesPerSecond)}</p>
+            {/if}
+            {#if etaSeconds !== null && etaSeconds > 0}
+              <p>eta: {formatEta(etaSeconds)} (finish at: {formatFinishAt(finishAt)})</p>
+            {/if}
             {#if status.detail?.current_file}
               <p class="truncate">current file: {status.detail.current_file}</p>
             {/if}
@@ -168,4 +253,3 @@
     </AlertDialog.Content>
   </AlertDialog.Portal>
 </AlertDialog.Root>
-

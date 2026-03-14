@@ -2529,7 +2529,7 @@ def _upload_log_file_to_r2(r2: "R2SyncService", local_path: Path, job_id: str) -
     try:
         prefix = f"{r2.version}/" if r2.version else ""
         key = f"{prefix}training_logs/{job_id}/{local_path.name}"
-        r2.s3.client.upload_file(str(local_path), r2.bucket, key)
+        r2.s3.upload_file(str(local_path), r2.bucket, key)
         return True
     except Exception as e:
         logger.warning(f"Failed to upload log to R2: {e}")
@@ -5487,13 +5487,18 @@ async def download_checkpoint(
                     status_code=404,
                     detail=f"Step {step} not found. Available steps: {available_steps}",
                 )
-            success, error = checkpoint_mgr.download_step_checkpoint(
-                job_name, step, download_path
+            success, error = await asyncio.to_thread(
+                checkpoint_mgr.download_step_checkpoint,
+                job_name,
+                step,
+                download_path,
             )
             downloaded_step = step
         else:
-            success, error = checkpoint_mgr.download_latest_checkpoint(
-                job_name, download_path
+            success, error = await asyncio.to_thread(
+                checkpoint_mgr.download_latest_checkpoint,
+                job_name,
+                download_path,
             )
             downloaded_step = entry.latest_step
 
