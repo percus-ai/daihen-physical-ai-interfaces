@@ -443,7 +443,7 @@
           style={`--editor-right-pane-width:${Math.round(editorRightPaneWidth)}px;`}
           bind:this={editorContentEl}
         >
-		          <div class="min-h-0 rounded-xl border border-slate-200/60 bg-white/70 p-2">
+		          <div class="min-h-0 nested-block p-2">
 			            <LayoutNode
 			              node={blueprint}
 			              selectedId={selectedId}
@@ -455,7 +455,7 @@
             />
           </div>
 
-          <aside class="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/60 bg-white/70 p-3">
+          <aside class="flex min-h-0 flex-col overflow-hidden nested-block p-3">
             <InspectorTabs bind:value={editInspectorTab} extraTabs={effectiveInspectorExtraTabs}>
               {#snippet blueprintPanel()}
                 <BlueprintTree node={blueprint} selectedId={selectedId} onSelect={updateSelection} />
@@ -589,7 +589,7 @@
                     </div>
                     <div class="space-y-2">
                       {#each selectedTabsNode?.tabs ?? [] as tab}
-                        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
+                        <div class="nested-block p-2">
                           <input
                             class="input"
                             type="text"

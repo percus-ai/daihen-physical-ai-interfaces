@@ -545,7 +545,7 @@
         <span class="chip">更新: {lastStatusAt || '-'}</span>
         <a class="btn-ghost px-3 py-1 text-xs" href={`/record/sessions/${activeSessionId}`}>収録を開く</a>
       </div>
-      <details class="mt-3 rounded-xl border border-slate-200/60 bg-white/70 p-3 text-xs text-slate-600">
+      <details class="mt-3 nested-block p-3 text-xs text-slate-600">
         <summary class="cursor-pointer text-slate-500">状態の生データ</summary>
         <pre class="mt-2 whitespace-pre-wrap text-[11px] text-slate-700">{rawStatus || '-'}</pre>
       </details>
@@ -596,7 +596,7 @@
     </label>
   </div>
   {#if selectedRecordingIds.length > 0}
-    <div class="mt-4 rounded-2xl border border-slate-200/80 bg-slate-50/90 p-4">
+    <div class="mt-4 nested-block-pane p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p class="text-sm font-semibold text-slate-900">選択中: {selectedRecordingIds.length} 件</p>

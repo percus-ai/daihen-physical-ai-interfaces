@@ -707,7 +707,7 @@
 <ViewerDialogShell bind:open={linkModalOpen} zIndexBase={60} inset="0.75rem">
   {#snippet children()}
       <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4">
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+        <div class="nested-block p-3">
           <div class="flex flex-wrap items-start justify-between gap-3">
 	            <div>
 	              <p class="text-sm font-semibold text-slate-900">セッションビューア</p>
@@ -784,16 +784,16 @@
   <div class="card p-6">
     <h2 class="text-xl font-semibold text-slate-900">集計</h2>
     <div class="mt-4 grid gap-4 text-sm text-slate-600 sm:grid-cols-3">
-      <div class="rounded-xl border border-slate-200/70 bg-white/70 p-4">
+      <div class="nested-block p-4">
         <p class="label">入力済み</p>
         <p class="text-base font-semibold text-slate-800">{filledCount} / {evaluationCount}</p>
         <p class="text-xs text-slate-500">未入力: {remainingCount}</p>
       </div>
-      <div class="rounded-xl border border-slate-200/70 bg-white/70 p-4">
+      <div class="nested-block p-4">
         <p class="label">保存済み評価件数</p>
         <p class="text-base font-semibold text-slate-800">{$summaryQuery.data?.total ?? 0}</p>
       </div>
-      <div class="rounded-xl border border-slate-200/70 bg-white/70 p-4">
+      <div class="nested-block p-4">
         <p class="label">カテゴリ比率</p>
         <p class="text-sm font-semibold text-slate-800">{formatRates($summaryQuery.data?.rates)}</p>
       </div>
@@ -838,7 +838,7 @@
 	          {@const secondaryEpisodeIndex = Math.max(0, Math.floor(Number(secondary?.episode_index) || 0))}
 	          {@const canPrev = carouselIndex > 0}
 	          {@const canNext = carouselIndex + 1 < totalLinks}
-	          <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4 shadow-sm">
+	          <div class="nested-block p-4">
 	            <div class="flex items-center justify-between">
 	              <p class="font-semibold text-slate-800">試行 {item.trial_index}</p>
 	              <span class="chip">#{item.trial_index}</span>
@@ -880,7 +880,7 @@
                 />
               </label>
             </div>
-            <div class="mt-3 rounded-xl border border-slate-200/70 bg-slate-50/70 p-3">
+            <div class="mt-3 nested-block-pane p-3">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p class="text-sm font-semibold text-slate-800">紐付けエピソード</p>
@@ -944,7 +944,7 @@
                     </div>
                   {/if}
 
-                  <div class="flex items-center gap-2 rounded-xl border border-slate-200/70 bg-white/80 p-2 sm:col-start-1 sm:row-start-2">
+                  <div class="nested-block flex items-center gap-2 p-2 sm:col-start-1 sm:row-start-2">
                     <button
                       class="btn-ghost px-3 py-2"
                       type="button"

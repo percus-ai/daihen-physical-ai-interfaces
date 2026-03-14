@@ -745,7 +745,7 @@
       ></div>
     </div>
     <div class="mt-4 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+      <div class="nested-block p-4 text-sm text-slate-600">
         <p class="label">現在の状態</p>
         <div class="mt-2 space-y-1 text-xs text-slate-500">
           <p>job.status: <span class="font-semibold text-slate-800">{status || '-'}</span></p>
@@ -753,7 +753,7 @@
           <p>provision.step: <span class="font-semibold text-slate-800">{provisionStep || '-'}</span></p>
         </div>
       </div>
-      <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+      <div class="nested-block p-4 text-sm text-slate-600">
         <p class="label">補足</p>
         <div class="mt-2 space-y-1 text-xs text-slate-500">
           <p class="font-semibold text-slate-800">{provisionOperation?.message ?? provisionStepLabel ?? '状態取得中'}</p>
@@ -775,27 +775,27 @@
         <h2 class="text-xl font-semibold text-slate-900">基本情報</h2>
       </div>
       <div class="mt-4 grid gap-4 sm:grid-cols-2">
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <div class="nested-block p-4 text-sm text-slate-600">
           <p class="label">ジョブID</p>
           <p class="mt-2 font-semibold text-slate-800">{jobInfo?.job_id ?? '-'}</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <div class="nested-block p-4 text-sm text-slate-600">
           <p class="label">ポリシー</p>
           <p class="mt-2 font-semibold text-slate-800">{jobInfo?.policy_type ?? '-'}</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <div class="nested-block p-4 text-sm text-slate-600">
           <p class="label">作成日時</p>
           <p class="mt-2 font-semibold text-slate-800">{formatDate(jobInfo?.created_at)}</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <div class="nested-block p-4 text-sm text-slate-600">
           <p class="label">開始日時</p>
           <p class="mt-2 font-semibold text-slate-800">{formatDate(jobInfo?.started_at)}</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <div class="nested-block p-4 text-sm text-slate-600">
           <p class="label">完了日時</p>
           <p class="mt-2 font-semibold text-slate-800">{formatDate(jobInfo?.completed_at)}</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <div class="nested-block p-4 text-sm text-slate-600">
           <p class="label">IP</p>
           <p class="mt-2 font-semibold text-slate-800">{sshTargetDisplay || '-'}</p>
         </div>
@@ -824,7 +824,7 @@
                 Val loss
               </span>
             </div>
-            <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+            <div class="nested-block p-4">
               <Plot height={240} grid>
                 <GridY />
                 <AxisX tickCount={6} />
@@ -862,7 +862,7 @@
         {/if}
         {#if isRunning}
           {#if displayedLogs}
-            <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
+            <div class="nested-block p-4 text-xs text-slate-600">
               <pre class="min-w-0 max-h-80 overflow-auto whitespace-pre-wrap break-all text-xs text-slate-700">{displayedLogs}</pre>
             </div>
           {:else}
@@ -879,7 +879,7 @@
         <h2 class="text-xl font-semibold text-slate-900">設定</h2>
       </div>
       <div class="mt-4 grid gap-4 sm:grid-cols-2 text-sm text-slate-600">
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+        <div class="nested-block p-4">
           <p class="label">データセット</p>
           <div class="mt-2 space-y-2 text-sm text-slate-600">
             <div>
@@ -899,12 +899,12 @@
             video_backend: {trainingConfig?.dataset?.video_backend ?? 'auto'}
           </p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+        <div class="nested-block p-4">
           <p class="label">ポリシー</p>
           <p class="mt-2 font-semibold text-slate-800">{trainingConfig?.policy?.type ?? '-'}</p>
           <p class="mt-1 text-xs text-slate-500">pretrained: {trainingConfig?.policy?.pretrained_path ?? '-'}</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+        <div class="nested-block p-4">
           <p class="label">学習</p>
           <p class="mt-2 font-semibold text-slate-800">
             steps: {trainingConfig?.training?.steps ?? '-'} / batch: {trainingConfig?.training?.batch_size ?? '-'}
@@ -913,7 +913,7 @@
             save_freq: {trainingConfig?.training?.save_freq ?? '-'} / log_freq: {trainingConfig?.training?.log_freq ?? '-'}
           </p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+        <div class="nested-block p-4">
           <p class="label">検証 / Early</p>
           <p class="mt-2 font-semibold text-slate-800">
             validation: {trainingConfig?.validation?.enable ? '有効' : '無効'}
@@ -924,7 +924,7 @@
         </div>
       </div>
       {#if Object.keys(summary).length}
-        <div class="mt-4 rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+        <div class="mt-4 nested-block p-4 text-sm text-slate-600">
           <p class="label">Summary</p>
           <div class="mt-2 grid gap-2">
             {#each Object.entries(summary) as [key, value]}
@@ -966,8 +966,8 @@
         <p class="mt-2 text-sm text-slate-600">
           終了済みジョブに対して、OSストレージからCPUインスタンスを再作成します。
         </p>
-        <div class="mt-4 space-y-3 text-sm text-slate-600">
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+        <div class="mt-4 nested-block-stack text-sm text-slate-600">
+          <div class="nested-block p-4">
             <p class="label">救済チェックポイント登録</p>
             <p class="mt-2 text-xs text-slate-500">
               リモート上の checkpoint ディレクトリから保存対象を選択して R2 に登録します。
@@ -1026,23 +1026,23 @@
             <p class="text-sm text-rose-600">{checkpointUploadError}</p>
           {/if}
           {#if reviveEvents.length}
-            <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+            <div class="nested-block p-4">
               <p class="label">進捗ログ</p>
-              <div class="mt-2 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
+              <div class="mt-2 nested-block-pane max-h-72 overflow-auto p-2">
                 <pre class="min-w-0 whitespace-pre-wrap break-all text-xs text-slate-700">{reviveEvents.join('\n')}</pre>
               </div>
             </div>
           {/if}
           {#if checkpointUploadEvents.length}
-            <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+            <div class="nested-block p-4">
               <p class="label">checkpoint登録ログ</p>
-              <div class="mt-2 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
+              <div class="mt-2 nested-block-pane max-h-72 overflow-auto p-2">
                 <pre class="min-w-0 whitespace-pre-wrap break-all text-xs text-slate-700">{checkpointUploadEvents.join('\n')}</pre>
               </div>
             </div>
           {/if}
           {#if checkpointUploadResult}
-            <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+            <div class="nested-block p-4">
               <p class="label">checkpoint登録結果</p>
               <div class="mt-2 space-y-1 text-xs text-slate-600">
                 <p>checkpoint: <span class="font-semibold text-slate-800">{checkpointUploadResult.checkpoint_name}</span></p>
@@ -1059,7 +1059,7 @@
             </div>
           {/if}
           {#if reviveResult}
-            <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+            <div class="nested-block p-4">
               <p class="label">蘇生結果</p>
               <div class="mt-2 space-y-1 text-xs text-slate-600">
                 <p>旧インスタンスID: <span class="font-semibold text-slate-800 break-all">{reviveResult.old_instance_id}</span></p>
@@ -1080,7 +1080,7 @@
                 <p>SSHユーザー: <span class="font-semibold text-slate-800">{reviveResult.ssh_user}</span></p>
                 <p>SSH鍵: <span class="font-semibold text-slate-800 break-all">{reviveResult.ssh_private_key}</span></p>
               </div>
-              <div class="mt-3 rounded-xl border border-slate-200/60 bg-slate-50/80 p-3 text-xs text-slate-600">
+              <div class="mt-3 nested-block-pane p-3 text-xs text-slate-600">
                 <p class="label">SSHコマンド</p>
                 <p class="mt-2 font-semibold text-slate-800 break-all">{reviveSshCommand || '-'}</p>
               </div>
@@ -1134,7 +1134,7 @@
     <section class="card p-6">
       <h2 class="text-xl font-semibold text-slate-900">SSH接続</h2>
       <p class="mt-2 text-sm text-slate-600">ジョブ詳細のIP情報を使って接続します。</p>
-      <div class="mt-4 rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
+      <div class="mt-4 nested-block p-4 text-xs text-slate-600">
         <p class="label">コマンド</p>
         <p class="mt-2 font-semibold text-slate-800">{sshCommand || 'IPが取得できていません'}</p>
       </div>

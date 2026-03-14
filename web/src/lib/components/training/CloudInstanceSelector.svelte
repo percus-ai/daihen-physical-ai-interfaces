@@ -386,7 +386,7 @@
     <p class="mt-1 text-sm leading-6 text-slate-500">選択中の構成だけを表示し、条件調整はモーダル内に集約します。</p>
   </div>
 
-  <div class="mt-5 rounded-[22px] border border-slate-200/80 bg-slate-50/70 p-4 shadow-sm">
+  <div class="mt-5 nested-block p-4">
     <p class="label">インスタンス</p>
     {#if resolvedSelectedCandidate}
       {@const selectedResourceLines = candidateResourceLines(resolvedSelectedCandidate)}

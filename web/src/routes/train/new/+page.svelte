@@ -650,7 +650,7 @@
           </select>
         </label>
       </div>
-      <div class="mt-4 rounded-xl border border-slate-200/60 bg-white/70 p-4 text-sm text-slate-600">
+      <div class="mt-4 nested-block p-4 text-sm text-slate-600">
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p class="label">選択中のデータセット</p>
@@ -931,7 +931,7 @@
           <span class="label">ジョブ名 (空で自動生成)</span>
           <input class="input mt-2" bind:value={jobName} placeholder={generatedJobName} />
         </label>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
+        <div class="nested-block p-4 text-xs text-slate-600">
           <p class="label">プレビュー</p>
           <p class="mt-2 font-semibold text-slate-800">{jobName.trim() || generatedJobName}</p>
         </div>
@@ -942,7 +942,7 @@
           {submitting ? '作成中...' : '学習を開始'}
         </Button.Root>
         {#if submitting || createEvents.length || provisionOperationId}
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-600">
+          <div class="nested-block p-4 text-xs text-slate-600">
             <div class="flex items-center justify-between">
               <p class="label">作成進行</p>
               <span class="chip">{createStage}</span>

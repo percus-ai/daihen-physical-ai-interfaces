@@ -128,11 +128,11 @@
   </div>
 
   {#if loading}
-    <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4 text-sm text-slate-500">
+    <div class="nested-block p-4 text-sm text-slate-500">
       GPU空き状況を読み込み中...
     </div>
   {:else if !visibleItems.length}
-    <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4 text-sm text-slate-500">
+    <div class="nested-block p-4 text-sm text-slate-500">
       {#if showUnavailable}
         GPU構成の情報がありません。
       {:else}
@@ -142,7 +142,7 @@
   {:else}
     <div class="space-y-3">
       {#each groupedModels as group}
-        <section class="rounded-2xl border border-slate-200/70 bg-white/70">
+        <section class="nested-block">
           <button
             class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
             type="button"

@@ -19,7 +19,7 @@
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
     <span class="text-[10px] text-slate-400">{($topicsQuery.data?.topics ?? []).length} 件</span>
   </div>
-  <div class="flex-1 rounded-2xl border border-slate-200/60 bg-white/70 p-3 text-xs text-slate-600">
+  <div class="flex-1 nested-block p-3 text-xs text-slate-600">
     {#if $topicsQuery.isLoading}
       <p>読み込み中...</p>
     {:else if $topicsQuery.error}

@@ -158,7 +158,7 @@
         return {
           label: 'Not Configured',
           chip: 'border-slate-200 bg-slate-100 text-slate-600',
-          panel: 'border-slate-200/80 bg-slate-50/70',
+          panel: 'nested-block',
           accent: 'bg-slate-300',
           input: 'border-slate-200 focus:border-slate-400'
         };
@@ -248,7 +248,7 @@
       </div>
     </div>
 
-    <div class="mt-5 rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+    <div class="mt-5 nested-block p-4">
       <p class="label">Profile</p>
       <div class="mt-3 space-y-2 text-sm text-slate-600">
         <p>username: {userSettings?.profile?.username ?? '-'}</p>
@@ -294,7 +294,7 @@
       </button>
     </div>
 
-    <div class="mt-5 rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+    <div class="mt-5 nested-block p-4">
       <p class="label">Hugging Face</p>
       <div class="mt-3 space-y-2 text-sm text-slate-600">
         <p>configured: {userSettings?.huggingface?.has_token ? 'yes' : 'no'}</p>
@@ -357,7 +357,7 @@
       <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${systemVisual.chip}`}>{systemVisual.label}</span>
     </div>
 
-    <div class="mt-5 rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+    <div class="mt-5 nested-block p-4">
       <p class="label">Bundled Torch defaults</p>
       <div class="mt-3 space-y-2 text-sm text-slate-600">
         <p>pytorch: {systemSettings?.bundled_torch?.pytorch_version ?? '-'}</p>

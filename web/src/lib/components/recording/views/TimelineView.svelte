@@ -213,11 +213,11 @@
 
   {#if isDataset}
     {#if !playbackController}
-      <div class="rounded-xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
+      <div class="nested-block p-3 text-xs text-slate-600">
         再生コントローラが見つかりません。
       </div>
     {:else}
-      <div class="rounded-2xl border border-slate-200/60 bg-white/70 p-3">
+      <div class="nested-block p-3">
         <div class="flex items-center gap-3">
           <div class="flex shrink-0 items-center gap-1">
             <button
@@ -298,7 +298,7 @@
       <p class="text-xs text-amber-600">{connectionWarning}</p>
     {/if}
 
-    <div class="rounded-2xl border border-slate-200/60 bg-white/70 p-3">
+    <div class="nested-block p-3">
       <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
         <span>録画タイムライン</span>
         <span>

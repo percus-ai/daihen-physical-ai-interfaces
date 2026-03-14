@@ -65,10 +65,32 @@ h1, h2, h3, h4 {
 
 @layer components {
   .card {
-    @apply rounded-2xl border border-slate-200/70 bg-white/80 shadow-sm backdrop-blur;
+    @apply nested-block shadow-sm backdrop-blur;
   }
   .card-strong {
     @apply rounded-2xl border border-slate-200/60 bg-white shadow-glow;
+  }
+  .nested-block {
+    @apply rounded-xl border border-slate-200/90 bg-white/60;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      0 1px 1px rgba(15, 23, 42, 0.03);
+  }
+  .nested-block-header {
+    @apply mb-3 flex items-start justify-between gap-3 border-b border-slate-200/90 pb-2;
+  }
+  .nested-block-stack {
+    @apply space-y-3;
+  }
+  .nested-block-interactive {
+    @apply transition hover:border-slate-400/80 hover:bg-white;
+  }
+  .nested-block-active {
+    @apply border-brand/40 ring-1 ring-brand/15;
+  }
+  .nested-block-pane {
+    @apply rounded-lg border border-slate-200/80 bg-slate-50/70;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
   }
   .section-title {
     @apply text-sm font-semibold uppercase tracking-[0.2em] text-slate-500;
@@ -92,7 +114,7 @@ h1, h2, h3, h4 {
     @apply inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-brand/40 hover:text-brand disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-slate-200 disabled:hover:text-slate-600;
   }
   .btn-card {
-    @apply items-start justify-between rounded-2xl border border-slate-200/70 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-slate-700 shadow-sm transition hover:border-brand/40 hover:text-slate-900;
+    @apply items-start justify-between nested-block px-4 py-3 text-left text-sm font-semibold text-slate-700 shadow-sm transition hover:border-brand/40 hover:text-slate-900;
   }
   .glass {
     @apply rounded-3xl border border-white/60 bg-white/50 backdrop-blur;

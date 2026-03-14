@@ -208,7 +208,7 @@
     </label>
     <div class="text-sm text-slate-600">
       <p class="label">既存画像キー</p>
-      <pre class="mt-2 max-h-40 overflow-auto rounded-xl border border-slate-200/70 bg-white/70 p-3 text-xs">{resultImageFiles.length ? resultImageFiles.join('\n') : 'なし'}</pre>
+      <pre class="mt-2 max-h-40 overflow-auto nested-block-pane p-3 text-xs">{resultImageFiles.length ? resultImageFiles.join('\n') : 'なし'}</pre>
     </div>
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">備考</span>

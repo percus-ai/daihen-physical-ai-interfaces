@@ -253,7 +253,7 @@
     </div>
 
     {#if recommendedDataset}
-      <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
+      <div class="nested-block p-3">
         <p class="text-xs font-semibold text-slate-700">推奨</p>
         <div class="mt-2 flex items-center justify-between gap-2">
           <div class="min-w-0">
@@ -275,7 +275,7 @@
       </div>
     {/if}
 
-    <div class="flex min-h-0 flex-1 flex-col rounded-xl border border-slate-200/70 bg-white/80 p-3">
+    <div class="flex min-h-0 flex-1 flex-col nested-block p-3">
       <p class="text-xs font-semibold text-slate-700">すべて</p>
       <div class="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
         {#if filteredDatasets.length}
@@ -322,7 +322,7 @@
       </div>
     </div>
 
-    <div class="rounded-xl border border-slate-200/70 bg-white/80 p-3">
+    <div class="nested-block p-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <p class="text-xs font-semibold text-slate-700">Episode ジャンプ (1-indexed)</p>
         {#if previewDatasetId}
@@ -359,7 +359,7 @@
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col gap-3">
-	      <div class="shrink-0 rounded-xl border border-slate-200/70 bg-white/80 p-3">
+	      <div class="shrink-0 nested-block p-3">
 	        <p class="text-xs font-semibold text-slate-700">選択済</p>
 	        {#if activeEpisodeLinks.length}
 	          <div class="mt-2 space-y-2">
@@ -409,7 +409,7 @@
 	        {/if}
 	      </div>
 
-      <div class="flex min-h-0 flex-1 flex-col rounded-xl border border-slate-200/70 bg-white/80 p-3">
+      <div class="flex min-h-0 flex-1 flex-col nested-block p-3">
         <p class="text-xs font-semibold text-slate-700">未選択</p>
         <div class="mt-2 min-h-0 flex-1 overflow-y-auto pr-1" bind:this={unselectedScrollEl} onscroll={(event) => {
           unselectedScrollTop = (event.currentTarget as HTMLDivElement).scrollTop;

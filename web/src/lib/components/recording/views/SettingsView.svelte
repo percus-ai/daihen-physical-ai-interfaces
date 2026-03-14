@@ -214,7 +214,7 @@
     <p class="text-xs text-amber-600">{connectionWarning}</p>
   {/if}
 
-  <div class="rounded-2xl border border-slate-200/60 bg-white/70 p-3">
+  <div class="nested-block p-3">
     <div class="grid gap-3">
       <label class="text-xs font-semibold text-slate-600">
         <span class="label">Task</span>

@@ -117,7 +117,7 @@
         モデルのローカル同期状況を表示しています。
       </AlertDialog.Description>
 
-      <div class="mt-4 space-y-3 rounded-xl border border-slate-200/70 bg-slate-50/70 p-3">
+      <div class="mt-4 space-y-3 nested-block-pane p-3">
         {#if loading}
           <p class="text-sm text-slate-500">同期ジョブ情報を読み込み中...</p>
         {:else if loadError}

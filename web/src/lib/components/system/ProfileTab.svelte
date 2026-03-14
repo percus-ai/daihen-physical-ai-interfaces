@@ -306,7 +306,7 @@
         <p>読み込み中...</p>
       {:else}
         <div class="grid gap-4 lg:grid-cols-2">
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+          <div class="nested-block px-4 py-3">
             <p class="label">カメラ</p>
             <div class="mt-2 space-y-2">
               {#each $activeStatusQuery.data?.cameras ?? [] as cam}
@@ -327,7 +327,7 @@
               {/each}
             </div>
           </div>
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+          <div class="nested-block px-4 py-3">
             <p class="label">ロボット/アーム</p>
             <div class="mt-2 space-y-2">
               {#each $activeStatusQuery.data?.arms ?? [] as arm}
@@ -358,7 +358,7 @@
   <div class="card p-6">
     <h2 class="text-lg font-semibold text-slate-900">プロファイルの生データ</h2>
     <div class="mt-4 text-sm text-slate-600">
-      <pre class="max-h-[360px] overflow-auto rounded-xl border border-slate-200/60 bg-white/70 p-4 text-xs text-slate-700">
+      <pre class="max-h-[360px] overflow-auto nested-block p-4 text-xs text-slate-700">
 {JSON.stringify($activeProfileQuery.data?.profile_snapshot ?? {}, null, 2)}
       </pre>
     </div>

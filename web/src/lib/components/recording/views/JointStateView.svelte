@@ -442,7 +442,7 @@
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</p>
     <span class="text-[10px] text-slate-400">{sourceText}</span>
   </div>
-  <div class="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200/60 bg-white/70 p-3">
+  <div class="flex min-h-0 flex-1 flex-col nested-block p-3">
     {#if posSeries.length}
       <div class="flex flex-wrap gap-2 text-[10px] text-slate-500">
         {#each posSeries as series}

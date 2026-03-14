@@ -89,7 +89,7 @@
         <p>読み込み中...</p>
       {:else if $datasetsQuery.data?.datasets?.length}
         {#each $datasetsQuery.data.datasets as dataset}
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+          <div class="nested-block px-4 py-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <span class="min-w-0 break-all font-semibold text-slate-800">{displayDatasetLabel(dataset)}</span>
               <span class="chip">{dataset.status}</span>
@@ -126,7 +126,7 @@
         <p>読み込み中...</p>
       {:else if $modelsQuery.data?.models?.length}
         {#each $modelsQuery.data.models as model}
-          <div class="rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+          <div class="nested-block px-4 py-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <span class="min-w-0 break-all font-semibold text-slate-800">{displayModelLabel(model)}</span>
               <span class="chip">{model.status}</span>

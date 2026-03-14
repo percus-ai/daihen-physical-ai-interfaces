@@ -151,19 +151,19 @@
       <p class="mt-4 text-sm text-slate-500">読み込み中...</p>
     {:else if $overviewQuery.data}
       <div class="mt-4 space-y-3 text-sm text-slate-600">
-        <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+        <div class="flex items-center justify-between nested-block px-4 py-3">
           <span>プロファイル数</span>
           <span class="chip">{$overviewQuery.data.stats?.total_profiles ?? 0}</span>
         </div>
-        <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+        <div class="flex items-center justify-between nested-block px-4 py-3">
           <span>エピソード数</span>
           <span class="chip">{$overviewQuery.data.stats?.total_episodes ?? 0}</span>
         </div>
-        <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+        <div class="flex items-center justify-between nested-block px-4 py-3">
           <span>学習ジョブ数</span>
           <span class="chip">{$overviewQuery.data.stats?.total_training_jobs ?? 0}</span>
         </div>
-        <div class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-3">
+        <div class="flex items-center justify-between nested-block px-4 py-3">
           <span>モデル数</span>
           <span class="chip">{$overviewQuery.data.stats?.total_models ?? 0}</span>
         </div>

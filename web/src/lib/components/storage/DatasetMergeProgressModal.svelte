@@ -120,7 +120,7 @@
         データセットのマージとR2へのアップロード状況を表示しています。
       </AlertDialog.Description>
 
-      <div class="mt-4 space-y-3 rounded-xl border border-slate-200/70 bg-slate-50/70 p-3">
+      <div class="mt-4 space-y-3 nested-block-pane p-3">
         <div class="flex items-center justify-between text-xs text-slate-500">
           <span>{stepLabel}</span>
           <span>{progressPercent.toFixed(1)}%</span>

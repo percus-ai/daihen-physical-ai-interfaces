@@ -102,7 +102,7 @@
         return {
           label: 'Unknown',
           chip: 'border-slate-200 bg-slate-100 text-slate-600',
-          panel: 'border-slate-200/80 bg-slate-50/70',
+          panel: 'nested-block',
           accent: 'bg-slate-300'
         };
     }
@@ -233,7 +233,7 @@
     </div>
 
     {#if alerts.length}
-      <div class="mt-5 rounded-2xl border border-slate-200/70 bg-slate-50/90 p-4">
+      <div class="mt-5 nested-block-pane p-4">
         <p class="label">Active Alerts</p>
         <div class="mt-3 flex flex-wrap gap-2">
           {#each alerts as alert}
@@ -260,7 +260,7 @@
     <div class="mt-5 space-y-3">
       {#if gpuDevices.length}
         {#each gpuDevices as device}
-          <div class="rounded-2xl border border-slate-200/70 bg-white/70 p-4">
+          <div class="nested-block p-4">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <p class="text-base font-semibold text-slate-900">{device.name}</p>

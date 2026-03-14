@@ -92,7 +92,7 @@
   {/if}
 
   <div class="mt-4 grid gap-4 text-sm text-slate-600 sm:grid-cols-2 xl:grid-cols-5">
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+    <div class="nested-block p-3">
       <p class="label">VLAbor</p>
       <p class="mt-1 text-base font-semibold text-slate-800">{renderStatusLabel(vlabor?.level ?? vlabor?.state)}</p>
       <div class="mt-2 space-y-1 text-xs text-slate-500">
@@ -101,7 +101,7 @@
         <p>topics: {ros2?.required_topics_ok === false ? 'missing' : 'ok'}</p>
       </div>
     </div>
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+    <div class="nested-block p-3">
       <p class="label">Recorder</p>
       <p class="mt-1 text-base font-semibold text-slate-800">{renderStatusLabel(recorder?.level ?? recorder?.state)}</p>
       <div class="mt-2 space-y-1 text-xs text-slate-500">
@@ -110,7 +110,7 @@
         <p>profile: {recorder?.active_profile ?? '-'}</p>
       </div>
     </div>
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+    <div class="nested-block p-3">
       <p class="label">Inference</p>
       <p class="mt-1 text-base font-semibold text-slate-800">{renderStatusLabel(inference?.level ?? inference?.state)}</p>
       <div class="mt-2 space-y-1 text-xs text-slate-500">
@@ -120,7 +120,7 @@
         <p>device: {inference?.device ?? '-'}</p>
       </div>
     </div>
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+    <div class="nested-block p-3">
       <p class="label">Network</p>
       <p class="mt-1 text-base font-semibold text-slate-800">{renderStatusLabel(network?.status)}</p>
       <div class="mt-2 space-y-1 text-xs text-slate-500">
@@ -129,7 +129,7 @@
         <p>rosbridge: {networkDetails?.rosbridge?.status ?? '-'}</p>
       </div>
     </div>
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+    <div class="nested-block p-3">
       <p class="label">GPU</p>
       <p class="mt-1 text-base font-semibold text-slate-800">{renderStatusLabel(gpu?.level)}</p>
       <div class="mt-2 space-y-1 text-xs text-slate-500">

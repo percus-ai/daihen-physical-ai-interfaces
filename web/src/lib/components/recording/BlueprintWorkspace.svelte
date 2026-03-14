@@ -153,7 +153,7 @@
   });
 </script>
 
-<div class="rounded-xl border border-slate-200/60 bg-white/70 p-3">
+<div class="nested-block p-3">
   <div class="flex flex-wrap items-end gap-3">
     <div class="min-w-[240px] flex-1">
       <p class="label">保存済みブループリント</p>

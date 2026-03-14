@@ -856,7 +856,7 @@
     </label>
   </div>
   {#if selectedIds.length > 0}
-    <div class="mt-4 rounded-2xl border border-slate-200/80 bg-slate-50/90 p-4">
+    <div class="mt-4 nested-block-pane p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <p class="text-sm font-semibold text-slate-900">選択中: {selectedIds.length} 件</p>
         <button class="btn-ghost" type="button" onclick={clearSelection}>選択解除</button>

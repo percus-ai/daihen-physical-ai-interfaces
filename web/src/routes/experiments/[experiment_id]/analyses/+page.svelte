@@ -239,7 +239,7 @@
       <p class="text-sm text-slate-500">読み込み中...</p>
     {:else if analysisBlocks.length}
       {#each analysisBlocks as block, index}
-        <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4 shadow-sm">
+        <div class="nested-block p-4 shadow-sm">
           <div class="flex items-center justify-between">
             <p class="font-semibold text-slate-800">ブロック {index + 1}</p>
             <Button.Root class="btn-ghost text-xs" type="button" onclick={() => removeBlock(index)}>

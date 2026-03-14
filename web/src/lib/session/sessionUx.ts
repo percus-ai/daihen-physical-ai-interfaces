@@ -50,7 +50,7 @@ export const renderSessionPanelClass = (level?: string | null) => {
     case 'stopped':
       return 'border-rose-200/80 bg-rose-50/40';
     default:
-      return 'border-slate-200/80 bg-slate-50/70';
+      return 'nested-block';
   }
 };
 

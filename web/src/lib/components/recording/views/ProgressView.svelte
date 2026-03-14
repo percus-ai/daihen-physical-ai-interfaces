@@ -157,7 +157,7 @@
     {#if connectionWarning}
       <p class="mb-2 text-xs text-amber-600">{connectionWarning}</p>
     {/if}
-    <div class="rounded-2xl border border-slate-200/60 bg-white/70 p-3">
+    <div class="nested-block p-3">
       <div class="flex items-center justify-between text-xs text-slate-500">
         <span>Episode {episodeDisplayNumber}</span>
         <span>{numEpisodes ? `${episodeCountValue}/${numEpisodes}` : '-'}</span>
@@ -166,17 +166,17 @@
         <div class="h-2 rounded-full bg-brand transition" style={`width: ${Math.min(progress * 100, 100)}%`}></div>
       </div>
       <div class="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
+        <div class="nested-block p-2">
           <p class="label text-slate-500">frame</p>
           <p class="mt-1 text-sm font-semibold text-slate-800">{frameCount}</p>
           <p class="text-[11px] text-slate-500">current ep: {episodeFrameCount} ({fpsDisplay} fps)</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
+        <div class="nested-block p-2">
           <p class="label text-slate-500">episode time</p>
           <p class="mt-1 text-sm font-semibold text-slate-800">{episodeTime || '-'}s</p>
           <p class="text-[11px] text-slate-500">{episodeElapsed.toFixed(1)}s / 残り{episodeRemaining.toFixed(1)}s</p>
         </div>
-        <div class="rounded-xl border border-slate-200/60 bg-white/70 p-2">
+        <div class="nested-block p-2">
           <p class="label text-slate-500">reset</p>
           <p class="mt-1 text-sm font-semibold text-slate-800">{resetTime || '-'}s</p>
           <p class="text-[11px] text-slate-500">{resetElapsed.toFixed(1)}s / 残り{resetRemaining.toFixed(1)}s</p>

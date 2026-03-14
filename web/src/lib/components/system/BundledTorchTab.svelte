@@ -108,7 +108,7 @@
       return {
         label: 'Not Required',
         chip: 'border-slate-200 bg-slate-100 text-slate-600',
-        panel: 'border-slate-200/80 bg-slate-50/80',
+        panel: 'nested-block',
         accent: 'bg-slate-300',
         progress: 'bg-slate-400'
       };
@@ -221,7 +221,7 @@
     {/if}
 
     <div class="grid gap-4 md:grid-cols-2">
-      <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+      <div class="nested-block p-4">
         <p class="label">Platform</p>
         <div class="mt-3 space-y-1 text-sm text-slate-600">
           <p>platform: {snapshot?.platform?.platform_name ?? '-'}</p>
@@ -232,7 +232,7 @@
         </div>
       </div>
 
-      <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+      <div class="nested-block p-4">
         <p class="label">Install</p>
         <div class="mt-3 space-y-1 text-sm text-slate-600">
           <p>exists: {snapshot?.install?.exists ? 'yes' : 'no'}</p>
@@ -246,7 +246,7 @@
     </div>
 
     <div class="grid gap-4 md:grid-cols-2">
-      <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+      <div class="nested-block p-4">
         <div class="flex items-center justify-between gap-4">
           <div>
             <p class="label">Current State</p>
@@ -278,7 +278,7 @@
         </div>
       </div>
 
-      <div class="rounded-2xl border border-slate-200/70 bg-white/80 p-4">
+      <div class="nested-block p-4">
         <p class="label">Action</p>
         <div class="mt-4 grid gap-3">
           <label class="text-sm text-slate-600">

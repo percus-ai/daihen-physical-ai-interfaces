@@ -142,7 +142,7 @@
         </div>
       </div>
 
-      <div class="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200/70 bg-slate-50/60 p-3 text-xs text-slate-600">
+      <div class="mt-3 flex flex-wrap items-center gap-2 nested-block-pane p-3 text-xs text-slate-600">
         <div class="flex items-center gap-2">
           <span class="font-semibold text-slate-700">エピソード</span>
           <Button.Root
@@ -211,7 +211,7 @@
             datasetVideoWindows={viewerVideoWindows}
           />
         {:else if datasetId && $viewerDatasetQuery.data && !$viewerIsLocal}
-          <div class="flex h-full flex-col items-center justify-center gap-3 rounded-xl border border-slate-200/70 bg-white/80 px-6 text-center">
+          <div class="flex h-full flex-col items-center justify-center gap-3 nested-block px-6 text-center">
             <p class="text-sm text-slate-700">ローカル未配置のため、データセット同期を実行中です。</p>
             {#if $viewerSyncJobQuery.isLoading}
               <p class="text-xs text-slate-500">同期ジョブ情報を読み込み中...</p>
@@ -245,12 +245,12 @@
             </div>
           </div>
         {:else if datasetId}
-          <div class="flex h-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-200/70 bg-white/80 px-6 text-center">
+          <div class="flex h-full flex-col items-center justify-center gap-2 nested-block px-6 text-center">
             <p class="text-sm text-slate-500">表示準備中...</p>
             <p class="text-xs text-slate-500">データセット情報を読み込み中です。</p>
           </div>
         {:else}
-          <div class="flex h-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-200/70 bg-white/80 px-6 text-center">
+          <div class="flex h-full flex-col items-center justify-center gap-2 nested-block px-6 text-center">
             <p class="text-sm text-slate-500">表示するデータセットがありません。</p>
             <p class="text-xs text-slate-500">データセットを選択してから開いてください。</p>
           </div>

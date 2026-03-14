@@ -144,7 +144,7 @@
       label: 'Not Built',
       accent: 'bg-slate-300',
       chip: 'border-slate-200 bg-slate-100 text-slate-600',
-      panel: 'border-slate-200/80 bg-slate-50/70'
+      panel: 'nested-block'
     };
   };
 </script>

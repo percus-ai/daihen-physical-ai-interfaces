@@ -351,7 +351,7 @@
         {:else if displayedJobs.length}
           {#each displayedJobs as job}
             <a
-              class="flex items-center justify-between gap-3 rounded-xl border border-slate-200/60 bg-white/70 px-3 py-2 transition hover:border-brand/40 hover:bg-white"
+              class="nested-block nested-block-interactive flex items-center justify-between gap-3 px-3 py-2"
               href={`/train/jobs/${job.job_id}`}
             >
               <div class="min-w-0">

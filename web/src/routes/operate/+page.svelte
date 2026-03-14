@@ -454,7 +454,7 @@
   </div>
 
   <div class="mt-4">
-    <div class="rounded-xl border border-slate-200/60 bg-white/70 p-4">
+    <div class="nested-block p-4">
       <div class="flex items-start justify-between gap-3">
         <div>
           <p class="label">推論</p>
