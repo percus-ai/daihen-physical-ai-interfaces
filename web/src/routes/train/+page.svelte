@@ -45,18 +45,10 @@
     jobs?: TrainingJob[];
     total?: number;
   };
-  type UserConfigResponse = {
-    user_id?: string;
-    email?: string;
-  };
 
   const jobsQuery = createQuery<JobListResponse>({
     queryKey: ['training', 'jobs'],
     queryFn: api.training.jobs
-  });
-  const userConfigQuery = createQuery<UserConfigResponse>({
-    queryKey: ['user', 'config'],
-    queryFn: () => api.user.config() as Promise<UserConfigResponse>
   });
 
 	  let provider = $state<StorageProvider>('verda');
@@ -101,7 +93,6 @@
   let jobSortOrder = $state<'desc' | 'asc'>('desc');
   let jobOwnerFilter = $state('all');
   let jobSearch = $state('');
-  let jobOwnerFilterInitialized = $state(false);
 
 	  const storageItems = $derived(
 	    (
@@ -170,7 +161,6 @@
     }
     return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
   });
-  const currentUserId = $derived(String($userConfigQuery.data?.user_id ?? '').trim());
   const displayedJobs = $derived.by(() => {
     const query = normalizeText(jobSearch);
     const sorted = jobs
@@ -204,16 +194,6 @@
       }
     });
     return sorted;
-  });
-  $effect(() => {
-    if (jobOwnerFilterInitialized) return;
-    if (!currentUserId) return;
-    if (!jobOwnerOptions.some((option) => option.id === currentUserId)) {
-      jobOwnerFilterInitialized = true;
-      return;
-    }
-    jobOwnerFilter = currentUserId;
-    jobOwnerFilterInitialized = true;
   });
 
   const toggleVolume = (id: string) => {
