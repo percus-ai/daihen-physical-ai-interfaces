@@ -2,6 +2,8 @@
   import { Button, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import type { StorageUsageResponse } from '$lib/api/client';
+  import { getDashboardStorageUsageBytes } from '$lib/dashboard/storageUsageSummary';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate, formatPercent } from '$lib/format';
 
@@ -25,10 +27,6 @@
       memory_total_gb?: number;
     };
     timestamp?: string;
-  };
-
-  type StorageUsageResponse = {
-    datasets_size_bytes?: number;
   };
 
   const overviewQuery = createQuery<OverviewResponse>({
@@ -195,9 +193,9 @@
         </p>
       </div>
       <div>
-        <p class="label">ストレージ</p>
+        <p class="label">ストレージ使用量</p>
         <p class="text-base font-semibold text-slate-800">
-          {formatBytes($storageUsageQuery.data?.datasets_size_bytes)}
+          {formatBytes(getDashboardStorageUsageBytes($storageUsageQuery.data))}
         </p>
       </div>
       <div class="text-xs text-slate-500">

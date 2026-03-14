@@ -560,6 +560,16 @@ export type StorageRenameRequest = {
   name: string;
 };
 
+export type StorageUsageResponse = {
+  datasets_size_bytes?: number;
+  datasets_count?: number;
+  models_size_bytes?: number;
+  models_count?: number;
+  archive_size_bytes?: number;
+  archive_count?: number;
+  total_size_bytes?: number;
+};
+
 export type BulkActionResultStatus = 'succeeded' | 'failed' | 'skipped';
 
 export type BulkActionResult = {
@@ -1209,7 +1219,7 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(payload)
       }),
-    usage: () => fetchApi('/api/storage/usage'),
+    usage: () => fetchApi<StorageUsageResponse>('/api/storage/usage'),
     archiveDataset: (datasetId: string) =>
       fetchApi(`/api/storage/datasets/${datasetId}`, { method: 'DELETE' }),
     bulkArchiveDatasets: (ids: string[]) =>

@@ -2,18 +2,9 @@
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
+  import type { StorageUsageResponse } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
   import { formatBytes } from '$lib/format';
-
-  type StorageUsageResponse = {
-    datasets_size_bytes?: number;
-    datasets_count?: number;
-    models_size_bytes?: number;
-    models_count?: number;
-    archive_size_bytes?: number;
-    archive_count?: number;
-    total_size_bytes?: number;
-  };
 
   const usageQuery = createQuery<StorageUsageResponse>({
     queryKey: qk.storage.usagePage(),
