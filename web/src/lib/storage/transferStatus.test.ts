@@ -33,7 +33,7 @@ describe('transfer status presentation', () => {
     expect(presentModelSyncStatus(null, true)).toEqual({
       kind: 'state',
       label: '同期済',
-      tone: 'default'
+      tone: 'success'
     });
   });
 

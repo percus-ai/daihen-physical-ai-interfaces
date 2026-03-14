@@ -30,7 +30,7 @@ export const presentModelSyncStatus = (
   return {
     kind: 'state',
     label: isLocal ? '同期済' : '未同期',
-    tone: 'default'
+    tone: isLocal ? 'success' : 'default'
   };
 };
 

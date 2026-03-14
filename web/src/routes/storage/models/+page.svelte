@@ -988,7 +988,17 @@
                         {syncStatus.label}
                       </button>
                     {:else}
-                      <span class="chip">{syncStatus.label}</span>
+                      <span
+                        class={`text-xs font-semibold ${
+                          syncStatus.tone === 'error'
+                            ? 'text-rose-600'
+                            : syncStatus.tone === 'success'
+                              ? 'text-emerald-600'
+                              : 'text-slate-500'
+                        }`}
+                      >
+                        {syncStatus.label}
+                      </span>
                     {/if}
                   </div>
                 </td>
