@@ -680,11 +680,11 @@
     resetMessages();
 
     if (!selectedIds.length) {
-      actionError = '再アップロード対象を選択してください。';
+      actionError = '再送信対象を選択してください。';
       return;
     }
 
-    const confirmed = confirm(`${selectedIds.length}件をR2へ再アップロードしますか？`);
+    const confirmed = confirm(`${selectedIds.length}件をR2へ再送信しますか？`);
     if (!confirmed) return;
 
     actionLoading = true;
@@ -692,10 +692,10 @@
 
     try {
       const response = await api.storage.bulkReuploadDatasets(ids);
-      applyBulkResponseMessage(response, '再アップロードを実行しました');
+      applyBulkResponseMessage(response, '再送信を実行しました');
       await refetchDatasets();
     } catch (err) {
-      actionError = err instanceof Error ? err.message : '再アップロードに失敗しました。';
+      actionError = err instanceof Error ? err.message : '再送信に失敗しました。';
     } finally {
       actionLoading = false;
     }
@@ -1026,7 +1026,7 @@
             disabled={!canReupload}
             onclick={handleReuploadSelected}
           >
-            再アップロード
+            再送信
           </button>
           <button
             class={`btn-ghost ${canArchive ? '' : 'opacity-50 cursor-not-allowed'}`}

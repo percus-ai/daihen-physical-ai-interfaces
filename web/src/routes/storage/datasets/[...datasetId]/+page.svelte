@@ -136,16 +136,16 @@
     actionError = '';
 
     if (!datasetId) return;
-    const confirmed = confirm(`${datasetId} をR2へ再アップロードしますか？`);
+    const confirmed = confirm(`${datasetId} をR2へ再送信しますか？`);
     if (!confirmed) return;
 
     actionLoading = true;
     try {
       const result = await api.storage.reuploadDataset(datasetId) as { message?: string };
       await refetchDataset();
-      actionMessage = result.message ?? '再アップロードを完了しました。';
+      actionMessage = result.message ?? '再送信を完了しました。';
     } catch (err) {
-      actionError = err instanceof Error ? err.message : '再アップロードに失敗しました。';
+      actionError = err instanceof Error ? err.message : '再送信に失敗しました。';
     } finally {
       actionLoading = false;
     }
@@ -259,7 +259,7 @@
           disabled={actionLoading}
           onclick={handleReupload}
         >
-          再アップロード
+          再送信
         </button>
         <button
           class={`btn-ghost ${actionLoading ? 'opacity-50 cursor-not-allowed' : ''}`}

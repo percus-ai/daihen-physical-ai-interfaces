@@ -295,9 +295,9 @@
     setReuploadBusy(recordingId, true);
     try {
       await api.storage.reuploadDataset(recordingId);
-      toast.success('再アップロードを受け付けました。');
+      toast.success('再送信を受け付けました。');
     } catch (err) {
-      const message = err instanceof Error ? err.message : '再アップロードに失敗しました。';
+      const message = err instanceof Error ? err.message : '再送信に失敗しました。';
       setUploadStatus(
         recordingId,
         normalizeUploadStatus(recordingId, {
@@ -337,18 +337,18 @@
     bulkMessage = '';
     bulkError = '';
     if (!selectedLocalRecordings.length) {
-      bulkError = '再アップロード対象を選択してください。';
+      bulkError = '再送信対象を選択してください。';
       return;
     }
-    const confirmed = confirm(`${selectedLocalRecordings.length}件をR2へ再アップロードしますか？`);
+    const confirmed = confirm(`${selectedLocalRecordings.length}件をR2へ再送信しますか？`);
     if (!confirmed) return;
     bulkPending = true;
     try {
       const response = await api.recording.bulkReupload(selectedLocalRecordings.map((recording) => recording.recording_id));
-      applyBulkResponseMessage(response, '再アップロードを実行しました');
+      applyBulkResponseMessage(response, '再送信を実行しました');
       await $recordingsQuery.refetch?.();
     } catch (err) {
-      bulkError = err instanceof Error ? err.message : '再アップロードに失敗しました。';
+      bulkError = err instanceof Error ? err.message : '再送信に失敗しました。';
     } finally {
       bulkPending = false;
     }
@@ -605,7 +605,7 @@
           <p class="text-sm font-semibold text-slate-900">選択中: {selectedRecordingIds.length} 件</p>
           {#if selectedRecordingIds.length !== selectedLocalRecordings.length}
             <p class="mt-1 text-xs text-slate-500">
-              再アップロードはローカルデータがある {selectedLocalRecordings.length} 件のみ対象です。
+              再送信はローカルデータがある {selectedLocalRecordings.length} 件のみ対象です。
             </p>
           {/if}
         </div>
@@ -618,7 +618,7 @@
           disabled={!canBulkReupload}
           onclick={bulkReuploadRecordings}
         >
-          再アップロード
+          再送信
         </button>
         <button
           class={`btn-ghost ${canBulkArchive ? '' : 'opacity-50 cursor-not-allowed'}`}
@@ -778,7 +778,7 @@
                           {#if isReuploadBusy(recording.recording_id)}
                             {uploadStatusLabel(recording.recording_id)}
                           {:else}
-                            再アップロード
+                            再送信
                           {/if}
                         </DropdownMenu.Item>
                         <DropdownMenu.Item

@@ -248,8 +248,8 @@
   const retryUpload = async () => {
     const targetDatasetId = String(uploadDatasetId || uploadStatus?.dataset_id || datasetId || sessionId || '').trim();
     if (!targetDatasetId) return;
-    const success = await runAction('再アップロード', () => api.storage.reuploadDataset(targetDatasetId), {
-      successToast: '再アップロードを受け付けました。'
+    const success = await runAction('再送信', () => api.storage.reuploadDataset(targetDatasetId), {
+      successToast: '再送信を受け付けました。'
     });
     if (!success) return;
     uploadDatasetId = targetDatasetId;
@@ -630,7 +630,7 @@
             onclick={retryUpload}
             disabled={Boolean(actionBusy)}
           >
-            {actionBusy === '再アップロード' ? '再アップロード中...' : '再アップロード'}
+            {actionBusy === '再送信' ? '再送信中...' : '再送信'}
           </Button.Root>
         {/if}
       </div>
