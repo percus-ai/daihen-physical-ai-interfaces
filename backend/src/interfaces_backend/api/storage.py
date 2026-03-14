@@ -1,7 +1,9 @@
 """Storage API router for datasets/models (DB-backed)."""
 
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from pathlib import PurePosixPath
 import shutil
@@ -62,6 +64,7 @@ from interfaces_backend.models.storage import (
     StorageSortOrder,
     StorageRenameRequest,
     StorageUsageResponse,
+    DatasetSourceInfo,
 )
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.dataset_merge_jobs import get_dataset_merge_jobs_service
@@ -88,6 +91,14 @@ from percus_ai.db import (
 )
 from percus_ai.storage.hash import compute_directory_hash, compute_directory_size
 from percus_ai.storage.hub import download_model, get_local_model_info, upload_model
+from percus_ai.storage.models import (
+    DataSource,
+    DataStatus,
+    DatasetMetadata,
+    DatasetType,
+    SourceDatasetInfo as DatasetMetadataSourceInfo,
+    SyncInfo,
+)
 from percus_ai.storage.naming import validate_dataset_name, generate_dataset_id
 from percus_ai.storage.paths import get_datasets_dir, get_models_dir
 from percus_ai.storage.r2_db_sync import R2DBSyncService
@@ -312,6 +323,112 @@ def _is_missing_column_error(exc: APIError, *, table_name: str, column_name: str
     return table_name.lower() in message and column_name.lower() in message
 
 
+def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _normalize_source_datasets(raw: object) -> list[DatasetSourceInfo]:
+    if not isinstance(raw, list):
+        return []
+
+    normalized: list[DatasetSourceInfo] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        dataset_id = _normalize_optional_text(item.get("dataset_id"))
+        if not dataset_id or dataset_id in seen:
+            continue
+        seen.add(dataset_id)
+        normalized.append(
+            DatasetSourceInfo(
+                dataset_id=dataset_id,
+                name=_normalize_optional_text(item.get("name")) or dataset_id,
+                content_hash=_normalize_optional_text(item.get("content_hash")),
+                task_detail=_normalize_optional_text(item.get("task_detail")),
+            )
+        )
+    return normalized
+
+
+def _build_source_dataset_snapshots(rows: list[dict]) -> list[DatasetSourceInfo]:
+    snapshots: list[DatasetSourceInfo] = []
+    seen: set[str] = set()
+    for row in rows:
+        dataset_id = _normalize_optional_text(row.get("id"))
+        if not dataset_id or dataset_id in seen:
+            continue
+        seen.add(dataset_id)
+        snapshots.append(
+            DatasetSourceInfo(
+                dataset_id=dataset_id,
+                name=_normalize_optional_text(row.get("name")) or dataset_id,
+                content_hash=_normalize_optional_text(row.get("content_hash")),
+                task_detail=_normalize_optional_text(row.get("task_detail")),
+            )
+        )
+    return snapshots
+
+
+def _current_user_id_for_metadata() -> str:
+    session = get_supabase_session() or {}
+    return str(session.get("user_id") or "unknown")
+
+
+def _write_dataset_metadata_file(
+    *,
+    dataset_id: str,
+    dataset_name: str,
+    dataset_root: Path,
+    profile_snapshot: Optional[dict],
+    content_hash: str,
+    source_datasets: list[DatasetSourceInfo],
+) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    metadata = DatasetMetadata(
+        id=dataset_id,
+        name=dataset_name,
+        source=DataSource.R2,
+        status=DataStatus.ACTIVE,
+        created_by=_current_user_id_for_metadata(),
+        created_at=now,
+        updated_at=now,
+        dataset_type=DatasetType.MERGED,
+        profile_snapshot=profile_snapshot if isinstance(profile_snapshot, dict) else None,
+        source_datasets=[
+            DatasetMetadataSourceInfo(
+                dataset_id=item.dataset_id,
+                name=item.name,
+                content_hash=item.content_hash,
+                task_detail=item.task_detail,
+            )
+            for item in source_datasets
+        ],
+        sync=SyncInfo(hash=content_hash, size_bytes=0),
+    )
+
+    meta_path = dataset_root / ".meta.json"
+    for _ in range(3):
+        meta_path.write_text(
+            json.dumps(metadata.model_dump(mode="json"), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        size_bytes = compute_directory_size(dataset_root)
+        if size_bytes == metadata.sync.size_bytes:
+            return size_bytes
+        metadata.sync.size_bytes = size_bytes
+
+    final_size = compute_directory_size(dataset_root)
+    if final_size != metadata.sync.size_bytes:
+        metadata.sync.size_bytes = final_size
+    meta_path.write_text(
+        json.dumps(metadata.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return compute_directory_size(dataset_root)
+
+
 def _dataset_row_to_info(row: dict) -> DatasetInfo:
     profile_snapshot = row.get("profile_snapshot")
     return DatasetInfo(
@@ -324,6 +441,7 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
         source=row.get("source") or "r2",
         status=row.get("status") or "active",
         dataset_type=row.get("dataset_type") or "recorded",
+        source_datasets=_normalize_source_datasets(row.get("source_datasets")),
         episode_count=row.get("episode_count") or 0,
         size_bytes=row.get("size_bytes") or 0,
         is_local=_dataset_is_local(row.get("id")),
@@ -380,11 +498,6 @@ def _build_bulk_action_response(results: list[BulkActionResult], requested: int 
         skipped=skipped,
         results=results,
     )
-
-
-def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
-    normalized = str(value or "").strip()
-    return normalized or None
 
 
 def _apply_common_storage_list_filters(query, *, include_archived: bool, status: Optional[str], owner_user_id: Optional[str], search: Optional[str]):
@@ -613,6 +726,7 @@ async def _merge_datasets(
         (row.get("profile_snapshot") for row in source_rows if isinstance(row.get("profile_snapshot"), dict)),
         None,
     )
+    source_datasets = _build_source_dataset_snapshots(source_rows)
 
     report({"type": "start", "step": "download", "message": "Ensuring local datasets"})
     sync_service = R2DBSyncService()
@@ -643,10 +757,17 @@ async def _merge_datasets(
         raise HTTPException(status_code=500, detail=f"Dataset merge failed: {e}") from e
     report({"type": "step_complete", "step": "aggregate", "message": "Aggregation complete"})
 
+    content_hash = compute_directory_hash(merged_root, use_content=True)
+    size_bytes = _write_dataset_metadata_file(
+        dataset_id=merged_dataset_id,
+        dataset_name=request.dataset_name,
+        dataset_root=merged_root,
+        profile_snapshot=profile_snapshot,
+        content_hash=content_hash,
+        source_datasets=source_datasets,
+    )
     metadata = LeRobotDatasetMetadata(merged_dataset_id, root=merged_root)
     episode_count = metadata.total_episodes
-    size_bytes = compute_directory_size(merged_root)
-    content_hash = compute_directory_hash(merged_root, use_content=True)
 
     def upload_progress(message: dict) -> None:
         msg_type = message.get("type")
@@ -676,6 +797,7 @@ async def _merge_datasets(
         "profile_snapshot": profile_snapshot,
         "episode_count": episode_count,
         "dataset_type": "merged",
+        "source_datasets": [item.model_dump(mode="python") for item in source_datasets],
         "source": "r2",
         "status": "active",
         "size_bytes": size_bytes,

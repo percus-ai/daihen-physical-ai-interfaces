@@ -31,7 +31,8 @@ from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.startup_operations import get_startup_operations_service
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from percus_ai.db import get_supabase_async_client
-from percus_ai.storage.paths import get_models_dir
+from percus_ai.storage.paths import get_datasets_dir, get_models_dir
+from lerobot.datasets.utils import load_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,53 @@ def _merge_task_candidates(*candidate_groups: Sequence[str]) -> list[str]:
             seen.add(normalized)
             merged.append(normalized)
     return merged
+
+
+def _task_candidates_from_source_snapshots(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    candidates: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        task_detail = _normalize_task_detail(item.get("task_detail"))
+        if task_detail is not None:
+            candidates.append(task_detail)
+    return _merge_task_candidates(candidates)
+
+
+def _load_local_dataset_task_candidates(dataset_id: str) -> list[str]:
+    dataset_root = get_datasets_dir() / dataset_id
+    if not dataset_root.exists():
+        return []
+
+    try:
+        tasks = load_tasks(dataset_root)
+    except Exception as exc:
+        logger.warning("Failed to load local dataset tasks for %s: %s", dataset_id, exc)
+        return []
+
+    try:
+        task_names = [str(task_name) for task_name in tasks.index.tolist()]
+    except Exception as exc:
+        logger.warning("Failed to normalize local dataset tasks for %s: %s", dataset_id, exc)
+        return []
+    return _merge_task_candidates(task_names)
+
+
+def _task_candidates_from_dataset_row(row: dict) -> list[str]:
+    dataset_type = str(row.get("dataset_type") or "").strip().lower()
+    dataset_id = str(row.get("id") or "").strip()
+    if dataset_type == "merged" and dataset_id:
+        local_candidates = _load_local_dataset_task_candidates(dataset_id)
+        if local_candidates:
+            return local_candidates
+        snapshot_candidates = _task_candidates_from_source_snapshots(row.get("source_datasets"))
+        if snapshot_candidates:
+            return snapshot_candidates
+
+    task_detail = _normalize_task_detail(row.get("task_detail"))
+    return [task_detail] if task_detail is not None else []
 
 
 async def _load_task_candidates_by_model(
@@ -139,7 +187,7 @@ async def _load_task_candidates_by_model(
     try:
         dataset_rows = (
             await client.table("datasets")
-            .select("id,task_detail,status")
+            .select("id,task_detail,status,dataset_type,source_datasets")
             .in_("id", all_dataset_ids)
             .eq("status", "active")
             .execute()
@@ -148,21 +196,20 @@ async def _load_task_candidates_by_model(
         logger.warning("Failed to load datasets for task candidates: %s", exc)
         return {model_id: [] for model_id in model_ids}
 
-    task_by_dataset_id: dict[str, str] = {}
+    task_candidates_by_dataset_id: dict[str, list[str]] = {}
     for row in dataset_rows:
         dataset_id = str(row.get("id") or "").strip()
-        task_detail = _normalize_task_detail(row.get("task_detail"))
-        if dataset_id and task_detail:
-            task_by_dataset_id[dataset_id] = task_detail
+        if dataset_id:
+            task_candidates_by_dataset_id[dataset_id] = _task_candidates_from_dataset_row(row)
 
     candidates_by_model: dict[str, list[str]] = {}
     for model_id in model_ids:
-        ordered_tasks = [
-            task_by_dataset_id[dataset_id]
+        ordered_candidate_groups = [
+            task_candidates_by_dataset_id[dataset_id]
             for dataset_id in model_dataset_ids.get(model_id, [])
-            if dataset_id in task_by_dataset_id
+            if dataset_id in task_candidates_by_dataset_id
         ]
-        candidates_by_model[model_id] = _merge_task_candidates(ordered_tasks)
+        candidates_by_model[model_id] = _merge_task_candidates(*ordered_candidate_groups)
     return candidates_by_model
 
 

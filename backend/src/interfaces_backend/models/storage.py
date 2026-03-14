@@ -8,6 +8,15 @@ from pydantic import BaseModel, Field
 # --- API Request/Response Models ---
 
 
+class DatasetSourceInfo(BaseModel):
+    """Source dataset snapshot captured for merged datasets."""
+
+    dataset_id: str = Field(..., description="Source dataset ID")
+    name: str = Field(..., description="Source dataset name at merge time")
+    content_hash: Optional[str] = Field(None, description="Source dataset content hash at merge time")
+    task_detail: Optional[str] = Field(None, description="Source dataset task detail at merge time")
+
+
 class DatasetInfo(BaseModel):
     """Dataset information for API responses."""
 
@@ -21,6 +30,10 @@ class DatasetInfo(BaseModel):
     source: str = Field("r2", description="Data source")
     status: str = Field("active", description="Data status")
     dataset_type: str = Field("recorded", description="Dataset type")
+    source_datasets: List[DatasetSourceInfo] = Field(
+        default_factory=list,
+        description="Source datasets captured when this dataset was merged",
+    )
     episode_count: int = Field(0, description="Number of episodes")
     size_bytes: int = Field(0, description="Size in bytes")
     is_local: bool = Field(False, description="Dataset is downloaded locally")

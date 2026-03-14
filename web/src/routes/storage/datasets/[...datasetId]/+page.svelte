@@ -14,11 +14,19 @@
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
+  type DatasetSourceInfo = {
+    dataset_id: string;
+    name?: string;
+    content_hash?: string | null;
+    task_detail?: string | null;
+  };
+
   type DatasetInfo = {
     id: string;
     name?: string;
     profile_name?: string;
     dataset_type?: string;
+    source_datasets?: DatasetSourceInfo[];
     status?: string;
     size_bytes?: number;
     episode_count?: number;
@@ -47,6 +55,7 @@
   const dataset = $derived($datasetQuery.data);
   const profileName = $derived(dataset?.profile_name ?? '');
   const isArchived = $derived(dataset?.status === 'archived');
+  const sourceDatasets = $derived(dataset?.source_datasets ?? []);
 
   const candidatesQuery = createQuery<DatasetListResponse>(
     toStore(() => ({
@@ -396,6 +405,32 @@
         <p class="label">更新日時</p>
         <p class="text-base font-semibold text-slate-800">{formatDate(dataset.updated_at)}</p>
       </div>
+      {#if sourceDatasets.length > 0}
+        <div class="lg:col-span-2">
+          <p class="label">マージ元</p>
+          <div class="mt-2 grid gap-3">
+            {#each sourceDatasets as source (source.dataset_id)}
+              <div class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <a
+                    class="text-sm font-semibold text-slate-900 underline decoration-slate-300 underline-offset-2"
+                    href={`/storage/datasets/${encodeURIComponent(source.dataset_id)}`}
+                  >
+                    {source.name ?? source.dataset_id}
+                  </a>
+                  <span class="text-xs text-slate-500">{source.dataset_id}</span>
+                </div>
+                {#if source.task_detail}
+                  <p class="mt-1 text-sm text-slate-600">task: {source.task_detail}</p>
+                {/if}
+                {#if source.content_hash}
+                  <p class="mt-1 text-xs text-slate-500">hash: {source.content_hash}</p>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
     </div>
     <div class="mt-6 flex flex-wrap gap-2">
       {#if isArchived}

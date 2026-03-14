@@ -230,6 +230,156 @@ def test_load_task_candidates_by_model_uses_related_active_datasets():
     assert candidates["model-a"] == ["pick and place", "stack blocks"]
 
 
+def test_load_task_candidates_by_model_prefers_local_tasks_for_merged_dataset(monkeypatch):
+    class _FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+            self._eq_filters: list[tuple[str, object]] = []
+            self._in_filters: list[tuple[str, set[object]]] = []
+            self._order_key: str | None = None
+            self._order_desc = False
+
+        def select(self, _fields):
+            return self
+
+        def eq(self, key, value):
+            self._eq_filters.append((key, value))
+            return self
+
+        def in_(self, key, values):
+            self._in_filters.append((key, set(values)))
+            return self
+
+        def order(self, key, desc=False):
+            self._order_key = key
+            self._order_desc = desc
+            return self
+
+        async def execute(self):
+            rows = list(self._rows)
+            for key, value in self._eq_filters:
+                rows = [row for row in rows if row.get(key) == value]
+            for key, values in self._in_filters:
+                rows = [row for row in rows if row.get(key) in values]
+            if self._order_key:
+                rows.sort(key=lambda row: row.get(self._order_key) or "", reverse=self._order_desc)
+            return type("Result", (), {"data": rows})()
+
+    class _FakeClient:
+        def __init__(self, rows_by_table):
+            self._rows_by_table = rows_by_table
+
+        def table(self, name):
+            return _FakeQuery(self._rows_by_table.get(name, []))
+
+    client = _FakeClient(
+        {
+            "training_jobs": [],
+            "datasets": [
+                {
+                    "id": "dataset-merged",
+                    "task_detail": None,
+                    "status": "active",
+                    "dataset_type": "merged",
+                    "source_datasets": [
+                        {"dataset_id": "dataset-a", "name": "Dataset A", "task_detail": "fallback task"},
+                    ],
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        inference_api,
+        "_load_local_dataset_task_candidates",
+        lambda dataset_id: ["pick cube", "place cube"] if dataset_id == "dataset-merged" else [],
+    )
+
+    candidates = asyncio.run(
+        inference_api._load_task_candidates_by_model(
+            client,
+            [
+                {"id": "model-a", "dataset_id": "dataset-merged"},
+            ],
+        )
+    )
+
+    assert candidates["model-a"] == ["pick cube", "place cube"]
+
+
+def test_load_task_candidates_by_model_falls_back_to_source_snapshots_for_merged_dataset(monkeypatch):
+    class _FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+            self._eq_filters: list[tuple[str, object]] = []
+            self._in_filters: list[tuple[str, set[object]]] = []
+            self._order_key: str | None = None
+            self._order_desc = False
+
+        def select(self, _fields):
+            return self
+
+        def eq(self, key, value):
+            self._eq_filters.append((key, value))
+            return self
+
+        def in_(self, key, values):
+            self._in_filters.append((key, set(values)))
+            return self
+
+        def order(self, key, desc=False):
+            self._order_key = key
+            self._order_desc = desc
+            return self
+
+        async def execute(self):
+            rows = list(self._rows)
+            for key, value in self._eq_filters:
+                rows = [row for row in rows if row.get(key) == value]
+            for key, values in self._in_filters:
+                rows = [row for row in rows if row.get(key) in values]
+            if self._order_key:
+                rows.sort(key=lambda row: row.get(self._order_key) or "", reverse=self._order_desc)
+            return type("Result", (), {"data": rows})()
+
+    class _FakeClient:
+        def __init__(self, rows_by_table):
+            self._rows_by_table = rows_by_table
+
+        def table(self, name):
+            return _FakeQuery(self._rows_by_table.get(name, []))
+
+    client = _FakeClient(
+        {
+            "training_jobs": [],
+            "datasets": [
+                {
+                    "id": "dataset-merged",
+                    "task_detail": None,
+                    "status": "active",
+                    "dataset_type": "merged",
+                    "source_datasets": [
+                        {"dataset_id": "dataset-a", "name": "Dataset A", "task_detail": "pick cube"},
+                        {"dataset_id": "dataset-b", "name": "Dataset B", "task_detail": "place cube"},
+                        {"dataset_id": "dataset-c", "name": "Dataset C", "task_detail": "pick cube"},
+                    ],
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(inference_api, "_load_local_dataset_task_candidates", lambda _dataset_id: [])
+
+    candidates = asyncio.run(
+        inference_api._load_task_candidates_by_model(
+            client,
+            [
+                {"id": "model-a", "dataset_id": "dataset-merged"},
+            ],
+        )
+    )
+
+    assert candidates["model-a"] == ["pick cube", "place cube"]
+
+
 def test_get_inference_runner_status_includes_model_sync(monkeypatch):
     class _FakeRuntime:
         def get_status(self):
