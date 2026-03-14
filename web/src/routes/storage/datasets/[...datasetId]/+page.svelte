@@ -1,16 +1,12 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import { Button } from 'bits-ui';
-  import { get, toStore } from 'svelte/store';
+  import { toStore } from 'svelte/store';
   import { page } from '$app/state';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
-  import { api, type DatasetViewerEpisodeVideoWindowResponse } from '$lib/api/client';
+  import { api } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
-  import { createDatasetAvailabilityController } from '$lib/viewer/datasetAvailability';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
-  import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
-  import DatasetMergeProgressModal from '$lib/components/storage/DatasetMergeProgressModal.svelte';
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
   import { formatBytes, formatDate } from '$lib/format';
 
@@ -35,11 +31,6 @@
     updated_at?: string;
   };
 
-  type DatasetListResponse = {
-    datasets?: DatasetInfo[];
-    total?: number;
-  };
-
   const datasetId = $derived(page.params.datasetId ?? '');
 
   const queryClient = useQueryClient();
@@ -53,131 +44,28 @@
   );
 
   const dataset = $derived($datasetQuery.data);
-  const profileName = $derived(dataset?.profile_name ?? '');
   const isArchived = $derived(dataset?.status === 'archived');
   const sourceDatasets = $derived(dataset?.source_datasets ?? []);
-
-  const candidatesQuery = createQuery<DatasetListResponse>(
-    toStore(() => ({
-      queryKey: qk.storage.datasets({ profileName }),
-      queryFn: () => api.storage.datasets({ profileName }) as Promise<DatasetListResponse>,
-      enabled: Boolean(profileName)
-    }))
-  );
-
-  const candidates = $derived(
-    ($candidatesQuery.data?.datasets ?? [])
-      .filter((item) => item.profile_name === profileName)
-      .filter((item) => item.status === 'active' && item.id !== datasetId)
-  );
-
-  let mergeSelection: string[] = $state([]);
-  let mergeName = $state('');
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
-
-  let mergeModalOpen = $state(false);
-  let mergeJobId = $state('');
-  let lastMergePayload = $state<null | { dataset_name: string; source_dataset_ids: string[] }>(null);
   let renameDialogOpen = $state(false);
   let renamePending = $state(false);
   let renameError = $state('');
 
-  const mergeDefaultName = $derived(
-    datasetId
-      ? `${dataset?.name ?? datasetId}_merged`
-      : ''
-  );
   const displayName = $derived(dataset?.name ?? datasetId);
-  const canMerge = $derived(!isArchived && mergeSelection.length > 0 && !actionLoading);
 
   const openViewerModal = () => {
     if (!datasetId) return;
-    sessionViewer.open({ datasetId, episodeIndex: selectedEpisode });
+    sessionViewer.open({ datasetId });
   };
-
-  const datasetAvailability = createDatasetAvailabilityController({
-    datasetId: toStore(() => datasetId),
-    enabled: toStore(() => Boolean(datasetId)),
-    queryClient,
-    notify: (message, level = 'info') => {
-      if (level === 'error') {
-        actionError = message;
-        return;
-      }
-      actionError = '';
-      actionMessage = message;
-    },
-    onCompleted: (completedDatasetId) => {
-      void queryClient.invalidateQueries({ queryKey: qk.storage.dataset(completedDatasetId) });
-    }
-  });
-  onDestroy(datasetAvailability.destroy);
-
-  const viewerQuery = datasetAvailability.datasetQuery;
-
-  let selectedEpisode = $state(0);
-  const playbackEpisodes = $derived($viewerQuery.data?.total_episodes ?? 0);
-  const datasetSyncJobId = datasetAvailability.syncJobId;
-  const datasetSyncStarting = datasetAvailability.syncStarting;
-  const datasetSyncJobQuery = datasetAvailability.syncJobQuery;
-  const startDatasetSyncJob = datasetAvailability.startSync;
-
-  const viewerCameraKeys = datasetAvailability.cameraKeys;
-  const viewerSignalKeys = datasetAvailability.signalKeys;
-
-  $effect(() => {
-    if (playbackEpisodes <= 0) {
-      selectedEpisode = 0;
-      return;
-    }
-    if (selectedEpisode < 0) selectedEpisode = 0;
-    if (selectedEpisode >= playbackEpisodes) selectedEpisode = playbackEpisodes - 1;
-  });
-
-  const videoWindowQuery = createQuery<DatasetViewerEpisodeVideoWindowResponse>(
-    toStore(() => ({
-      queryKey: qk.storage.datasetViewerEpisodeVideoWindow(datasetId, selectedEpisode),
-      queryFn: () => api.storage.datasetViewerEpisodeVideoWindow(datasetId, selectedEpisode),
-      enabled: Boolean(datasetId) && Boolean(dataset?.is_local)
-    }))
-  );
-  const viewerVideoWindows = $derived.by(() => {
-    const videos = $videoWindowQuery.data?.videos ?? [];
-    const out: Record<string, { from_s: number; to_s: number }> = {};
-    for (const video of videos) {
-      out[video.key] = {
-        from_s: Number(video.from_s) || 0,
-        to_s: Number(video.to_s) || 0
-      };
-    }
-    return out;
-  });
 
   const refetchDataset = async () => {
     if (!datasetId) return;
-    await queryClient.invalidateQueries({ queryKey: qk.storage.dataset(datasetId) });
-    await datasetAvailability.refetch();
-  };
-
-  const cancelDatasetSyncJob = async () => {
-    const currentJobId = get(datasetSyncJobId);
-    if (!currentJobId) return;
-    actionError = '';
-    try {
-      await api.storage.cancelDatasetSyncJob(currentJobId);
-      await queryClient.invalidateQueries({ queryKey: qk.storage.datasetSyncJob(currentJobId) });
-    } catch (err) {
-      actionError = err instanceof Error ? err.message : '同期中断に失敗しました。';
-    }
-  };
-
-  const refetchCandidates = async () => {
-    if (!profileName) return;
-    await queryClient.invalidateQueries({
-      queryKey: qk.storage.datasets({ profileName })
-    });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.storage.dataset(datasetId) }),
+      queryClient.invalidateQueries({ queryKey: qk.storage.datasetsPrefix() })
+    ]);
   };
 
   const resetRenameDialog = () => {
@@ -201,21 +89,6 @@
     } finally {
       renamePending = false;
     }
-  };
-
-  const startMergeJob = async (payload: { dataset_name: string; source_dataset_ids: string[] }) => {
-    const accepted = await api.storage.startDatasetMergeJob(payload);
-    mergeJobId = accepted.job_id;
-    mergeModalOpen = true;
-  };
-
-  const handleMergeCompleted = async (mergedDatasetId: string) => {
-    actionMessage = `マージ完了: ${mergedDatasetId}`;
-    actionError = '';
-    mergeSelection = [];
-    mergeName = '';
-    await refetchDataset();
-    await refetchCandidates();
   };
 
   async function handleArchive() {
@@ -278,52 +151,7 @@
     }
   }
 
-  async function handleMerge() {
-    actionMessage = '';
-    actionError = '';
-
-    if (!datasetId || !profileName) return;
-    if (!mergeSelection.length) {
-      actionError = 'マージ対象を選択してください。';
-      return;
-    }
-
-    const datasetName = mergeName.trim() || mergeDefaultName;
-    if (!datasetName) {
-      actionError = '新しいデータセット名を入力してください。';
-      return;
-    }
-
-    const confirmed = confirm(`${mergeSelection.length + 1}件を ${datasetName} にマージしますか？`);
-    if (!confirmed) return;
-
-    actionLoading = true;
-    try {
-      const payload = {
-        dataset_name: datasetName,
-        source_dataset_ids: [datasetId, ...mergeSelection]
-      };
-      lastMergePayload = payload;
-      await startMergeJob(payload);
-      actionMessage = 'マージを開始しました。進捗を表示します。';
-    } catch (err) {
-      actionError = err instanceof Error ? err.message : 'マージに失敗しました。';
-    } finally {
-      actionLoading = false;
-    }
-  }
 </script>
-
-<DatasetMergeProgressModal
-  bind:open={mergeModalOpen}
-  jobId={mergeJobId}
-  onCompleted={handleMergeCompleted}
-  onRetry={async () => {
-    if (!lastMergePayload) return;
-    actionError = '';
-    await startMergeJob(lastMergePayload);
-  }}
-/>
 
 <StorageRenameDialog
   bind:open={renameDialogOpen}
@@ -405,34 +233,16 @@
         <p class="label">更新日時</p>
         <p class="text-base font-semibold text-slate-800">{formatDate(dataset.updated_at)}</p>
       </div>
-      {#if sourceDatasets.length > 0}
-        <div class="lg:col-span-2">
-          <p class="label">マージ元</p>
-          <div class="mt-2 grid gap-3">
-            {#each sourceDatasets as source (source.dataset_id)}
-              <div class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                <div class="flex flex-wrap items-center gap-2">
-                  <a
-                    class="text-sm font-semibold text-slate-900 underline decoration-slate-300 underline-offset-2"
-                    href={`/storage/datasets/${encodeURIComponent(source.dataset_id)}`}
-                  >
-                    {source.name ?? source.dataset_id}
-                  </a>
-                  <span class="text-xs text-slate-500">{source.dataset_id}</span>
-                </div>
-                {#if source.task_detail}
-                  <p class="mt-1 text-sm text-slate-600">task: {source.task_detail}</p>
-                {/if}
-                {#if source.content_hash}
-                  <p class="mt-1 text-xs text-slate-500">hash: {source.content_hash}</p>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
     </div>
     <div class="mt-6 flex flex-wrap gap-2">
+      <button
+        class="btn-ghost"
+        type="button"
+        disabled={actionLoading}
+        onclick={openViewerModal}
+      >
+        ビューアで開く
+      </button>
       {#if isArchived}
         <button
           class={`btn-primary ${actionLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -473,177 +283,48 @@
   {/if}
 </section>
 
-<section class="card p-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-xl font-semibold text-slate-900">再生</h2>
-    <div class="flex gap-2">
-      <button class="btn-ghost" type="button" onclick={openViewerModal}>
-        ビューアで開く
-      </button>
-      <button class="btn-ghost" type="button" onclick={refetchDataset}>
-        再読み込み
-      </button>
-    </div>
-  </div>
-  <p class="mt-2 text-sm text-slate-600">収録済みエピソードをブラウザで確認できます。</p>
-  {#if !dataset?.is_local}
-    <div class="mt-4 rounded-xl border border-slate-200/70 bg-white/70 p-4">
-      <p class="text-sm text-slate-700">ローカル未配置のため、データセット同期を実行中です。</p>
-      {#if $datasetSyncJobQuery.isLoading}
-        <p class="mt-2 text-xs text-slate-500">同期ジョブ情報を読み込み中...</p>
-      {:else if $datasetSyncJobQuery.error}
-        <p class="mt-2 text-xs text-rose-600">
-          {$datasetSyncJobQuery.error instanceof Error
-            ? $datasetSyncJobQuery.error.message
-            : '同期ジョブ情報の取得に失敗しました。'}
-        </p>
-      {:else if $datasetSyncJobQuery.data}
-        <p class="mt-2 text-xs text-slate-500">
-          状態: {$datasetSyncJobQuery.data.state}
-          {#if typeof $datasetSyncJobQuery.data.progress_percent === 'number'}
-            / {Math.round($datasetSyncJobQuery.data.progress_percent)}%
-          {/if}
-        </p>
-        {#if $datasetSyncJobQuery.data.message}
-          <p class="mt-1 text-xs text-slate-500">{$datasetSyncJobQuery.data.message}</p>
-        {/if}
-        {#if $datasetSyncJobQuery.data.error}
-          <p class="mt-1 text-xs text-rose-600">{$datasetSyncJobQuery.data.error}</p>
-        {/if}
-      {/if}
-      <div class="mt-3 flex flex-wrap gap-2">
-        <button
-          class={`btn-ghost ${$datasetSyncStarting ? 'opacity-50 cursor-not-allowed' : ''}`}
-          type="button"
-          disabled={$datasetSyncStarting}
-          onclick={startDatasetSyncJob}
-        >
-          同期を再実行
-        </button>
-        {#if $datasetSyncJobId}
-          <button
-            class="btn-ghost"
-            type="button"
-            onclick={cancelDatasetSyncJob}
-          >
-            同期を中断
-          </button>
-        {/if}
-      </div>
-    </div>
-  {:else if $viewerQuery.isLoading}
-    <p class="mt-4 text-sm text-slate-600">再生情報を読み込み中...</p>
-  {:else if $viewerQuery.error}
-    <p class="mt-4 text-sm text-rose-600">
-      {$viewerQuery.error instanceof Error
-        ? $viewerQuery.error.message
-        : '再生情報の取得に失敗しました。'}
-    </p>
-  {:else if playbackEpisodes > 0}
-    <div class="mt-4 flex flex-wrap items-end gap-3">
+{#if sourceDatasets.length > 0}
+  <section class="card p-6">
+    <div class="flex items-center justify-between gap-3">
       <div>
-        <label class="label" for="episode-index">エピソード</label>
-        <input
-          id="episode-index"
-          class="input mt-2 w-36"
-          type="number"
-          min="0"
-          max={Math.max(playbackEpisodes - 1, 0)}
-          bind:value={selectedEpisode}
-        />
+        <h2 class="text-xl font-semibold text-slate-900">マージ元</h2>
+        <p class="mt-2 text-sm text-slate-600">このデータセットを構成している元データセットです。</p>
       </div>
-      <button
-        class="btn-ghost"
-        type="button"
-        disabled={selectedEpisode <= 0}
-        onclick={() => (selectedEpisode = Math.max(0, selectedEpisode - 1))}
-      >
-        前へ
-      </button>
-      <button
-        class="btn-ghost"
-        type="button"
-        disabled={selectedEpisode >= playbackEpisodes - 1}
-        onclick={() => (selectedEpisode = Math.min(playbackEpisodes - 1, selectedEpisode + 1))}
-      >
-        次へ
-      </button>
-      <p class="text-xs text-slate-500">
-        {selectedEpisode + 1} / {playbackEpisodes} episodes
-      </p>
+      <div class="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+        {sourceDatasets.length} datasets
+      </div>
     </div>
-
-    <div class="mt-4 h-[82vh] min-h-0">
-      <SessionLayoutEditor
-        blueprintSessionId={datasetId}
-        blueprintSessionKind="recording"
-        layoutSessionId={datasetId}
-        layoutSessionKind="recording"
-        layoutMode="recording"
-        viewSource="dataset"
-        editMode={false}
-        initialInspectorTab="selection"
-        persistBlueprintDraft={false}
-        embedded={true}
-        datasetId={datasetId}
-        datasetEpisodeIndex={selectedEpisode}
-        datasetCameraKeys={$viewerCameraKeys}
-        datasetSignalKeys={$viewerSignalKeys}
-        datasetVideoWindows={viewerVideoWindows}
-      />
-    </div>
-  {:else}
-    <p class="mt-4 text-sm text-slate-600">再生可能なエピソードがありません。</p>
-  {/if}
-</section>
-
-<section class="card p-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-xl font-semibold text-slate-900">マージ</h2>
-    <button class="btn-ghost" type="button" onclick={refetchCandidates}>候補を更新</button>
-  </div>
-  <p class="mt-2 text-sm text-slate-600">同一プロジェクトの他データセットと統合できます。</p>
-  {#if isArchived}
-    <p class="mt-4 text-sm text-rose-600">アーカイブ中のデータセットはマージできません。</p>
-  {:else if $candidatesQuery.isLoading}
-    <p class="mt-4 text-sm text-slate-600">候補を読み込み中...</p>
-  {:else if candidates.length}
-    <div class="mt-4 grid gap-2">
-      {#each candidates as candidate}
-        <label class="flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/70 px-4 py-2 text-sm text-slate-600">
-          <div class="flex items-center gap-3">
-            <input
-              type="checkbox"
-              class="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/40"
-              bind:group={mergeSelection}
-              value={candidate.id}
-            />
-            <span class="font-semibold text-slate-800">{candidate.id}</span>
+    <div class="mt-4 grid gap-3 lg:grid-cols-2">
+      {#each sourceDatasets as source, index (source.dataset_id)}
+        <div class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Source {index + 1}
+              </p>
+              <a
+                class="mt-2 block truncate text-sm font-semibold text-slate-900 underline decoration-slate-300 underline-offset-2"
+                href={`/storage/datasets/${encodeURIComponent(source.dataset_id)}`}
+              >
+                {source.name ?? source.dataset_id}
+              </a>
+            </div>
+            <span class="rounded-full bg-white px-2 py-1 text-[11px] font-medium text-slate-500">
+              linked
+            </span>
           </div>
-          <span class="text-xs text-slate-500">{formatBytes(candidate.size_bytes ?? 0)}</span>
-        </label>
+          <p class="mt-2 break-all text-xs text-slate-500">{source.dataset_id}</p>
+          {#if source.task_detail}
+            <div class="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Task</p>
+              <p class="mt-1 text-sm text-slate-700">{source.task_detail}</p>
+            </div>
+          {/if}
+          {#if source.content_hash}
+            <p class="mt-3 text-xs text-slate-500">hash: {source.content_hash}</p>
+          {/if}
+        </div>
       {/each}
     </div>
-    <div class="mt-4">
-      <label class="label" for="merge-name-detail">新しいデータセット名</label>
-      <input
-        class="input mt-2"
-        id="merge-name-detail"
-        placeholder={mergeDefaultName || 'dataset_name'}
-        bind:value={mergeName}
-      />
-    </div>
-    <div class="mt-4">
-      <button
-        class={`btn-primary ${canMerge ? '' : 'opacity-50 cursor-not-allowed'}`}
-        type="button"
-        disabled={!canMerge}
-        onclick={handleMerge}
-      >
-        マージ実行
-      </button>
-    </div>
-  {:else}
-    <p class="mt-4 text-sm text-slate-600">マージ可能なデータセットがありません。</p>
-  {/if}
-</section>
+  </section>
+{/if}
