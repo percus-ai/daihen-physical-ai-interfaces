@@ -1,4 +1,4 @@
-import type { ModelSyncJobStatus } from '$lib/api/client';
+import type { DatasetSyncJobStatus, ModelSyncJobStatus } from '$lib/api/client';
 import type { RecordingUploadStatus } from '$lib/recording/uploadStatus';
 
 export type TransferStatusPresentation = {
@@ -17,6 +17,25 @@ export const formatTransferProgressLabel = (value: unknown) => `${Math.round(cla
 
 export const presentModelSyncStatus = (
   activeJob: ModelSyncJobStatus | null,
+  isLocal: boolean
+): TransferStatusPresentation => {
+  if (activeJob && (activeJob.state === 'queued' || activeJob.state === 'running')) {
+    return {
+      kind: 'progress',
+      label: formatTransferProgressLabel(activeJob.progress_percent),
+      tone: 'default'
+    };
+  }
+
+  return {
+    kind: 'state',
+    label: isLocal ? '同期済' : '未同期',
+    tone: isLocal ? 'success' : 'default'
+  };
+};
+
+export const presentDatasetSyncStatus = (
+  activeJob: DatasetSyncJobStatus | null,
   isLocal: boolean
 ): TransferStatusPresentation => {
   if (activeJob && (activeJob.state === 'queued' || activeJob.state === 'running')) {

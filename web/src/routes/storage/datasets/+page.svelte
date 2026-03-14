@@ -1,14 +1,38 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { Button, DropdownMenu, Tabs } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import Archive from 'phosphor-svelte/lib/Archive';
+  import ArrowArcLeft from 'phosphor-svelte/lib/ArrowArcLeft';
+  import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
+  import CloudArrowDown from 'phosphor-svelte/lib/CloudArrowDown';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
+  import Eye from 'phosphor-svelte/lib/Eye';
+  import FileText from 'phosphor-svelte/lib/FileText';
+  import PencilSimple from 'phosphor-svelte/lib/PencilSimple';
+  import StopCircle from 'phosphor-svelte/lib/StopCircle';
+  import TrashSimple from 'phosphor-svelte/lib/TrashSimple';
   import { toStore } from 'svelte/store';
   import toast from 'svelte-french-toast';
-  import { api, type ArchiveBulkResponse, type BulkActionResponse } from '$lib/api/client';
+  import {
+    api,
+    type ArchiveBulkResponse,
+    type BulkActionResponse,
+    type DatasetSyncJobState,
+    type DatasetSyncJobStatus,
+    type TabSessionSubscription
+  } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
+  import {
+    registerTabRealtimeContributor,
+    type TabRealtimeContributorHandle,
+    type TabRealtimeEvent
+  } from '$lib/realtime/tabSessionClient';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import { formatBytes, formatDate } from '$lib/format';
+  import { presentDatasetSyncStatus } from '$lib/storage/transferStatus';
   import DatasetMergeProgressModal from '$lib/components/storage/DatasetMergeProgressModal.svelte';
+  import DatasetSyncProgressModal from '$lib/components/storage/DatasetSyncProgressModal.svelte';
   import StorageArchiveConfirmDialog from '$lib/components/storage/StorageArchiveConfirmDialog.svelte';
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
 
@@ -22,6 +46,7 @@
     size_bytes?: number;
     episode_count?: number;
     status?: string;
+    is_local?: boolean;
     created_at?: string;
   };
 
@@ -41,6 +66,9 @@
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
+  let syncMessage = $state('');
+  let syncError = $state('');
+  let syncPending = $state(false);
 
   let mergeModalOpen = $state(false);
   let mergeJobId = $state('');
@@ -59,6 +87,11 @@
   let datasetSortOrder = $state<'desc' | 'asc'>('desc');
   let datasetOwnerFilter = $state('all');
   let datasetSearch = $state('');
+  let jobsById = $state<Record<string, DatasetSyncJobStatus>>({});
+  let activeJobsByDatasetId = $state<Record<string, DatasetSyncJobStatus>>({});
+  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let datasetSyncModalOpen = $state(false);
+  let selectedSyncJobId = $state('');
 
   const datasetsQuery = createQuery<DatasetListResponse>(
     toStore(() => {
@@ -81,6 +114,7 @@
   const emptyStateText = $derived(
     isArchiveTab ? '条件に合うアーカイブ済みデータセットがありません。' : '条件に合うデータセットがありません。'
   );
+  const datasetTableColumnCount = $derived(isArchiveTab ? 8 : 9);
 
   const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
   const compareText = (left?: string | null, right?: string | null) =>
@@ -111,7 +145,9 @@
       ? `${selectedDatasets[0].name ?? selectedDatasets[0].id}_merged`
       : ''
   );
+  const syncTargets = $derived(selectedDatasets.filter((dataset) => !Boolean(dataset.is_local)));
   const canMerge = $derived(!isArchiveTab && selectedIds.length >= 2 && !profileMismatch && !actionLoading);
+  const canSyncSelected = $derived(!isArchiveTab && syncTargets.length > 0 && !actionLoading && !syncPending);
   const canArchive = $derived(!isArchiveTab && selectedIds.length > 0 && !actionLoading);
   const canReupload = $derived(!isArchiveTab && selectedIds.length > 0 && !actionLoading);
   const canRestore = $derived(isArchiveTab && selectedIds.length > 0 && !actionLoading);
@@ -168,6 +204,8 @@
   const resetMessages = () => {
     actionMessage = '';
     actionError = '';
+    syncMessage = '';
+    syncError = '';
   };
 
   const resetArchiveDialog = () => {
@@ -215,6 +253,230 @@
   const refetchDatasets = async () => {
     await queryClient.invalidateQueries({ queryKey: qk.storage.datasetsPrefix() });
     await $datasetsQuery?.refetch?.();
+  };
+
+  const normalizeJob = (job: DatasetSyncJobStatus): DatasetSyncJobStatus => {
+    const progress = Number(job.progress_percent ?? 0);
+    const normalizedProgress = Number.isFinite(progress) ? Math.min(100, Math.max(0, progress)) : 0;
+    return {
+      ...job,
+      progress_percent: normalizedProgress,
+      detail: {
+        files_done: Number(job.detail?.files_done ?? 0),
+        total_files: Number(job.detail?.total_files ?? 0),
+        transferred_bytes: Number(job.detail?.transferred_bytes ?? 0),
+        total_bytes: Number(job.detail?.total_bytes ?? 0),
+        current_file: job.detail?.current_file ?? null
+      }
+    };
+  };
+
+  const isActiveJobState = (state?: DatasetSyncJobState) => state === 'queued' || state === 'running';
+  const isTerminalJobState = (state?: DatasetSyncJobState) =>
+    state === 'completed' || state === 'failed' || state === 'cancelled';
+
+  const isNewerJobSnapshot = (next: DatasetSyncJobStatus, prev: DatasetSyncJobStatus | undefined) => {
+    if (!prev) return true;
+    const nextTs = Date.parse(next.updated_at ?? '');
+    const prevTs = Date.parse(prev.updated_at ?? '');
+    if (Number.isNaN(nextTs) || Number.isNaN(prevTs)) return true;
+    return nextTs >= prevTs;
+  };
+
+  const applyJobSnapshot = (job: DatasetSyncJobStatus) => {
+    const normalized = normalizeJob(job);
+    const previous = jobsById[normalized.job_id];
+    if (!isNewerJobSnapshot(normalized, previous)) return;
+
+    jobsById = {
+      ...jobsById,
+      [normalized.job_id]: normalized
+    };
+
+    if (isActiveJobState(normalized.state)) {
+      activeJobsByDatasetId = {
+        ...activeJobsByDatasetId,
+        [normalized.dataset_id]: normalized
+      };
+      return;
+    }
+
+    const activeJob = activeJobsByDatasetId[normalized.dataset_id];
+    if (activeJob?.job_id === normalized.job_id) {
+      const next = { ...activeJobsByDatasetId };
+      delete next[normalized.dataset_id];
+      activeJobsByDatasetId = next;
+    }
+    if (isTerminalJobState(normalized.state)) {
+      void queryClient.invalidateQueries({ queryKey: qk.storage.datasetsPrefix() });
+    }
+  };
+
+  const loadActiveJobs = async () => {
+    const response = await api.storage.datasetSyncJobs(false);
+    const activeJobs = (response.jobs ?? []).map(normalizeJob);
+
+    const nextJobsById = { ...jobsById };
+    const nextActive: Record<string, DatasetSyncJobStatus> = {};
+
+    const preferActiveJob = (next: DatasetSyncJobStatus, prev: DatasetSyncJobStatus | undefined) => {
+      if (!prev) return true;
+      if (prev.state === 'running' && next.state === 'queued') return false;
+      if (next.state === 'running' && prev.state === 'queued') return true;
+      return isNewerJobSnapshot(next, prev);
+    };
+
+    for (const job of activeJobs) {
+      nextJobsById[job.job_id] = job;
+      if (preferActiveJob(job, nextActive[job.dataset_id])) {
+        nextActive[job.dataset_id] = job;
+      }
+    }
+
+    jobsById = nextJobsById;
+    activeJobsByDatasetId = nextActive;
+  };
+
+  const activeJobOf = (datasetId: string) => activeJobsByDatasetId[datasetId] ?? null;
+
+  const openDatasetSyncModal = (jobId: string) => {
+    if (!jobId) return;
+    selectedSyncJobId = jobId;
+    datasetSyncModalOpen = true;
+  };
+
+  const startDatasetSync = async (datasetId: string) => {
+    const accepted = await api.storage.syncDataset(datasetId);
+    const snapshot = await api.storage.datasetSyncJob(accepted.job_id);
+    applyJobSnapshot(snapshot);
+    return snapshot;
+  };
+
+  const cancelDatasetSync = async (jobId: string) => {
+    await api.storage.cancelDatasetSyncJob(jobId);
+    const snapshot = await api.storage.datasetSyncJob(jobId);
+    applyJobSnapshot(snapshot);
+    return snapshot;
+  };
+
+  const syncButtonLabel = (dataset: DatasetSummary) => {
+    const activeJob = activeJobOf(dataset.id);
+    if (activeJob) return '中断';
+    if (dataset.is_local) return '同期済';
+    return '同期';
+  };
+
+  const isSyncButtonDisabled = (dataset: DatasetSummary) => {
+    const activeJob = activeJobOf(dataset.id);
+    if (activeJob) return false;
+    if (dataset.is_local) return true;
+    if (syncPending) return true;
+    if (actionLoading) return true;
+    return false;
+  };
+
+  const handleSyncDataset = async (dataset: DatasetSummary) => {
+    if (datasetStatusTab !== 'active') return;
+
+    const datasetId = dataset.id;
+    if (!datasetId) return;
+    const activeJob = activeJobOf(datasetId);
+
+    resetMessages();
+
+    if (activeJob) {
+      try {
+        const snapshot = await cancelDatasetSync(activeJob.job_id);
+        syncMessage = snapshot.message ?? `${datasetId} の中断を要求しました。`;
+        openDatasetSyncModal(snapshot.job_id);
+      } catch (err) {
+        syncError = err instanceof Error ? err.message : 'データセット同期の中断に失敗しました。';
+      }
+      return;
+    }
+
+    if (dataset.is_local || syncPending || actionLoading) return;
+
+    try {
+      const started = await startDatasetSync(datasetId);
+      syncMessage = started.message ?? `${datasetId} の同期を開始しました。`;
+      openDatasetSyncModal(started.job_id);
+    } catch (err) {
+      const status =
+        typeof err === 'object' && err !== null && 'status' in err ? Number((err as { status?: unknown }).status) : 0;
+      if (status === 409) {
+        try {
+          await loadActiveJobs();
+          const existing = activeJobOf(datasetId);
+          if (existing) {
+            syncMessage = '同期ジョブが既に実行中です。';
+            openDatasetSyncModal(existing.job_id);
+            return;
+          }
+        } catch {
+          // ignore
+        }
+        syncError = '同期ジョブが既に実行中です。';
+        return;
+      }
+      syncError = err instanceof Error ? err.message : 'データセット同期の開始に失敗しました。';
+    }
+  };
+
+  async function handleSyncSelected() {
+    resetMessages();
+
+    if (!syncTargets.length) {
+      syncError = '同期対象を選択してください。';
+      return;
+    }
+
+    const confirmed = confirm(`${syncTargets.length}件のデータセット同期ジョブを登録しますか？`);
+    if (!confirmed) return;
+
+    syncPending = true;
+
+    try {
+      let enqueued = 0;
+      let skipped = 0;
+      let failed = 0;
+      const failedIds: string[] = [];
+
+      for (const dataset of syncTargets) {
+        try {
+          await api.storage.syncDataset(dataset.id);
+          enqueued += 1;
+        } catch (err) {
+          const status =
+            typeof err === 'object' && err !== null && 'status' in err ? Number((err as { status?: unknown }).status) : 0;
+          if (status === 409) {
+            skipped += 1;
+            continue;
+          }
+          failed += 1;
+          failedIds.push(dataset.id);
+        }
+      }
+
+      const summary = [`登録 ${enqueued}`, `スキップ ${skipped}`, `失敗 ${failed}`].join(' / ');
+      syncMessage = `データセット同期ジョブを登録しました: ${summary}`;
+      if (failedIds.length) {
+        const preview = failedIds.slice(0, 5).join(', ');
+        const suffix = failedIds.length > 5 ? ' ...' : '';
+        syncError = `失敗データセット: ${preview}${suffix}`;
+      }
+      await loadActiveJobs();
+    } catch (err) {
+      syncError = err instanceof Error ? err.message : 'データセット同期の登録に失敗しました。';
+    } finally {
+      syncPending = false;
+    }
+  }
+
+  const handleRefresh = async () => {
+    resetMessages();
+    await refetchDatasets();
+    await loadActiveJobs();
   };
 
   const toggleSelectAllDisplayedDatasets = () => {
@@ -529,6 +791,63 @@
     }
   }
 
+  const activeJobSubscriptions = $derived.by(() =>
+    Object.keys(jobsById)
+      .map((jobId) => jobsById[jobId])
+      .filter((job) => isActiveJobState(job?.state))
+      .map(
+        (job): TabSessionSubscription => ({
+          subscription_id: `storage.dataset-sync.${job.job_id}`,
+          kind: 'storage.dataset-sync',
+          params: { job_id: job.job_id }
+        })
+      )
+  );
+
+  $effect(() => {
+    let disposed = false;
+
+    const initialize = async () => {
+      try {
+        await loadActiveJobs();
+      } catch (err) {
+        if (disposed) return;
+        syncError = err instanceof Error ? err.message : '同期ジョブ状態の取得に失敗しました。';
+      }
+    };
+
+    void initialize();
+
+    return () => {
+      disposed = true;
+    };
+  });
+
+  $effect(() => {
+    if (!browser) return;
+    if (realtimeContributor === null) {
+      realtimeContributor = registerTabRealtimeContributor({
+        subscriptions: activeJobSubscriptions,
+        onEvent: (event: TabRealtimeEvent) => {
+          if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-sync') return;
+          applyJobSnapshot(event.payload as DatasetSyncJobStatus);
+        }
+      });
+      if (!realtimeContributor) {
+        return;
+      }
+      return;
+    }
+    realtimeContributor.setSubscriptions(activeJobSubscriptions);
+  });
+
+  $effect(() => {
+    return () => {
+      realtimeContributor?.dispose();
+      realtimeContributor = null;
+    };
+  });
+
   $effect(() => {
     if (archiveDialogOpen || archivePendingId) return;
     archiveTarget = null;
@@ -551,6 +870,12 @@
     actionError = '';
     await startMergeJob(lastMergePayload);
   }}
+/>
+
+<DatasetSyncProgressModal
+  bind:open={datasetSyncModalOpen}
+  jobId={selectedSyncJobId}
+  onCancel={cancelDatasetSync}
 />
 
 <StorageArchiveConfirmDialog
@@ -580,7 +905,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage">戻る</Button.Root>
-      <button class="btn-ghost" type="button" onclick={refetchDatasets}>更新</button>
+      <button class="btn-ghost" type="button" onclick={handleRefresh}>更新</button>
     </div>
   </div>
 </section>
@@ -688,6 +1013,14 @@
             マージ
           </button>
           <button
+            class={`btn-primary ${canSyncSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
+            type="button"
+            disabled={!canSyncSelected}
+            onclick={handleSyncSelected}
+          >
+            同期
+          </button>
+          <button
             class={`btn-primary ${canReupload ? '' : 'opacity-50 cursor-not-allowed'}`}
             type="button"
             disabled={!canReupload}
@@ -713,6 +1046,12 @@
   {#if actionError}
     <p class="mt-2 text-sm text-rose-600">{actionError}</p>
   {/if}
+  {#if syncMessage}
+    <p class="mt-3 text-sm text-emerald-600">{syncMessage}</p>
+  {/if}
+  {#if syncError}
+    <p class="mt-2 text-sm text-rose-600">{syncError}</p>
+  {/if}
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">
@@ -731,17 +1070,22 @@
           <th class="pb-3">名前</th>
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
-          <th class="pb-3">サイズ</th>
           <th class="pb-3">エピソード</th>
+          <th class="pb-3">サイズ</th>
           <th class="pb-3">作成日時</th>
+          {#if !isArchiveTab}
+            <th class="pb-3 text-center">同期状態</th>
+          {/if}
           <th class="pb-3 text-right">操作</th>
         </tr>
       </thead>
       <tbody class="text-slate-600">
         {#if $datasetsQuery.isLoading}
-          <tr><td class="py-3" colspan="8">読み込み中...</td></tr>
+          <tr><td class="py-3" colspan={datasetTableColumnCount}>読み込み中...</td></tr>
         {:else if displayedDatasets.length}
           {#each displayedDatasets as dataset}
+            {@const activeJob = activeJobOf(dataset.id)}
+            {@const syncStatus = presentDatasetSyncStatus(activeJob, Boolean(dataset.is_local))}
             <tr class="border-t border-slate-200/60">
               <td class="w-12 py-3 align-middle">
                 <div class="flex justify-center">
@@ -760,9 +1104,36 @@
               </td>
               <td class="py-3">{ownerLabel(dataset)}</td>
               <td class="py-3">{dataset.profile_name ?? '-'}</td>
-              <td class="py-3">{formatBytes(dataset.size_bytes ?? 0)}</td>
               <td class="py-3">{dataset.episode_count ?? 0}</td>
+              <td class="py-3">{formatBytes(dataset.size_bytes ?? 0)}</td>
               <td class="py-3">{formatDate(dataset.created_at)}</td>
+              {#if !isArchiveTab}
+                <td class="py-3 text-center">
+                  <div class="flex justify-center">
+                    {#if syncStatus.kind === 'progress' && activeJob}
+                      <button
+                        class="text-xs font-semibold text-brand hover:underline"
+                        type="button"
+                        onclick={() => openDatasetSyncModal(activeJob.job_id)}
+                      >
+                        {syncStatus.label}
+                      </button>
+                    {:else}
+                      <span
+                        class={`text-xs font-semibold ${
+                          syncStatus.tone === 'error'
+                            ? 'text-rose-600'
+                            : syncStatus.tone === 'success'
+                              ? 'text-emerald-600'
+                              : 'text-slate-500'
+                        }`}
+                      >
+                        {syncStatus.label}
+                      </span>
+                    {/if}
+                  </div>
+                </td>
+              {/if}
               <td class="py-3 text-right">
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger
@@ -779,67 +1150,116 @@
                       align="end"
                       preventScroll={false}
                     >
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
-                        onSelect={() => openViewer(dataset.id)}
-                      >
-                        ビューアで開く
-                      </DropdownMenu.Item>
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
-                        onSelect={() => {
-                          window.location.href = `/storage/datasets/${dataset.id}`;
-                        }}
-                      >
-                        詳細を開く
-                      </DropdownMenu.Item>
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                        disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
-                        onSelect={() => openRenameDialog(dataset)}
-                      >
-                        名前変更
-                      </DropdownMenu.Item>
-                      {#if isArchiveTab}
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                        >
+                          表示
+                        </DropdownMenu.GroupHeading>
                         <DropdownMenu.Item
-                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                          class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
                           onSelect={() => {
-                            void handleRestoreTarget(dataset);
+                            window.location.href = `/storage/datasets/${dataset.id}`;
                           }}
                         >
-                          {#if isRowPending(dataset.id, 'restore')}
-                            復元中...
-                          {:else}
-                            復元
-                          {/if}
+                          <FileText size={16} class="text-slate-500" />
+                          詳細を開く
                         </DropdownMenu.Item>
                         <DropdownMenu.Item
-                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
-                          onSelect={() => {
-                            void handleDeleteTarget(dataset);
-                          }}
+                          class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
+                          onSelect={() => openViewer(dataset.id)}
                         >
-                          {#if isRowPending(dataset.id, 'delete')}
-                            完全削除中...
-                          {:else}
-                            完全削除
-                          {/if}
+                          <Eye size={16} class="text-slate-500" />
+                          ビューアで開く
                         </DropdownMenu.Item>
-                      {:else}
+                      </DropdownMenu.Group>
+
+                      <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                        >
+                          編集
+                        </DropdownMenu.GroupHeading>
                         <DropdownMenu.Item
-                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                          class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
                           disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
-                          onSelect={() => openArchiveDialog(dataset)}
+                          onSelect={() => openRenameDialog(dataset)}
                         >
-                          {#if isArchivePending(dataset.id)}
-                            アーカイブ中...
-                          {:else}
-                            アーカイブ
-                          {/if}
+                          <PencilSimple size={16} class="text-slate-500" />
+                          名前変更
                         </DropdownMenu.Item>
-                      {/if}
+                      </DropdownMenu.Group>
+
+                      <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                        >
+                          操作
+                        </DropdownMenu.GroupHeading>
+                        {#if isArchiveTab}
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                            disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                            onSelect={() => {
+                              void handleRestoreTarget(dataset);
+                            }}
+                          >
+                            <ArrowArcLeft size={16} class="text-slate-500" />
+                            {#if isRowPending(dataset.id, 'restore')}
+                              復元中...
+                            {:else}
+                              復元
+                            {/if}
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                            disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                            onSelect={() => {
+                              void handleDeleteTarget(dataset);
+                            }}
+                          >
+                            <TrashSimple size={16} class="text-rose-500" />
+                            {#if isRowPending(dataset.id, 'delete')}
+                              完全削除中...
+                            {:else}
+                              完全削除
+                            {/if}
+                          </DropdownMenu.Item>
+                        {:else}
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                            disabled={isSyncButtonDisabled(dataset) || renamePending}
+                            onSelect={() => {
+                              void handleSyncDataset(dataset);
+                            }}
+                          >
+                            {#if activeJob}
+                              <StopCircle size={16} class="text-slate-500" />
+                            {:else if dataset.is_local}
+                              <CheckCircle size={16} class="text-slate-500" />
+                            {:else}
+                              <CloudArrowDown size={16} class="text-slate-500" />
+                            {/if}
+                            {syncButtonLabel(dataset)}
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                            disabled={actionLoading || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                            onSelect={() => openArchiveDialog(dataset)}
+                          >
+                            <Archive size={16} class="text-rose-500" />
+                            {#if isArchivePending(dataset.id)}
+                              アーカイブ中...
+                            {:else}
+                              アーカイブ
+                            {/if}
+                          </DropdownMenu.Item>
+                        {/if}
+                      </DropdownMenu.Group>
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>
                 </DropdownMenu.Root>
@@ -847,7 +1267,7 @@
             </tr>
           {/each}
         {:else}
-          <tr><td class="py-3" colspan="8">{emptyStateText}</td></tr>
+          <tr><td class="py-3" colspan={datasetTableColumnCount}>{emptyStateText}</td></tr>
         {/if}
       </tbody>
     </table>

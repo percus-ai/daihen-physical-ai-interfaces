@@ -4,7 +4,10 @@
   import { Button, DropdownMenu } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
+  import Archive from 'phosphor-svelte/lib/Archive';
+  import CloudArrowUp from 'phosphor-svelte/lib/CloudArrowUp';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
+  import Eye from 'phosphor-svelte/lib/Eye';
   import { api, type BulkActionResponse, type TabSessionSubscription } from '$lib/api/client';
   import { formatBytes, formatDate } from '$lib/format';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
@@ -653,9 +656,9 @@
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
           <th class="pb-3">エピソード</th>
-          <th class="pb-3 text-center">送信状態</th>
           <th class="pb-3">サイズ</th>
           <th class="pb-3">作成日時</th>
+          <th class="pb-3 text-center">送信状態</th>
           <th class="pb-3 text-right">操作</th>
         </tr>
       </thead>
@@ -694,6 +697,8 @@
               <td class="py-3">{ownerLabel(recording)}</td>
               <td class="py-3">{recording.profile_name ?? '-'}</td>
               <td class="py-3">{recording.episode_count ?? '-'}</td>
+              <td class="py-3">{formatBytes(recording.size_bytes ?? 0)}</td>
+              <td class="py-3">{formatDate(recording.created_at)}</td>
               <td class="py-3 text-center">
                 <div class="flex flex-col items-center gap-1">
                   {#if uploadCellStatus.kind === 'progress'}
@@ -724,8 +729,6 @@
                   {/if}
                 </div>
               </td>
-              <td class="py-3">{formatBytes(recording.size_bytes ?? 0)}</td>
-              <td class="py-3">{formatDate(recording.created_at)}</td>
               <td class="py-3 text-right">
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger
@@ -742,44 +745,75 @@
                       align="end"
                       preventScroll={false}
                     >
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
-                        onSelect={() => openDatasetViewer(recording.recording_id)}
-                      >
-                        ビューアで開く
-                      </DropdownMenu.Item>
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                        disabled={!recording.is_local || isReuploadBusy(recording.recording_id)}
-                        closeOnSelect={false}
-                        onSelect={() => reuploadRecording(recording)}
-                      >
-                        {#if isReuploadBusy(recording.recording_id)}
-                          {uploadStatusLabel(recording.recording_id)}
-                        {:else}
-                          再アップロード
-                        {/if}
-                      </DropdownMenu.Item>
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                        disabled={isArchiveBusy(recording.recording_id) || isReuploadBusy(recording.recording_id)}
-                        onSelect={() => archiveRecording(recording)}
-                      >
-                        {#if isArchiveBusy(recording.recording_id)}
-                          アーカイブ中...
-                        {:else}
-                          アーカイブ
-                        {/if}
-                      </DropdownMenu.Item>
-                      {#if uploadStatusMap[recording.recording_id]?.status === 'running'}
-                        <div class="px-3 pb-1 pt-0.5 text-[10px] text-slate-400">
-                          {uploadStatusMap[recording.recording_id]?.message || 'アップロード中...'}
-                        </div>
-                      {/if}
-                      {#if !recording.is_local}
-                        <div class="px-3 pb-1 pt-0.5 text-[10px] text-slate-400">
-                          ローカルデータがないため実行できません
-                        </div>
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                        >
+                          表示
+                        </DropdownMenu.GroupHeading>
+                        <DropdownMenu.Item
+                          class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
+                          onSelect={() => openDatasetViewer(recording.recording_id)}
+                        >
+                          <Eye size={16} class="text-slate-500" />
+                          ビューアで開く
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Group>
+
+                      <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                        >
+                          操作
+                        </DropdownMenu.GroupHeading>
+                        <DropdownMenu.Item
+                          class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                          disabled={!recording.is_local || isReuploadBusy(recording.recording_id)}
+                          closeOnSelect={false}
+                          onSelect={() => reuploadRecording(recording)}
+                        >
+                          <CloudArrowUp size={16} class="text-slate-500" />
+                          {#if isReuploadBusy(recording.recording_id)}
+                            {uploadStatusLabel(recording.recording_id)}
+                          {:else}
+                            再アップロード
+                          {/if}
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item
+                          class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                          disabled={isArchiveBusy(recording.recording_id) || isReuploadBusy(recording.recording_id)}
+                          onSelect={() => archiveRecording(recording)}
+                        >
+                          <Archive size={16} class="text-rose-500" />
+                          {#if isArchiveBusy(recording.recording_id)}
+                            アーカイブ中...
+                          {:else}
+                            アーカイブ
+                          {/if}
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Group>
+
+                      {#if uploadStatusMap[recording.recording_id]?.status === 'running' || !recording.is_local}
+                        <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+                        <DropdownMenu.Group>
+                          <DropdownMenu.GroupHeading
+                            class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                          >
+                            情報
+                          </DropdownMenu.GroupHeading>
+                          {#if uploadStatusMap[recording.recording_id]?.status === 'running'}
+                            <div class="px-3 pb-1 pt-0.5 text-[10px] text-slate-400">
+                              {uploadStatusMap[recording.recording_id]?.message || 'アップロード中...'}
+                            </div>
+                          {/if}
+                          {#if !recording.is_local}
+                            <div class="px-3 pb-1 pt-0.5 text-[10px] text-slate-400">
+                              ローカルデータがないため実行できません
+                            </div>
+                          {/if}
+                        </DropdownMenu.Group>
                       {/if}
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>

@@ -2,7 +2,16 @@
   import { browser } from '$app/environment';
   import { Button, DropdownMenu, Tabs } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import Archive from 'phosphor-svelte/lib/Archive';
+  import ArrowArcLeft from 'phosphor-svelte/lib/ArrowArcLeft';
+  import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
+  import CloudArrowDown from 'phosphor-svelte/lib/CloudArrowDown';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
+  import FileText from 'phosphor-svelte/lib/FileText';
+  import FolderOpen from 'phosphor-svelte/lib/FolderOpen';
+  import PencilSimple from 'phosphor-svelte/lib/PencilSimple';
+  import StopCircle from 'phosphor-svelte/lib/StopCircle';
+  import TrashSimple from 'phosphor-svelte/lib/TrashSimple';
   import { toStore } from 'svelte/store';
   import toast from 'svelte-french-toast';
   import {
@@ -98,7 +107,7 @@
   const emptyStateText = $derived(
     isArchiveTab ? '条件に合うアーカイブ済みモデルがありません。' : '条件に合うモデルがありません。'
   );
-  const modelTableColumnCount = $derived(isArchiveTab ? 9 : 10);
+  const modelTableColumnCount = $derived(isArchiveTab ? 8 : 9);
 
   const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
   const compareText = (left?: string | null, right?: string | null) =>
@@ -926,7 +935,6 @@
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
           <th class="pb-3">ポリシー</th>
-          <th class="pb-3">データセット</th>
           <th class="pb-3">サイズ</th>
           <th class="pb-3">作成日時</th>
           {#if !isArchiveTab}
@@ -961,19 +969,6 @@
               <td class="py-3">{ownerLabel(model)}</td>
               <td class="py-3">{model.profile_name ?? '-'}</td>
               <td class="py-3">{model.policy_type ?? '-'}</td>
-              <td class="py-3">
-                {#if model.dataset_id}
-                  <a
-                    class="text-brand hover:underline"
-                    href={`/storage/datasets/${model.dataset_id}`}
-                    title={model.dataset_id}
-                  >
-                    開く
-                  </a>
-                {:else}
-                  -
-                {/if}
-              </td>
               <td class="py-3">{formatBytes(model.size_bytes ?? 0)}</td>
               <td class="py-3">{formatDate(model.created_at)}</td>
               {#if !isArchiveTab}
@@ -1019,70 +1014,120 @@
                       align="end"
                       preventScroll={false}
                     >
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
-                        onSelect={() => {
-                          window.location.href = `/storage/models/${model.id}`;
-                        }}
-                      >
-                        詳細を開く
-                      </DropdownMenu.Item>
-                      <DropdownMenu.Item
-                        class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                        disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
-                        onSelect={() => openRenameDialog(model)}
-                      >
-                        名前変更
-                      </DropdownMenu.Item>
-                      {#if isArchiveTab}
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                        >
+                          表示
+                        </DropdownMenu.GroupHeading>
                         <DropdownMenu.Item
-                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                          class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
                           onSelect={() => {
-                            void handleRestoreTarget(model);
+                            window.location.href = `/storage/models/${model.id}`;
                           }}
                         >
-                          {#if isRowPending(model.id, 'restore')}
-                            復元中...
-                          {:else}
-                            復元
-                          {/if}
+                          <FileText size={16} class="text-slate-500" />
+                          詳細を開く
                         </DropdownMenu.Item>
+                        {#if model.dataset_id}
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
+                            onSelect={() => {
+                              window.location.href = `/storage/datasets/${model.dataset_id}`;
+                            }}
+                          >
+                            <FolderOpen size={16} class="text-slate-500" />
+                            データセットを開く
+                          </DropdownMenu.Item>
+                        {/if}
+                      </DropdownMenu.Group>
+
+                      <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                        >
+                          編集
+                        </DropdownMenu.GroupHeading>
                         <DropdownMenu.Item
-                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                          class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
                           disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
-                          onSelect={() => {
-                            void handleDeleteTarget(model);
-                          }}
+                          onSelect={() => openRenameDialog(model)}
                         >
-                          {#if isRowPending(model.id, 'delete')}
-                            完全削除中...
-                          {:else}
-                            完全削除
-                          {/if}
+                          <PencilSimple size={16} class="text-slate-500" />
+                          名前変更
                         </DropdownMenu.Item>
-                      {:else}
-                        <DropdownMenu.Item
-                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={isSyncButtonDisabled(model) || renamePending}
-                          onSelect={() => {
-                            void handleSyncModel(model);
-                          }}
+                      </DropdownMenu.Group>
+
+                      <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
                         >
-                          {syncButtonLabel(model)}
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          class="flex items-center rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
-                          disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
-                          onSelect={() => openArchiveDialog(model)}
-                        >
-                          {#if isArchivePending(model.id)}
-                            アーカイブ中...
-                          {:else}
-                            アーカイブ
-                          {/if}
-                        </DropdownMenu.Item>
-                      {/if}
+                          操作
+                        </DropdownMenu.GroupHeading>
+                        {#if isArchiveTab}
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                            disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                            onSelect={() => {
+                              void handleRestoreTarget(model);
+                            }}
+                          >
+                            <ArrowArcLeft size={16} class="text-slate-500" />
+                            {#if isRowPending(model.id, 'restore')}
+                              復元中...
+                            {:else}
+                              復元
+                            {/if}
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                            disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                            onSelect={() => {
+                              void handleDeleteTarget(model);
+                            }}
+                          >
+                            <TrashSimple size={16} class="text-rose-500" />
+                            {#if isRowPending(model.id, 'delete')}
+                              完全削除中...
+                            {:else}
+                              完全削除
+                            {/if}
+                          </DropdownMenu.Item>
+                        {:else}
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                            disabled={isSyncButtonDisabled(model) || renamePending}
+                            onSelect={() => {
+                              void handleSyncModel(model);
+                            }}
+                          >
+                            {#if activeJob}
+                              <StopCircle size={16} class="text-slate-500" />
+                            {:else if model.is_local}
+                              <CheckCircle size={16} class="text-slate-500" />
+                            {:else}
+                              <CloudArrowDown size={16} class="text-slate-500" />
+                            {/if}
+                            {syncButtonLabel(model)}
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item
+                            class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent"
+                            disabled={bulkPending || syncAllPending || Boolean(archivePendingId) || Boolean(rowPendingId) || renamePending}
+                            onSelect={() => openArchiveDialog(model)}
+                          >
+                            <Archive size={16} class="text-rose-500" />
+                            {#if isArchivePending(model.id)}
+                              アーカイブ中...
+                            {:else}
+                              アーカイブ
+                            {/if}
+                          </DropdownMenu.Item>
+                        {/if}
+                      </DropdownMenu.Group>
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>
                 </DropdownMenu.Root>

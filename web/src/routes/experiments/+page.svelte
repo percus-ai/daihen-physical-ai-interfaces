@@ -239,7 +239,7 @@
           <th class="pb-3">カテゴリ比率</th>
           <th class="pb-3">考察</th>
           <th class="pb-3">更新日時</th>
-          <th class="pb-3">操作</th>
+          <th class="pb-3 text-right">操作</th>
         </tr>
       </thead>
       <tbody class="text-slate-600">
@@ -317,43 +317,52 @@
               </td>
               <td class="py-3">{summariesLoading ? '-' : analysisById[exp.id] ? 'あり' : 'なし'}</td>
               <td class="py-3">{formatDate(exp.updated_at)}</td>
-              <td class="py-3">
+              <td class="py-3 text-right">
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger
-                    class="btn-ghost h-8 w-8 p-0 text-slate-600"
+                    class="btn-ghost ml-auto h-8 w-8 p-0 text-slate-600"
                     aria-label="操作メニュー"
                     title="操作"
                   >
                     <DotsThree size={18} weight="bold" />
                   </DropdownMenu.Trigger>
-                  <DropdownMenu.Content
-                    class="z-50 min-w-[140px] rounded-xl border border-slate-200/80 bg-white/95 p-2 text-xs text-slate-700 shadow-lg backdrop-blur"
-                    sideOffset={6}
-                    align="end"
-                    preventScroll={false}
-                  >
-                    <DropdownMenu.Item
-                      class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
-                      onSelect={() => goto(`/experiments/${exp.id}`)}
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      class="z-50 min-w-[180px] rounded-xl border border-slate-200/80 bg-white/95 p-2 text-xs text-slate-700 shadow-lg backdrop-blur"
+                      sideOffset={6}
+                      align="end"
+                      preventScroll={false}
                     >
-                      <FileText size={16} class="text-slate-500" />
-                      開く
-                    </DropdownMenu.Item>
-                    <DropdownMenu.Item
-                      class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
-                      onSelect={() => goto(`/experiments/${exp.id}/evaluations`)}
-                    >
-                      <CheckCircle size={16} class="text-slate-500" />
-                      評価
-                    </DropdownMenu.Item>
-                    <DropdownMenu.Item
-                      class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
-                      onSelect={() => goto(`/experiments/${exp.id}/analyses`)}
-                    >
-                      <Lightbulb size={16} class="text-slate-500" />
-                      考察
-                    </DropdownMenu.Item>
-                  </DropdownMenu.Content>
+                      <DropdownMenu.Group>
+                        <DropdownMenu.GroupHeading
+                          class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                        >
+                          表示
+                        </DropdownMenu.GroupHeading>
+                        <DropdownMenu.Item
+                          class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
+                          onSelect={() => goto(`/experiments/${exp.id}`)}
+                        >
+                          <FileText size={16} class="text-slate-500" />
+                          開く
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item
+                          class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
+                          onSelect={() => goto(`/experiments/${exp.id}/evaluations`)}
+                        >
+                          <CheckCircle size={16} class="text-slate-500" />
+                          評価
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item
+                          class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
+                          onSelect={() => goto(`/experiments/${exp.id}/analyses`)}
+                        >
+                          <Lightbulb size={16} class="text-slate-500" />
+                          考察
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Group>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
                 </DropdownMenu.Root>
               </td>
             </tr>
