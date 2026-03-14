@@ -120,6 +120,8 @@
   let selectedDevice = $state('');
   let selectedTaskCandidate = $state('');
   let taskInput = $state('');
+  let taskInputMode = $state<'auto' | 'manual'>('auto');
+  let taskModelId = $state('');
   let denoisingStepsInput = $state('10');
   let inferenceStartError = $state('');
   let inferenceStopError = $state('');
@@ -223,13 +225,21 @@
   };
 
   const handleTaskCandidateSelect = (nextTask: string) => {
+    taskInputMode = 'auto';
     selectedTaskCandidate = nextTask;
     taskInput = nextTask;
   };
 
   const handleTaskInput = (nextValue: string) => {
+    taskInputMode = 'manual';
     taskInput = nextValue;
     selectedTaskCandidate = taskCandidates.includes(nextValue) ? nextValue : '';
+  };
+
+  const clearTaskInput = () => {
+    taskInputMode = 'manual';
+    taskInput = '';
+    selectedTaskCandidate = '';
   };
 
   const handleInferenceStop = async () => {
@@ -265,16 +275,41 @@
   const startupDetail = $derived(startupStatus?.detail ?? {});
 
   $effect(() => {
-    selectedModelId;
-    if (!taskCandidates.length) {
-      selectedTaskCandidate = '';
+    const modelId = selectedModelId;
+    const candidates = taskCandidates;
+    const mode = taskInputMode;
+
+    const modelChanged = modelId !== taskModelId;
+    if (modelChanged) {
+      taskModelId = modelId;
+      if (mode === 'auto') {
+        const nextCandidate = candidates[0] ?? '';
+        selectedTaskCandidate = nextCandidate;
+        taskInput = nextCandidate;
+        return;
+      }
+      selectedTaskCandidate = candidates.includes(taskInput) ? taskInput : '';
       return;
     }
-    if (!selectedTaskCandidate || !taskCandidates.includes(selectedTaskCandidate)) {
-      selectedTaskCandidate = taskCandidates[0];
+
+    if (mode === 'auto') {
+      if (!candidates.length) {
+        selectedTaskCandidate = '';
+        taskInput = '';
+        return;
+      }
+      if (!selectedTaskCandidate || !candidates.includes(selectedTaskCandidate)) {
+        selectedTaskCandidate = candidates[0];
+      }
+      if (taskInput !== selectedTaskCandidate) {
+        taskInput = selectedTaskCandidate;
+      }
+      return;
     }
-    if (!taskInput.trim()) {
-      taskInput = selectedTaskCandidate;
+
+    const nextSelectedCandidate = candidates.includes(taskInput) ? taskInput : '';
+    if (selectedTaskCandidate !== nextSelectedCandidate) {
+      selectedTaskCandidate = nextSelectedCandidate;
     }
   });
 
@@ -467,7 +502,18 @@
           </label>
 
           <div class="text-sm font-semibold text-slate-700">
-            <span class="label">タスク説明</span>
+            <div class="flex items-center justify-between gap-2">
+              <span class="label">タスク説明</span>
+              <button
+                type="button"
+                class="text-xs font-semibold text-slate-500 transition hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300"
+                onclick={clearTaskInput}
+                disabled={!taskInput.trim()}
+                aria-label="タスク説明をクリア"
+              >
+                クリア
+              </button>
+            </div>
             <div class="mt-2">
               <TaskCandidateCombobox
                 items={taskCandidates}

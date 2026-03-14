@@ -44,7 +44,6 @@
     if (!nextValue) return;
     searchValue = nextValue;
     void onSelect?.(nextValue);
-    void onInput?.(nextValue);
   };
 
   $effect(() => {
