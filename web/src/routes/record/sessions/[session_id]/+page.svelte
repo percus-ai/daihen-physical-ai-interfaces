@@ -87,7 +87,7 @@
     if (lastAnnouncedState === state) return;
     lastAnnouncedState = state;
     if (state === 'resetting') {
-      speakSessionMessage('リセット環境です。');
+      speakSessionMessage('環境をリセットしてください。');
       return;
     }
     if (state === 'recording') {

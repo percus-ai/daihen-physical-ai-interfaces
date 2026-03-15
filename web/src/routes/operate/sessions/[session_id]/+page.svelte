@@ -200,7 +200,7 @@
       return;
     }
     if (next === 'resetting' || next === 'resetting_paused') {
-      speakSessionMessage('リセット環境です。');
+      speakSessionMessage('環境をリセットしてください。');
       return;
     }
     if (next === 'running') {
