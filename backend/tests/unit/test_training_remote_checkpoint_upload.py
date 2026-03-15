@@ -7,6 +7,7 @@ import types
 
 from fastapi import HTTPException
 import pytest
+from percus_ai.storage.models import CheckpointDatasetInfo as StorageCheckpointDatasetInfo
 
 os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
 
@@ -124,11 +125,151 @@ def _job() -> dict:
     }
 
 
+def test_register_job_for_checkpoint_if_needed_converts_dataset_info_for_storage(monkeypatch):
+    class _CapturingCheckpointManager:
+        def __init__(self) -> None:
+            self.dataset_info = None
+
+        @staticmethod
+        def get_job_info(_job_name: str):
+            return None
+
+        def register_job(self, **kwargs):
+            self.dataset_info = kwargs["dataset_info"]
+            return True
+
+    manager = _CapturingCheckpointManager()
+    api_dataset_info = training.CheckpointDatasetInfo(
+        camera_names=["cam_left", "cam_right"],
+        action_dim=7,
+        state_dim=7,
+    )
+
+    monkeypatch.setattr(
+        training,
+        "_get_dataset_info_from_manifest",
+        lambda _dataset_id: api_dataset_info,
+    )
+
+    training._register_job_for_checkpoint_if_needed(manager, _job())
+
+    assert isinstance(manager.dataset_info, StorageCheckpointDatasetInfo)
+    assert manager.dataset_info.model_dump() == api_dataset_info.model_dump()
+
+
+def test_save_job_with_registered_model_upserts_model_before_saving_job(monkeypatch):
+    call_order: list[tuple[str, str]] = []
+
+    async def fake_upsert_model(job_data: dict):
+        call_order.append(("upsert", str(job_data["model_id"])))
+
+    async def fake_save_job(job_data: dict):
+        call_order.append(("save", str(job_data["model_id"])))
+
+    monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+
+    asyncio.run(training._save_job_with_registered_model(_job()))
+
+    assert call_order == [("upsert", "job-1"), ("save", "job-1")]
+
+
+def test_build_rescue_checkpoint_model_identity_is_step_specific():
+    step_1000_id, step_1000_name = training._build_rescue_checkpoint_model_identity(
+        "job-1",
+        "pick_place_train_20260309",
+        1000,
+    )
+    same_step_id, same_step_name = training._build_rescue_checkpoint_model_identity(
+        "job-1",
+        "pick_place_train_20260309",
+        1000,
+    )
+    step_1500_id, step_1500_name = training._build_rescue_checkpoint_model_identity(
+        "job-1",
+        "pick_place_train_20260309",
+        1500,
+    )
+
+    assert step_1000_id == same_step_id
+    assert step_1000_name == same_step_name
+    assert step_1000_id != step_1500_id
+    assert step_1000_name == "pick_place_train_20260309_step_001000"
+    assert step_1500_name == "pick_place_train_20260309_step_001500"
+
+
+def test_stop_job_stops_running_training_process(monkeypatch):
+    saved_jobs: list[dict] = []
+    archived_job_ids: list[str] = []
+
+    async def fake_load_job(_job_id: str):
+        return {
+            **_job(),
+            "status": "running",
+            "instance_id": "instance-1",
+        }
+
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
+    async def fake_archive_job_metrics(job_id: str):
+        archived_job_ids.append(job_id)
+        return True
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(training, "_stop_remote_job", lambda _job_data: True)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_archive_job_metrics", fake_archive_job_metrics)
+
+    result = asyncio.run(training.stop_job("job-1"))
+
+    assert result.success is True
+    assert result.message == "Job stopped"
+    assert saved_jobs[-1]["status"] == "stopped"
+    assert saved_jobs[-1]["termination_reason"] == "USER_STOP"
+    assert archived_job_ids == ["job-1"]
+
+
+def test_stop_job_terminates_live_instance_for_completed_job(monkeypatch):
+    saved_jobs: list[dict] = []
+    archived_job_ids: list[str] = []
+
+    async def fake_load_job(_job_id: str):
+        return {
+            **_job(),
+            "status": "completed",
+            "instance_id": "instance-1",
+            "ip": "86.38.238.107",
+        }
+
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
+    async def fake_archive_job_metrics(job_id: str):
+        archived_job_ids.append(job_id)
+        return True
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(training, "_check_instance_status", lambda _job_data: "running")
+    monkeypatch.setattr(training, "_delete_verda_instance", lambda _instance_id: True)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_archive_job_metrics", fake_archive_job_metrics)
+
+    result = asyncio.run(training.stop_job("job-1"))
+
+    assert result.success is True
+    assert result.message == "Instance stopped"
+    assert saved_jobs[-1]["status"] == "completed"
+    assert saved_jobs[-1]["ip"] is None
+    assert archived_job_ids == []
+
+
 def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     manager = _DummyCheckpointManager(existing_steps=[])
     conn = _DummyConn()
     saved_jobs: list[dict] = []
     upserted: list[dict] = []
+    call_order: list[str] = []
     progress: list[dict] = []
 
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
@@ -136,9 +277,11 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
         return _job()
 
     async def fake_save_job(job_data: dict):
+        call_order.append("save")
         saved_jobs.append(dict(job_data))
 
     async def fake_upsert_model(job_data: dict):
+        call_order.append("upsert")
         upserted.append(dict(job_data))
 
     monkeypatch.setattr(training, "_load_job", fake_load_job)
@@ -152,11 +295,27 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     monkeypatch.setattr(training, "_register_job_for_checkpoint_if_needed", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         training,
+        "_upload_remote_checkpoint_to_r2_direct",
+        lambda *_args, **_kwargs: 1234,
+    )
+    monkeypatch.setattr(
+        training,
+        "_upload_remote_checkpoint_to_r2",
+        lambda *_args, **_kwargs: 1234,
+    )
+    monkeypatch.setattr(
+        training,
         "_ensure_model_artifact_in_r2_from_checkpoint",
         lambda *_args, **_kwargs: ("s3://daihen/v2/models/job-1", 1234, True),
     )
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
+
+    expected_model_id, expected_model_name = training._build_rescue_checkpoint_model_identity(
+        "job-1",
+        "pick_place_train_20260309",
+        1000,
+    )
 
     result = asyncio.run(
         training._upload_selected_remote_checkpoint_with_progress(
@@ -168,11 +327,16 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
 
     assert result["job_id"] == "job-1"
     assert result["step"] == 1000
-    assert result["model_id"] == "job-1"
+    assert result["model_id"] == expected_model_id
     assert result["db_registered"] is True
-    assert saved_jobs and saved_jobs[-1]["model_id"] == "job-1"
+    assert saved_jobs and saved_jobs[-1]["model_id"] == expected_model_id
+    assert saved_jobs[-1]["model_name"] == expected_model_name
+    assert saved_jobs[-1]["model_training_steps"] == 1000
     assert saved_jobs[-1]["model_size_bytes"] == 1234
-    assert upserted and upserted[-1]["model_id"] == "job-1"
+    assert upserted and upserted[-1]["model_id"] == expected_model_id
+    assert upserted[-1]["model_name"] == expected_model_name
+    assert upserted[-1]["model_training_steps"] == 1000
+    assert call_order == ["upsert", "save"]
     assert any(msg.get("type") == "model_registered" for msg in progress)
     assert conn.disconnected is True
 
@@ -180,12 +344,13 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
 def test_upload_selected_remote_checkpoint_reports_db_failure(monkeypatch):
     manager = _DummyCheckpointManager(existing_steps=[])
     conn = _DummyConn()
+    save_calls: list[dict] = []
 
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
         return _job()
 
-    async def fake_save_job(_job_data: dict):
-        return None
+    async def fake_save_job(job_data: dict):
+        save_calls.append(dict(job_data))
 
     async def fake_upsert_model(_job_data: dict):
         raise RuntimeError("db unavailable")
@@ -199,6 +364,16 @@ def test_upload_selected_remote_checkpoint_reports_db_failure(monkeypatch):
     monkeypatch.setattr(training, "_get_ssh_connection_for_job", lambda *_args, **_kwargs: conn)
     monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: manager)
     monkeypatch.setattr(training, "_register_job_for_checkpoint_if_needed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        training,
+        "_upload_remote_checkpoint_to_r2_direct",
+        lambda *_args, **_kwargs: 1234,
+    )
+    monkeypatch.setattr(
+        training,
+        "_upload_remote_checkpoint_to_r2",
+        lambda *_args, **_kwargs: 1234,
+    )
     monkeypatch.setattr(
         training,
         "_ensure_model_artifact_in_r2_from_checkpoint",
@@ -218,7 +393,8 @@ def test_upload_selected_remote_checkpoint_reports_db_failure(monkeypatch):
         assert False, "Expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 500
-        assert "R2登録は完了しましたが、モデルのDB登録に失敗しました" in str(exc.detail)
+        assert "R2登録は完了しましたが、モデルのDB登録またはジョブ関連付けに失敗しました" in str(exc.detail)
+    assert save_calls == []
     assert conn.disconnected is True
 
 
@@ -248,6 +424,11 @@ def test_upload_selected_remote_checkpoint_skips_r2_reupload_if_step_exists(monk
     )
     monkeypatch.setattr(training, "_get_ssh_connection_for_job", fail_if_called)
     monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: manager)
+    monkeypatch.setattr(
+        training,
+        "_upload_remote_checkpoint_to_r2_direct",
+        fail_if_called,
+    )
     monkeypatch.setattr(
         training,
         "_ensure_model_artifact_in_r2_from_checkpoint",
@@ -740,6 +921,140 @@ def test_revive_rejects_non_verda_job(monkeypatch):
     assert "cloud.provider=verda" in str(exc.value.detail)
 
 
+def test_pick_os_volume_from_instance_record_uses_instance_os_volume_id_for_detached_volume():
+    class _Volume:
+        def __init__(self):
+            self.id = "vol-detached-1"
+            self.status = "detached"
+            self.name = "os-lerobot-1773470371"
+            self.size = 400
+            self.type = "NVMe"
+            self.is_os_volume = True
+            self.created_at = "2026-03-14T06:39:32.974Z"
+            self.location = "FIN-03"
+            self.instance_id = None
+            self.deleted_at = None
+
+    class _Instances:
+        @staticmethod
+        def get_by_id(instance_id: str):
+            assert instance_id == "instance-1"
+            return types.SimpleNamespace(os_volume_id="vol-detached-1")
+
+    class _Volumes:
+        @staticmethod
+        def get_by_id(_volume_id: str):
+            raise AssertionError("cache hit should avoid direct volume lookup")
+
+    client = types.SimpleNamespace(instances=_Instances(), volumes=_Volumes())
+    volume = _Volume()
+
+    picked = training._pick_os_volume_from_instance_record(
+        client,
+        {"vol-detached-1": ("active", volume)},
+        "instance-1",
+    )
+
+    assert picked == ("active", volume)
+
+
+def test_pick_os_volume_from_instance_record_fetches_volume_detail_when_not_cached():
+    class _Volume:
+        def __init__(self):
+            self.id = "vol-deleted-1"
+            self.status = "deleted"
+            self.name = "os-lerobot-1773447130"
+            self.size = 400
+            self.type = "NVMe"
+            self.is_os_volume = True
+            self.created_at = "2026-03-14T00:12:11.871Z"
+            self.location = "FIN-03"
+            self.instance_id = None
+            self.deleted_at = "2026-03-14T21:40:08.913Z"
+
+    class _Instances:
+        @staticmethod
+        def get_by_id(instance_id: str):
+            assert instance_id == "instance-2"
+            return types.SimpleNamespace(os_volume_id="vol-deleted-1")
+
+    class _Volumes:
+        @staticmethod
+        def get_by_id(volume_id: str):
+            assert volume_id == "vol-deleted-1"
+            return _Volume()
+
+    client = types.SimpleNamespace(instances=_Instances(), volumes=_Volumes())
+
+    picked = training._pick_os_volume_from_instance_record(client, {}, "instance-2")
+
+    assert picked is not None
+    state, volume = picked
+    assert state == "deleted"
+    assert volume.id == "vol-deleted-1"
+
+
+def test_wait_for_volume_detached_requires_detached_status(monkeypatch):
+    volumes = [
+        types.SimpleNamespace(id="vol-1", status="attached", instance_id=None),
+        types.SimpleNamespace(id="vol-1", status="detached", instance_id=None),
+    ]
+
+    class _Volumes:
+        def get_by_id(self, volume_id: str):
+            assert volume_id == "vol-1"
+            return volumes.pop(0)
+
+    client = types.SimpleNamespace(volumes=_Volumes())
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(training.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    training._wait_for_volume_detached(client, "vol-1", timeout_sec=10)
+
+    assert sleep_calls == [5]
+
+
+def test_create_verda_instance_from_volume_retries_until_detached(monkeypatch):
+    calls: list[str] = []
+
+    class _Instances:
+        def create(self, **kwargs):
+            calls.append(kwargs["image"])
+            if len(calls) == 1:
+                raise RuntimeError("error code: invalid_request message: OS volume must be detached")
+            return types.SimpleNamespace(id="new-instance-1")
+
+    client = types.SimpleNamespace(instances=_Instances())
+    progress: list[dict] = []
+    waited: list[tuple[str, int]] = []
+    slept: list[float] = []
+
+    monkeypatch.setattr(
+        training,
+        "_wait_for_volume_detached",
+        lambda _client, volume_id, timeout_sec=20: waited.append((volume_id, timeout_sec)),
+    )
+    monkeypatch.setattr(training.time, "sleep", lambda seconds: slept.append(seconds))
+
+    instance = training._create_verda_instance_from_volume(
+        client,
+        volume_id="vol-1",
+        instance_type="cpu.small",
+        ssh_key_id="ssh-1",
+        location="FIN-02",
+        hostname="revive-job",
+        description="Revive job",
+        emit_progress=progress.append,
+        retry_timeout_sec=30,
+    )
+
+    assert instance.id == "new-instance-1"
+    assert calls == ["vol-1", "vol-1"]
+    assert waited == [("vol-1", 20)]
+    assert slept == [5]
+    assert any(msg.get("type") == "waiting_detach_propagation" for msg in progress)
+
+
 def test_get_ssh_connection_for_job_uses_cloud_ssh_port(monkeypatch, tmp_path: Path):
     key_path = tmp_path / "id_test"
     key_path.write_text("dummy", encoding="utf-8")
@@ -922,6 +1237,50 @@ def test_upsert_model_for_job_preserves_custom_existing_name(monkeypatch):
     assert captured["name"] == "custom_name"
 
 
+def test_upsert_model_for_job_prefers_explicit_rescue_name_and_step(monkeypatch):
+    captured: dict = {}
+
+    class _Entry:
+        latest_step = 15000
+        size_mb = 42.0
+
+    class _CheckpointMgr:
+        @staticmethod
+        def get_job_info(job_name: str):
+            if job_name == "pick_place_train_20260309":
+                return _Entry()
+            return None
+
+    async def fake_upsert_with_owner(_table: str, _key: str, payload: dict):
+        captured.update(payload)
+
+    async def fake_load_existing_model_name(_model_id: str):
+        return None
+
+    monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: _CheckpointMgr())
+    monkeypatch.setattr(training, "_load_existing_model_name", fake_load_existing_model_name)
+    monkeypatch.setattr(training, "upsert_with_owner", fake_upsert_with_owner)
+
+    job_data = {
+        "job_id": "job-1",
+        "job_name": "pick_place_train_20260309",
+        "model_id": "model-step-10000",
+        "model_name": "pick_place_train_20260309_step_010000",
+        "model_training_steps": 10000,
+        "dataset_id": "dataset-1",
+        "policy_type": "pi0",
+        "training_config": {"training": {"steps": 9999, "batch_size": 4}},
+        "profile_instance_id": "profile-1",
+        "profile_snapshot": {"name": "so101_dual_teleop"},
+    }
+    asyncio.run(training._upsert_model_for_job(job_data))
+
+    assert captured["id"] == "model-step-10000"
+    assert captured["name"] == "pick_place_train_20260309_step_010000"
+    assert captured["training_steps"] == 10000
+    assert captured["size_bytes"] == int(42.0 * 1024 * 1024)
+
+
 def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatch):
     manager = _DummyCheckpointManager(existing_steps=[])
     conn = _DummyConn()
@@ -953,9 +1312,57 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
     monkeypatch.setattr(training, "_get_ssh_connection_for_job", lambda *_args, **_kwargs: conn)
     monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: manager)
     monkeypatch.setattr(training, "_register_job_for_checkpoint_if_needed", lambda *_args, **_kwargs: None)
+    def fake_upload_remote_checkpoint_direct(
+        _checkpoint_mgr,
+        _conn,
+        *,
+        job_data: dict,
+        checkpoint_job_name: str,
+        step: int,
+        remote_checkpoint_path: str,
+        emit_progress,
+    ):
+        captured["job_data_job_id"] = job_data["job_id"]
+        manager.upload_calls.append(
+            {
+                "job_name": checkpoint_job_name,
+                "step": step,
+                "remote_checkpoint_path": remote_checkpoint_path,
+            }
+        )
+        emit_progress({"type": "uploaded", "message": "R2登録が完了しました", "step": step})
+        return 1234
+
+    monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2_direct", fake_upload_remote_checkpoint_direct)
+    def fake_upload_remote_checkpoint(
+        _checkpoint_mgr,
+        _conn,
+        *,
+        checkpoint_job_name: str,
+        step: int,
+        remote_checkpoint_path: str,
+        emit_progress,
+    ):
+        manager.upload_calls.append(
+            {
+                "job_name": checkpoint_job_name,
+                "step": step,
+                "remote_checkpoint_path": remote_checkpoint_path,
+            }
+        )
+        emit_progress({"type": "uploaded", "message": "R2登録が完了しました", "step": step})
+        return 1234
+
+    monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2", fake_upload_remote_checkpoint)
     monkeypatch.setattr(training, "_ensure_model_artifact_in_r2_from_checkpoint", fake_ensure_model_artifact)
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
+
+    expected_model_id, expected_model_name = training._build_rescue_checkpoint_model_identity(
+        "job-1",
+        "pick_place_train_20260309",
+        1000,
+    )
 
     result = asyncio.run(
         training._upload_selected_remote_checkpoint_with_progress(
@@ -967,7 +1374,82 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
 
     assert manager.upload_calls[0]["job_name"] == "pick_place_train_20260309"
     assert captured["checkpoint_job_name"] == "pick_place_train_20260309"
+    assert captured["model_id"] == expected_model_id
+    assert captured["job_data_job_id"] == "job-1"
+    assert result["model_id"] == expected_model_id
     assert result["r2_step_path"] == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000"
+
+
+def test_upload_selected_remote_checkpoint_falls_back_when_direct_upload_fails(monkeypatch):
+    manager = _DummyCheckpointManager(existing_steps=[])
+    conn = _DummyConn()
+    progress: list[dict] = []
+    fallback_calls: list[dict] = []
+
+    async def fake_load_job(_job_id: str, include_deleted: bool = False):
+        assert include_deleted is True
+        return _job()
+
+    async def fake_save_job(_job_data: dict):
+        return None
+
+    async def fake_upsert_model(_job_data: dict):
+        return None
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(
+        training,
+        "_refresh_job_ssh_target_if_needed",
+        lambda job_data: asyncio.sleep(0, result=job_data),
+    )
+    monkeypatch.setattr(training, "_get_ssh_connection_for_job", lambda *_args, **_kwargs: conn)
+    monkeypatch.setattr(training, "_get_checkpoint_index_manager", lambda: manager)
+    monkeypatch.setattr(training, "_register_job_for_checkpoint_if_needed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        training,
+        "_upload_remote_checkpoint_to_r2_direct",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("direct path failed")),
+    )
+
+    def fake_fallback_upload(
+        _checkpoint_mgr,
+        _conn,
+        *,
+        checkpoint_job_name: str,
+        step: int,
+        remote_checkpoint_path: str,
+        emit_progress,
+    ):
+        fallback_calls.append(
+            {
+                "job_name": checkpoint_job_name,
+                "step": step,
+                "remote_checkpoint_path": remote_checkpoint_path,
+            }
+        )
+        emit_progress({"type": "uploaded", "message": "R2登録が完了しました", "step": step})
+        return 1234
+
+    monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2", fake_fallback_upload)
+    monkeypatch.setattr(
+        training,
+        "_ensure_model_artifact_in_r2_from_checkpoint",
+        lambda *_args, **_kwargs: ("s3://daihen/v2/models/job-1", 1234, True),
+    )
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
+
+    result = asyncio.run(
+        training._upload_selected_remote_checkpoint_with_progress(
+            "job-1",
+            "001000",
+            progress.append,
+        )
+    )
+
+    assert result["step"] == 1000
+    assert fallback_calls and fallback_calls[0]["job_name"] == "pick_place_train_20260309"
+    assert any(msg.get("type") == "direct_upload_fallback" for msg in progress)
 
 
 def test_ensure_model_artifact_in_r2_from_checkpoint_skips_when_model_exists():

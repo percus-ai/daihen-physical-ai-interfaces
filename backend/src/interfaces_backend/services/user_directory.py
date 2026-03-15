@@ -9,14 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from supabase import create_async_client
 from supabase._async.client import AsyncClient
 
-from percus_ai.db import get_supabase_async_client
+from percus_ai.db import get_supabase_async_client, get_supabase_service_client
 from percus_ai.storage import get_storage_root
-
-_service_client: Optional[AsyncClient] = None
-_service_client_lock = asyncio.Lock()
 _directory_cache: dict[str, "UserDirectoryEntry"] = {}
 
 _USERNAME_INVALID_CHARS = re.compile(r"[^a-z0-9._-]+")
@@ -137,19 +133,7 @@ def _write_local_profiles(users: dict[str, dict[str, str | None]]) -> None:
 
 
 async def _get_service_client() -> Optional[AsyncClient]:
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SECRET_KEY")
-    if not supabase_url or not service_key:
-        return None
-
-    global _service_client
-    if _service_client is not None:
-        return _service_client
-
-    async with _service_client_lock:
-        if _service_client is None:
-            _service_client = await create_async_client(supabase_url, service_key)
-        return _service_client
+    return await get_supabase_service_client()
 
 
 async def _fetch_profiles(user_ids: list[str]) -> dict[str, dict[str, str | None]]:

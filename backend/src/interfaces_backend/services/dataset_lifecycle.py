@@ -6,7 +6,6 @@ recording.py and inference.py.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -16,12 +15,11 @@ from typing import Callable, Optional
 
 import yaml
 from fastapi import HTTPException
-from supabase import create_async_client
 from supabase._async.client import AsyncClient
 
 from interfaces_backend.models.inference import InferenceModelSyncStatus
 from interfaces_backend.services.profile_snapshot import extract_profile_name
-from percus_ai.db import get_supabase_async_client, upsert_with_owner
+from percus_ai.db import get_supabase_async_client, get_supabase_service_client, upsert_with_owner
 from percus_ai.storage.paths import get_datasets_dir, get_user_config_path
 from percus_ai.storage.r2_db_sync import R2DBSyncService
 
@@ -35,20 +33,12 @@ class DatasetLifecycle:
         self._model_sync_status = InferenceModelSyncStatus()
         self._dataset_upload_lock = threading.Lock()
         self._dataset_upload_status: dict[str, dict] = {}
-        self._service_client: AsyncClient | None = None
-        self._service_client_lock = asyncio.Lock()
 
     async def _get_internal_db_client(self) -> AsyncClient:
         """Return a DB client that is safe for long-running background tasks."""
-        supabase_url = os.environ.get("SUPABASE_URL")
-        service_key = os.environ.get("SUPABASE_SECRET_KEY")
-        if supabase_url and service_key:
-            if self._service_client is not None:
-                return self._service_client
-            async with self._service_client_lock:
-                if self._service_client is None:
-                    self._service_client = await create_async_client(supabase_url, service_key)
-                return self._service_client
+        service_client = await get_supabase_service_client()
+        if service_client is not None:
+            return service_client
         return await get_supabase_async_client()
 
     # -- DB operations --------------------------------------------------------

@@ -1350,6 +1350,7 @@ export const api = {
       fetchApi<TrainingProvisionOperationStatusResponse>(
         `/api/training/provision-operations/${encodeURIComponent(operationId)}`
       ),
+    instanceStatus: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/instance-status`),
     stopJob: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/stop`, { method: 'POST' }),
     deleteJob: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}`, { method: 'DELETE' }),
     logs: (jobId: string, logType: string, lines: number = 30) =>

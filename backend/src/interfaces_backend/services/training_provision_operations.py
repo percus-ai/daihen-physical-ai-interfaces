@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -10,7 +9,6 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import HTTPException
-from supabase import create_async_client
 from supabase._async.client import AsyncClient
 
 from interfaces_backend.models.training import (
@@ -18,7 +16,7 @@ from interfaces_backend.models.training import (
     TrainingProvisionOperationAcceptedResponse,
     TrainingProvisionOperationStatusResponse,
 )
-from percus_ai.db import get_supabase_async_client
+from percus_ai.db import get_supabase_async_client, get_supabase_service_client
 from percus_ai.training.providers.vast import destroy_instance
 from percus_ai.training.providers.verda import VerdaProvider
 
@@ -28,10 +26,6 @@ TRAINING_PROVISION_OPERATION_TABLE = "training_provision_operations"
 _ACTIVE_STATES = {"queued", "running"}
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
 _STALE_TIMEOUT_MINUTES = int(os.environ.get("TRAINING_PROVISION_STALE_TIMEOUT_MINUTES", "15"))
-
-_service_client: Optional[AsyncClient] = None
-_service_client_lock = asyncio.Lock()
-
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -47,19 +41,7 @@ def _is_jwt_expired_error(exc: Exception) -> bool:
 
 
 async def _get_service_db_client() -> Optional[AsyncClient]:
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SECRET_KEY")
-    if not supabase_url or not service_key:
-        return None
-
-    global _service_client
-    if _service_client is not None:
-        return _service_client
-
-    async with _service_client_lock:
-        if _service_client is None:
-            _service_client = await create_async_client(supabase_url, service_key)
-        return _service_client
+    return await get_supabase_service_client()
 
 
 def _cleanup_step_from_progress(progress_type: str) -> str:

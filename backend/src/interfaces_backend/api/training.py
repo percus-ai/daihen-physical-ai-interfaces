@@ -7,7 +7,9 @@ import logging
 import os
 import re
 import shlex
+import stat
 import tempfile
+import textwrap
 import time
 import threading
 import uuid
@@ -28,7 +30,6 @@ from fastapi import (
 )
 from fastapi.responses import PlainTextResponse
 from postgrest.exceptions import APIError
-from supabase import create_async_client
 from supabase._async.client import AsyncClient
 
 from interfaces_backend.core.request_auth import (
@@ -87,10 +88,15 @@ from interfaces_backend.models.training import (
     RemoteCheckpointUploadResponse,
 )
 from interfaces_backend.services.profile_snapshot import extract_profile_name
-from percus_ai.storage import get_project_root, get_models_dir
+from percus_ai.storage import (
+    CheckpointDatasetInfo as StorageCheckpointDatasetInfo,
+    get_models_dir,
+    get_project_root,
+)
 from percus_ai.db import (
     get_current_user_id,
     get_supabase_async_client,
+    get_supabase_service_client,
     get_supabase_session,
     reset_request_session,
     set_request_session,
@@ -106,9 +112,6 @@ from interfaces_backend.services.training_provision_operations import (
 from interfaces_backend.services.user_directory import resolve_user_directory_entries
 
 logger = logging.getLogger(__name__)
-
-_service_client: Optional[AsyncClient] = None
-_service_client_lock = asyncio.Lock()
 _T = TypeVar("_T")
 
 
@@ -152,19 +155,7 @@ def _parse_job_created_at(value: str) -> datetime:
 
 
 async def _get_service_db_client() -> Optional[AsyncClient]:
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SECRET_KEY")
-    if not supabase_url or not service_key:
-        return None
-
-    global _service_client
-    if _service_client is not None:
-        return _service_client
-
-    async with _service_client_lock:
-        if _service_client is None:
-            _service_client = await create_async_client(supabase_url, service_key)
-        return _service_client
+    return await get_supabase_service_client()
 
 
 async def _with_training_service_role_retry(
@@ -971,6 +962,44 @@ def _pick_os_volume_for_instance(
     return None
 
 
+def _volume_state_from_detail(volume: object) -> str:
+    status = str(getattr(volume, "status", "") or "").strip().lower()
+    deleted_at = str(getattr(volume, "deleted_at", "") or "").strip()
+    if status in {"deleted", "deleting", "trash"} or deleted_at:
+        return "deleted"
+    return "active"
+
+
+def _pick_os_volume_from_instance_record(
+    client: VerdaClient,
+    volumes_by_id: dict[str, tuple[str, object]],
+    instance_id: str,
+) -> Optional[tuple[str, object]]:
+    normalized_instance_id = str(instance_id or "").strip()
+    if not normalized_instance_id:
+        return None
+
+    try:
+        instance = client.instances.get_by_id(normalized_instance_id)
+    except Exception:
+        return None
+
+    volume_id = str(getattr(instance, "os_volume_id", "") or "").strip()
+    if not volume_id:
+        return None
+
+    cached = volumes_by_id.get(volume_id)
+    if cached:
+        return cached
+
+    try:
+        volume = client.volumes.get_by_id(volume_id)
+    except Exception:
+        return None
+
+    return _volume_state_from_detail(volume), volume
+
+
 def _pick_os_volume_for_job(
     volumes_by_id: dict[str, tuple[str, object]],
     job_id: str,
@@ -1023,21 +1052,24 @@ def _ensure_volume_detached(
             status_code=404, detail=f"ストレージ取得に失敗しました: {exc}"
         ) from exc
 
-    if getattr(volume, "instance_id", None) is None:
+    status = str(getattr(volume, "status", "") or "").strip().lower()
+    if getattr(volume, "instance_id", None) is None and status == "detached":
         return
 
-    try:
-        client.volumes.detach(volume_id)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400, detail=f"ストレージのデタッチに失敗しました: {exc}"
-        ) from exc
+    if getattr(volume, "instance_id", None) is not None:
+        try:
+            client.volumes.detach(volume_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"ストレージのデタッチに失敗しました: {exc}"
+            ) from exc
 
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         try:
             volume = client.volumes.get_by_id(volume_id)
-            if getattr(volume, "instance_id", None) is None:
+            status = str(getattr(volume, "status", "") or "").strip().lower()
+            if getattr(volume, "instance_id", None) is None and status == "detached":
                 return
         except Exception:
             pass
@@ -1059,7 +1091,8 @@ def _wait_for_volume_detached(
             raise HTTPException(
                 status_code=404, detail=f"ストレージ取得に失敗しました: {exc}"
             ) from exc
-        if getattr(volume, "instance_id", None) is None:
+        status = str(getattr(volume, "status", "") or "").strip().lower()
+        if getattr(volume, "instance_id", None) is None and status == "detached":
             return
         time.sleep(5)
 
@@ -1098,9 +1131,89 @@ def _restore_verda_volumes(client: VerdaClient, volume_ids: list[str]) -> None:
     client._http_client.put("/volumes", json=payload)
 
 
+def _shutdown_verda_instance(instance_id: str, wait_timeout: int = 60) -> bool:
+    """Shutdown Verda instance and wait until it is safe for volume detach."""
+    client = _get_verda_client()
+    if not client:
+        logger.warning(
+            "Cannot shutdown instance %s: Verda client not available",
+            instance_id,
+        )
+        return False
+
+    try:
+        instance = client.instances.get_by_id(instance_id)
+        current_status = str(getattr(instance, "status", "") or "").strip().lower()
+        logger.info("Instance %s current status before shutdown: %s", instance_id, current_status)
+        if current_status in {"offline", "deleted", "deleting", "discontinued"}:
+            return True
+
+        client.instances.action(instance_id, client.constants.instance_actions.SHUTDOWN)
+        deadline = time.time() + wait_timeout
+        while time.time() < deadline:
+            time.sleep(2)
+            try:
+                instance = client.instances.get_by_id(instance_id)
+            except Exception:
+                return True
+            new_status = str(getattr(instance, "status", "") or "").strip().lower()
+            logger.info("Instance %s status after shutdown request: %s", instance_id, new_status)
+            if new_status in {"offline", "deleted", "deleting", "discontinued"}:
+                return True
+        logger.warning(
+            "Instance %s shutdown not confirmed within %ss, proceeding with current state",
+            instance_id,
+            wait_timeout,
+        )
+        return True
+    except Exception as exc:
+        logger.error("Failed to shutdown instance %s: %s", instance_id, exc)
+        return False
+
+
 def _chunk_list(items: list[str], chunk_size: int = 20) -> list[list[str]]:
     """Split items into smaller chunks."""
     return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+
+def _ensure_volume_active_and_detached(
+    client: VerdaClient,
+    volume_id: str,
+    *,
+    emit_progress: Callable[[dict], None] | None = None,
+) -> object:
+    try:
+        volume = client.volumes.get_by_id(volume_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=404, detail=f"ストレージ取得に失敗しました: {exc}"
+        ) from exc
+
+    status = str(getattr(volume, "status", "") or "").strip().lower()
+    if status in {"deleted", "deleting", "trash"}:
+        if emit_progress is not None:
+            emit_progress(
+                {
+                    "type": "restore_storage",
+                    "message": "ストレージを復活中...",
+                    "volume_id": volume_id,
+                }
+            )
+        _restore_verda_volumes(client, [volume_id])
+        _wait_for_volume_restore(client, volume_id)
+        if emit_progress is not None:
+            emit_progress(
+                {
+                    "type": "restore_complete",
+                    "message": "ストレージ復活完了",
+                    "volume_id": volume_id,
+                }
+            )
+        volume = client.volumes.get_by_id(volume_id)
+
+    _ensure_volume_detached(client, volume_id)
+    _wait_for_volume_detached(client, volume_id)
+    return client.volumes.get_by_id(volume_id)
 
 
 _verda_client_local = threading.local()
@@ -1722,6 +1835,35 @@ async def _load_existing_model_name(model_id: str) -> Optional[str]:
     return normalized or None
 
 
+def _parse_optional_int(value: object) -> Optional[int]:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_rescue_checkpoint_model_identity(
+    job_id: str,
+    checkpoint_job_name: str,
+    step: int,
+) -> tuple[str, str]:
+    normalized_job_id = str(job_id or "").strip()
+    normalized_job_name = str(checkpoint_job_name or "").strip()
+    step_suffix = f"step_{step:06d}"
+
+    try:
+        namespace = uuid.UUID(normalized_job_id)
+    except (ValueError, TypeError, AttributeError):
+        namespace = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"daihen-physical-ai:training-job:{normalized_job_id or normalized_job_name}",
+        )
+
+    model_id = str(uuid.uuid5(namespace, f"rescue-checkpoint:{step_suffix}"))
+    model_name_base = normalized_job_name or normalized_job_id or model_id
+    return model_id, f"{model_name_base}_{step_suffix}"
+
+
 async def _upsert_model_for_job(job_data: dict) -> None:
     model_id_raw = job_data.get("model_id") or job_data.get("job_id")
     model_id = str(model_id_raw or "").strip()
@@ -1765,15 +1907,21 @@ async def _upsert_model_for_job(job_data: dict) -> None:
 
     now = datetime.now().isoformat()
     job_name = str(job_data.get("job_name") or "").strip()
-    default_model_name = job_name or model_id
+    explicit_model_name = str(job_data.get("model_name") or "").strip()
+    default_model_name = explicit_model_name or job_name or model_id
     existing_model_name = await _load_existing_model_name(model_id)
     if existing_model_name and existing_model_name != model_id:
         resolved_model_name = existing_model_name
     else:
         resolved_model_name = default_model_name
 
-    training_steps = training_params.get("steps")
-    if checkpoint_entry is not None:
+    explicit_training_steps = _parse_optional_int(job_data.get("model_training_steps"))
+    training_steps = (
+        explicit_training_steps
+        if explicit_training_steps is not None
+        else training_params.get("steps")
+    )
+    if checkpoint_entry is not None and explicit_training_steps is None:
         latest_step = int(getattr(checkpoint_entry, "latest_step", 0) or 0)
         if latest_step > 0:
             training_steps = latest_step
@@ -1806,6 +1954,15 @@ async def _upsert_model_for_job(job_data: dict) -> None:
     if content_hash:
         payload["content_hash"] = content_hash
     await upsert_with_owner("models", "id", payload)
+
+
+async def _save_job_with_registered_model(job_data: dict) -> None:
+    model_id = str(job_data.get("model_id") or job_data.get("job_id") or "").strip()
+    if not model_id:
+        raise ValueError("Missing model_id for job model registration")
+    job_data["model_id"] = model_id
+    await _upsert_model_for_job(job_data)
+    await _save_job(job_data)
 
 
 async def _archive_job_metrics(job_id: str) -> bool:
@@ -1886,10 +2043,7 @@ async def _mark_job_completed(
     job_data["status"] = "completed"
     job_data["termination_reason"] = termination_reason
     job_data["completed_at"] = datetime.now().isoformat()
-    if not job_data.get("model_id"):
-        job_data["model_id"] = job_data.get("job_id")
-    await _save_job(job_data)
-    await _upsert_model_for_job(job_data)
+    await _save_job_with_registered_model(job_data)
     await _archive_job_metrics(job_id)
 
 
@@ -2095,7 +2249,7 @@ def _register_job_for_checkpoint_if_needed(
 
     pretrained_path = policy_cfg.get("pretrained_path")
     author = str(job_data.get("author") or _default_author_user_id()).strip() or "unknown"
-    dataset_info = _get_dataset_info_from_manifest(dataset_id)
+    dataset_info = _get_storage_dataset_info_from_manifest(dataset_id)
 
     ok = checkpoint_mgr.register_job(
         job_name=job_name,
@@ -2166,6 +2320,506 @@ def _ensure_model_artifact_in_r2_from_checkpoint(
     return target_path.rstrip("/"), size_bytes, True
 
 
+def _format_byte_size(size_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(max(size_bytes, 0))
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{int(max(size_bytes, 0))} B"
+
+
+def _normalize_env_value(value: object) -> str:
+    return str(value or "").strip().strip("\"'")
+
+
+def _resolve_r2_upload_settings() -> dict[str, str]:
+    env_fallback = _load_env_file_vars()
+
+    def pick(*names: str) -> str:
+        for name in names:
+            value = _normalize_env_value(os.environ.get(name))
+            if value:
+                return value
+            value = _normalize_env_value(env_fallback.get(name))
+            if value:
+                return value
+        return ""
+
+    endpoint = pick("R2_ENDPOINT_URL", "S3_ENDPOINT_URL")
+    access_key = pick("R2_ACCESS_KEY_ID", "S3_ACCESS_KEY_ID")
+    secret_key = pick("R2_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY")
+    bucket = pick("R2_BUCKET", "S3_BUCKET")
+    version = pick("R2_VERSION", "S3_VERSION")
+
+    if not endpoint or not access_key or not secret_key or not bucket:
+        raise HTTPException(
+            status_code=503,
+            detail="R2アップロード設定が不足しています",
+        )
+
+    return {
+        "endpoint": endpoint,
+        "access_key": access_key,
+        "secret_key": secret_key,
+        "bucket": bucket,
+        "version": version,
+    }
+
+
+def _build_remote_checkpoint_upload_script() -> str:
+    return textwrap.dedent(
+        """
+        import json
+        import os
+        import sys
+        import time
+        from pathlib import Path
+
+        import boto3
+        from boto3.s3.transfer import TransferConfig
+        from botocore.config import Config
+
+
+        def emit(event_type: str, message: str, **extra) -> None:
+            payload = {"type": event_type, "message": message}
+            payload.update(extra)
+            print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+        def format_size(size_bytes: int) -> str:
+            units = ["B", "KB", "MB", "GB", "TB"]
+            value = float(max(size_bytes, 0))
+            for unit in units:
+                if value < 1024.0 or unit == units[-1]:
+                    if unit == "B":
+                        return f"{int(value)} {unit}"
+                    return f"{value:.1f} {unit}"
+                value /= 1024.0
+            return f"{int(max(size_bytes, 0))} B"
+
+
+        def main() -> int:
+            checkpoint_dir = Path(os.environ["CHECKPOINT_DIR"]).expanduser()
+            if not checkpoint_dir.exists():
+                emit("error", f"Remote checkpoint not found: {checkpoint_dir}")
+                return 4
+
+            bucket = os.environ["R2_BUCKET"]
+            endpoint = os.environ["R2_ENDPOINT_URL"]
+            access_key = os.environ["R2_ACCESS_KEY_ID"]
+            secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
+            step_prefix = os.environ["R2_STEP_PREFIX"].strip("/")
+
+            transfer_max_concurrency = max(int(os.environ.get("S3_TRANSFER_MAX_CONCURRENCY", "10") or "10"), 1)
+            transfer_threshold_mb = max(int(os.environ.get("S3_TRANSFER_MULTIPART_THRESHOLD_MB", "8") or "8"), 1)
+            transfer_chunksize_mb = max(int(os.environ.get("S3_TRANSFER_MULTIPART_CHUNKSIZE_MB", "8") or "8"), 1)
+
+            emit("scanning", f"checkpoint内容を走査中... {checkpoint_dir}")
+            files = sorted(path for path in checkpoint_dir.rglob("*") if path.is_file())
+            if not files:
+                emit("error", f"Remote checkpoint is empty: {checkpoint_dir}")
+                return 5
+
+            total_bytes = sum(path.stat().st_size for path in files)
+            emit(
+                "uploading",
+                f"R2へ直接転送を開始します ({format_size(total_bytes)})",
+                total_bytes=total_bytes,
+                file_count=len(files),
+            )
+
+            config = Config(
+                signature_version="s3v4",
+                retries={"max_attempts": 3, "mode": "standard"},
+                max_pool_connections=max(transfer_max_concurrency * 2, 16),
+            )
+            transfer_config = TransferConfig(
+                max_concurrency=transfer_max_concurrency,
+                multipart_threshold=transfer_threshold_mb * 1024 * 1024,
+                multipart_chunksize=transfer_chunksize_mb * 1024 * 1024,
+                use_threads=True,
+            )
+            client = boto3.client(
+                "s3",
+                endpoint_url=endpoint,
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                region_name="auto",
+                config=config,
+            )
+
+            transferred_bytes = 0
+            last_emit_time = 0.0
+            last_emit_bytes = 0
+
+            def maybe_emit_progress(current_file: str | None = None, *, force: bool = False) -> None:
+                nonlocal last_emit_time, last_emit_bytes
+                now = time.time()
+                byte_delta = transferred_bytes - last_emit_bytes
+                if not force and byte_delta < 128 * 1024 * 1024 and (now - last_emit_time) < 1.0:
+                    return
+
+                detail = f"{format_size(transferred_bytes)} / {format_size(total_bytes)}"
+                message = f"R2へ直接転送中... ({detail})"
+                if current_file:
+                    message = f"{message} {current_file}"
+                emit("uploading", message, transferred_bytes=transferred_bytes, total_bytes=total_bytes)
+                last_emit_time = now
+                last_emit_bytes = transferred_bytes
+
+            maybe_emit_progress(force=True)
+
+            for index, file_path in enumerate(files, start=1):
+                relative_path = file_path.relative_to(checkpoint_dir).as_posix()
+                key = f"{step_prefix}/{relative_path}".lstrip("/")
+                file_size = file_path.stat().st_size
+                emit(
+                    "uploading_file",
+                    f"R2へ転送中 {index}/{len(files)}: {relative_path} ({format_size(file_size)})",
+                    path=relative_path,
+                    file_bytes=file_size,
+                )
+
+                def callback(bytes_amount: int) -> None:
+                    nonlocal transferred_bytes
+                    transferred_bytes += max(int(bytes_amount or 0), 0)
+                    maybe_emit_progress(relative_path)
+
+                client.upload_file(
+                    str(file_path),
+                    bucket,
+                    key,
+                    Config=transfer_config,
+                    Callback=callback,
+                )
+                maybe_emit_progress(relative_path, force=True)
+
+            emit(
+                "uploaded",
+                "R2への直接転送が完了しました",
+                total_bytes=total_bytes,
+                transferred_bytes=transferred_bytes,
+                file_count=len(files),
+            )
+            print(
+                json.dumps(
+                    {
+                        "type": "result",
+                        "ok": True,
+                        "total_bytes": total_bytes,
+                        "file_count": len(files),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            return 0
+
+
+        if __name__ == "__main__":
+            sys.exit(main())
+        """
+    ).strip() + "\n"
+
+
+def _ensure_remote_checkpoint_upload_script(
+    conn: SSHConnection,
+    *,
+    remote_base_dir: str,
+) -> str:
+    run_dir = f"{remote_base_dir.rstrip('/')}/run"
+    conn.mkdir_p(run_dir)
+    script_path = f"{run_dir}/rescue_checkpoint_upload.py"
+    conn.upload_content(_build_remote_checkpoint_upload_script(), script_path)
+    conn.exec_command(f"chmod 700 {shlex.quote(script_path)}")
+    return script_path
+
+
+def _upload_remote_checkpoint_to_r2_direct(
+    checkpoint_mgr: "CheckpointIndexManager",
+    conn: SSHConnection,
+    *,
+    job_data: dict,
+    checkpoint_job_name: str,
+    step: int,
+    remote_checkpoint_path: str,
+    emit_progress: Callable[[dict], None],
+) -> int:
+    remote_base_dir = str(job_data.get("remote_base_dir") or "/root/.physical-ai").strip() or "/root/.physical-ai"
+    script_path = _ensure_remote_checkpoint_upload_script(conn, remote_base_dir=remote_base_dir)
+    step_path = checkpoint_mgr._get_step_path(checkpoint_job_name, step)
+    bucket, step_prefix = checkpoint_mgr.sync.s3.parse_s3_path(step_path)
+    settings = _resolve_r2_upload_settings()
+
+    framework_python = f"{remote_base_dir.rstrip('/')}/envs/framework/bin/python"
+    env_exports = {
+        "CHECKPOINT_DIR": remote_checkpoint_path,
+        "R2_BUCKET": bucket or settings["bucket"],
+        "R2_ENDPOINT_URL": settings["endpoint"],
+        "R2_ACCESS_KEY_ID": settings["access_key"],
+        "R2_SECRET_ACCESS_KEY": settings["secret_key"],
+        "R2_STEP_PREFIX": step_prefix,
+        "S3_TRANSFER_MAX_CONCURRENCY": str(
+            max(int(os.environ.get("S3_TRANSFER_MAX_CONCURRENCY") or "10"), 1)
+        ),
+        "S3_TRANSFER_MULTIPART_THRESHOLD_MB": str(
+            max(int(os.environ.get("S3_TRANSFER_MULTIPART_THRESHOLD_MB") or "8"), 1)
+        ),
+        "S3_TRANSFER_MULTIPART_CHUNKSIZE_MB": str(
+            max(int(os.environ.get("S3_TRANSFER_MULTIPART_CHUNKSIZE_MB") or "8"), 1)
+        ),
+    }
+    export_lines = " ".join(
+        f"{name}={shlex.quote(value)}" for name, value in env_exports.items()
+    )
+    command = (
+        f"if [ -x {shlex.quote(framework_python)} ]; then PYTHON_BIN={shlex.quote(framework_python)}; "
+        "elif command -v python3 >/dev/null 2>&1; then PYTHON_BIN=python3; "
+        "elif command -v python >/dev/null 2>&1; then PYTHON_BIN=python; "
+        "else echo '{\"type\":\"error\",\"message\":\"Python runtime not found on rescue instance\"}'; exit 127; fi; "
+        f"{export_lines} \"$PYTHON_BIN\" {shlex.quote(script_path)}"
+    )
+
+    result_payload: dict[str, object] = {}
+    last_error: str | None = None
+
+    def _on_stdout(line: str) -> None:
+        nonlocal last_error
+        stripped = line.strip()
+        if not stripped:
+            return
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            emit_progress({"type": "remote_log", "message": stripped, "step": step})
+            return
+        if not isinstance(payload, dict):
+            emit_progress({"type": "remote_log", "message": stripped, "step": step})
+            return
+        payload.setdefault("step", step)
+        payload_type = str(payload.get("type") or "").strip()
+        if payload_type == "result":
+            result_payload.update(payload)
+            return
+        if payload_type == "error":
+            last_error = str(payload.get("message") or payload.get("error") or "").strip() or stripped
+        emit_progress(payload)
+
+    exit_code = run_remote_command(
+        conn,
+        command,
+        stream_output=False,
+        on_stdout=_on_stdout,
+    )
+    if exit_code != 0:
+        detail = last_error or f"remote direct upload failed with exit code {exit_code}"
+        raise RuntimeError(detail)
+
+    total_bytes = int(result_payload.get("total_bytes") or 0)
+    if total_bytes <= 0:
+        raise RuntimeError("remote direct upload completed without total_bytes result")
+
+    emit_progress(
+        {
+            "type": "updating_last",
+            "message": "last ポインタ用オブジェクトを更新中...",
+            "step": step,
+        }
+    )
+    checkpoint_mgr._copy_to_last(checkpoint_job_name, step)
+    checkpoint_mgr._update_index_step(checkpoint_job_name, step, total_bytes)
+    return total_bytes
+
+
+def _create_verda_instance_from_volume(
+    client: VerdaClient,
+    *,
+    volume_id: str,
+    instance_type: str,
+    ssh_key_id: str,
+    location: str,
+    hostname: str,
+    description: str,
+    emit_progress: Callable[[dict], None] | None = None,
+    retry_timeout_sec: int = 120,
+) -> object:
+    deadline = time.time() + retry_timeout_sec
+    last_exc: Exception | None = None
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            return client.instances.create(
+                instance_type=instance_type,
+                image=volume_id,
+                hostname=hostname,
+                description=description,
+                ssh_key_ids=[ssh_key_id],
+                location=location,
+                is_spot=False,
+            )
+        except Exception as exc:
+            last_exc = exc
+            detail = str(exc)
+            if "OS volume must be detached" not in detail:
+                raise
+            logger.warning(
+                "Volume %s still not reusable while creating instance (attempt %s): %s",
+                volume_id,
+                attempt,
+                detail,
+            )
+            if emit_progress is not None:
+                emit_progress(
+                    {
+                        "type": "waiting_detach_propagation",
+                        "message": "ストレージの分離反映待ち...",
+                        "volume_id": volume_id,
+                    }
+                )
+            try:
+                _wait_for_volume_detached(client, volume_id, timeout_sec=20)
+            except HTTPException:
+                pass
+            time.sleep(5)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("instance creation retry timeout")
+
+
+def _list_remote_checkpoint_files(
+    conn: SSHConnection,
+    remote_path: str,
+    *,
+    relative_prefix: str = "",
+) -> list[tuple[str, str, int]]:
+    files: list[tuple[str, str, int]] = []
+    for attr in sorted(conn.sftp.listdir_attr(remote_path), key=lambda item: item.filename):
+        name = str(getattr(attr, "filename", "") or "").strip()
+        if not name:
+            continue
+        child_remote_path = f"{remote_path.rstrip('/')}/{name}"
+        child_relative_path = f"{relative_prefix}/{name}".lstrip("/")
+        mode = int(getattr(attr, "st_mode", 0) or 0)
+        if stat.S_ISDIR(mode):
+            files.extend(
+                _list_remote_checkpoint_files(
+                    conn,
+                    child_remote_path,
+                    relative_prefix=child_relative_path,
+                )
+            )
+            continue
+        size = max(int(getattr(attr, "st_size", 0) or 0), 0)
+        files.append((child_remote_path, child_relative_path, size))
+    return files
+
+
+def _upload_remote_checkpoint_to_r2(
+    checkpoint_mgr: "CheckpointIndexManager",
+    conn: SSHConnection,
+    *,
+    checkpoint_job_name: str,
+    step: int,
+    remote_checkpoint_path: str,
+    emit_progress: Callable[[dict], None],
+) -> int:
+    remote_files = _list_remote_checkpoint_files(conn, remote_checkpoint_path)
+    if not remote_files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Remote checkpoint is empty: {remote_checkpoint_path}",
+        )
+
+    step_path = checkpoint_mgr._get_step_path(checkpoint_job_name, step)
+    bucket, step_prefix = checkpoint_mgr.sync.s3.parse_s3_path(step_path)
+    total_bytes = sum(size for _, _, size in remote_files)
+    transferred_bytes = 0
+    last_emit_time = 0.0
+    last_emit_bytes = 0
+
+    def emit_transfer_progress(*, current_file: str | None = None, force: bool = False) -> None:
+        nonlocal last_emit_time, last_emit_bytes
+        now = time.time()
+        byte_delta = transferred_bytes - last_emit_bytes
+        if not force and byte_delta < 128 * 1024 * 1024 and (now - last_emit_time) < 1.0:
+            return
+
+        detail = (
+            f"{_format_byte_size(transferred_bytes)} / {_format_byte_size(total_bytes)}"
+            if total_bytes > 0
+            else _format_byte_size(transferred_bytes)
+        )
+        message = f"checkpointをR2へ転送中... ({detail})"
+        if current_file:
+            message = f"{message} {current_file}"
+        emit_progress(
+            {
+                "type": "uploading",
+                "message": message,
+                "step": step,
+            }
+        )
+        last_emit_time = now
+        last_emit_bytes = transferred_bytes
+
+    emit_transfer_progress(force=True)
+
+    for index, (remote_file_path, relative_path, file_size) in enumerate(remote_files, start=1):
+        emit_progress(
+            {
+                "type": "uploading_file",
+                "message": (
+                    f"R2へ転送中 {index}/{len(remote_files)}: "
+                    f"{relative_path} ({_format_byte_size(file_size)})"
+                ),
+                "step": step,
+            }
+        )
+        target_key = f"{step_prefix.rstrip('/')}/{relative_path}".lstrip("/")
+        with conn.sftp.file(remote_file_path, "rb") as remote_file:
+            prefetch = getattr(remote_file, "prefetch", None)
+            if callable(prefetch):
+                try:
+                    prefetch(file_size if file_size > 0 else None)
+                except TypeError:
+                    try:
+                        prefetch()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            def _callback(bytes_transferred: int) -> None:
+                nonlocal transferred_bytes
+                transferred_bytes += max(int(bytes_transferred or 0), 0)
+                emit_transfer_progress(current_file=relative_path)
+
+            checkpoint_mgr.sync.s3.upload_fileobj(
+                remote_file,
+                bucket,
+                target_key,
+                callback=_callback,
+                use_threads=False,
+            )
+        emit_transfer_progress(current_file=relative_path, force=True)
+
+    emit_progress(
+        {
+            "type": "updating_last",
+            "message": "last ポインタ用オブジェクトを更新中...",
+            "step": step,
+        }
+    )
+    checkpoint_mgr._copy_to_last(checkpoint_job_name, step)
+    checkpoint_mgr._update_index_step(checkpoint_job_name, step, total_bytes)
+    return total_bytes
+
+
 async def _upload_selected_remote_checkpoint_with_progress(
     job_id: str,
     checkpoint_name: str,
@@ -2186,8 +2840,12 @@ async def _upload_selected_remote_checkpoint_with_progress(
         )
 
     step = int(checkpoint_name)
-    model_id = str(job_data.get("model_id") or job_id).strip()
     checkpoint_job_name = str(job_data.get("job_name") or "").strip() or job_id
+    model_id, model_name = _build_rescue_checkpoint_model_identity(
+        job_id,
+        checkpoint_job_name,
+        step,
+    )
     if not model_id:
         raise HTTPException(
             status_code=500,
@@ -2208,8 +2866,6 @@ async def _upload_selected_remote_checkpoint_with_progress(
                 detail="SSH接続に失敗しました。インスタンスが起動中か確認してください。",
             )
 
-        local_checkpoint_path: Optional[Path] = None
-        temp_dir_obj: Optional[tempfile.TemporaryDirectory] = None
         try:
             emit_progress({"type": "validating", "message": "checkpoint存在を確認中..."})
             check_cmd = f"test -d {shlex.quote(remote_checkpoint_path)}"
@@ -2223,33 +2879,68 @@ async def _upload_selected_remote_checkpoint_with_progress(
             emit_progress(
                 {
                     "type": "downloading",
-                    "message": "checkpointをバックエンドへ転送中...",
+                    "message": "checkpointの転送準備中...",
                     "checkpoint_name": checkpoint_name,
                 }
             )
-            temp_dir_obj = tempfile.TemporaryDirectory(prefix=f"checkpoint_upload_{job_id}_")
-            local_checkpoint_path = Path(temp_dir_obj.name) / checkpoint_name
-            conn.download_directory(remote_checkpoint_path, local_checkpoint_path)
 
             emit_progress({"type": "registering", "message": "checkpoint index登録中..."})
             _register_job_for_checkpoint_if_needed(checkpoint_mgr, job_data)
 
-            emit_progress({"type": "uploading", "message": "R2へアップロード中..."})
-            ok, msg = checkpoint_mgr.upload_step_checkpoint(
-                job_name=checkpoint_job_name,
-                step=step,
-                local_checkpoint_path=local_checkpoint_path,
-                update_last=True,
-            )
-            if not ok:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Checkpoint upload failed: {msg}",
+            direct_upload_error: Exception | None = None
+            try:
+                emit_progress(
+                    {
+                        "type": "direct_upload",
+                        "message": "rescue instance から R2 へ直接転送します...",
+                        "step": step,
+                    }
+                )
+                _upload_remote_checkpoint_to_r2_direct(
+                    checkpoint_mgr,
+                    conn,
+                    job_data=job_data,
+                    checkpoint_job_name=checkpoint_job_name,
+                    step=step,
+                    remote_checkpoint_path=remote_checkpoint_path,
+                    emit_progress=emit_progress,
+                )
+            except Exception as exc:
+                direct_upload_error = exc
+                logger.warning(
+                    "Remote direct checkpoint upload failed; falling back to backend relay: job_id=%s step=%s error=%s",
+                    job_id,
+                    step,
+                    exc,
+                )
+                emit_progress(
+                    {
+                        "type": "direct_upload_fallback",
+                        "message": (
+                            "rescue instance からの直接転送に失敗したため、"
+                            "バックエンド経由転送に切り替えます..."
+                        ),
+                        "step": step,
+                    }
+                )
+                _upload_remote_checkpoint_to_r2(
+                    checkpoint_mgr,
+                    conn,
+                    checkpoint_job_name=checkpoint_job_name,
+                    step=step,
+                    remote_checkpoint_path=remote_checkpoint_path,
+                    emit_progress=emit_progress,
+                )
+            if direct_upload_error is None:
+                emit_progress(
+                    {
+                        "type": "direct_upload_complete",
+                        "message": "rescue instance からの直接転送が完了しました",
+                        "step": step,
+                    }
                 )
         finally:
             conn.disconnect()
-            if temp_dir_obj is not None:
-                temp_dir_obj.cleanup()
     else:
         emit_progress(
             {
@@ -2309,20 +3000,21 @@ async def _upload_selected_remote_checkpoint_with_progress(
         }
     )
     job_data["model_id"] = model_id
+    job_data["model_name"] = model_name
+    job_data["model_training_steps"] = step
     job_data["model_size_bytes"] = model_size_bytes
-    await _save_job(job_data)
     try:
-        await _upsert_model_for_job(job_data)
+        await _save_job_with_registered_model(job_data)
     except Exception as exc:
         logger.exception(
-            "Remote checkpoint upload succeeded but model DB upsert failed: job_id=%s step=%s",
+            "Remote checkpoint upload succeeded but model DB registration failed: job_id=%s step=%s",
             job_id,
             step,
         )
         raise HTTPException(
             status_code=500,
             detail=(
-                "R2登録は完了しましたが、モデルのDB登録に失敗しました: "
+                "R2登録は完了しましたが、モデルのDB登録またはジョブ関連付けに失敗しました: "
                 f"{exc}. 同じチェックポイントで再実行してください。"
             ),
         ) from exc
@@ -2722,6 +3414,34 @@ def _stop_remote_job(job_data: dict) -> bool:
         return False
     finally:
         conn.disconnect()
+
+
+def _terminate_job_instance(job_data: dict) -> tuple[bool, str]:
+    """Terminate the cloud instance associated with a job without deleting the job record."""
+    instance_id = str(job_data.get("instance_id") or "").strip()
+    if not instance_id:
+        return False, "No instance associated with this job"
+
+    current_status = _check_instance_status(job_data)
+    if current_status is None:
+        return True, "Instance already deleted"
+    if _is_terminated_instance_status(current_status):
+        return True, f"Instance already stopped ({current_status})"
+
+    provider = _get_job_provider(job_data)
+    if provider == "vast":
+        from percus_ai.training.providers.vast import destroy_instance
+
+        try:
+            destroy_instance(instance_id)
+        except Exception as exc:
+            logger.warning("Failed to delete Vast instance %s: %s", instance_id, exc)
+            return False, f"Failed to stop instance: {exc}"
+        return True, "Instance stopped"
+
+    if not _delete_verda_instance(instance_id):
+        return False, "Failed to stop instance"
+    return True, "Instance stopped"
 
 
 # --- API Endpoints ---
@@ -4423,7 +5143,9 @@ async def _revive_job_with_progress(
 
     emit_progress({"type": "loading_storage", "message": "ストレージ情報を取得中..."})
     volumes_by_id = _collect_verda_volumes(client)
-    picked = _pick_os_volume_for_instance(volumes_by_id, instance_id)
+    picked = _pick_os_volume_from_instance_record(client, volumes_by_id, instance_id)
+    if not picked:
+        picked = _pick_os_volume_for_instance(volumes_by_id, instance_id)
     if not picked:
         picked = _pick_os_volume_for_job(volumes_by_id, job_id)
     if not picked:
@@ -4439,24 +5161,6 @@ async def _revive_job_with_progress(
             status_code=404, detail="ストレージIDが取得できませんでした"
         )
 
-    if state == "deleted":
-        emit_progress(
-            {
-                "type": "restore_storage",
-                "message": "ストレージを復活中...",
-                "volume_id": volume_id,
-            }
-        )
-        _restore_verda_volumes(client, [volume_id])
-        _wait_for_volume_restore(client, volume_id)
-        emit_progress(
-            {
-                "type": "restore_complete",
-                "message": "ストレージ復活完了",
-                "volume_id": volume_id,
-            }
-        )
-
     detach_ready_statuses = {"offline", "discontinued", "deleted"}
     attached_instance_id = getattr(volume, "instance_id", None)
     if attached_instance_id and attached_instance_id != instance_id:
@@ -4469,7 +5173,7 @@ async def _revive_job_with_progress(
         )
         attached_status = _check_instance_via_api(attached_instance_id)
         if attached_status is not None and attached_status not in detach_ready_statuses:
-            _delete_verda_instance(attached_instance_id)
+            _shutdown_verda_instance(attached_instance_id)
             _wait_for_instance_offline(
                 client, attached_instance_id, allowed_statuses=detach_ready_statuses
             )
@@ -4483,7 +5187,7 @@ async def _revive_job_with_progress(
                 "instance_id": instance_id,
             }
         )
-        _delete_verda_instance(instance_id)
+        _shutdown_verda_instance(instance_id)
         _wait_for_instance_offline(
             client, instance_id, allowed_statuses=detach_ready_statuses
         )
@@ -4495,8 +5199,11 @@ async def _revive_job_with_progress(
             "volume_id": volume_id,
         }
     )
-    _ensure_volume_detached(client, volume_id)
-    _wait_for_volume_detached(client, volume_id)
+    volume = _ensure_volume_active_and_detached(
+        client,
+        volume_id,
+        emit_progress=emit_progress,
+    )
     emit_progress(
         {
             "type": "detached_storage",
@@ -4521,14 +5228,15 @@ async def _revive_job_with_progress(
     emit_progress(
         {"type": "creating_instance", "message": "CPUインスタンスを作成中..."}
     )
-    instance = client.instances.create(
+    instance = _create_verda_instance_from_volume(
+        client,
+        volume_id=volume_id,
         instance_type=instance_type,
-        image=volume_id,
+        ssh_key_id=ssh_key_id,
+        location=location,
         hostname=hostname,
         description=f"Revive job: {job_id}",
-        ssh_key_ids=[ssh_key_id],
-        location=location,
-        is_spot=False,
+        emit_progress=emit_progress,
     )
     new_instance_id = instance.id
 
@@ -4730,25 +5438,30 @@ async def stop_job(job_id: str):
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    if job_data.get("status") not in ("running", "starting"):
+    status = str(job_data.get("status") or "").strip().lower()
+    if status in {"running", "starting", "deploying"}:
+        success = _stop_remote_job(job_data)
+        if success:
+            job_data["status"] = "stopped"
+            job_data["termination_reason"] = "USER_STOP"
+            job_data["completed_at"] = datetime.now().isoformat()
+            await _save_job(job_data)
+            await _archive_job_metrics(job_id)
         return JobActionResponse(
             job_id=job_id,
-            success=False,
-            message=f"Job is not running (status: {job_data.get('status')})",
+            success=success,
+            message="Job stopped" if success else "Failed to stop job",
         )
 
-    success = _stop_remote_job(job_data)
+    success, message = _terminate_job_instance(job_data)
     if success:
-        job_data["status"] = "stopped"
-        job_data["termination_reason"] = "USER_STOP"
-        job_data["completed_at"] = datetime.now().isoformat()
+        job_data["ip"] = None
         await _save_job(job_data)
-        await _archive_job_metrics(job_id)
 
     return JobActionResponse(
         job_id=job_id,
         success=success,
-        message="Job stopped" if success else "Failed to stop job",
+        message=message,
     )
 
 
@@ -5335,6 +6048,11 @@ def _get_dataset_info_from_manifest(dataset_id: str) -> CheckpointDatasetInfo:
         )
     except Exception:
         return CheckpointDatasetInfo()
+
+
+def _get_storage_dataset_info_from_manifest(dataset_id: str) -> StorageCheckpointDatasetInfo:
+    dataset_info = _get_dataset_info_from_manifest(dataset_id)
+    return StorageCheckpointDatasetInfo(**dataset_info.model_dump())
 
 
 @router.get("/checkpoints", response_model=CheckpointListResponse)

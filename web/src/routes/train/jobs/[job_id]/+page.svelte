@@ -27,6 +27,7 @@
   type JobInfo = {
     job_id?: string;
     job_name?: string;
+    instance_id?: string;
     status?: string;
     dataset_id?: string;
     profile_instance_id?: string;
@@ -75,6 +76,13 @@
     summary?: Record<string, unknown> | null;
   };
 
+  type InstanceStatusResponse = {
+    instance_status?: string | null;
+    job_status?: string;
+    remote_process_status?: string | null;
+    message?: string;
+  };
+
   const jobId = $derived(page.params.job_id ?? '');
 
   const jobQuery = createQuery<JobDetailResponse>(
@@ -82,6 +90,14 @@
       queryKey: ['training', 'job', jobId],
       queryFn: () => api.training.job(jobId) as Promise<JobDetailResponse>,
       enabled: Boolean(jobId)
+    }))
+  );
+
+  const instanceStatusQuery = createQuery<InstanceStatusResponse>(
+    toStore(() => ({
+      queryKey: ['training', 'job', jobId, 'instance-status'],
+      queryFn: () => api.training.instanceStatus(jobId) as Promise<InstanceStatusResponse>,
+      enabled: Boolean(jobId && $jobQuery.data?.job?.instance_id)
     }))
   );
 
@@ -144,6 +160,11 @@
     $metricsQuery.error instanceof Error ? $metricsQuery.error.message : ''
   );
   const status = $derived(jobInfo?.status ?? '');
+  const instanceStatus = $derived(
+    String($instanceStatusQuery.data?.instance_status ?? '')
+      .trim()
+      .toLowerCase()
+  );
   const provider = $derived(
     String(trainingConfig?.cloud?.provider ?? 'verda').trim().toLowerCase()
   );
@@ -164,6 +185,17 @@
   );
 
   const isRunning = $derived(['running', 'starting', 'deploying'].includes(status));
+  const hasLiveInstance = $derived(
+    Boolean(jobInfo?.instance_id) &&
+      Boolean(instanceStatus) &&
+      !['offline', 'error', 'discontinued', 'deleted', 'terminated', 'stopped', 'exited', 'dead', 'unavailable'].includes(
+        instanceStatus
+      )
+  );
+  const canStop = $derived(isRunning || hasLiveInstance);
+  const stopActionLabel = $derived(
+    isRunning ? 'ジョブを停止' : hasLiveInstance ? 'インスタンスを停止' : '停止不可'
+  );
   const canDelete = $derived(['completed', 'failed', 'stopped', 'terminated'].includes(status));
   const canRevive = $derived(
     provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
@@ -397,15 +429,24 @@
   };
 
   const refresh = async () => {
-    const refetch = $jobQuery?.refetch;
-    if (typeof refetch === 'function') {
-      await refetch();
+    const refetches: Promise<unknown>[] = [];
+    const refetchJob = $jobQuery?.refetch;
+    if (typeof refetchJob === 'function') {
+      refetches.push(refetchJob());
+    }
+    const refetchInstanceStatus = $instanceStatusQuery?.refetch;
+    if (typeof refetchInstanceStatus === 'function') {
+      refetches.push(refetchInstanceStatus());
+    }
+    if (refetches.length > 0) {
+      await Promise.all(refetches);
     }
   };
 
   const stopJob = async () => {
-    if (!jobId || !isRunning) return;
-    if (!confirm('このジョブを停止しますか?')) return;
+    if (!jobId || !canStop) return;
+    const confirmMessage = isRunning ? 'このジョブを停止しますか?' : 'このインスタンスを停止しますか?';
+    if (!confirm(confirmMessage)) return;
     await api.training.stopJob(jobId);
     await refresh();
   };
@@ -940,8 +981,8 @@
     <section class="card p-6">
       <h2 class="text-xl font-semibold text-slate-900">操作</h2>
       <div class="mt-4 grid gap-3">
-        <Button.Root class="btn-primary" type="button" onclick={stopJob} disabled={!isRunning}>
-          {isRunning ? 'ジョブを停止' : '停止不可'}
+        <Button.Root class="btn-primary" type="button" onclick={stopJob} disabled={!canStop}>
+          {stopActionLabel}
         </Button.Root>
         {#if canRevive}
           <Button.Root class="btn-ghost" type="button" onclick={reviveJob} disabled={reviveInProgress}>
@@ -950,7 +991,7 @@
         {/if}
       </div>
       <p class="mt-3 text-xs text-slate-500">
-        停止・蘇生はジョブステータスに応じて有効化されます。
+        停止はジョブまたは稼働中インスタンス、蘇生はジョブステータスに応じて有効化されます。
       </p>
       {#if isRunning}
         <div class="mt-3 flex items-center gap-2 text-xs text-slate-500">
