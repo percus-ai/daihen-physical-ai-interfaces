@@ -16,7 +16,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from interfaces_backend.core.request_auth import is_session_expired, refresh_session_from_refresh_token
 from percus_ai.storage.r2_db_sync import R2DBSyncService, StorageSyncCancelledError
+from percus_ai.db import reset_request_session, set_request_session
 
 from interfaces_backend.models.storage import (
     DatasetSyncJobAcceptedResponse,
@@ -43,6 +45,7 @@ class _JobRecord:
     job_id: str
     user_id: str
     dataset_id: str
+    auth_session: dict[str, Any] | None = None
     state: DatasetSyncJobState = "queued"
     progress_percent: float = 0.0
     message: str | None = None
@@ -75,7 +78,13 @@ class DatasetSyncJobsService:
         self._worker_task: asyncio.Task[None] | None = None
         self._pending_event: asyncio.Event | None = None
 
-    def create(self, *, user_id: str, dataset_id: str) -> DatasetSyncJobAcceptedResponse:
+    def create(
+        self,
+        *,
+        user_id: str,
+        dataset_id: str,
+        auth_session: dict[str, Any] | None = None,
+    ) -> DatasetSyncJobAcceptedResponse:
         with self._lock:
             self._cleanup_locked()
             for job in self._jobs.values():
@@ -92,6 +101,7 @@ class DatasetSyncJobsService:
                 job_id=job_id,
                 user_id=user_id,
                 dataset_id=dataset_id,
+                auth_session=dict(auth_session) if auth_session else None,
                 state="queued",
                 message="データセット同期ジョブを受け付けました。",
                 created_at=now,
@@ -223,9 +233,11 @@ class DatasetSyncJobsService:
 
         sync_service = R2DBSyncService()
         progress_callback = self.build_progress_callback(job_id=job_id)
+        request_session = self._resolve_job_session(record.auth_session)
 
         self.set_running(job_id=job_id, progress_percent=0.0, message="データセット同期を開始しました。")
 
+        session_token = set_request_session(request_session)
         try:
             result = await sync_service.ensure_dataset_local(
                 record.dataset_id,
@@ -243,6 +255,8 @@ class DatasetSyncJobsService:
                 error=str(exc),
             )
             return
+        finally:
+            reset_request_session(session_token)
 
         if result.success:
             self.complete(
@@ -381,6 +395,19 @@ class DatasetSyncJobsService:
         if snapshot is not None:
             return None
 
+    @staticmethod
+    def _resolve_job_session(auth_session: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not auth_session:
+            return None
+        refresh_token = str(auth_session.get("refresh_token") or "").strip()
+        if refresh_token:
+            refreshed_session = refresh_session_from_refresh_token(refresh_token)
+            if refreshed_session:
+                return refreshed_session
+        if is_session_expired(auth_session):
+            return None
+        return dict(auth_session)
+
     def _cleanup_locked(self) -> None:
         cutoff = _utcnow() - timedelta(seconds=self._ttl_seconds)
         stale_job_ids = [
@@ -447,4 +474,3 @@ def get_dataset_sync_jobs_service() -> DatasetSyncJobsService:
 def reset_dataset_sync_jobs_service() -> None:
     global _service
     _service = None
-

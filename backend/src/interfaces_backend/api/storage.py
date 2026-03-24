@@ -1320,6 +1320,7 @@ async def sync_dataset(request: DatasetSyncJobCreateRequest):
     if not dataset_id:
         raise HTTPException(status_code=400, detail="Dataset ID is required")
     user_id = require_user_id()
+    auth_session = get_supabase_session()
 
     client = await get_supabase_async_client()
     rows = (
@@ -1331,7 +1332,7 @@ async def sync_dataset(request: DatasetSyncJobCreateRequest):
         raise HTTPException(status_code=400, detail="Dataset is not active")
 
     jobs = get_dataset_sync_jobs_service()
-    accepted = jobs.create(user_id=user_id, dataset_id=dataset_id)
+    accepted = jobs.create(user_id=user_id, dataset_id=dataset_id, auth_session=auth_session)
     jobs.ensure_worker()
     return accepted
 
@@ -1418,6 +1419,7 @@ async def sync_model(model_id: str):
     if not model_id:
         raise HTTPException(status_code=400, detail="Model ID is required")
     user_id = require_user_id()
+    auth_session = get_supabase_session()
 
     client = await get_supabase_async_client()
     rows = (
@@ -1429,7 +1431,7 @@ async def sync_model(model_id: str):
         raise HTTPException(status_code=400, detail="Model is not active")
 
     jobs = get_model_sync_jobs_service()
-    accepted = jobs.create(user_id=user_id, model_id=model_id)
+    accepted = jobs.create(user_id=user_id, model_id=model_id, auth_session=auth_session)
     jobs.ensure_worker()
     return accepted
 
