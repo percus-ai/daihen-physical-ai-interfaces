@@ -91,6 +91,10 @@ class JobListResponse(BaseModel):
     total: int
 
 
+JobListSortBy = Literal["created_at", "updated_at", "job_name", "status"]
+SortOrder = Literal["asc", "desc"]
+
+
 class JobDetailResponse(BaseModel):
     """Response for job detail endpoint."""
 

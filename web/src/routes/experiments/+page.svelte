@@ -1,11 +1,14 @@
 <script lang="ts">
   import { Button, DropdownMenu, Tooltip } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
+  import { page } from '$app/state';
   import { toStore } from 'svelte/store';
   import { api } from '$lib/api/client';
+  import PaginationControls from '$lib/components/PaginationControls.svelte';
   import { qk } from '$lib/queryKeys';
   import { formatDate, formatPercent } from '$lib/format';
   import { goto } from '$app/navigation';
+  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import FileText from 'phosphor-svelte/lib/FileText';
@@ -53,13 +56,18 @@
   });
 
   let selectedModel = $state('');
+  let experimentQuerySignature = $state('');
+  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
 
   const experimentsQuery = createQuery<ExperimentListResponse>(
     toStore(() => ({
-      queryKey: ['experiments', selectedModel],
+      queryKey: ['experiments', selectedModel, currentPage],
       queryFn: () =>
         api.experiments.list({
-          model_id: selectedModel || undefined
+          model_id: selectedModel || undefined,
+          limit: PAGE_SIZE,
+          offset: (currentPage - 1) * PAGE_SIZE
         })
     }))
   );
@@ -71,6 +79,7 @@
   let summaryKey = $state('');
 
   const experiments = $derived($experimentsQuery.data?.experiments ?? []);
+  const totalExperiments = $derived($experimentsQuery.data?.total ?? 0);
   const modelMap = $derived(
     new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]))
   );
@@ -81,13 +90,50 @@
         : '実験一覧の取得に失敗しました。'
       : ''
   );
-  const displayCount = $derived(experimentsError ? '-' : String(experiments.length));
+  const displayCount = $derived(experimentsError ? '-' : String(totalExperiments));
+
+  const navigateToPage = async (nextPage: number) => {
+    const href = buildPageHref(page.url, nextPage);
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (href === currentHref) return;
+    await goto(href, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
 
   $effect(() => {
     const key = experiments.map((exp) => exp.id).join('|');
     if (key !== summaryKey) {
       summaryKey = key;
       void loadSummaries();
+    }
+  });
+
+  $effect(() => {
+    const nextSignature = selectedModel;
+    if (!experimentQuerySignature) {
+      experimentQuerySignature = nextSignature;
+      return;
+    }
+    if (nextSignature === experimentQuerySignature) {
+      return;
+    }
+    experimentQuerySignature = nextSignature;
+    if (currentPage !== 1) {
+      void navigateToPage(1);
+    }
+  });
+
+  $effect(() => {
+    if ($experimentsQuery.isLoading) {
+      return;
+    }
+    const nextPage = clampPage(currentPage, totalExperiments, PAGE_SIZE);
+    if (nextPage !== currentPage) {
+      void navigateToPage(nextPage);
     }
   });
 
@@ -373,4 +419,11 @@
       </tbody>
     </table>
   </div>
+  <PaginationControls
+    currentPage={currentPage}
+    pageSize={PAGE_SIZE}
+    totalItems={totalExperiments}
+    disabled={$experimentsQuery.isLoading}
+    onPageChange={navigateToPage}
+  />
 </section>

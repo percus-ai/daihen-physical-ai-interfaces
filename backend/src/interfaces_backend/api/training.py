@@ -42,6 +42,7 @@ from interfaces_backend.core.request_auth import (
 from interfaces_backend.models.training import (
     JobInfo,
     JobListResponse,
+    JobListSortBy,
     JobDetailResponse,
     JobLogsResponse,
     JobProgressResponse,
@@ -86,6 +87,7 @@ from interfaces_backend.models.training import (
     RemoteCheckpointListResponse,
     RemoteCheckpointUploadRequest,
     RemoteCheckpointUploadResponse,
+    SortOrder,
 )
 from interfaces_backend.services.profile_snapshot import extract_profile_name
 from percus_ai.storage import (
@@ -2047,7 +2049,19 @@ async def _mark_job_completed(
     await _archive_job_metrics(job_id)
 
 
-async def _list_jobs(days: int = 365, owner_user_id: Optional[str] = None) -> list[dict]:
+def _normalize_query_text(value: Optional[str]) -> str:
+    return str(value or "").strip().lower()
+
+
+async def _list_jobs(
+    days: int = 365,
+    owner_user_id: Optional[str] = None,
+    search: Optional[str] = None,
+    sort_by: JobListSortBy = "created_at",
+    sort_order: SortOrder = "desc",
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
     """List jobs from DB.
 
     Args:
@@ -2092,8 +2106,61 @@ async def _list_jobs(days: int = 365, owner_user_id: Optional[str] = None) -> li
         except Exception:
             continue
 
-    filtered.sort(key=lambda j: j.get("created_at", ""), reverse=True)
-    return filtered
+    owner_directory = await resolve_user_directory_entries(
+        [str(job.get("owner_user_id") or "").strip() for job in filtered]
+    )
+    dataset_name_map = await _resolve_dataset_names(
+        [str(job.get("dataset_id") or "").strip() for job in filtered]
+    )
+
+    enriched: list[dict] = []
+    normalized_search = _normalize_query_text(search)
+    for job in filtered:
+        owner_id = str(job.get("owner_user_id") or "").strip()
+        dataset_id = str(job.get("dataset_id") or "").strip()
+        owner_entry = owner_directory.get(owner_id)
+
+        enriched_job = dict(job)
+        enriched_job["owner_email"] = owner_entry.email or None if owner_entry else None
+        enriched_job["owner_name"] = owner_entry.name or None if owner_entry else None
+        enriched_job["dataset_name"] = dataset_name_map.get(dataset_id) or None
+
+        if normalized_search:
+            searchable_values = (
+                enriched_job.get("job_id"),
+                enriched_job.get("job_name"),
+                enriched_job.get("dataset_name"),
+                enriched_job.get("dataset_id"),
+                enriched_job.get("policy_type"),
+                enriched_job.get("status"),
+                enriched_job.get("owner_name"),
+                enriched_job.get("owner_email"),
+            )
+            if not any(normalized_search in _normalize_query_text(value) for value in searchable_values):
+                continue
+
+        enriched.append(enriched_job)
+
+    reverse = sort_order == "desc"
+
+    def _sort_key(record: dict) -> tuple[object, str]:
+        if sort_by == "job_name":
+            primary = _normalize_query_text(record.get("job_name") or record.get("job_id"))
+        elif sort_by == "status":
+            primary = _normalize_query_text(record.get("status"))
+        elif sort_by == "updated_at":
+            primary = str(record.get("updated_at") or "")
+        else:
+            primary = str(record.get("created_at") or "")
+        return primary, str(record.get("job_id") or "")
+
+    enriched.sort(key=_sort_key, reverse=reverse)
+    total = len(enriched)
+    if offset > 0:
+        enriched = enriched[offset:]
+    if limit is not None:
+        enriched = enriched[:limit]
+    return enriched, total
 
 
 async def _resolve_dataset_names(dataset_ids: list[str]) -> dict[str, str]:
@@ -4775,18 +4842,28 @@ async def websocket_verda_storage(websocket: WebSocket):
 
 
 @router.get("/jobs", response_model=JobListResponse)
-async def list_jobs(days: int = Query(365, ge=1, le=365), owner_user_id: Optional[str] = Query(None)):
+async def list_jobs(
+    days: int = Query(365, ge=1, le=365),
+    owner_user_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None, description="Search job, dataset, policy, and owner fields"),
+    sort_by: JobListSortBy = Query("created_at", description="Sort field"),
+    sort_order: SortOrder = Query("desc", description="Sort direction"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+):
     """List training jobs.
 
     Args:
         days: Return jobs from past N days (running jobs always included)
     """
-    jobs_data = await _list_jobs(days, owner_user_id=owner_user_id)
-    owner_directory = await resolve_user_directory_entries(
-        [str(job.get("owner_user_id") or "").strip() for job in jobs_data]
-    )
-    dataset_name_map = await _resolve_dataset_names(
-        [str(job.get("dataset_id") or "").strip() for job in jobs_data]
+    jobs_data, total = await _list_jobs(
+        days,
+        owner_user_id=owner_user_id,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset,
     )
 
     def _coerce_jobinfo_fields(record: dict) -> dict:
@@ -4805,16 +4882,10 @@ async def list_jobs(days: int = Query(365, ge=1, le=365), owner_user_id: Optiona
             cloud_port = cloud_cfg.get("ssh_port")
             if cloud_port is not None:
                 coerced["ssh_port"] = cloud_port
-        owner_id = str(coerced.get("owner_user_id") or "").strip()
-        dataset_id = str(coerced.get("dataset_id") or "").strip()
-        owner_entry = owner_directory.get(owner_id)
-        coerced["owner_email"] = owner_entry.email or None if owner_entry else None
-        coerced["owner_name"] = owner_entry.name or None if owner_entry else None
-        coerced["dataset_name"] = dataset_name_map.get(dataset_id) or None
         return coerced
 
     jobs = [JobInfo(**_coerce_jobinfo_fields(j)) for j in jobs_data]
-    return JobListResponse(jobs=jobs, total=len(jobs))
+    return JobListResponse(jobs=jobs, total=total)
 
 
 @router.get("/jobs/{job_id}", response_model=JobDetailResponse)
@@ -5602,7 +5673,7 @@ async def check_all_jobs_status():
 
     This will connect to Verda API and SSH to verify job status.
     """
-    jobs_data = await _list_jobs()
+    jobs_data, _ = await _list_jobs()
     updates = []
     checked = 0
 

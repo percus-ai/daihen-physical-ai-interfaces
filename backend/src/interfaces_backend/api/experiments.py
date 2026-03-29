@@ -229,16 +229,18 @@ async def list_experiments(
 ):
     """List experiments."""
     client = await get_supabase_async_client()
-    query = client.table("experiments").select("*")
+    query = client.table("experiments").select("*", count="exact").order("updated_at", desc=True)
     if model_id:
         query = query.eq("model_id", model_id)
     if profile_instance_id:
         query = query.eq("profile_instance_id", profile_instance_id)
     if limit > 0:
         query = query.range(offset, offset + limit - 1)
-    rows = (await query.execute()).data or []
+    response = await query.execute()
+    rows = response.data or []
     experiments = [_row_to_experiment(row) for row in rows]
-    return ExperimentListResponse(experiments=experiments, total=len(experiments))
+    total = int(getattr(response, "count", len(experiments)) or 0)
+    return ExperimentListResponse(experiments=experiments, total=total)
 
 
 @router.get("/{experiment_id}", response_model=ExperimentModel)

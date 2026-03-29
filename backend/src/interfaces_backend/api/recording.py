@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from interfaces_backend.services.recorder_bridge import get_recorder_bridge
@@ -869,7 +869,23 @@ async def get_session_upload_status(session_id: str):
 # -- Recording management endpoints (DB / filesystem) ------------------------
 
 
-async def _list_recordings() -> list[dict]:
+RecordingListSortBy = Literal["created_at", "dataset_name", "episode_count", "upload_status"]
+SortOrder = Literal["asc", "desc"]
+
+
+def _normalize_query_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+async def _list_recordings(
+    *,
+    owner_user_id: str | None = None,
+    search: str | None = None,
+    sort_by: RecordingListSortBy = "created_at",
+    sort_order: SortOrder = "desc",
+    limit: int | None = None,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
     client = await get_supabase_async_client()
     rows = (
         await client.table("datasets")
@@ -879,21 +895,81 @@ async def _list_recordings() -> list[dict]:
         .eq("dataset_type", "recorded")
         .execute()
     ).data or []
-    return [row for row in rows if row.get("status") != "archived"]
+    filtered = [row for row in rows if row.get("status") != "archived"]
+    owner_directory = await resolve_user_directory_entries(
+        [str(row.get("owner_user_id") or "").strip() for row in filtered]
+    )
+
+    normalized_search = _normalize_query_text(search)
+    records: list[dict] = []
+    for row in filtered:
+        normalized_owner_user_id = str(row.get("owner_user_id") or "").strip()
+        if owner_user_id and normalized_owner_user_id != owner_user_id:
+            continue
+
+        owner_entry = owner_directory.get(normalized_owner_user_id)
+        enriched_row = dict(row)
+        enriched_row["owner_email"] = owner_entry.email or None if owner_entry else None
+        enriched_row["owner_name"] = owner_entry.name or None if owner_entry else None
+
+        if normalized_search:
+            searchable_values = (
+                enriched_row.get("id"),
+                enriched_row.get("name"),
+                enriched_row.get("task_detail"),
+                enriched_row.get("profile_name"),
+                enriched_row.get("owner_name"),
+                enriched_row.get("owner_email"),
+            )
+            if not any(normalized_search in _normalize_query_text(value) for value in searchable_values):
+                continue
+
+        records.append(enriched_row)
+
+    reverse = sort_order == "desc"
+
+    def _sort_key(record: dict) -> tuple[object, str]:
+        if sort_by == "dataset_name":
+            primary = _normalize_query_text(record.get("name") or record.get("id"))
+        elif sort_by == "episode_count":
+            primary = int(record.get("episode_count") or 0)
+        elif sort_by == "upload_status":
+            primary = 1 if str(record.get("content_hash") or "").strip() else 0
+        else:
+            primary = str(record.get("created_at") or "")
+        return primary, str(record.get("id") or "")
+
+    records.sort(key=_sort_key, reverse=reverse)
+    total = len(records)
+    if offset > 0:
+        records = records[offset:]
+    if limit is not None:
+        records = records[:limit]
+    return records, total
 
 
 @router.get("/recordings", response_model=RecordingListResponse)
-async def list_recordings():
-    recordings_data = await _list_recordings()
-    owner_directory = await resolve_user_directory_entries(
-        [str(row.get("owner_user_id") or "").strip() for row in recordings_data]
+async def list_recordings(
+    owner_user_id: Optional[str] = Query(None, description="Filter by owner user id"),
+    search: Optional[str] = Query(None, description="Search recording, task, profile, and owner fields"),
+    sort_by: RecordingListSortBy = Query("created_at", description="Sort field"),
+    sort_order: SortOrder = Query("desc", description="Sort direction"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+):
+    recordings_data, total = await _list_recordings(
+        owner_user_id=owner_user_id,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset,
     )
     recordings: list[RecordingInfo] = []
     for row in recordings_data:
         if not row.get("id"):
             continue
         plan = _build_continue_plan_from_row(row)
-        owner_entry = owner_directory.get(str(row.get("owner_user_id") or "").strip())
         recordings.append(
             RecordingInfo(
                 recording_id=str(row.get("id")),
@@ -901,8 +977,8 @@ async def list_recordings():
                 task=str(row.get("task_detail") or ""),
                 profile_name=str(row.get("profile_name") or "").strip() or None,
                 owner_user_id=row.get("owner_user_id"),
-                owner_email=owner_entry.email or None if owner_entry else None,
-                owner_name=owner_entry.name or None if owner_entry else None,
+                owner_email=row.get("owner_email"),
+                owner_name=row.get("owner_name"),
                 created_at=row.get("created_at"),
                 episode_count=row.get("episode_count") or 0,
                 target_total_episodes=plan.target_total_episodes,
@@ -916,7 +992,7 @@ async def list_recordings():
                 is_uploaded=bool(str(row.get("content_hash") or "").strip()),
             )
         )
-    return RecordingListResponse(recordings=recordings, total=len(recordings))
+    return RecordingListResponse(recordings=recordings, total=total)
 
 
 @router.get(

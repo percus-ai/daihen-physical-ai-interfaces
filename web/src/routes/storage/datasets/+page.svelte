@@ -1,5 +1,7 @@
 <script lang="ts">
   import { browser } from '$app/environment';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { Button, DropdownMenu, Tabs } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import Archive from 'phosphor-svelte/lib/Archive';
@@ -22,6 +24,8 @@
     type DatasetSyncJobStatus,
     type TabSessionSubscription
   } from '$lib/api/client';
+  import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import {
     registerTabRealtimeContributor,
@@ -92,18 +96,43 @@
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
   let datasetSyncModalOpen = $state(false);
   let selectedSyncJobId = $state('');
+  let datasetQuerySignature = $state('');
+
+  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
 
   const datasetsQuery = createQuery<DatasetListResponse>(
     toStore(() => {
       const status = datasetStatusTab;
+      const ownerUserId = datasetOwnerFilter === 'all' ? undefined : datasetOwnerFilter;
+      const search = datasetSearch || undefined;
       return {
-        queryKey: qk.storage.datasets({ status }),
-        queryFn: () => api.storage.datasets({ status })
+        queryKey: qk.storage.datasets({
+          status,
+          ownerUserId,
+          search,
+          sortBy: datasetSortKey,
+          sortOrder: datasetSortOrder,
+          limit: PAGE_SIZE,
+          offset: (currentPage - 1) * PAGE_SIZE
+        }),
+        queryFn: () =>
+          api.storage.datasets({
+            status,
+            ownerUserId,
+            search,
+            sortBy: datasetSortKey,
+            sortOrder: datasetSortOrder,
+            limit: PAGE_SIZE,
+            offset: (currentPage - 1) * PAGE_SIZE
+          })
       };
     })
   );
 
   const datasets = $derived($datasetsQuery.data?.datasets ?? []);
+  const totalDatasets = $derived($datasetsQuery.data?.total ?? 0);
+  const displayedDatasets = $derived(datasets);
   const isArchiveTab = $derived(datasetStatusTab === 'archived');
   const pageDescription = $derived(
     isArchiveTab ? 'アーカイブ済みのデータセットを一覧で確認できます。' : 'アクティブなデータセットを一覧で確認できます。'
@@ -116,12 +145,6 @@
   );
   const datasetTableColumnCount = $derived(isArchiveTab ? 8 : 9);
 
-  const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
-  const compareText = (left?: string | null, right?: string | null) =>
-    normalizeText(left).localeCompare(normalizeText(right), 'ja');
-  const compareNumber = (left?: number | null, right?: number | null) => Number(left ?? 0) - Number(right ?? 0);
-  const compareDate = (left?: string | null, right?: string | null) =>
-    (new Date(left ?? 0).getTime() || 0) - (new Date(right ?? 0).getTime() || 0);
   const creatorLabel = (value?: string | null) => {
     const normalized = String(value ?? '').trim();
     if (!normalized) return '-';
@@ -161,35 +184,6 @@
       options.set(ownerId, ownerLabel(dataset));
     }
     return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
-  });
-
-  const displayedDatasets = $derived.by(() => {
-    const query = normalizeText(datasetSearch);
-    const sorted = datasets
-      .filter((dataset) => {
-        if (datasetOwnerFilter !== 'all' && String(dataset.owner_user_id ?? '') !== datasetOwnerFilter) return false;
-        if (!query) return true;
-        return [dataset.id, dataset.name, dataset.profile_name, dataset.owner_name, dataset.owner_email].some((value) =>
-          normalizeText(value).includes(query)
-        );
-      })
-      .slice();
-
-    sorted.sort((a, b) => {
-      const direction = datasetSortOrder === 'asc' ? 1 : -1;
-      switch (datasetSortKey) {
-        case 'name':
-          return compareText(displayDatasetLabel(a), displayDatasetLabel(b)) * direction;
-        case 'episode_count':
-          return compareNumber(a.episode_count, b.episode_count) * direction;
-        case 'size_bytes':
-          return compareNumber(a.size_bytes, b.size_bytes) * direction;
-        case 'created_at':
-        default:
-          return compareDate(a.created_at, b.created_at) * direction;
-      }
-    });
-    return sorted;
   });
 
   const allDisplayedDatasetIds = $derived(displayedDatasets.map((dataset) => dataset.id));
@@ -254,6 +248,60 @@
     await queryClient.invalidateQueries({ queryKey: qk.storage.datasetsPrefix() });
     await $datasetsQuery?.refetch?.();
   };
+
+  const navigateToPage = async (nextPage: number) => {
+    const href = buildPageHref(page.url, nextPage);
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (href === currentHref) return;
+    await goto(href, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
+
+  $effect(() => {
+    const nextSignature = JSON.stringify([
+      datasetStatusTab,
+      datasetOwnerFilter,
+      datasetSearch,
+      datasetSortKey,
+      datasetSortOrder
+    ]);
+    if (!datasetQuerySignature) {
+      datasetQuerySignature = nextSignature;
+      return;
+    }
+    if (nextSignature === datasetQuerySignature) {
+      return;
+    }
+    datasetQuerySignature = nextSignature;
+    if (currentPage !== 1) {
+      void navigateToPage(1);
+    }
+  });
+
+  $effect(() => {
+    if ($datasetsQuery.isLoading) {
+      return;
+    }
+    const nextPage = clampPage(currentPage, totalDatasets, PAGE_SIZE);
+    if (nextPage !== currentPage) {
+      void navigateToPage(nextPage);
+    }
+  });
+
+  $effect(() => {
+    const visibleIds = new Set(displayedDatasets.map((dataset) => dataset.id));
+    const nextSelectedIds = selectedIds.filter((id) => visibleIds.has(id));
+    if (
+      nextSelectedIds.length !== selectedIds.length ||
+      nextSelectedIds.some((id, index) => id !== selectedIds[index])
+    ) {
+      selectedIds = nextSelectedIds;
+    }
+  });
 
   const normalizeJob = (job: DatasetSyncJobStatus): DatasetSyncJobStatus => {
     const progress = Number(job.progress_percent ?? 0);
@@ -1272,4 +1320,11 @@
       </tbody>
     </table>
   </div>
+  <PaginationControls
+    currentPage={currentPage}
+    pageSize={PAGE_SIZE}
+    totalItems={totalDatasets}
+    disabled={$datasetsQuery.isLoading}
+    onPageChange={navigateToPage}
+  />
 </section>

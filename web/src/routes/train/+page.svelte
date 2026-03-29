@@ -1,10 +1,14 @@
 <script lang="ts">
+	  import { goto } from '$app/navigation';
+	  import { page } from '$app/state';
 	  import { Button, Tabs } from 'bits-ui';
 	  import { createQuery } from '@tanstack/svelte-query';
-	  import { get } from 'svelte/store';
+	  import { get, toStore } from 'svelte/store';
 	  import { api } from '$lib/api/client';
+	  import PaginationControls from '$lib/components/PaginationControls.svelte';
 	  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
 	  import { formatDate } from '$lib/format';
+	  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
 	  import { GPU_MODELS } from '$lib/policies';
 	  import type { GpuAvailabilityResponse, TrainingProviderCapabilityResponse } from '$lib/types/training';
 
@@ -45,11 +49,6 @@
     jobs?: TrainingJob[];
     total?: number;
   };
-
-  const jobsQuery = createQuery<JobListResponse>({
-    queryKey: ['training', 'jobs'],
-    queryFn: api.training.jobs
-  });
 
 	  let provider = $state<StorageProvider>('verda');
 	  let storageProvider = $state<StorageProvider>('verda');
@@ -93,6 +92,36 @@
   let jobSortOrder = $state<'desc' | 'asc'>('desc');
   let jobOwnerFilter = $state('all');
   let jobSearch = $state('');
+  let jobQuerySignature = $state('');
+
+  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
+
+  const jobsQuery = createQuery<JobListResponse>(
+    toStore(() => ({
+      queryKey: [
+        'training',
+        'jobs',
+        {
+          ownerUserId: jobOwnerFilter === 'all' ? undefined : jobOwnerFilter,
+          search: jobSearch || undefined,
+          sortBy: jobSortKey,
+          sortOrder: jobSortOrder,
+          limit: PAGE_SIZE,
+          offset: (currentPage - 1) * PAGE_SIZE
+        }
+      ],
+      queryFn: () =>
+        api.training.jobs({
+          ownerUserId: jobOwnerFilter === 'all' ? undefined : jobOwnerFilter,
+          search: jobSearch || undefined,
+          sortBy: jobSortKey,
+          sortOrder: jobSortOrder,
+          limit: PAGE_SIZE,
+          offset: (currentPage - 1) * PAGE_SIZE
+        })
+    }))
+  );
 
 	  const storageItems = $derived(
 	    (
@@ -134,16 +163,13 @@
 	    void get(query).refetch?.();
 	  });
   const jobs = $derived($jobsQuery.data?.jobs ?? []);
+  const totalJobs = $derived($jobsQuery.data?.total ?? 0);
+  const displayedJobs = $derived(jobs);
   const displayDatasetName = (datasetId?: string | null) => {
     const normalized = String(datasetId ?? '').trim();
     if (!normalized) return '-';
     return normalized;
   };
-  const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
-  const compareText = (left?: string | null, right?: string | null) =>
-    normalizeText(left).localeCompare(normalizeText(right), 'ja');
-  const compareDate = (left?: string | null, right?: string | null) =>
-    (new Date(left ?? 0).getTime() || 0) - (new Date(right ?? 0).getTime() || 0);
   const creatorLabel = (value?: string | null) => {
     const normalized = String(value ?? '').trim();
     if (!normalized) return '-';
@@ -161,39 +187,42 @@
     }
     return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
   });
-  const displayedJobs = $derived.by(() => {
-    const query = normalizeText(jobSearch);
-    const sorted = jobs
-      .filter((job) => {
-        if (jobOwnerFilter !== 'all' && String(job.owner_user_id ?? '') !== jobOwnerFilter) return false;
-        if (!query) return true;
-        return [
-          job.job_id,
-          job.job_name,
-          job.dataset_name ?? job.dataset_id,
-          job.policy_type,
-          job.status,
-          job.owner_name,
-          job.owner_email
-        ].some((value) => normalizeText(value).includes(query));
-      })
-      .slice();
 
-    sorted.sort((a, b) => {
-      const direction = jobSortOrder === 'asc' ? 1 : -1;
-      switch (jobSortKey) {
-        case 'job_name':
-          return compareText(a.job_name ?? a.job_id, b.job_name ?? b.job_id) * direction;
-        case 'status':
-          return compareText(a.status, b.status) * direction;
-        case 'updated_at':
-          return compareDate(a.updated_at, b.updated_at) * direction;
-        case 'created_at':
-        default:
-          return compareDate(a.created_at, b.created_at) * direction;
-      }
+  const navigateToPage = async (nextPage: number) => {
+    const href = buildPageHref(page.url, nextPage);
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (href === currentHref) return;
+    await goto(href, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
     });
-    return sorted;
+  };
+
+  $effect(() => {
+    const nextSignature = JSON.stringify([jobOwnerFilter, jobSearch, jobSortKey, jobSortOrder]);
+    if (!jobQuerySignature) {
+      jobQuerySignature = nextSignature;
+      return;
+    }
+    if (nextSignature === jobQuerySignature) {
+      return;
+    }
+    jobQuerySignature = nextSignature;
+    if (currentPage !== 1) {
+      void navigateToPage(1);
+    }
+  });
+
+  $effect(() => {
+    if ($jobsQuery.isLoading) {
+      return;
+    }
+    const nextPage = clampPage(currentPage, totalJobs, PAGE_SIZE);
+    if (nextPage !== currentPage) {
+      void navigateToPage(nextPage);
+    }
   });
 
   const toggleVolume = (id: string) => {
@@ -372,6 +401,13 @@
           <p>条件に合う学習ジョブがありません。</p>
         {/if}
       </div>
+      <PaginationControls
+        currentPage={currentPage}
+        pageSize={PAGE_SIZE}
+        totalItems={totalJobs}
+        disabled={$jobsQuery.isLoading}
+        onPageChange={navigateToPage}
+      />
       <div class="mt-4 text-xs text-slate-500">最終更新: {formatDate(displayedJobs[0]?.updated_at)}</div>
     </Tabs.Content>
 

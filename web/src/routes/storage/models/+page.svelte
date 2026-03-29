@@ -1,5 +1,7 @@
 <script lang="ts">
   import { browser } from '$app/environment';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { Button, DropdownMenu, Tabs } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import Archive from 'phosphor-svelte/lib/Archive';
@@ -22,6 +24,8 @@
     type ModelSyncJobStatus,
     type TabSessionSubscription
   } from '$lib/api/client';
+  import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
   import {
@@ -85,18 +89,43 @@
   let renameError = $state('');
   let rowPendingId = $state('');
   let rowPendingAction = $state<ModelRowAction>('');
+  let modelQuerySignature = $state('');
+
+  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
 
   const modelsQuery = createQuery<ModelListResponse>(
     toStore(() => {
       const status = modelStatusTab;
+      const ownerUserId = modelOwnerFilter === 'all' ? undefined : modelOwnerFilter;
+      const search = modelSearch || undefined;
       return {
-        queryKey: qk.storage.models({ status }),
-        queryFn: () => api.storage.models({ status })
+        queryKey: qk.storage.models({
+          status,
+          ownerUserId,
+          search,
+          sortBy: modelSortKey,
+          sortOrder: modelSortOrder,
+          limit: PAGE_SIZE,
+          offset: (currentPage - 1) * PAGE_SIZE
+        }),
+        queryFn: () =>
+          api.storage.models({
+            status,
+            ownerUserId,
+            search,
+            sortBy: modelSortKey,
+            sortOrder: modelSortOrder,
+            limit: PAGE_SIZE,
+            offset: (currentPage - 1) * PAGE_SIZE
+          })
       };
     })
   );
 
   const models = $derived($modelsQuery.data?.models ?? []);
+  const totalModels = $derived($modelsQuery.data?.total ?? 0);
+  const displayedModels = $derived(models);
   const isArchiveTab = $derived(modelStatusTab === 'archived');
   const pageDescription = $derived(
     isArchiveTab ? 'アーカイブ済みのモデルを一覧で確認できます。' : 'アクティブなモデルを一覧で確認できます。'
@@ -109,12 +138,6 @@
   );
   const modelTableColumnCount = $derived(isArchiveTab ? 8 : 9);
 
-  const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
-  const compareText = (left?: string | null, right?: string | null) =>
-    normalizeText(left).localeCompare(normalizeText(right), 'ja');
-  const compareNumber = (left?: number | null, right?: number | null) => Number(left ?? 0) - Number(right ?? 0);
-  const compareDate = (left?: string | null, right?: string | null) =>
-    (new Date(left ?? 0).getTime() || 0) - (new Date(right ?? 0).getTime() || 0);
   const creatorLabel = (value?: string | null) => {
     const normalized = String(value ?? '').trim();
     if (!normalized) return '-';
@@ -137,40 +160,6 @@
       options.set(ownerId, ownerLabel(model));
     }
     return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
-  });
-  const displayedModels = $derived.by(() => {
-    const query = normalizeText(modelSearch);
-    const sorted = models
-      .filter((model) => {
-        if (modelOwnerFilter !== 'all' && String(model.owner_user_id ?? '') !== modelOwnerFilter) return false;
-        if (!query) return true;
-        return [
-          model.id,
-          model.name,
-          model.profile_name,
-          model.policy_type,
-          model.dataset_id,
-          model.owner_name,
-          model.owner_email
-        ].some((value) => normalizeText(value).includes(query));
-      })
-      .slice();
-
-    sorted.sort((a, b) => {
-      const direction = modelSortOrder === 'asc' ? 1 : -1;
-      switch (modelSortKey) {
-        case 'name':
-          return compareText(displayModelLabel(a), displayModelLabel(b)) * direction;
-        case 'size_bytes':
-          return compareNumber(a.size_bytes, b.size_bytes) * direction;
-        case 'policy_type':
-          return compareText(a.policy_type, b.policy_type) * direction;
-        case 'created_at':
-        default:
-          return compareDate(a.created_at, b.created_at) * direction;
-      }
-    });
-    return sorted;
   });
   const allDisplayedModelIds = $derived(displayedModels.map((model) => model.id));
   const allDisplayedModelsSelected = $derived(
@@ -205,6 +194,60 @@
     const idSet = new Set(ids);
     selectedIds = selectedIds.filter((id) => !idSet.has(id));
   };
+
+  const navigateToPage = async (nextPage: number) => {
+    const href = buildPageHref(page.url, nextPage);
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (href === currentHref) return;
+    await goto(href, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
+
+  $effect(() => {
+    const nextSignature = JSON.stringify([
+      modelStatusTab,
+      modelOwnerFilter,
+      modelSearch,
+      modelSortKey,
+      modelSortOrder
+    ]);
+    if (!modelQuerySignature) {
+      modelQuerySignature = nextSignature;
+      return;
+    }
+    if (nextSignature === modelQuerySignature) {
+      return;
+    }
+    modelQuerySignature = nextSignature;
+    if (currentPage !== 1) {
+      void navigateToPage(1);
+    }
+  });
+
+  $effect(() => {
+    if ($modelsQuery.isLoading) {
+      return;
+    }
+    const nextPage = clampPage(currentPage, totalModels, PAGE_SIZE);
+    if (nextPage !== currentPage) {
+      void navigateToPage(nextPage);
+    }
+  });
+
+  $effect(() => {
+    const visibleIds = new Set(displayedModels.map((model) => model.id));
+    const nextSelectedIds = selectedIds.filter((id) => visibleIds.has(id));
+    if (
+      nextSelectedIds.length !== selectedIds.length ||
+      nextSelectedIds.some((id, index) => id !== selectedIds[index])
+    ) {
+      selectedIds = nextSelectedIds;
+    }
+  });
 
   const toggleSelectAllDisplayedModels = () => {
     if (allDisplayedModelsSelected) {
@@ -1140,6 +1183,13 @@
       </tbody>
     </table>
   </div>
+  <PaginationControls
+    currentPage={currentPage}
+    pageSize={PAGE_SIZE}
+    totalItems={totalModels}
+    disabled={$modelsQuery.isLoading}
+    onPageChange={navigateToPage}
+  />
   {#if syncMessage}
     <p class="mt-4 text-sm text-emerald-600">{syncMessage}</p>
   {/if}

@@ -93,6 +93,9 @@ export type ExperimentAnalysisListResponse = {
   total?: number;
 };
 
+export type RecordingSortBy = 'created_at' | 'dataset_name' | 'episode_count' | 'upload_status';
+export type TrainingJobSortBy = 'created_at' | 'updated_at' | 'job_name' | 'status';
+
 export type ExperimentEvaluationSummary = {
   total?: number;
   counts?: Record<string, number>;
@@ -554,6 +557,25 @@ export type StorageModelListQuery = {
   offset?: number;
   sortBy?: StorageModelSortBy;
   sortOrder?: StorageSortOrder;
+};
+
+export type RecordingListQuery = {
+  ownerUserId?: string;
+  search?: string;
+  sortBy?: RecordingSortBy;
+  sortOrder?: StorageSortOrder;
+  limit?: number;
+  offset?: number;
+};
+
+export type TrainingJobListQuery = {
+  days?: number;
+  ownerUserId?: string;
+  search?: string;
+  sortBy?: TrainingJobSortBy;
+  sortOrder?: StorageSortOrder;
+  limit?: number;
+  offset?: number;
 };
 
 export type StorageRenameRequest = {
@@ -1056,7 +1078,17 @@ export const api = {
     sessionStatus: () => fetchApi('/api/teleop/session/status')
   },
   recording: {
-    list: () => fetchApi('/api/recording/recordings'),
+    list: (query: RecordingListQuery = {}) =>
+      fetchApi(
+        `/api/recording/recordings${buildQueryString({
+          owner_user_id: query.ownerUserId,
+          search: query.search,
+          sort_by: query.sortBy,
+          sort_order: query.sortOrder,
+          limit: query.limit,
+          offset: query.offset
+        })}`
+      ),
     bulkArchive: (ids: string[]) =>
       fetchApi<BulkActionResponse>('/api/recording/recordings/bulk/archive', {
         method: 'POST',
@@ -1339,7 +1371,18 @@ export const api = {
   training: {
     providerCapabilities: () =>
       fetchApi<TrainingProviderCapabilityResponse>('/api/training/provider-capabilities'),
-    jobs: () => fetchApi('/api/training/jobs'),
+    jobs: (query: TrainingJobListQuery = {}) =>
+      fetchApi(
+        `/api/training/jobs${buildQueryString({
+          days: query.days,
+          owner_user_id: query.ownerUserId,
+          search: query.search,
+          sort_by: query.sortBy,
+          sort_order: query.sortOrder,
+          limit: query.limit,
+          offset: query.offset
+        })}`
+      ),
     job: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}`),
     startProvisionOperation: (data: Record<string, unknown>) =>
       fetchApi<TrainingProvisionOperationAcceptedResponse>('/api/training/provision-operations', {

@@ -1,15 +1,20 @@
 <script lang="ts">
   import { browser } from '$app/environment';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { onDestroy } from 'svelte';
   import { Button, DropdownMenu } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
+  import { toStore } from 'svelte/store';
   import toast from 'svelte-french-toast';
   import Archive from 'phosphor-svelte/lib/Archive';
   import CloudArrowUp from 'phosphor-svelte/lib/CloudArrowUp';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import Eye from 'phosphor-svelte/lib/Eye';
   import { api, type BulkActionResponse, type TabSessionSubscription } from '$lib/api/client';
+  import PaginationControls from '$lib/components/PaginationControls.svelte';
   import { formatBytes, formatDate } from '$lib/format';
+  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import DatasetUploadProgressModal from '$lib/components/storage/DatasetUploadProgressModal.svelte';
@@ -90,11 +95,6 @@
     };
   };
 
-  const recordingsQuery = createQuery<RecordingListResponse>({
-    queryKey: ['recording', 'recordings'],
-    queryFn: () => api.recording.list()
-  });
-
   const operateStatusQuery = createQuery<OperateStatusResponse>({
     queryKey: ['operate', 'status'],
     queryFn: api.operate.status
@@ -104,12 +104,7 @@
     queryFn: () => api.user.config() as Promise<UserConfigResponse>
   });
 
-  const recordings = $derived($recordingsQuery.data?.recordings ?? []);
-  const sortDateValue = (value?: string) => new Date(value ?? 0).getTime() || 0;
-  const normalizeText = (value?: string | null) => String(value ?? '').trim().toLowerCase();
-  const compareText = (left?: string | null, right?: string | null) =>
-    normalizeText(left).localeCompare(normalizeText(right), 'ja');
-  const compareNumber = (left?: number | null, right?: number | null) => Number(left ?? 0) - Number(right ?? 0);
+  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
   let recordingSortKey = $state<'created_at' | 'dataset_name' | 'episode_count' | 'status'>('created_at');
   let recordingSortOrder = $state<'desc' | 'asc'>('desc');
@@ -128,6 +123,52 @@
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
   let uploadModalOpen = $state(false);
   let selectedUploadDatasetId = $state('');
+  let recordingQuerySignature = $state('');
+
+  const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
+  const recordingSortQuery = $derived(recordingSortKey === 'status' ? 'upload_status' : recordingSortKey);
+
+  const recordingsQuery = createQuery<RecordingListResponse>(
+    toStore(() => ({
+      queryKey: [
+        'recording',
+        'recordings',
+        {
+          ownerUserId: recordingOwnerFilter === 'all' ? undefined : recordingOwnerFilter,
+          search: recordingSearch || undefined,
+          sortBy: recordingSortQuery,
+          sortOrder: recordingSortOrder,
+          limit: PAGE_SIZE,
+          offset: (currentPage - 1) * PAGE_SIZE
+        }
+      ],
+      queryFn: () =>
+        api.recording.list({
+          ownerUserId: recordingOwnerFilter === 'all' ? undefined : recordingOwnerFilter,
+          search: recordingSearch || undefined,
+          sortBy: recordingSortQuery,
+          sortOrder: recordingSortOrder,
+          limit: PAGE_SIZE,
+          offset: (currentPage - 1) * PAGE_SIZE
+        })
+    }))
+  );
+
+  const recordings = $derived($recordingsQuery.data?.recordings ?? []);
+  const totalRecordings = $derived($recordingsQuery.data?.total ?? 0);
+  const displayedRecordings = $derived(recordings);
+
+  const navigateToPage = async (nextPage: number) => {
+    const href = buildPageHref(page.url, nextPage);
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (href === currentHref) return;
+    await goto(href, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
 
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
     idle: '未開始',
@@ -215,39 +256,6 @@
     return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
   });
   const currentUserId = $derived(String($userConfigQuery.data?.user_id ?? '').trim());
-  const displayedRecordings = $derived.by(() => {
-    const query = normalizeText(recordingSearch);
-    const sorted = recordings
-      .filter((recording) => {
-        if (recordingOwnerFilter !== 'all' && String(recording.owner_user_id ?? '') !== recordingOwnerFilter) return false;
-        if (!query) return true;
-        return [
-          recording.dataset_name,
-          recording.recording_id,
-          recording.task,
-          recording.profile_name,
-          recording.owner_name,
-          recording.owner_email
-        ].some((value) => normalizeText(value).includes(query));
-      })
-      .slice();
-
-    sorted.sort((a, b) => {
-      const direction = recordingSortOrder === 'asc' ? 1 : -1;
-      switch (recordingSortKey) {
-        case 'dataset_name':
-          return compareText(a.dataset_name ?? a.recording_id, b.dataset_name ?? b.recording_id) * direction;
-        case 'episode_count':
-          return compareNumber(a.episode_count, b.episode_count) * direction;
-        case 'status':
-          return compareText(uploadStatusMap[a.recording_id]?.status, uploadStatusMap[b.recording_id]?.status) * direction;
-        case 'created_at':
-        default:
-          return (sortDateValue(a.created_at) - sortDateValue(b.created_at)) * direction;
-      }
-    });
-    return sorted;
-  });
   const allDisplayedRecordingIds = $derived(displayedRecordings.map((recording) => recording.recording_id));
   const allDisplayedRecordingsSelected = $derived(
     allDisplayedRecordingIds.length > 0 && allDisplayedRecordingIds.every((id) => selectedRecordingIds.includes(id))
@@ -437,6 +445,36 @@
   const rawStatus = $derived(recorderStatus ? JSON.stringify(recorderStatus, null, 2) : '');
 
   $effect(() => {
+    const nextSignature = JSON.stringify([
+      recordingOwnerFilter,
+      recordingSearch,
+      recordingSortKey,
+      recordingSortOrder
+    ]);
+    if (!recordingQuerySignature) {
+      recordingQuerySignature = nextSignature;
+      return;
+    }
+    if (nextSignature === recordingQuerySignature) {
+      return;
+    }
+    recordingQuerySignature = nextSignature;
+    if (currentPage !== 1) {
+      void navigateToPage(1);
+    }
+  });
+
+  $effect(() => {
+    if ($recordingsQuery.isLoading) {
+      return;
+    }
+    const nextPage = clampPage(currentPage, totalRecordings, PAGE_SIZE);
+    if (nextPage !== currentPage) {
+      void navigateToPage(nextPage);
+    }
+  });
+
+  $effect(() => {
     if (recordingOwnerFilterInitialized) return;
     if (!currentUserId) return;
     if (!recordingOwnerOptions.some((option) => option.id === currentUserId)) {
@@ -457,6 +495,17 @@
     }
     if (Object.keys(nextMap).length !== Object.keys(uploadStatusMap).length) {
       uploadStatusMap = nextMap;
+    }
+  });
+
+  $effect(() => {
+    const visibleIds = new Set(displayedRecordings.map((recording) => recording.recording_id));
+    const nextSelectedIds = selectedRecordingIds.filter((id) => visibleIds.has(id));
+    if (
+      nextSelectedIds.length !== selectedRecordingIds.length ||
+      nextSelectedIds.some((id, index) => id !== selectedRecordingIds[index])
+    ) {
+      selectedRecordingIds = nextSelectedIds;
     }
   });
 
@@ -827,6 +876,13 @@
       </tbody>
     </table>
   </div>
+  <PaginationControls
+    currentPage={currentPage}
+    pageSize={PAGE_SIZE}
+    totalItems={totalRecordings}
+    disabled={$recordingsQuery.isLoading}
+    onPageChange={navigateToPage}
+  />
 </section>
 
 <DatasetUploadProgressModal bind:open={uploadModalOpen} datasetId={selectedUploadDatasetId} />
