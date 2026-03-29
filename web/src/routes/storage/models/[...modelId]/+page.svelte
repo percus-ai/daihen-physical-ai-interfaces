@@ -214,7 +214,7 @@
           アーカイブ
         </button>
       {/if}
-      <Button.Root class="btn-ghost" href="/storage/models">モデル管理</Button.Root>
+      <Button.Root class="btn-ghost" href="/storage/models">モデル</Button.Root>
     </div>
   {:else}
     <p class="mt-4 text-sm text-slate-600">モデルが見つかりません。</p>

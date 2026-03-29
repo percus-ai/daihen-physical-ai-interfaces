@@ -913,7 +913,7 @@
   <p class="section-title">Storage</p>
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
-      <h1 class="text-3xl font-semibold text-slate-900">モデル管理</h1>
+      <h1 class="text-3xl font-semibold text-slate-900">モデル</h1>
       <p class="mt-2 text-sm text-slate-600">{pageDescription}</p>
     </div>
     <div class="flex flex-wrap gap-2">

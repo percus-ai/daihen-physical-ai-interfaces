@@ -116,7 +116,7 @@
   <div class="card p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="min-w-0">
-        <h2 class="text-xl font-semibold text-slate-900">モデル管理</h2>
+        <h2 class="text-xl font-semibold text-slate-900">モデル</h2>
         <p class="text-xs text-slate-500">最新のモデルを一覧表示</p>
       </div>
       <Button.Root class="btn-ghost" href="/storage/models">管理</Button.Root>
