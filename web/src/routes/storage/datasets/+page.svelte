@@ -25,7 +25,7 @@
     type TabSessionSubscription
   } from '$lib/api/client';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
+  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import {
     registerTabRealtimeContributor,
@@ -61,10 +61,17 @@
 
   type DatasetStatusTab = 'active' | 'archived';
   type DatasetRowAction = '' | 'restore' | 'delete';
+  const DATASET_SORT_KEYS = ['created_at', 'name', 'episode_count', 'size_bytes'] as const;
+  const parseDatasetStatusTab = (value: string | null): DatasetStatusTab => (value === 'archived' ? 'archived' : 'active');
+  const parseDatasetSortKey = (value: string | null): 'created_at' | 'name' | 'episode_count' | 'size_bytes' =>
+    DATASET_SORT_KEYS.includes((value ?? '') as (typeof DATASET_SORT_KEYS)[number])
+      ? ((value ?? '') as 'created_at' | 'name' | 'episode_count' | 'size_bytes')
+      : 'created_at';
+  const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
   const queryClient = useQueryClient();
 
-  let datasetStatusTab = $state<DatasetStatusTab>('active');
+  let datasetStatusTab = $state<DatasetStatusTab>(parseDatasetStatusTab(page.url.searchParams.get('status')));
   let selectedIds = $state<string[]>([]);
   let mergeName = $state('');
   let actionMessage = $state('');
@@ -87,16 +94,17 @@
   let renameError = $state('');
   let rowPendingId = $state('');
   let rowPendingAction = $state<DatasetRowAction>('');
-  let datasetSortKey = $state<'created_at' | 'name' | 'episode_count' | 'size_bytes'>('created_at');
-  let datasetSortOrder = $state<'desc' | 'asc'>('desc');
-  let datasetOwnerFilter = $state('all');
-  let datasetSearch = $state('');
+  let datasetSortKey = $state<'created_at' | 'name' | 'episode_count' | 'size_bytes'>(
+    parseDatasetSortKey(page.url.searchParams.get('sort'))
+  );
+  let datasetSortOrder = $state<'desc' | 'asc'>(parseSortOrder(page.url.searchParams.get('order')));
+  let datasetOwnerFilter = $state(page.url.searchParams.get('owner') || 'all');
+  let datasetSearch = $state(page.url.searchParams.get('search') || '');
   let jobsById = $state<Record<string, DatasetSyncJobStatus>>({});
   let activeJobsByDatasetId = $state<Record<string, DatasetSyncJobStatus>>({});
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
   let datasetSyncModalOpen = $state(false);
   let selectedSyncJobId = $state('');
-  let datasetQuerySignature = $state('');
 
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
@@ -260,26 +268,62 @@
       invalidateAll: false
     });
   };
+  const buildDatasetsHref = (pageNumber: number = currentPage) =>
+    buildUrlWithQueryState(page.url, {
+      status: datasetStatusTab !== 'active' ? datasetStatusTab : null,
+      owner: datasetOwnerFilter !== 'all' ? datasetOwnerFilter : null,
+      search: datasetSearch || null,
+      sort: datasetSortKey !== 'created_at' ? datasetSortKey : null,
+      order: datasetSortOrder !== 'desc' ? datasetSortOrder : null,
+      page: pageNumber > 1 ? pageNumber : null
+    });
 
   $effect(() => {
-    const nextSignature = JSON.stringify([
-      datasetStatusTab,
-      datasetOwnerFilter,
-      datasetSearch,
-      datasetSortKey,
-      datasetSortOrder
-    ]);
-    if (!datasetQuerySignature) {
-      datasetQuerySignature = nextSignature;
+    const nextStatusTab = parseDatasetStatusTab(page.url.searchParams.get('status'));
+    const nextOwnerFilter = page.url.searchParams.get('owner') || 'all';
+    const nextSearch = page.url.searchParams.get('search') || '';
+    const nextSortKey = parseDatasetSortKey(page.url.searchParams.get('sort'));
+    const nextSortOrder = parseSortOrder(page.url.searchParams.get('order'));
+    if (datasetStatusTab !== nextStatusTab) {
+      datasetStatusTab = nextStatusTab;
+    }
+    if (datasetOwnerFilter !== nextOwnerFilter) {
+      datasetOwnerFilter = nextOwnerFilter;
+    }
+    if (datasetSearch !== nextSearch) {
+      datasetSearch = nextSearch;
+    }
+    if (datasetSortKey !== nextSortKey) {
+      datasetSortKey = nextSortKey;
+    }
+    if (datasetSortOrder !== nextSortOrder) {
+      datasetSortOrder = nextSortOrder;
+    }
+  });
+
+  $effect(() => {
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    const urlStatusTab = parseDatasetStatusTab(page.url.searchParams.get('status'));
+    const urlOwnerFilter = page.url.searchParams.get('owner') || 'all';
+    const urlSearch = page.url.searchParams.get('search') || '';
+    const urlSortKey = parseDatasetSortKey(page.url.searchParams.get('sort'));
+    const urlSortOrder = parseSortOrder(page.url.searchParams.get('order'));
+    const filtersChanged =
+      datasetStatusTab !== urlStatusTab ||
+      datasetOwnerFilter !== urlOwnerFilter ||
+      datasetSearch !== urlSearch ||
+      datasetSortKey !== urlSortKey ||
+      datasetSortOrder !== urlSortOrder;
+    const nextHref = buildDatasetsHref(filtersChanged && currentPage !== 1 ? 1 : currentPage);
+    if (currentHref === nextHref) {
       return;
     }
-    if (nextSignature === datasetQuerySignature) {
-      return;
-    }
-    datasetQuerySignature = nextSignature;
-    if (currentPage !== 1) {
-      void navigateToPage(1);
-    }
+    void goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
   });
 
   $effect(() => {

@@ -29,6 +29,21 @@ export const buildPageHref = (currentUrl: URL, page: number): string => {
   return `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
 };
 
+export const buildUrlWithQueryState = (
+  currentUrl: URL,
+  params: Record<string, string | number | null | undefined>
+): string => {
+  const nextUrl = new URL(currentUrl);
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined || value === '') {
+      nextUrl.searchParams.delete(key);
+      continue;
+    }
+    nextUrl.searchParams.set(key, String(value));
+  }
+  return `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+};
+
 export const describePageRange = (currentPage: number, pageSize: number, totalItems: number): string => {
   const total = Math.max(0, Math.floor(Number(totalItems) || 0));
   if (total <= 0) {

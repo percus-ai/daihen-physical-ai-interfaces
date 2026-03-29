@@ -8,7 +8,7 @@
 	  import PaginationControls from '$lib/components/PaginationControls.svelte';
 	  import GpuAvailabilityBoard from '$lib/components/training/GpuAvailabilityBoard.svelte';
 	  import { formatDate } from '$lib/format';
-	  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
+	  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
 	  import { GPU_MODELS } from '$lib/policies';
 	  import type { GpuAvailabilityResponse, TrainingProviderCapabilityResponse } from '$lib/types/training';
 
@@ -49,6 +49,12 @@
     jobs?: TrainingJob[];
     total?: number;
   };
+  const JOB_SORT_KEYS = ['created_at', 'updated_at', 'job_name', 'status'] as const;
+  const parseJobSortKey = (value: string | null): 'created_at' | 'updated_at' | 'job_name' | 'status' =>
+    JOB_SORT_KEYS.includes((value ?? '') as (typeof JOB_SORT_KEYS)[number])
+      ? ((value ?? '') as 'created_at' | 'updated_at' | 'job_name' | 'status')
+      : 'created_at';
+  const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
 	  let provider = $state<StorageProvider>('verda');
 	  let storageProvider = $state<StorageProvider>('verda');
@@ -87,12 +93,13 @@
 	  });
 
 	  const gpuModelOrder = $derived(GPU_MODELS.map((gpu) => gpu.value));
-	  let activeTab = $state<'availability' | 'jobs' | 'storage'>('jobs');
-  let jobSortKey = $state<'created_at' | 'updated_at' | 'job_name' | 'status'>('created_at');
-  let jobSortOrder = $state<'desc' | 'asc'>('desc');
-  let jobOwnerFilter = $state('all');
-  let jobSearch = $state('');
-  let jobQuerySignature = $state('');
+  let activeTab = $state<'availability' | 'jobs' | 'storage'>('jobs');
+  let jobSortKey = $state<'created_at' | 'updated_at' | 'job_name' | 'status'>(
+    parseJobSortKey(page.url.searchParams.get('sort'))
+  );
+  let jobSortOrder = $state<'desc' | 'asc'>(parseSortOrder(page.url.searchParams.get('order')));
+  let jobOwnerFilter = $state(page.url.searchParams.get('owner') || 'all');
+  let jobSearch = $state(page.url.searchParams.get('search') || '');
 
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
@@ -199,20 +206,55 @@
       invalidateAll: false
     });
   };
+  const buildTrainingJobsHref = (pageNumber: number = currentPage) =>
+    buildUrlWithQueryState(page.url, {
+      owner: jobOwnerFilter !== 'all' ? jobOwnerFilter : null,
+      search: jobSearch || null,
+      sort: jobSortKey !== 'created_at' ? jobSortKey : null,
+      order: jobSortOrder !== 'desc' ? jobSortOrder : null,
+      page: pageNumber > 1 ? pageNumber : null
+    });
 
   $effect(() => {
-    const nextSignature = JSON.stringify([jobOwnerFilter, jobSearch, jobSortKey, jobSortOrder]);
-    if (!jobQuerySignature) {
-      jobQuerySignature = nextSignature;
+    const nextOwnerFilter = page.url.searchParams.get('owner') || 'all';
+    const nextSearch = page.url.searchParams.get('search') || '';
+    const nextSortKey = parseJobSortKey(page.url.searchParams.get('sort'));
+    const nextSortOrder = parseSortOrder(page.url.searchParams.get('order'));
+    if (jobOwnerFilter !== nextOwnerFilter) {
+      jobOwnerFilter = nextOwnerFilter;
+    }
+    if (jobSearch !== nextSearch) {
+      jobSearch = nextSearch;
+    }
+    if (jobSortKey !== nextSortKey) {
+      jobSortKey = nextSortKey;
+    }
+    if (jobSortOrder !== nextSortOrder) {
+      jobSortOrder = nextSortOrder;
+    }
+  });
+
+  $effect(() => {
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    const urlOwnerFilter = page.url.searchParams.get('owner') || 'all';
+    const urlSearch = page.url.searchParams.get('search') || '';
+    const urlSortKey = parseJobSortKey(page.url.searchParams.get('sort'));
+    const urlSortOrder = parseSortOrder(page.url.searchParams.get('order'));
+    const filtersChanged =
+      jobOwnerFilter !== urlOwnerFilter ||
+      jobSearch !== urlSearch ||
+      jobSortKey !== urlSortKey ||
+      jobSortOrder !== urlSortOrder;
+    const nextHref = buildTrainingJobsHref(filtersChanged && currentPage !== 1 ? 1 : currentPage);
+    if (currentHref === nextHref) {
       return;
     }
-    if (nextSignature === jobQuerySignature) {
-      return;
-    }
-    jobQuerySignature = nextSignature;
-    if (currentPage !== 1) {
-      void navigateToPage(1);
-    }
+    void goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
   });
 
   $effect(() => {

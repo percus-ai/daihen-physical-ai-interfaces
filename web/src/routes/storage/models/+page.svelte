@@ -25,7 +25,7 @@
     type TabSessionSubscription
   } from '$lib/api/client';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
+  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
   import {
@@ -59,10 +59,17 @@
 
   type ModelStatusTab = 'active' | 'archived';
   type ModelRowAction = '' | 'restore' | 'delete';
+  const MODEL_SORT_KEYS = ['created_at', 'name', 'size_bytes', 'policy_type'] as const;
+  const parseModelStatusTab = (value: string | null): ModelStatusTab => (value === 'archived' ? 'archived' : 'active');
+  const parseModelSortKey = (value: string | null): 'created_at' | 'name' | 'size_bytes' | 'policy_type' =>
+    MODEL_SORT_KEYS.includes((value ?? '') as (typeof MODEL_SORT_KEYS)[number])
+      ? ((value ?? '') as 'created_at' | 'name' | 'size_bytes' | 'policy_type')
+      : 'created_at';
+  const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
   const queryClient = useQueryClient();
 
-  let modelStatusTab = $state<ModelStatusTab>('active');
+  let modelStatusTab = $state<ModelStatusTab>(parseModelStatusTab(page.url.searchParams.get('status')));
   let syncAllPending = $state(false);
   let syncMessage = $state('');
   let syncError = $state('');
@@ -70,10 +77,12 @@
   let bulkError = $state('');
   let bulkPending = $state(false);
   let selectedIds = $state<string[]>([]);
-  let modelSortKey = $state<'created_at' | 'name' | 'size_bytes' | 'policy_type'>('created_at');
-  let modelSortOrder = $state<'desc' | 'asc'>('desc');
-  let modelOwnerFilter = $state('all');
-  let modelSearch = $state('');
+  let modelSortKey = $state<'created_at' | 'name' | 'size_bytes' | 'policy_type'>(
+    parseModelSortKey(page.url.searchParams.get('sort'))
+  );
+  let modelSortOrder = $state<'desc' | 'asc'>(parseSortOrder(page.url.searchParams.get('order')));
+  let modelOwnerFilter = $state(page.url.searchParams.get('owner') || 'all');
+  let modelSearch = $state(page.url.searchParams.get('search') || '');
   let jobsById = $state<Record<string, ModelSyncJobStatus>>({});
   let activeJobsByModelId = $state<Record<string, ModelSyncJobStatus>>({});
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
@@ -89,7 +98,6 @@
   let renameError = $state('');
   let rowPendingId = $state('');
   let rowPendingAction = $state<ModelRowAction>('');
-  let modelQuerySignature = $state('');
 
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
@@ -206,26 +214,62 @@
       invalidateAll: false
     });
   };
+  const buildModelsHref = (pageNumber: number = currentPage) =>
+    buildUrlWithQueryState(page.url, {
+      status: modelStatusTab !== 'active' ? modelStatusTab : null,
+      owner: modelOwnerFilter !== 'all' ? modelOwnerFilter : null,
+      search: modelSearch || null,
+      sort: modelSortKey !== 'created_at' ? modelSortKey : null,
+      order: modelSortOrder !== 'desc' ? modelSortOrder : null,
+      page: pageNumber > 1 ? pageNumber : null
+    });
 
   $effect(() => {
-    const nextSignature = JSON.stringify([
-      modelStatusTab,
-      modelOwnerFilter,
-      modelSearch,
-      modelSortKey,
-      modelSortOrder
-    ]);
-    if (!modelQuerySignature) {
-      modelQuerySignature = nextSignature;
+    const nextStatusTab = parseModelStatusTab(page.url.searchParams.get('status'));
+    const nextOwnerFilter = page.url.searchParams.get('owner') || 'all';
+    const nextSearch = page.url.searchParams.get('search') || '';
+    const nextSortKey = parseModelSortKey(page.url.searchParams.get('sort'));
+    const nextSortOrder = parseSortOrder(page.url.searchParams.get('order'));
+    if (modelStatusTab !== nextStatusTab) {
+      modelStatusTab = nextStatusTab;
+    }
+    if (modelOwnerFilter !== nextOwnerFilter) {
+      modelOwnerFilter = nextOwnerFilter;
+    }
+    if (modelSearch !== nextSearch) {
+      modelSearch = nextSearch;
+    }
+    if (modelSortKey !== nextSortKey) {
+      modelSortKey = nextSortKey;
+    }
+    if (modelSortOrder !== nextSortOrder) {
+      modelSortOrder = nextSortOrder;
+    }
+  });
+
+  $effect(() => {
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    const urlStatusTab = parseModelStatusTab(page.url.searchParams.get('status'));
+    const urlOwnerFilter = page.url.searchParams.get('owner') || 'all';
+    const urlSearch = page.url.searchParams.get('search') || '';
+    const urlSortKey = parseModelSortKey(page.url.searchParams.get('sort'));
+    const urlSortOrder = parseSortOrder(page.url.searchParams.get('order'));
+    const filtersChanged =
+      modelStatusTab !== urlStatusTab ||
+      modelOwnerFilter !== urlOwnerFilter ||
+      modelSearch !== urlSearch ||
+      modelSortKey !== urlSortKey ||
+      modelSortOrder !== urlSortOrder;
+    const nextHref = buildModelsHref(filtersChanged && currentPage !== 1 ? 1 : currentPage);
+    if (currentHref === nextHref) {
       return;
     }
-    if (nextSignature === modelQuerySignature) {
-      return;
-    }
-    modelQuerySignature = nextSignature;
-    if (currentPage !== 1) {
-      void navigateToPage(1);
-    }
+    void goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
   });
 
   $effect(() => {

@@ -8,7 +8,7 @@
   import { qk } from '$lib/queryKeys';
   import { formatDate, formatPercent } from '$lib/format';
   import { goto } from '$app/navigation';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
+  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import FileText from 'phosphor-svelte/lib/FileText';
@@ -55,8 +55,7 @@
     queryFn: () => api.storage.models()
   });
 
-  let selectedModel = $state('');
-  let experimentQuerySignature = $state('');
+  let selectedModel = $state(page.url.searchParams.get('model_id') || '');
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
 
@@ -103,6 +102,11 @@
       invalidateAll: false
     });
   };
+  const buildExperimentsHref = (pageNumber: number = currentPage) =>
+    buildUrlWithQueryState(page.url, {
+      model_id: selectedModel || null,
+      page: pageNumber > 1 ? pageNumber : null
+    });
 
   $effect(() => {
     const key = experiments.map((exp) => exp.id).join('|');
@@ -113,18 +117,25 @@
   });
 
   $effect(() => {
-    const nextSignature = selectedModel;
-    if (!experimentQuerySignature) {
-      experimentQuerySignature = nextSignature;
+    const nextSelectedModel = page.url.searchParams.get('model_id') || '';
+    if (selectedModel !== nextSelectedModel) {
+      selectedModel = nextSelectedModel;
+    }
+  });
+
+  $effect(() => {
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    const urlModelId = page.url.searchParams.get('model_id') || '';
+    const nextHref = buildExperimentsHref(selectedModel !== urlModelId && currentPage !== 1 ? 1 : currentPage);
+    if (currentHref === nextHref) {
       return;
     }
-    if (nextSignature === experimentQuerySignature) {
-      return;
-    }
-    experimentQuerySignature = nextSignature;
-    if (currentPage !== 1) {
-      void navigateToPage(1);
-    }
+    void goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
   });
 
   $effect(() => {

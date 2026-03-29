@@ -14,7 +14,7 @@
   import { api, type BulkActionResponse, type TabSessionSubscription } from '$lib/api/client';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
   import { formatBytes, formatDate } from '$lib/format';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, clampPage, parsePageParam } from '$lib/pagination';
+  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import DatasetUploadProgressModal from '$lib/components/storage/DatasetUploadProgressModal.svelte';
@@ -105,11 +105,19 @@
   });
 
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const RECORDING_SORT_KEYS = ['created_at', 'dataset_name', 'episode_count', 'status'] as const;
+  const parseRecordingSortKey = (value: string | null): 'created_at' | 'dataset_name' | 'episode_count' | 'status' =>
+    RECORDING_SORT_KEYS.includes((value ?? '') as (typeof RECORDING_SORT_KEYS)[number])
+      ? ((value ?? '') as 'created_at' | 'dataset_name' | 'episode_count' | 'status')
+      : 'created_at';
+  const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
-  let recordingSortKey = $state<'created_at' | 'dataset_name' | 'episode_count' | 'status'>('created_at');
-  let recordingSortOrder = $state<'desc' | 'asc'>('desc');
-  let recordingOwnerFilter = $state('all');
-  let recordingSearch = $state('');
+  let recordingSortKey = $state<'created_at' | 'dataset_name' | 'episode_count' | 'status'>(
+    parseRecordingSortKey(page.url.searchParams.get('sort'))
+  );
+  let recordingSortOrder = $state<'desc' | 'asc'>(parseSortOrder(page.url.searchParams.get('order')));
+  let recordingOwnerFilter = $state(page.url.searchParams.get('owner') || 'all');
+  let recordingSearch = $state(page.url.searchParams.get('search') || '');
   let selectedRecordingIds = $state<string[]>([]);
   let recordingOwnerFilterInitialized = $state(false);
   let bulkPending = $state(false);
@@ -123,7 +131,6 @@
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
   let uploadModalOpen = $state(false);
   let selectedUploadDatasetId = $state('');
-  let recordingQuerySignature = $state('');
 
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
   const recordingSortQuery = $derived(recordingSortKey === 'status' ? 'upload_status' : recordingSortKey);
@@ -169,6 +176,14 @@
       invalidateAll: false
     });
   };
+  const buildRecordHref = (pageNumber: number = currentPage) =>
+    buildUrlWithQueryState(page.url, {
+      owner: recordingOwnerFilter !== 'all' ? recordingOwnerFilter : null,
+      search: recordingSearch || null,
+      sort: recordingSortKey !== 'created_at' ? recordingSortKey : null,
+      order: recordingSortOrder !== 'desc' ? recordingSortOrder : null,
+      page: pageNumber > 1 ? pageNumber : null
+    });
 
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
     idle: '未開始',
@@ -445,23 +460,45 @@
   const rawStatus = $derived(recorderStatus ? JSON.stringify(recorderStatus, null, 2) : '');
 
   $effect(() => {
-    const nextSignature = JSON.stringify([
-      recordingOwnerFilter,
-      recordingSearch,
-      recordingSortKey,
-      recordingSortOrder
-    ]);
-    if (!recordingQuerySignature) {
-      recordingQuerySignature = nextSignature;
+    const nextOwnerFilter = page.url.searchParams.get('owner') || 'all';
+    const nextSearch = page.url.searchParams.get('search') || '';
+    const nextSortKey = parseRecordingSortKey(page.url.searchParams.get('sort'));
+    const nextSortOrder = parseSortOrder(page.url.searchParams.get('order'));
+    if (recordingOwnerFilter !== nextOwnerFilter) {
+      recordingOwnerFilter = nextOwnerFilter;
+    }
+    if (recordingSearch !== nextSearch) {
+      recordingSearch = nextSearch;
+    }
+    if (recordingSortKey !== nextSortKey) {
+      recordingSortKey = nextSortKey;
+    }
+    if (recordingSortOrder !== nextSortOrder) {
+      recordingSortOrder = nextSortOrder;
+    }
+  });
+
+  $effect(() => {
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    const urlOwnerFilter = page.url.searchParams.get('owner') || 'all';
+    const urlSearch = page.url.searchParams.get('search') || '';
+    const urlSortKey = parseRecordingSortKey(page.url.searchParams.get('sort'));
+    const urlSortOrder = parseSortOrder(page.url.searchParams.get('order'));
+    const filtersChanged =
+      recordingOwnerFilter !== urlOwnerFilter ||
+      recordingSearch !== urlSearch ||
+      recordingSortKey !== urlSortKey ||
+      recordingSortOrder !== urlSortOrder;
+    const nextHref = buildRecordHref(filtersChanged && currentPage !== 1 ? 1 : currentPage);
+    if (currentHref === nextHref) {
       return;
     }
-    if (nextSignature === recordingQuerySignature) {
-      return;
-    }
-    recordingQuerySignature = nextSignature;
-    if (currentPage !== 1) {
-      void navigateToPage(1);
-    }
+    void goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
   });
 
   $effect(() => {
@@ -477,6 +514,10 @@
   $effect(() => {
     if (recordingOwnerFilterInitialized) return;
     if (!currentUserId) return;
+    if (page.url.searchParams.has('owner')) {
+      recordingOwnerFilterInitialized = true;
+      return;
+    }
     if (!recordingOwnerOptions.some((option) => option.id === currentUserId)) {
       recordingOwnerFilterInitialized = true;
       return;
