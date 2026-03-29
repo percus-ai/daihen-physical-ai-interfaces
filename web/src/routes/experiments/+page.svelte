@@ -4,7 +4,9 @@
   import { page } from '$app/state';
   import { toStore } from 'svelte/store';
   import { api } from '$lib/api/client';
+  import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import type { ListFilterField } from '$lib/listFilters';
   import { qk } from '$lib/queryKeys';
   import { formatDate, formatPercent } from '$lib/format';
   import { goto } from '$app/navigation';
@@ -55,8 +57,9 @@
     queryFn: () => api.storage.models()
   });
 
-  let selectedModel = $state(page.url.searchParams.get('model_id') || '');
+  let filterDialogOpen = $state(false);
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const selectedModel = $derived(page.url.searchParams.get('model_id') || '');
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
 
   const experimentsQuery = createQuery<ExperimentListResponse>(
@@ -89,7 +92,27 @@
         : '実験一覧の取得に失敗しました。'
       : ''
   );
-  const displayCount = $derived(experimentsError ? '-' : String(totalExperiments));
+  const experimentFilterDefaults = {
+    model_id: ''
+  };
+  const experimentFilterValues = $derived({
+    model_id: selectedModel
+  });
+  const experimentFilterFields = $derived<ListFilterField[]>([
+    {
+      type: 'select',
+      key: 'model_id',
+      label: 'モデル',
+      options: [
+        { value: '', label: 'すべて' },
+        ...($modelsQuery.data?.models ?? []).map((model) => ({
+          value: model.id,
+          label: model.name ?? model.id
+        }))
+      ]
+    }
+  ]);
+  const hasActiveFilters = $derived(Boolean(selectedModel));
 
   const navigateToPage = async (nextPage: number) => {
     const href = buildPageHref(page.url, nextPage);
@@ -102,11 +125,36 @@
       invalidateAll: false
     });
   };
-  const buildExperimentsHref = (pageNumber: number = currentPage) =>
-    buildUrlWithQueryState(page.url, {
-      model_id: selectedModel || null,
-      page: pageNumber > 1 ? pageNumber : null
+  const applyExperimentFilters = async (values: Record<string, string>) => {
+    const nextHref = buildUrlWithQueryState(page.url, {
+      model_id: values.model_id || null,
+      page: null
     });
+    filterDialogOpen = false;
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
+
+  const clearFilters = async () => {
+    const nextHref = buildUrlWithQueryState(page.url, {
+      model_id: null,
+      page: null
+    });
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
 
   $effect(() => {
     const key = experiments.map((exp) => exp.id).join('|');
@@ -114,28 +162,6 @@
       summaryKey = key;
       void loadSummaries();
     }
-  });
-
-  $effect(() => {
-    const nextSelectedModel = page.url.searchParams.get('model_id') || '';
-    if (selectedModel !== nextSelectedModel) {
-      selectedModel = nextSelectedModel;
-    }
-  });
-
-  $effect(() => {
-    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
-    const urlModelId = page.url.searchParams.get('model_id') || '';
-    const nextHref = buildExperimentsHref(selectedModel !== urlModelId && currentPage !== 1 ? 1 : currentPage);
-    if (currentHref === nextHref) {
-      return;
-    }
-    void goto(nextHref, {
-      replaceState: true,
-      noScroll: true,
-      keepFocus: true,
-      invalidateAll: false
-    });
   });
 
   $effect(() => {
@@ -219,10 +245,6 @@
     return entries.map((entry) => `${entry.label}: ${formatPercent(entry.value)}`).join(' / ');
   };
 
-  const resetFilters = () => {
-    selectedModel = '';
-  };
-
   const refreshAll = async () => {
     const refetch = $experimentsQuery?.refetch;
     if (typeof refetch === 'function') {
@@ -244,46 +266,38 @@
 </section>
 
 <section class="card p-6">
-  <div class="flex flex-wrap items-center justify-between gap-3">
-    <div>
-      <h2 class="text-xl font-semibold text-slate-900">フィルタ</h2>
-      <p class="text-xs text-slate-500">モデルで絞り込みできます。</p>
-    </div>
-    <div class="flex flex-wrap gap-2">
-      <Button.Root class="btn-ghost" type="button" onclick={resetFilters}>リセット</Button.Root>
-      <Button.Root class="btn-ghost" type="button" onclick={refreshAll}>更新</Button.Root>
-    </div>
-  </div>
-  <div class="mt-4 grid gap-4 md:grid-cols-2">
-    <label class="text-sm font-semibold text-slate-700">
-      <span class="label">モデル</span>
-      <select class="input mt-2" bind:value={selectedModel}>
-        <option value="">すべて</option>
-        {#each $modelsQuery.data?.models ?? [] as model}
-          <option value={model.id}>{model.name ?? model.id}</option>
-        {/each}
-      </select>
-    </label>
-    <div class="text-sm text-slate-600">
-      <p class="label">表示件数</p>
-      <p class="mt-2 text-xl font-semibold text-slate-800">{displayCount}</p>
-      {#if summariesLoading}
-        <p class="mt-1 text-xs text-slate-500">集計を取得中...</p>
-      {:else if summariesError}
-        <p class="mt-1 text-xs text-rose-600">{summariesError}</p>
-      {/if}
-      {#if experimentsError}
-        <p class="mt-1 text-xs text-rose-600">{experimentsError}</p>
-      {/if}
-    </div>
-  </div>
-</section>
-
-<section class="card p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-xl font-semibold text-slate-900">実験一覧</h2>
-    <span class="text-xs text-slate-500">更新: {formatDate(experiments[0]?.updated_at)}</span>
+    <div class="flex items-center gap-2">
+      <PaginationControls
+        currentPage={currentPage}
+        pageSize={PAGE_SIZE}
+        totalItems={totalExperiments}
+        disabled={$experimentsQuery.isLoading}
+        compact={true}
+        onPageChange={navigateToPage}
+      />
+      <ListFilterPopover
+        bind:open={filterDialogOpen}
+        fields={experimentFilterFields}
+        values={experimentFilterValues}
+        defaults={experimentFilterDefaults}
+        active={hasActiveFilters}
+        onApply={applyExperimentFilters}
+        onClear={clearFilters}
+      />
+    </div>
   </div>
+  {#if summariesLoading}
+    <p class="mt-3 text-xs text-slate-500">集計を取得中...</p>
+  {/if}
+  {#if summariesError}
+    <p class="mt-3 text-xs text-rose-600">{summariesError}</p>
+  {/if}
+  {#if experimentsError}
+    <p class="mt-2 text-xs text-rose-600">{experimentsError}</p>
+  {/if}
+  <p class="mt-2 text-xs text-slate-500">更新: {formatDate(experiments[0]?.updated_at)}</p>
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">

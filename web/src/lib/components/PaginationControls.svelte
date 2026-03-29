@@ -7,17 +7,30 @@
     pageSize,
     totalItems,
     disabled = false,
+    compact = false,
     onPageChange
   }: {
     currentPage: number;
     pageSize: number;
     totalItems: number;
     disabled?: boolean;
+    compact?: boolean;
     onPageChange: (page: number) => void;
   } = $props();
 
-  const pageCount = $derived(resolvePageCount(totalItems, pageSize));
-  const rangeLabel = $derived(describePageRange(currentPage, pageSize, totalItems));
+  let stableTotalItems = $state(0);
+  const resolvedTotalItems = $derived(disabled && totalItems <= 0 ? stableTotalItems : totalItems);
+  const pageCount = $derived(resolvePageCount(resolvedTotalItems, pageSize));
+  const rangeLabel = $derived(describePageRange(currentPage, pageSize, resolvedTotalItems));
+  const paginationButtonClass =
+    'inline-flex h-10 items-center justify-center rounded-full border px-4 text-sm font-semibold transition';
+
+  $effect(() => {
+    if (disabled && totalItems <= 0) {
+      return;
+    }
+    stableTotalItems = totalItems;
+  });
 
   const handlePageChange = (page: number) => {
     if (disabled || page === currentPage || page < 1 || page > pageCount) return;
@@ -25,12 +38,23 @@
   };
 </script>
 
-<div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 pt-4">
-  <p class="text-xs text-slate-500">{rangeLabel}</p>
-  <Pagination.Root count={totalItems} perPage={pageSize} page={currentPage} onPageChange={handlePageChange} siblingCount={1}>
+<div class={`${compact ? 'flex flex-wrap items-center gap-1' : 'mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 pt-4'}`}>
+  {#if !compact}
+    <p class="text-xs text-slate-500">{rangeLabel}</p>
+  {/if}
+  <Pagination.Root
+    count={resolvedTotalItems}
+    perPage={pageSize}
+    page={currentPage}
+    onPageChange={handlePageChange}
+    siblingCount={1}
+  >
     {#snippet children({ pages })}
       <div class="flex items-center gap-1">
-        <Pagination.PrevButton class="btn-ghost px-3 py-1.5 text-xs" disabled={disabled}>
+        <Pagination.PrevButton
+          class={`${paginationButtonClass} border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand`}
+          disabled={disabled}
+        >
           前へ
         </Pagination.PrevButton>
 
@@ -40,7 +64,11 @@
           {:else}
             <Pagination.Page
               page={item}
-              class={`min-w-9 px-3 py-1.5 text-xs ${item.value === currentPage ? 'btn-primary' : 'btn-ghost'}`}
+              class={`min-w-10 ${paginationButtonClass} ${
+                item.value === currentPage
+                  ? 'border-brand/30 bg-brand text-white hover:border-brand/50 hover:bg-brand'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand'
+              }`}
               disabled={disabled}
             >
               {item.value}
@@ -48,7 +76,10 @@
           {/if}
         {/each}
 
-        <Pagination.NextButton class="btn-ghost px-3 py-1.5 text-xs" disabled={disabled}>
+        <Pagination.NextButton
+          class={`${paginationButtonClass} border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand`}
+          disabled={disabled}
+        >
           次へ
         </Pagination.NextButton>
       </div>

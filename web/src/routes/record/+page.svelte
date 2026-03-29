@@ -12,8 +12,10 @@
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import Eye from 'phosphor-svelte/lib/Eye';
   import { api, type BulkActionResponse, type TabSessionSubscription } from '$lib/api/client';
+  import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
   import { formatBytes, formatDate } from '$lib/format';
+  import type { ListFilterField } from '$lib/listFilters';
   import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
@@ -112,12 +114,7 @@
       : 'created_at';
   const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
-  let recordingSortKey = $state<'created_at' | 'dataset_name' | 'episode_count' | 'status'>(
-    parseRecordingSortKey(page.url.searchParams.get('sort'))
-  );
-  let recordingSortOrder = $state<'desc' | 'asc'>(parseSortOrder(page.url.searchParams.get('order')));
-  let recordingOwnerFilter = $state(page.url.searchParams.get('owner') || 'all');
-  let recordingSearch = $state(page.url.searchParams.get('search') || '');
+  let filterDialogOpen = $state(false);
   let selectedRecordingIds = $state<string[]>([]);
   let recordingOwnerFilterInitialized = $state(false);
   let bulkPending = $state(false);
@@ -132,6 +129,10 @@
   let uploadModalOpen = $state(false);
   let selectedUploadDatasetId = $state('');
 
+  const recordingSortKey = $derived(parseRecordingSortKey(page.url.searchParams.get('sort')));
+  const recordingSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
+  const recordingOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
+  const recordingSearch = $derived(page.url.searchParams.get('search') || '');
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
   const recordingSortQuery = $derived(recordingSortKey === 'status' ? 'upload_status' : recordingSortKey);
 
@@ -176,14 +177,41 @@
       invalidateAll: false
     });
   };
-  const buildRecordHref = (pageNumber: number = currentPage) =>
-    buildUrlWithQueryState(page.url, {
-      owner: recordingOwnerFilter !== 'all' ? recordingOwnerFilter : null,
-      search: recordingSearch || null,
-      sort: recordingSortKey !== 'created_at' ? recordingSortKey : null,
-      order: recordingSortOrder !== 'desc' ? recordingSortOrder : null,
-      page: pageNumber > 1 ? pageNumber : null
+  const applyRecordFilters = async (values: Record<string, string>) => {
+    const nextHref = buildUrlWithQueryState(page.url, {
+      owner: values.owner !== 'all' ? values.owner : null,
+      search: values.search || null,
+      sort: values.sort !== 'created_at' ? values.sort : null,
+      order: values.order !== 'desc' ? values.order : null,
+      page: null
     });
+    filterDialogOpen = false;
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
+  const clearRecordingFilters = async () => {
+    const nextHref = buildUrlWithQueryState(page.url, {
+      owner: null,
+      search: null,
+      sort: null,
+      order: null,
+      page: null
+    });
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
 
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
     idle: '未開始',
@@ -270,6 +298,62 @@
     }
     return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
   });
+  const recordingOwnerSelectOptions = $derived.by(() => {
+    const options = [{ value: 'all', label: '全員' }, ...recordingOwnerOptions.map((owner) => ({ value: owner.id, label: owner.label }))];
+    if (recordingOwnerFilter !== 'all' && !options.some((option) => option.value === recordingOwnerFilter)) {
+      options.push({ value: recordingOwnerFilter, label: recordingOwnerFilter });
+    }
+    return options;
+  });
+  const recordingFilterDefaults = {
+    search: '',
+    owner: 'all',
+    sort: 'created_at',
+    order: 'desc'
+  };
+  const recordingFilterValues = $derived({
+    search: recordingSearch,
+    owner: recordingOwnerFilter,
+    sort: recordingSortKey,
+    order: recordingSortOrder
+  });
+  const recordingFilterFields = $derived<ListFilterField[]>([
+    {
+      type: 'text',
+      key: 'search',
+      label: '検索',
+      placeholder: 'dataset / task / user'
+    },
+    {
+      type: 'select',
+      key: 'owner',
+      label: '作成者',
+      options: recordingOwnerSelectOptions
+    },
+    {
+      type: 'select',
+      key: 'sort',
+      label: '並び替え',
+      options: [
+        { value: 'created_at', label: '作成日時' },
+        { value: 'dataset_name', label: '名前' },
+        { value: 'episode_count', label: 'エピソード数' },
+        { value: 'status', label: 'アップロード状態' }
+      ]
+    },
+    {
+      type: 'select',
+      key: 'order',
+      label: '順序',
+      options: [
+        { value: 'desc', label: '降順' },
+        { value: 'asc', label: '昇順' }
+      ]
+    }
+  ]);
+  const hasActiveRecordingFilters = $derived(
+    Boolean(recordingSearch) || recordingOwnerFilter !== 'all' || recordingSortKey !== 'created_at' || recordingSortOrder !== 'desc'
+  );
   const currentUserId = $derived(String($userConfigQuery.data?.user_id ?? '').trim());
   const allDisplayedRecordingIds = $derived(displayedRecordings.map((recording) => recording.recording_id));
   const allDisplayedRecordingsSelected = $derived(
@@ -460,48 +544,6 @@
   const rawStatus = $derived(recorderStatus ? JSON.stringify(recorderStatus, null, 2) : '');
 
   $effect(() => {
-    const nextOwnerFilter = page.url.searchParams.get('owner') || 'all';
-    const nextSearch = page.url.searchParams.get('search') || '';
-    const nextSortKey = parseRecordingSortKey(page.url.searchParams.get('sort'));
-    const nextSortOrder = parseSortOrder(page.url.searchParams.get('order'));
-    if (recordingOwnerFilter !== nextOwnerFilter) {
-      recordingOwnerFilter = nextOwnerFilter;
-    }
-    if (recordingSearch !== nextSearch) {
-      recordingSearch = nextSearch;
-    }
-    if (recordingSortKey !== nextSortKey) {
-      recordingSortKey = nextSortKey;
-    }
-    if (recordingSortOrder !== nextSortOrder) {
-      recordingSortOrder = nextSortOrder;
-    }
-  });
-
-  $effect(() => {
-    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
-    const urlOwnerFilter = page.url.searchParams.get('owner') || 'all';
-    const urlSearch = page.url.searchParams.get('search') || '';
-    const urlSortKey = parseRecordingSortKey(page.url.searchParams.get('sort'));
-    const urlSortOrder = parseSortOrder(page.url.searchParams.get('order'));
-    const filtersChanged =
-      recordingOwnerFilter !== urlOwnerFilter ||
-      recordingSearch !== urlSearch ||
-      recordingSortKey !== urlSortKey ||
-      recordingSortOrder !== urlSortOrder;
-    const nextHref = buildRecordHref(filtersChanged && currentPage !== 1 ? 1 : currentPage);
-    if (currentHref === nextHref) {
-      return;
-    }
-    void goto(nextHref, {
-      replaceState: true,
-      noScroll: true,
-      keepFocus: true,
-      invalidateAll: false
-    });
-  });
-
-  $effect(() => {
     if ($recordingsQuery.isLoading) {
       return;
     }
@@ -522,8 +564,19 @@
       recordingOwnerFilterInitialized = true;
       return;
     }
-    recordingOwnerFilter = currentUserId;
     recordingOwnerFilterInitialized = true;
+    void goto(
+      buildUrlWithQueryState(page.url, {
+        owner: currentUserId,
+        page: null
+      }),
+      {
+        replaceState: true,
+        noScroll: true,
+        keepFocus: true,
+        invalidateAll: false
+      }
+    );
   });
 
   $effect(() => {
@@ -654,40 +707,27 @@
       <h2 class="text-xl font-semibold text-slate-900">データセット履歴</h2>
       <p class="text-sm text-slate-600">収録済みデータセットの履歴です。</p>
     </div>
-    <Button.Root class="btn-ghost" type="button" onclick={() => $recordingsQuery.refetch?.()}>更新</Button.Root>
+    <div class="flex items-center gap-2">
+      <PaginationControls
+        currentPage={currentPage}
+        pageSize={PAGE_SIZE}
+        totalItems={totalRecordings}
+        disabled={$recordingsQuery.isLoading}
+        compact={true}
+        onPageChange={navigateToPage}
+      />
+      <ListFilterPopover
+        bind:open={filterDialogOpen}
+        fields={recordingFilterFields}
+        values={recordingFilterValues}
+        defaults={recordingFilterDefaults}
+        active={hasActiveRecordingFilters}
+        onApply={applyRecordFilters}
+        onClear={clearRecordingFilters}
+      />
+    </div>
   </div>
   <p class="mt-3 text-xs text-slate-500">選択中: {selectedRecordingIds.length} 件</p>
-  <div class="mt-4 grid gap-3 md:grid-cols-4">
-    <label class="block">
-      <span class="label">検索</span>
-      <input class="input mt-2" type="text" bind:value={recordingSearch} placeholder="dataset / task / user" />
-    </label>
-    <label class="block">
-      <span class="label">作成者</span>
-      <select class="input mt-2" bind:value={recordingOwnerFilter}>
-        <option value="all">全員</option>
-        {#each recordingOwnerOptions as owner}
-          <option value={owner.id}>{owner.label}</option>
-        {/each}
-      </select>
-    </label>
-    <label class="block">
-      <span class="label">並び替え</span>
-      <select class="input mt-2" bind:value={recordingSortKey}>
-        <option value="created_at">作成日時</option>
-        <option value="dataset_name">名前</option>
-        <option value="episode_count">エピソード数</option>
-        <option value="status">アップロード状態</option>
-      </select>
-    </label>
-    <label class="block">
-      <span class="label">順序</span>
-      <select class="input mt-2" bind:value={recordingSortOrder}>
-        <option value="desc">降順</option>
-        <option value="asc">昇順</option>
-      </select>
-    </label>
-  </div>
   {#if selectedRecordingIds.length > 0}
     <div class="mt-4 nested-block-pane p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">

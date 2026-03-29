@@ -1,4 +1,4 @@
-export const DEFAULT_PAGE_SIZE = 20;
+export const DEFAULT_PAGE_SIZE = 10;
 
 export const parsePageParam = (value: string | null | undefined): number => {
   const parsed = Number(value);

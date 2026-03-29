@@ -24,7 +24,9 @@
     type DatasetSyncJobStatus,
     type TabSessionSubscription
   } from '$lib/api/client';
+  import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import type { ListFilterField } from '$lib/listFilters';
   import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import {
@@ -71,7 +73,7 @@
 
   const queryClient = useQueryClient();
 
-  let datasetStatusTab = $state<DatasetStatusTab>(parseDatasetStatusTab(page.url.searchParams.get('status')));
+  let filterDialogOpen = $state(false);
   let selectedIds = $state<string[]>([]);
   let mergeName = $state('');
   let actionMessage = $state('');
@@ -94,12 +96,11 @@
   let renameError = $state('');
   let rowPendingId = $state('');
   let rowPendingAction = $state<DatasetRowAction>('');
-  let datasetSortKey = $state<'created_at' | 'name' | 'episode_count' | 'size_bytes'>(
-    parseDatasetSortKey(page.url.searchParams.get('sort'))
-  );
-  let datasetSortOrder = $state<'desc' | 'asc'>(parseSortOrder(page.url.searchParams.get('order')));
-  let datasetOwnerFilter = $state(page.url.searchParams.get('owner') || 'all');
-  let datasetSearch = $state(page.url.searchParams.get('search') || '');
+  const datasetStatusTab = $derived(parseDatasetStatusTab(page.url.searchParams.get('status')));
+  const datasetSortKey = $derived(parseDatasetSortKey(page.url.searchParams.get('sort')));
+  const datasetSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
+  const datasetOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
+  const datasetSearch = $derived(page.url.searchParams.get('search') || '');
   let jobsById = $state<Record<string, DatasetSyncJobStatus>>({});
   let activeJobsByDatasetId = $state<Record<string, DatasetSyncJobStatus>>({});
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
@@ -193,6 +194,62 @@
     }
     return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
   });
+  const datasetOwnerSelectOptions = $derived.by(() => {
+    const options = [{ value: 'all', label: '全員' }, ...datasetOwnerOptions.map((owner) => ({ value: owner.id, label: owner.label }))];
+    if (datasetOwnerFilter !== 'all' && !options.some((option) => option.value === datasetOwnerFilter)) {
+      options.push({ value: datasetOwnerFilter, label: datasetOwnerFilter });
+    }
+    return options;
+  });
+  const datasetFilterDefaults = {
+    search: '',
+    owner: 'all',
+    sort: 'created_at',
+    order: 'desc'
+  };
+  const datasetFilterValues = $derived({
+    search: datasetSearch,
+    owner: datasetOwnerFilter,
+    sort: datasetSortKey,
+    order: datasetSortOrder
+  });
+  const datasetFilterFields = $derived<ListFilterField[]>([
+    {
+      type: 'text',
+      key: 'search',
+      label: '検索',
+      placeholder: 'dataset / profile / user'
+    },
+    {
+      type: 'select',
+      key: 'owner',
+      label: '作成者',
+      options: datasetOwnerSelectOptions
+    },
+    {
+      type: 'select',
+      key: 'sort',
+      label: '並び替え',
+      options: [
+        { value: 'created_at', label: '作成日時' },
+        { value: 'name', label: '名前' },
+        { value: 'episode_count', label: 'エピソード数' },
+        { value: 'size_bytes', label: 'サイズ' }
+      ]
+    },
+    {
+      type: 'select',
+      key: 'order',
+      label: '順序',
+      options: [
+        { value: 'desc', label: '降順' },
+        { value: 'asc', label: '昇順' }
+      ]
+    }
+  ]);
+  const hasActiveDatasetFilters = $derived(
+    Boolean(datasetSearch) || datasetOwnerFilter !== 'all' || datasetSortKey !== 'created_at' || datasetSortOrder !== 'desc'
+  );
 
   const allDisplayedDatasetIds = $derived(displayedDatasets.map((dataset) => dataset.id));
   const allDisplayedDatasetsSelected = $derived(
@@ -268,63 +325,44 @@
       invalidateAll: false
     });
   };
-  const buildDatasetsHref = (pageNumber: number = currentPage) =>
-    buildUrlWithQueryState(page.url, {
+  const applyDatasetFilters = async (values: Record<string, string>) => {
+    const nextHref = buildUrlWithQueryState(page.url, {
       status: datasetStatusTab !== 'active' ? datasetStatusTab : null,
-      owner: datasetOwnerFilter !== 'all' ? datasetOwnerFilter : null,
-      search: datasetSearch || null,
-      sort: datasetSortKey !== 'created_at' ? datasetSortKey : null,
-      order: datasetSortOrder !== 'desc' ? datasetSortOrder : null,
-      page: pageNumber > 1 ? pageNumber : null
+      owner: values.owner !== 'all' ? values.owner : null,
+      search: values.search || null,
+      sort: values.sort !== 'created_at' ? values.sort : null,
+      order: values.order !== 'desc' ? values.order : null,
+      page: null
     });
-
-  $effect(() => {
-    const nextStatusTab = parseDatasetStatusTab(page.url.searchParams.get('status'));
-    const nextOwnerFilter = page.url.searchParams.get('owner') || 'all';
-    const nextSearch = page.url.searchParams.get('search') || '';
-    const nextSortKey = parseDatasetSortKey(page.url.searchParams.get('sort'));
-    const nextSortOrder = parseSortOrder(page.url.searchParams.get('order'));
-    if (datasetStatusTab !== nextStatusTab) {
-      datasetStatusTab = nextStatusTab;
-    }
-    if (datasetOwnerFilter !== nextOwnerFilter) {
-      datasetOwnerFilter = nextOwnerFilter;
-    }
-    if (datasetSearch !== nextSearch) {
-      datasetSearch = nextSearch;
-    }
-    if (datasetSortKey !== nextSortKey) {
-      datasetSortKey = nextSortKey;
-    }
-    if (datasetSortOrder !== nextSortOrder) {
-      datasetSortOrder = nextSortOrder;
-    }
-  });
-
-  $effect(() => {
+    filterDialogOpen = false;
     const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
-    const urlStatusTab = parseDatasetStatusTab(page.url.searchParams.get('status'));
-    const urlOwnerFilter = page.url.searchParams.get('owner') || 'all';
-    const urlSearch = page.url.searchParams.get('search') || '';
-    const urlSortKey = parseDatasetSortKey(page.url.searchParams.get('sort'));
-    const urlSortOrder = parseSortOrder(page.url.searchParams.get('order'));
-    const filtersChanged =
-      datasetStatusTab !== urlStatusTab ||
-      datasetOwnerFilter !== urlOwnerFilter ||
-      datasetSearch !== urlSearch ||
-      datasetSortKey !== urlSortKey ||
-      datasetSortOrder !== urlSortOrder;
-    const nextHref = buildDatasetsHref(filtersChanged && currentPage !== 1 ? 1 : currentPage);
-    if (currentHref === nextHref) {
-      return;
-    }
-    void goto(nextHref, {
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
       replaceState: true,
       noScroll: true,
       keepFocus: true,
       invalidateAll: false
     });
-  });
+  };
+
+  const clearDatasetFilters = async () => {
+    const nextHref = buildUrlWithQueryState(page.url, {
+      status: datasetStatusTab !== 'active' ? datasetStatusTab : null,
+      owner: null,
+      search: null,
+      sort: null,
+      order: null,
+      page: null
+    });
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
 
   $effect(() => {
     if ($datasetsQuery.isLoading) {
@@ -605,7 +643,6 @@
   const handleDatasetTabChange = (nextValue: string) => {
     const nextTab: DatasetStatusTab = nextValue === 'archived' ? 'archived' : 'active';
     if (nextTab === datasetStatusTab) return;
-    datasetStatusTab = nextTab;
     clearSelection();
     mergeName = '';
     resetMessages();
@@ -613,6 +650,19 @@
     resetRenameDialog();
     rowPendingId = '';
     rowPendingAction = '';
+    filterDialogOpen = false;
+    void goto(
+      buildUrlWithQueryState(page.url, {
+        status: nextTab !== 'active' ? nextTab : null,
+        page: null
+      }),
+      {
+        replaceState: true,
+        noScroll: true,
+        keepFocus: true,
+        invalidateAll: false
+      }
+    );
   };
 
   const openArchiveDialog = (dataset: DatasetSummary) => {
@@ -997,7 +1047,6 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage">戻る</Button.Root>
-      <button class="btn-ghost" type="button" onclick={handleRefresh}>更新</button>
     </div>
   </div>
 </section>
@@ -1005,55 +1054,43 @@
 <section class="card p-6">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-xl font-semibold text-slate-900">データセット一覧</h2>
-    <Tabs.Root value={datasetStatusTab} onValueChange={handleDatasetTabChange}>
-      <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
-        <Tabs.Trigger
-          value="active"
-          class={tabTriggerClass('active')}
-        >
-          アクティブ
-        </Tabs.Trigger>
-        <Tabs.Trigger
-          value="archived"
-          class={tabTriggerClass('archived')}
-        >
-          アーカイブ
-        </Tabs.Trigger>
-      </Tabs.List>
-    </Tabs.Root>
+    <div class="flex flex-wrap items-center gap-2">
+      <PaginationControls
+        currentPage={currentPage}
+        pageSize={PAGE_SIZE}
+        totalItems={totalDatasets}
+        disabled={$datasetsQuery.isLoading}
+        compact={true}
+        onPageChange={navigateToPage}
+      />
+      <ListFilterPopover
+        bind:open={filterDialogOpen}
+        fields={datasetFilterFields}
+        values={datasetFilterValues}
+        defaults={datasetFilterDefaults}
+        active={hasActiveDatasetFilters}
+        onApply={applyDatasetFilters}
+        onClear={clearDatasetFilters}
+      />
+      <Tabs.Root value={datasetStatusTab} onValueChange={handleDatasetTabChange}>
+        <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+          <Tabs.Trigger
+            value="active"
+            class={tabTriggerClass('active')}
+          >
+            アクティブ
+          </Tabs.Trigger>
+          <Tabs.Trigger
+            value="archived"
+            class={tabTriggerClass('archived')}
+          >
+            アーカイブ
+          </Tabs.Trigger>
+        </Tabs.List>
+      </Tabs.Root>
+    </div>
   </div>
   <p class="mt-2 text-xs text-slate-500">{helperText}</p>
-  <div class="mt-4 grid gap-3 md:grid-cols-4">
-    <label class="block">
-      <span class="label">検索</span>
-      <input class="input mt-2" type="text" bind:value={datasetSearch} placeholder="dataset / profile / user" />
-    </label>
-    <label class="block">
-      <span class="label">作成者</span>
-      <select class="input mt-2" bind:value={datasetOwnerFilter}>
-        <option value="all">全員</option>
-        {#each datasetOwnerOptions as owner}
-          <option value={owner.id}>{owner.label}</option>
-        {/each}
-      </select>
-    </label>
-    <label class="block">
-      <span class="label">並び替え</span>
-      <select class="input mt-2" bind:value={datasetSortKey}>
-        <option value="created_at">作成日時</option>
-        <option value="name">名前</option>
-        <option value="episode_count">エピソード数</option>
-        <option value="size_bytes">サイズ</option>
-      </select>
-    </label>
-    <label class="block">
-      <span class="label">順序</span>
-      <select class="input mt-2" bind:value={datasetSortOrder}>
-        <option value="desc">降順</option>
-        <option value="asc">昇順</option>
-      </select>
-    </label>
-  </div>
   {#if selectedIds.length > 0}
     <div class="mt-4 nested-block-pane p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">

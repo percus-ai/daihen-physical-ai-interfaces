@@ -24,7 +24,9 @@
     type ModelSyncJobStatus,
     type TabSessionSubscription
   } from '$lib/api/client';
+  import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import type { ListFilterField } from '$lib/listFilters';
   import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
@@ -69,7 +71,7 @@
 
   const queryClient = useQueryClient();
 
-  let modelStatusTab = $state<ModelStatusTab>(parseModelStatusTab(page.url.searchParams.get('status')));
+  let filterDialogOpen = $state(false);
   let syncAllPending = $state(false);
   let syncMessage = $state('');
   let syncError = $state('');
@@ -77,12 +79,11 @@
   let bulkError = $state('');
   let bulkPending = $state(false);
   let selectedIds = $state<string[]>([]);
-  let modelSortKey = $state<'created_at' | 'name' | 'size_bytes' | 'policy_type'>(
-    parseModelSortKey(page.url.searchParams.get('sort'))
-  );
-  let modelSortOrder = $state<'desc' | 'asc'>(parseSortOrder(page.url.searchParams.get('order')));
-  let modelOwnerFilter = $state(page.url.searchParams.get('owner') || 'all');
-  let modelSearch = $state(page.url.searchParams.get('search') || '');
+  const modelStatusTab = $derived(parseModelStatusTab(page.url.searchParams.get('status')));
+  const modelSortKey = $derived(parseModelSortKey(page.url.searchParams.get('sort')));
+  const modelSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
+  const modelOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
+  const modelSearch = $derived(page.url.searchParams.get('search') || '');
   let jobsById = $state<Record<string, ModelSyncJobStatus>>({});
   let activeJobsByModelId = $state<Record<string, ModelSyncJobStatus>>({});
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
@@ -169,6 +170,62 @@
     }
     return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
   });
+  const modelOwnerSelectOptions = $derived.by(() => {
+    const options = [{ value: 'all', label: '全員' }, ...modelOwnerOptions.map((owner) => ({ value: owner.id, label: owner.label }))];
+    if (modelOwnerFilter !== 'all' && !options.some((option) => option.value === modelOwnerFilter)) {
+      options.push({ value: modelOwnerFilter, label: modelOwnerFilter });
+    }
+    return options;
+  });
+  const modelFilterDefaults = {
+    search: '',
+    owner: 'all',
+    sort: 'created_at',
+    order: 'desc'
+  };
+  const modelFilterValues = $derived({
+    search: modelSearch,
+    owner: modelOwnerFilter,
+    sort: modelSortKey,
+    order: modelSortOrder
+  });
+  const modelFilterFields = $derived<ListFilterField[]>([
+    {
+      type: 'text',
+      key: 'search',
+      label: '検索',
+      placeholder: 'model / policy / user'
+    },
+    {
+      type: 'select',
+      key: 'owner',
+      label: '作成者',
+      options: modelOwnerSelectOptions
+    },
+    {
+      type: 'select',
+      key: 'sort',
+      label: '並び替え',
+      options: [
+        { value: 'created_at', label: '作成日時' },
+        { value: 'name', label: '名前' },
+        { value: 'size_bytes', label: 'サイズ' },
+        { value: 'policy_type', label: 'ポリシー' }
+      ]
+    },
+    {
+      type: 'select',
+      key: 'order',
+      label: '順序',
+      options: [
+        { value: 'desc', label: '降順' },
+        { value: 'asc', label: '昇順' }
+      ]
+    }
+  ]);
+  const hasActiveModelFilters = $derived(
+    Boolean(modelSearch) || modelOwnerFilter !== 'all' || modelSortKey !== 'created_at' || modelSortOrder !== 'desc'
+  );
   const allDisplayedModelIds = $derived(displayedModels.map((model) => model.id));
   const allDisplayedModelsSelected = $derived(
     allDisplayedModelIds.length > 0 && allDisplayedModelIds.every((id) => selectedIds.includes(id))
@@ -214,63 +271,44 @@
       invalidateAll: false
     });
   };
-  const buildModelsHref = (pageNumber: number = currentPage) =>
-    buildUrlWithQueryState(page.url, {
+  const applyModelFilters = async (values: Record<string, string>) => {
+    const nextHref = buildUrlWithQueryState(page.url, {
       status: modelStatusTab !== 'active' ? modelStatusTab : null,
-      owner: modelOwnerFilter !== 'all' ? modelOwnerFilter : null,
-      search: modelSearch || null,
-      sort: modelSortKey !== 'created_at' ? modelSortKey : null,
-      order: modelSortOrder !== 'desc' ? modelSortOrder : null,
-      page: pageNumber > 1 ? pageNumber : null
+      owner: values.owner !== 'all' ? values.owner : null,
+      search: values.search || null,
+      sort: values.sort !== 'created_at' ? values.sort : null,
+      order: values.order !== 'desc' ? values.order : null,
+      page: null
     });
-
-  $effect(() => {
-    const nextStatusTab = parseModelStatusTab(page.url.searchParams.get('status'));
-    const nextOwnerFilter = page.url.searchParams.get('owner') || 'all';
-    const nextSearch = page.url.searchParams.get('search') || '';
-    const nextSortKey = parseModelSortKey(page.url.searchParams.get('sort'));
-    const nextSortOrder = parseSortOrder(page.url.searchParams.get('order'));
-    if (modelStatusTab !== nextStatusTab) {
-      modelStatusTab = nextStatusTab;
-    }
-    if (modelOwnerFilter !== nextOwnerFilter) {
-      modelOwnerFilter = nextOwnerFilter;
-    }
-    if (modelSearch !== nextSearch) {
-      modelSearch = nextSearch;
-    }
-    if (modelSortKey !== nextSortKey) {
-      modelSortKey = nextSortKey;
-    }
-    if (modelSortOrder !== nextSortOrder) {
-      modelSortOrder = nextSortOrder;
-    }
-  });
-
-  $effect(() => {
+    filterDialogOpen = false;
     const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
-    const urlStatusTab = parseModelStatusTab(page.url.searchParams.get('status'));
-    const urlOwnerFilter = page.url.searchParams.get('owner') || 'all';
-    const urlSearch = page.url.searchParams.get('search') || '';
-    const urlSortKey = parseModelSortKey(page.url.searchParams.get('sort'));
-    const urlSortOrder = parseSortOrder(page.url.searchParams.get('order'));
-    const filtersChanged =
-      modelStatusTab !== urlStatusTab ||
-      modelOwnerFilter !== urlOwnerFilter ||
-      modelSearch !== urlSearch ||
-      modelSortKey !== urlSortKey ||
-      modelSortOrder !== urlSortOrder;
-    const nextHref = buildModelsHref(filtersChanged && currentPage !== 1 ? 1 : currentPage);
-    if (currentHref === nextHref) {
-      return;
-    }
-    void goto(nextHref, {
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
       replaceState: true,
       noScroll: true,
       keepFocus: true,
       invalidateAll: false
     });
-  });
+  };
+
+  const clearModelFilters = async () => {
+    const nextHref = buildUrlWithQueryState(page.url, {
+      status: modelStatusTab !== 'active' ? modelStatusTab : null,
+      owner: null,
+      search: null,
+      sort: null,
+      order: null,
+      page: null
+    });
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
 
   $effect(() => {
     if ($modelsQuery.isLoading) {
@@ -353,13 +391,25 @@
   const handleModelTabChange = (nextValue: string) => {
     const nextTab: ModelStatusTab = nextValue === 'archived' ? 'archived' : 'active';
     if (nextTab === modelStatusTab) return;
-    modelStatusTab = nextTab;
     clearSelection();
     resetMessages();
     resetArchiveDialog();
     resetRenameDialog();
     rowPendingId = '';
     rowPendingAction = '';
+    filterDialogOpen = false;
+    void goto(
+      buildUrlWithQueryState(page.url, {
+        status: nextTab !== 'active' ? nextTab : null,
+        page: null
+      }),
+      {
+        replaceState: true,
+        noScroll: true,
+        keepFocus: true,
+        invalidateAll: false
+      }
+    );
   };
 
   const openArchiveDialog = (model: ModelSummary) => {
@@ -892,9 +942,6 @@
           {syncAllPending ? '全て同期中...' : '全て同期'}
         </button>
       {/if}
-      <button class="btn-ghost" type="button" onclick={handleRefresh} disabled={syncAllPending}>
-        更新
-      </button>
     </div>
   </div>
 </section>
@@ -902,55 +949,43 @@
 <section class="card p-6">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-xl font-semibold text-slate-900">モデル一覧</h2>
-    <Tabs.Root value={modelStatusTab} onValueChange={handleModelTabChange}>
-      <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
-        <Tabs.Trigger
-          value="active"
-          class={tabTriggerClass('active')}
-        >
-          アクティブ
-        </Tabs.Trigger>
-        <Tabs.Trigger
-          value="archived"
-          class={tabTriggerClass('archived')}
-        >
-          アーカイブ
-        </Tabs.Trigger>
-      </Tabs.List>
-    </Tabs.Root>
+    <div class="flex flex-wrap items-center gap-2">
+      <PaginationControls
+        currentPage={currentPage}
+        pageSize={PAGE_SIZE}
+        totalItems={totalModels}
+        disabled={$modelsQuery.isLoading}
+        compact={true}
+        onPageChange={navigateToPage}
+      />
+      <ListFilterPopover
+        bind:open={filterDialogOpen}
+        fields={modelFilterFields}
+        values={modelFilterValues}
+        defaults={modelFilterDefaults}
+        active={hasActiveModelFilters}
+        onApply={applyModelFilters}
+        onClear={clearModelFilters}
+      />
+      <Tabs.Root value={modelStatusTab} onValueChange={handleModelTabChange}>
+        <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+          <Tabs.Trigger
+            value="active"
+            class={tabTriggerClass('active')}
+          >
+            アクティブ
+          </Tabs.Trigger>
+          <Tabs.Trigger
+            value="archived"
+            class={tabTriggerClass('archived')}
+          >
+            アーカイブ
+          </Tabs.Trigger>
+        </Tabs.List>
+      </Tabs.Root>
+    </div>
   </div>
   <p class="mt-2 text-xs text-slate-500">{helperText}</p>
-  <div class="mt-4 grid gap-3 md:grid-cols-4">
-    <label class="block">
-      <span class="label">検索</span>
-      <input class="input mt-2" type="text" bind:value={modelSearch} placeholder="model / policy / user" />
-    </label>
-    <label class="block">
-      <span class="label">作成者</span>
-      <select class="input mt-2" bind:value={modelOwnerFilter}>
-        <option value="all">全員</option>
-        {#each modelOwnerOptions as owner}
-          <option value={owner.id}>{owner.label}</option>
-        {/each}
-      </select>
-    </label>
-    <label class="block">
-      <span class="label">並び替え</span>
-      <select class="input mt-2" bind:value={modelSortKey}>
-        <option value="created_at">作成日時</option>
-        <option value="name">名前</option>
-        <option value="size_bytes">サイズ</option>
-        <option value="policy_type">ポリシー</option>
-      </select>
-    </label>
-    <label class="block">
-      <span class="label">順序</span>
-      <select class="input mt-2" bind:value={modelSortOrder}>
-        <option value="desc">降順</option>
-        <option value="asc">昇順</option>
-      </select>
-    </label>
-  </div>
   {#if selectedIds.length > 0}
     <div class="mt-4 nested-block-pane p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
