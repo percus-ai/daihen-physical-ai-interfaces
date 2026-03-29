@@ -42,6 +42,12 @@
   import StorageArchiveConfirmDialog from '$lib/components/storage/StorageArchiveConfirmDialog.svelte';
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
 
+  type Props = {
+    embedded?: boolean;
+  };
+
+  let { embedded = false }: Props = $props();
+
   type DatasetSummary = {
     id: string;
     name?: string;
@@ -1019,20 +1025,22 @@
   onConfirm={handleRenameTarget}
 />
 
-<section class="card-strong p-8">
-  <p class="section-title">Storage</p>
-  <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
-    <div>
-      <h1 class="text-3xl font-semibold text-slate-900">データセット管理</h1>
-      <p class="mt-2 text-sm text-slate-600">{pageDescription}</p>
+{#if !embedded}
+  <section class="card-strong p-8">
+    <p class="section-title">Storage</p>
+    <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 class="text-3xl font-semibold text-slate-900">データセット管理</h1>
+        <p class="mt-2 text-sm text-slate-600">{pageDescription}</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <Button.Root class="btn-ghost" href="/storage">戻る</Button.Root>
+      </div>
     </div>
-    <div class="flex flex-wrap gap-2">
-      <Button.Root class="btn-ghost" href="/storage">戻る</Button.Root>
-    </div>
-  </div>
-</section>
+  </section>
+{/if}
 
-<section class="card p-6">
+<svelte:element this={embedded ? 'div' : 'section'} class={embedded ? 'mt-4' : 'card p-6'}>
   <div class="flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-xl font-semibold text-slate-900">データセット一覧</h2>
     <div class="flex flex-wrap items-center gap-2">
@@ -1161,6 +1169,7 @@
   {#if syncError}
     <p class="mt-2 text-sm text-rose-600">{syncError}</p>
   {/if}
+  <div class="mt-3 text-xs text-slate-500">選択中: {selectedIds.length} 件</div>
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">
@@ -1388,4 +1397,4 @@
     disabled={$datasetsQuery.isLoading}
     onPageChange={navigateToPage}
   />
-</section>
+</svelte:element>

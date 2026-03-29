@@ -40,6 +40,12 @@
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
   import { presentModelSyncStatus } from '$lib/storage/transferStatus';
 
+  type Props = {
+    embedded?: boolean;
+  };
+
+  let { embedded = false }: Props = $props();
+
   type ModelSummary = {
     id: string;
     name?: string;
@@ -909,28 +915,35 @@
   onConfirm={handleRenameTarget}
 />
 
-<section class="card-strong p-8">
-  <p class="section-title">Storage</p>
-  <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
-    <div>
-      <h1 class="text-3xl font-semibold text-slate-900">モデル</h1>
-      <p class="mt-2 text-sm text-slate-600">{pageDescription}</p>
+{#if !embedded}
+  <section class="card-strong p-8">
+    <p class="section-title">Storage</p>
+    <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 class="text-3xl font-semibold text-slate-900">モデル</h1>
+        <p class="mt-2 text-sm text-slate-600">{pageDescription}</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <Button.Root class="btn-ghost" href="/storage">ビューに戻る</Button.Root>
+        {#if !isArchiveTab}
+          <button class="btn-ghost" type="button" onclick={handleSyncAll} disabled={syncPending || bulkPending || !models.length}>
+            {syncAllPending ? '全て同期中...' : '全て同期'}
+          </button>
+        {/if}
+      </div>
     </div>
-    <div class="flex flex-wrap gap-2">
-      <Button.Root class="btn-ghost" href="/storage">ビューに戻る</Button.Root>
-      {#if !isArchiveTab}
+  </section>
+{/if}
+
+<svelte:element this={embedded ? 'div' : 'section'} class={embedded ? 'mt-4' : 'card p-6'}>
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <h2 class="text-xl font-semibold text-slate-900">モデル一覧</h2>
+    <div class="flex flex-wrap items-center gap-2">
+      {#if embedded && !isArchiveTab}
         <button class="btn-ghost" type="button" onclick={handleSyncAll} disabled={syncPending || bulkPending || !models.length}>
           {syncAllPending ? '全て同期中...' : '全て同期'}
         </button>
       {/if}
-    </div>
-  </div>
-</section>
-
-<section class="card p-6">
-  <div class="flex flex-wrap items-center justify-between gap-3">
-    <h2 class="text-xl font-semibold text-slate-900">モデル一覧</h2>
-    <div class="flex flex-wrap items-center gap-2">
       <PaginationControls
         currentPage={currentPage}
         pageSize={PAGE_SIZE}
@@ -1255,4 +1268,4 @@
   {#if syncError}
     <p class="mt-2 text-sm text-rose-600">{syncError}</p>
   {/if}
-</section>
+</svelte:element>
