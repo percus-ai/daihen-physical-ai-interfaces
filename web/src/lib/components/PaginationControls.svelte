@@ -38,51 +38,53 @@
   };
 </script>
 
-<div class={`${compact ? 'flex flex-wrap items-center gap-1' : 'mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 pt-4'}`}>
-  {#if !compact}
-    <p class="text-xs text-slate-500">{rangeLabel}</p>
-  {/if}
-  <Pagination.Root
-    count={resolvedTotalItems}
-    perPage={pageSize}
-    page={currentPage}
-    onPageChange={handlePageChange}
-    siblingCount={1}
-  >
-    {#snippet children({ pages })}
-      <div class="flex items-center gap-1">
-        <Pagination.PrevButton
-          class={`${paginationButtonClass} border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand`}
-          disabled={disabled}
-        >
-          前へ
-        </Pagination.PrevButton>
+{#if pageCount > 1}
+  <div class={`${compact ? 'flex flex-wrap items-center gap-1' : 'mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 pt-4'}`}>
+    {#if !compact}
+      <p class="text-xs text-slate-500">{rangeLabel}</p>
+    {/if}
+    <Pagination.Root
+      count={resolvedTotalItems}
+      perPage={pageSize}
+      page={currentPage}
+      onPageChange={handlePageChange}
+      siblingCount={1}
+    >
+      {#snippet children({ pages })}
+        <div class="flex items-center gap-1">
+          <Pagination.PrevButton
+            class={`${paginationButtonClass} border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand`}
+            disabled={disabled}
+          >
+            前へ
+          </Pagination.PrevButton>
 
-        {#each pages as item (item.key)}
-          {#if item.type === 'ellipsis'}
-            <span class="px-1 text-xs text-slate-400">...</span>
-          {:else}
-            <Pagination.Page
-              page={item}
-              class={`min-w-10 ${paginationButtonClass} ${
-                item.value === currentPage
-                  ? 'border-brand/30 bg-brand text-white hover:border-brand/50 hover:bg-brand'
-                  : 'border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand'
-              }`}
-              disabled={disabled}
-            >
-              {item.value}
-            </Pagination.Page>
-          {/if}
-        {/each}
+          {#each pages as item (item.key)}
+            {#if item.type === 'ellipsis'}
+              <span class="px-1 text-xs text-slate-400">...</span>
+            {:else}
+              <Pagination.Page
+                page={item}
+                class={`min-w-10 ${paginationButtonClass} ${
+                  item.value === currentPage
+                    ? 'border-brand/30 bg-brand text-white hover:border-brand/50 hover:bg-brand'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand'
+                }`}
+                disabled={disabled}
+              >
+                {item.value}
+              </Pagination.Page>
+            {/if}
+          {/each}
 
-        <Pagination.NextButton
-          class={`${paginationButtonClass} border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand`}
-          disabled={disabled}
-        >
-          次へ
-        </Pagination.NextButton>
-      </div>
-    {/snippet}
-  </Pagination.Root>
-</div>
+          <Pagination.NextButton
+            class={`${paginationButtonClass} border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand`}
+            disabled={disabled}
+          >
+            次へ
+          </Pagination.NextButton>
+        </div>
+      {/snippet}
+    </Pagination.Root>
+  </div>
+{/if}
