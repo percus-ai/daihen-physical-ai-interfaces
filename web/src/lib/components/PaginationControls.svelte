@@ -23,9 +23,9 @@
   const pageCount = $derived(resolvePageCount(resolvedTotalItems, pageSize));
   const rangeLabel = $derived(describePageRange(currentPage, pageSize, resolvedTotalItems));
   const paginationNavButtonClass =
-    'inline-flex h-10 items-center justify-center rounded-full border px-4 text-sm font-semibold transition';
+    'inline-flex h-10 items-center justify-center rounded-full border px-4 text-sm font-semibold transition disabled:cursor-not-allowed';
   const paginationPageButtonClass =
-    'inline-flex h-10 min-w-10 items-center justify-center rounded-full border px-0 text-sm font-semibold transition';
+    'inline-flex h-10 min-w-10 items-center justify-center rounded-full border px-0 text-sm font-semibold transition disabled:cursor-not-allowed';
   const neutralButtonTone =
     'border-slate-200 bg-white text-slate-600 hover:border-brand/40 hover:text-brand disabled:opacity-45 disabled:hover:border-slate-200 disabled:hover:text-slate-600';
   const compactPages = $derived.by(() => {

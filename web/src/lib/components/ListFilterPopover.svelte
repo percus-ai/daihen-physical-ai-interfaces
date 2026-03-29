@@ -14,7 +14,6 @@
     sideOffset?: number;
     pending?: boolean;
     onApply?: (nextValues: Record<string, string>) => Promise<unknown> | unknown;
-    onClear?: () => Promise<unknown> | unknown;
   };
 
   let {
@@ -26,8 +25,7 @@
     align = 'end',
     sideOffset = 10,
     pending = false,
-    onApply,
-    onClear
+    onApply
   }: Props = $props();
 
   let draftValues = $state<Record<string, string>>({});
@@ -55,16 +53,22 @@
     draftValues = resolveFilterValues(fields, defaults, defaults);
   };
 
+  const hasChanges = $derived.by(() =>
+    fields.some((field) => (draftValues[field.key] ?? '') !== (values[field.key] ?? defaults[field.key] ?? ''))
+  );
+  const canClear = $derived.by(() =>
+    fields.some((field) => (draftValues[field.key] ?? defaults[field.key] ?? '') !== (defaults[field.key] ?? ''))
+  );
+
   const handleApply = async (event?: SubmitEvent) => {
     event?.preventDefault();
-    if (!onApply || pending) return;
+    if (!onApply || pending || !hasChanges) return;
     await onApply(resolveFilterValues(fields, draftValues, defaults));
   };
 
-  const handleClear = async () => {
+  const handleClear = () => {
+    if (pending || !canClear) return;
     resetDraft();
-    if (!onClear || pending) return;
-    await onClear();
   };
 </script>
 
@@ -117,10 +121,10 @@
 
         <div class="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-4">
           <div class="flex flex-wrap items-center gap-2">
-            <Button.Root class="btn-primary" type="submit" disabled={pending}>
+            <Button.Root class="btn-primary" type="submit" disabled={pending || !hasChanges}>
               {pending ? '適用中...' : '適用'}
             </Button.Root>
-            <button class="btn-ghost" type="button" disabled={pending} onclick={handleClear}>クリア</button>
+            <button class="btn-ghost" type="button" disabled={pending || !canClear} onclick={handleClear}>クリア</button>
           </div>
           <button
             class="inline-flex h-10 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"

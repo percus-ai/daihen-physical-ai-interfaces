@@ -141,21 +141,6 @@
     });
   };
 
-  const clearFilters = async () => {
-    const nextHref = buildUrlWithQueryState(page.url, {
-      model_id: null,
-      page: null
-    });
-    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
-    if (nextHref === currentHref) return;
-    await goto(nextHref, {
-      replaceState: true,
-      noScroll: true,
-      keepFocus: true,
-      invalidateAll: false
-    });
-  };
-
   $effect(() => {
     const key = experiments.map((exp) => exp.id).join('|');
     if (key !== summaryKey) {
@@ -284,7 +269,6 @@
         defaults={experimentFilterDefaults}
         active={hasActiveFilters}
         onApply={applyExperimentFilters}
-        onClear={clearFilters}
       />
     </div>
   </div>

@@ -183,24 +183,6 @@
     });
   };
 
-  const clearJobFilters = async () => {
-    const nextHref = buildUrlWithQueryState(page.url, {
-      owner: null,
-      search: null,
-      sort: null,
-      order: null,
-      page: null
-    });
-    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
-    if (nextHref === currentHref) return;
-    await goto(nextHref, {
-      replaceState: true,
-      noScroll: true,
-      keepFocus: true,
-      invalidateAll: false
-    });
-  };
-
   $effect(() => {
     if ($jobsQuery.isLoading) {
       return;
@@ -250,7 +232,6 @@
         defaults={trainingFilterDefaults}
         active={hasActiveJobFilters}
         onApply={applyTrainingFilters}
-        onClear={clearJobFilters}
       />
     </div>
   </div>

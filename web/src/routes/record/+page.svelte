@@ -195,24 +195,6 @@
       invalidateAll: false
     });
   };
-  const clearRecordingFilters = async () => {
-    const nextHref = buildUrlWithQueryState(page.url, {
-      owner: null,
-      search: null,
-      sort: null,
-      order: null,
-      page: null
-    });
-    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
-    if (nextHref === currentHref) return;
-    await goto(nextHref, {
-      replaceState: true,
-      noScroll: true,
-      keepFocus: true,
-      invalidateAll: false
-    });
-  };
-
   const UPLOAD_STATUS_LABELS: Record<string, string> = {
     idle: '未開始',
     running: 'アップロード中',
@@ -723,7 +705,6 @@
         defaults={recordingFilterDefaults}
         active={hasActiveRecordingFilters}
         onApply={applyRecordFilters}
-        onClear={clearRecordingFilters}
       />
     </div>
   </div>

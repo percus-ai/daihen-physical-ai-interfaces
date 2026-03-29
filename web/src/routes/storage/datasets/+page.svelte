@@ -345,25 +345,6 @@
     });
   };
 
-  const clearDatasetFilters = async () => {
-    const nextHref = buildUrlWithQueryState(page.url, {
-      status: datasetStatusTab !== 'active' ? datasetStatusTab : null,
-      owner: null,
-      search: null,
-      sort: null,
-      order: null,
-      page: null
-    });
-    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
-    if (nextHref === currentHref) return;
-    await goto(nextHref, {
-      replaceState: true,
-      noScroll: true,
-      keepFocus: true,
-      invalidateAll: false
-    });
-  };
-
   $effect(() => {
     if ($datasetsQuery.isLoading) {
       return;
@@ -1070,7 +1051,6 @@
         defaults={datasetFilterDefaults}
         active={hasActiveDatasetFilters}
         onApply={applyDatasetFilters}
-        onClear={clearDatasetFilters}
       />
       <Tabs.Root value={datasetStatusTab} onValueChange={handleDatasetTabChange}>
         <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
