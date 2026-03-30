@@ -94,7 +94,7 @@ export type ExperimentAnalysisListResponse = {
 };
 
 export type RecordingSortBy = 'created_at' | 'dataset_name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'upload_status';
-export type TrainingJobSortBy = 'created_at' | 'updated_at' | 'job_name' | 'status';
+export type TrainingJobSortBy = 'created_at' | 'updated_at' | 'job_name' | 'owner_name' | 'policy_type' | 'status';
 
 export type ExperimentEvaluationSummary = {
   total?: number;

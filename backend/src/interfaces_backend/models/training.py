@@ -110,7 +110,7 @@ class TrainingValueFilterOption(BaseModel):
     available_count: int = 0
 
 
-JobListSortBy = Literal["created_at", "updated_at", "job_name", "status"]
+JobListSortBy = Literal["created_at", "updated_at", "job_name", "owner_name", "policy_type", "status"]
 SortOrder = Literal["asc", "desc"]
 
 

@@ -1,13 +1,17 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
+  import ArrowDown from 'phosphor-svelte/lib/ArrowDown';
+  import ArrowUp from 'phosphor-svelte/lib/ArrowUp';
+  import CaretUpDown from 'phosphor-svelte/lib/CaretUpDown';
   import { toStore } from 'svelte/store';
   import { api } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
-  import { formatDate } from '$lib/format';
+  import { formatDate, formatRelativeDate } from '$lib/format';
   import type { ListFilterField } from '$lib/listFilters';
   import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
 
@@ -49,14 +53,15 @@
       available_count?: number;
     }>;
   };
-  const JOB_SORT_KEYS = ['created_at', 'updated_at', 'job_name', 'status'] as const;
-  const parseJobSortKey = (value: string | null): 'created_at' | 'updated_at' | 'job_name' | 'status' =>
+  const JOB_SORT_KEYS = ['created_at', 'updated_at', 'job_name', 'owner_name', 'policy_type', 'status'] as const;
+  const parseJobSortKey = (value: string | null): 'created_at' | 'updated_at' | 'job_name' | 'owner_name' | 'policy_type' | 'status' =>
     JOB_SORT_KEYS.includes((value ?? '') as (typeof JOB_SORT_KEYS)[number])
-      ? ((value ?? '') as 'created_at' | 'updated_at' | 'job_name' | 'status')
+      ? ((value ?? '') as 'created_at' | 'updated_at' | 'job_name' | 'owner_name' | 'policy_type' | 'status')
       : 'created_at';
   const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
   let filterDialogOpen = $state(false);
+  let nowMs = $state(Date.now());
   const jobSortKey = $derived(parseJobSortKey(page.url.searchParams.get('sort')));
   const jobSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
   const jobOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
@@ -119,6 +124,18 @@
   };
   const ownerLabel = (job: TrainingJob) =>
     creatorLabel(job.owner_name ?? job.owner_email ?? job.owner_user_id);
+  const presentJobStatus = (status?: string | null) => {
+    const normalized = String(status ?? '').trim().toLowerCase();
+    if (!normalized) return '-';
+    if (normalized === 'starting') return '開始中';
+    if (normalized === 'deploying') return 'デプロイ中';
+    if (normalized === 'running') return '実行中';
+    if (normalized === 'completed') return '完了';
+    if (normalized === 'failed') return '失敗';
+    if (normalized === 'stopped') return '停止';
+    if (normalized === 'terminated') return '終了';
+    return status ?? '-';
+  };
   const jobOwnerOptions = $derived($jobsQuery.data?.owner_options ?? []);
   const jobStatusOptions = $derived($jobsQuery.data?.status_options ?? []);
   const jobPolicyOptions = $derived($jobsQuery.data?.policy_options ?? []);
@@ -170,9 +187,7 @@
     job_status: 'all',
     policy: 'all',
     created_from: '',
-    created_to: '',
-    sort: 'created_at',
-    order: 'desc'
+    created_to: ''
   };
   const trainingFilterValues = $derived({
     search: jobSearch,
@@ -180,9 +195,7 @@
     job_status: jobStatusFilter,
     policy: jobPolicyFilter,
     created_from: createdFrom,
-    created_to: createdTo,
-    sort: jobSortKey,
-    order: jobSortOrder
+    created_to: createdTo
   });
   const trainingFilterFields = $derived<ListFilterField[]>([
     {
@@ -219,28 +232,6 @@
       keyFrom: 'created_from',
       keyTo: 'created_to',
       label: '作成日時'
-    },
-    {
-      section: '並び順',
-      type: 'select',
-      key: 'sort',
-      label: '並び替え',
-      options: [
-        { value: 'created_at', label: '作成日時' },
-        { value: 'updated_at', label: '更新日時' },
-        { value: 'job_name', label: 'ジョブ名' },
-        { value: 'status', label: '状態' }
-      ]
-    },
-    {
-      section: '並び順',
-      type: 'select',
-      key: 'order',
-      label: '順序',
-      options: [
-        { value: 'desc', label: '降順' },
-        { value: 'asc', label: '昇順' }
-      ]
     }
   ]);
   const hasActiveJobFilters = $derived(
@@ -249,9 +240,7 @@
       jobStatusFilter !== 'all' ||
       jobPolicyFilter !== 'all' ||
       Boolean(createdFrom) ||
-      Boolean(createdTo) ||
-      jobSortKey !== 'created_at' ||
-      jobSortOrder !== 'desc'
+      Boolean(createdTo)
   );
 
   const navigateToPage = async (nextPage: number) => {
@@ -273,8 +262,6 @@
       search: values.search || null,
       created_from: values.created_from || null,
       created_to: values.created_to || null,
-      sort: values.sort !== 'created_at' ? values.sort : null,
-      order: values.order !== 'desc' ? values.order : null,
       page: null
     });
     filterDialogOpen = false;
@@ -289,6 +276,14 @@
   };
 
   $effect(() => {
+    if (!browser) return;
+    const timer = window.setInterval(() => {
+      nowMs = Date.now();
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  });
+
+  $effect(() => {
     if ($jobsQuery.isLoading) {
       return;
     }
@@ -297,6 +292,44 @@
       void navigateToPage(nextPage);
     }
   });
+
+  const sortIconClass = 'text-slate-400 transition group-hover:text-slate-600';
+  const sortableHeaderButtonClass =
+    'group inline-flex items-center gap-1 font-semibold text-slate-400 transition hover:text-slate-700';
+  const isSortedBy = (key: 'created_at' | 'updated_at' | 'job_name' | 'owner_name' | 'policy_type' | 'status') =>
+    jobSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'updated_at' | 'job_name' | 'owner_name' | 'policy_type' | 'status') =>
+    !isSortedBy(key) ? CaretUpDown : jobSortOrder === 'asc' ? ArrowUp : ArrowDown;
+  const JobNameSortIcon = $derived(sortIconFor('job_name'));
+  const OwnerSortIcon = $derived(sortIconFor('owner_name'));
+  const PolicySortIcon = $derived(sortIconFor('policy_type'));
+  const StatusSortIcon = $derived(sortIconFor('status'));
+  const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
+  const UpdatedAtSortIcon = $derived(sortIconFor('updated_at'));
+  const handleSortChange = async (key: 'created_at' | 'updated_at' | 'job_name' | 'owner_name' | 'policy_type' | 'status') => {
+    const nextOrder: 'asc' | 'desc' = jobSortKey === key ? (jobSortOrder === 'asc' ? 'desc' : 'asc') : 'desc';
+    const nextHref = buildUrlWithQueryState(page.url, {
+      sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
+      order: nextOrder !== 'desc' ? nextOrder : null,
+      page: null
+    });
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
+  const openJobDetail = async (jobId: string) => {
+    await goto(`/train/jobs/${jobId}`);
+  };
+  const handleRowKeydown = async (event: KeyboardEvent, jobId: string) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    await openJobDetail(jobId);
+  };
 
 </script>
 
@@ -340,32 +373,86 @@
       />
     </div>
   </div>
-  <div class="mt-4 space-y-2 text-sm text-slate-600">
-    {#if $jobsQuery.isLoading}
-      <p>読み込み中...</p>
-    {:else if displayedJobs.length}
-      {#each displayedJobs as job}
-        <a
-          class="nested-block nested-block-interactive flex items-center justify-between gap-3 px-3 py-2"
-          href={`/train/jobs/${job.job_id}`}
-        >
-          <div class="min-w-0">
-            <p class="truncate text-sm font-semibold text-slate-800">{job.job_name}</p>
-            <p class="mt-0.5 truncate text-[11px] text-slate-500">
-              {job.dataset_name ?? displayDatasetName(job.dataset_id)} / {job.policy_type ?? '-'}
-            </p>
-            <p class="mt-0.5 truncate text-[10px] text-slate-400">
-              creator: {ownerLabel(job)} / created: {formatDate(job.created_at)}
-            </p>
-          </div>
-          <span class="shrink-0 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
-            {job.status}
-          </span>
-        </a>
-      {/each}
-    {:else}
-      <p>条件に合う学習ジョブがありません。</p>
-    {/if}
+  <div class="mt-4 overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="text-left text-xs uppercase tracking-widest text-slate-400">
+        <tr>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('job_name')}>
+              ジョブ名
+              <JobNameSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('owner_name')}>
+              作成者
+              <OwnerSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">データセット</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('policy_type')}>
+              ポリシー
+              <PolicySortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('status')}>
+              状態
+              <StatusSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('created_at')}>
+              作成日時
+              <CreatedAtSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('updated_at')}>
+              最終更新
+              <UpdatedAtSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+        </tr>
+      </thead>
+      <tbody class="text-slate-600">
+        {#if $jobsQuery.isLoading}
+          <tr><td class="py-3" colspan="7">読み込み中...</td></tr>
+        {:else if displayedJobs.length}
+          {#each displayedJobs as job}
+            <tr
+              class="cursor-pointer border-t border-slate-200/60 transition hover:bg-slate-50 focus-within:bg-slate-50"
+              tabindex="0"
+              role="link"
+              aria-label={`${job.job_name ?? job.job_id} の詳細を開く`}
+              onclick={() => void openJobDetail(job.job_id)}
+              onkeydown={(event) => void handleRowKeydown(event, job.job_id)}
+            >
+              <td class="py-3 text-slate-800">
+                <span class="block max-w-[28ch] truncate" title={job.job_name ?? job.job_id}>
+                  {job.job_name ?? job.job_id}
+                </span>
+              </td>
+              <td class="py-3">{ownerLabel(job)}</td>
+              <td class="py-3">
+                <span class="block max-w-[16ch] truncate" title={job.dataset_name ?? displayDatasetName(job.dataset_id)}>
+                  {job.dataset_name ?? displayDatasetName(job.dataset_id)}
+                </span>
+              </td>
+              <td class="py-3">{job.policy_type ?? '-'}</td>
+              <td class="py-3 text-slate-600">{presentJobStatus(job.status)}</td>
+              <td class="py-3 whitespace-nowrap">{formatDate(job.created_at)}</td>
+              <td class="py-3 whitespace-nowrap" title={formatDate(job.updated_at)}>
+                {formatRelativeDate(job.updated_at, nowMs)}
+              </td>
+            </tr>
+          {/each}
+        {:else}
+          <tr><td class="py-3" colspan="7">条件に合う学習ジョブがありません。</td></tr>
+        {/if}
+      </tbody>
+    </table>
   </div>
   <PaginationControls
     currentPage={currentPage}

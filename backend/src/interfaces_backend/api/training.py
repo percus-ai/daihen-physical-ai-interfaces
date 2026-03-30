@@ -2265,6 +2265,10 @@ async def _list_jobs(
     def _sort_key(record: dict) -> tuple[object, str]:
         if sort_by == "job_name":
             primary = _normalize_query_text(record.get("job_name") or record.get("job_id"))
+        elif sort_by == "owner_name":
+            primary = _normalize_query_text(record.get("owner_name") or record.get("owner_email") or record.get("owner_user_id"))
+        elif sort_by == "policy_type":
+            primary = _normalize_query_text(record.get("policy_type"))
         elif sort_by == "status":
             primary = _normalize_query_text(record.get("status"))
         elif sort_by == "updated_at":
