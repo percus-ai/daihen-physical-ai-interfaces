@@ -161,6 +161,7 @@
   const datasetEpisodeMax = $derived(page.url.searchParams.get('episodes_max') || '');
   let jobsById = $state<Record<string, DatasetSyncJobStatus>>({});
   let activeJobsByDatasetId = $state<Record<string, DatasetSyncJobStatus>>({});
+  let locallySyncedDatasetIds = $state<Record<string, boolean>>({});
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
   let datasetSyncModalOpen = $state(false);
   let selectedSyncJobId = $state('');
@@ -248,6 +249,7 @@
   const ownerLabel = (dataset: DatasetSummary) =>
     creatorLabel(dataset.owner_name ?? dataset.owner_email ?? dataset.owner_user_id);
   const displayDatasetLabel = (dataset: DatasetSummary) => dataset.name ?? dataset.id;
+  const isDatasetLocal = (dataset: DatasetSummary) => Boolean(dataset.is_local) || Boolean(locallySyncedDatasetIds[dataset.id]);
 
   const selectedDatasets = $derived(datasets.filter((dataset) => selectedIds.includes(dataset.id)));
   const profileNames = $derived(
@@ -262,7 +264,7 @@
       ? `${selectedDatasets[0].name ?? selectedDatasets[0].id}_merged`
       : ''
   );
-  const syncTargets = $derived(selectedDatasets.filter((dataset) => !Boolean(dataset.is_local)));
+  const syncTargets = $derived(selectedDatasets.filter((dataset) => !isDatasetLocal(dataset)));
   const canMerge = $derived(!isArchiveTab && selectedIds.length >= 2 && !profileMismatch && !actionLoading);
   const canSyncSelected = $derived(!isArchiveTab && syncTargets.length > 0 && !actionLoading && !syncPending);
   const canArchive = $derived(!isArchiveTab && selectedIds.length > 0 && !actionLoading);
@@ -583,6 +585,20 @@
     }
   });
 
+  $effect(() => {
+    const nextOverrides = { ...locallySyncedDatasetIds };
+    let changed = false;
+    for (const dataset of datasets) {
+      if (!dataset.is_local) continue;
+      if (!nextOverrides[dataset.id]) continue;
+      delete nextOverrides[dataset.id];
+      changed = true;
+    }
+    if (changed) {
+      locallySyncedDatasetIds = nextOverrides;
+    }
+  });
+
   const normalizeJob = (job: DatasetSyncJobStatus): DatasetSyncJobStatus => {
     const progress = Number(job.progress_percent ?? 0);
     const normalizedProgress = Number.isFinite(progress) ? Math.min(100, Math.max(0, progress)) : 0;
@@ -634,6 +650,18 @@
       const next = { ...activeJobsByDatasetId };
       delete next[normalized.dataset_id];
       activeJobsByDatasetId = next;
+    }
+    if (normalized.state === 'completed') {
+      locallySyncedDatasetIds = {
+        ...locallySyncedDatasetIds,
+        [normalized.dataset_id]: true
+      };
+    } else {
+      const nextOverrides = { ...locallySyncedDatasetIds };
+      if (nextOverrides[normalized.dataset_id]) {
+        delete nextOverrides[normalized.dataset_id];
+        locallySyncedDatasetIds = nextOverrides;
+      }
     }
     if (isTerminalJobState(normalized.state)) {
       void queryClient.invalidateQueries({ queryKey: qk.storage.datasetsPrefix() });
@@ -690,14 +718,14 @@
   const syncButtonLabel = (dataset: DatasetSummary) => {
     const activeJob = activeJobOf(dataset.id);
     if (activeJob) return '中断';
-    if (dataset.is_local) return '同期済';
+    if (isDatasetLocal(dataset)) return '同期済';
     return '同期';
   };
 
   const isSyncButtonDisabled = (dataset: DatasetSummary) => {
     const activeJob = activeJobOf(dataset.id);
     if (activeJob) return false;
-    if (dataset.is_local) return true;
+    if (isDatasetLocal(dataset)) return true;
     if (syncPending) return true;
     if (actionLoading) return true;
     return false;
@@ -723,7 +751,7 @@
       return;
     }
 
-    if (dataset.is_local || syncPending || actionLoading) return;
+    if (isDatasetLocal(dataset) || syncPending || actionLoading) return;
 
     try {
       const started = await startDatasetSync(datasetId);
@@ -1524,7 +1552,7 @@
         {:else if displayedDatasets.length}
           {#each displayedDatasets as dataset}
             {@const activeJob = activeJobOf(dataset.id)}
-            {@const syncStatus = presentDatasetSyncStatus(activeJob, Boolean(dataset.is_local))}
+            {@const syncStatus = presentDatasetSyncStatus(activeJob, isDatasetLocal(dataset))}
             <tr
               class={`cursor-pointer border-t border-slate-200/60 transition focus-within:bg-slate-100/80 ${
                 selectedIds.includes(dataset.id) ? 'bg-slate-50/80' : 'hover:bg-slate-100/80'
@@ -1566,7 +1594,7 @@
                       >
                         {syncStatus.label}
                       </button>
-                    {:else if !dataset.is_local && !isArchiveTab}
+                    {:else if !isDatasetLocal(dataset) && !isArchiveTab}
                       <button
                         class="text-xs font-semibold text-brand hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
                         type="button"
@@ -1694,7 +1722,7 @@
                           >
                             {#if activeJob}
                               <StopCircle size={16} class="text-slate-500" />
-                            {:else if dataset.is_local}
+                            {:else if isDatasetLocal(dataset)}
                               <CheckCircle size={16} class="text-slate-500" />
                             {:else}
                               <CloudArrowDown size={16} class="text-slate-500" />

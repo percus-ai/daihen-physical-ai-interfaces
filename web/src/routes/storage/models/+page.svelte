@@ -139,6 +139,7 @@
   const modelSizeMax = $derived(page.url.searchParams.get('size_max') || '');
   let jobsById = $state<Record<string, ModelSyncJobStatus>>({});
   let activeJobsByModelId = $state<Record<string, ModelSyncJobStatus>>({});
+  let locallySyncedModelIds = $state<Record<string, boolean>>({});
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
   let modelSyncModalOpen = $state(false);
   let selectedJobId = $state('');
@@ -234,6 +235,7 @@
   const ownerLabel = (model: ModelSummary) =>
     creatorLabel(model.owner_name ?? model.owner_email ?? model.owner_user_id);
   const displayModelLabel = (model: ModelSummary) => model.name ?? model.id;
+  const isModelLocal = (model: ModelSummary) => Boolean(model.is_local) || Boolean(locallySyncedModelIds[model.id]);
   const isActiveJobState = (state?: ModelSyncJobState) => state === 'queued' || state === 'running';
   const isTerminalJobState = (state?: ModelSyncJobState) =>
     state === 'completed' || state === 'failed' || state === 'cancelled';
@@ -494,6 +496,20 @@
   });
 
   $effect(() => {
+    const nextOverrides = { ...locallySyncedModelIds };
+    let changed = false;
+    for (const model of models) {
+      if (!model.is_local) continue;
+      if (!nextOverrides[model.id]) continue;
+      delete nextOverrides[model.id];
+      changed = true;
+    }
+    if (changed) {
+      locallySyncedModelIds = nextOverrides;
+    }
+  });
+
+  $effect(() => {
     const currentStatusTab = modelStatusTab;
     if (previousStatusTab === null) {
       previousStatusTab = currentStatusTab;
@@ -680,13 +696,25 @@
       delete next[normalized.model_id];
       activeJobsByModelId = next;
     }
+    if (normalized.state === 'completed') {
+      locallySyncedModelIds = {
+        ...locallySyncedModelIds,
+        [normalized.model_id]: true
+      };
+    } else {
+      const nextOverrides = { ...locallySyncedModelIds };
+      if (nextOverrides[normalized.model_id]) {
+        delete nextOverrides[normalized.model_id];
+        locallySyncedModelIds = nextOverrides;
+      }
+    }
     if (isTerminalJobState(normalized.state)) {
       void queryClient.invalidateQueries({ queryKey: qk.storage.modelsPrefix() });
     }
   };
 
   const selectedModels = $derived(models.filter((model) => selectedIds.includes(model.id)));
-  const syncTargets = $derived(selectedModels.filter((model) => !model.is_local));
+  const syncTargets = $derived(selectedModels.filter((model) => !isModelLocal(model)));
   const canSyncSelected = $derived(!isArchiveTab && syncTargets.length > 0 && !bulkPending && !syncAllPending);
   const canArchiveSelected = $derived(!isArchiveTab && selectedIds.length > 0 && !bulkPending && !syncAllPending);
   const canRestoreSelected = $derived(isArchiveTab && selectedIds.length > 0 && !bulkPending && !syncAllPending);
@@ -755,7 +783,7 @@
       return;
     }
 
-    if (model.is_local || syncAllPending || bulkPending) return;
+    if (isModelLocal(model) || syncAllPending || bulkPending) return;
 
     try {
       const started = await startModelSync(modelId);
@@ -769,7 +797,7 @@
   const handleSyncAll = async () => {
     if (modelStatusTab !== 'active' || syncPending || bulkPending) return;
 
-    const targets = models.filter((model) => !model.is_local);
+    const targets = models.filter((model) => !isModelLocal(model));
     if (!targets.length) {
       syncMessage = '未同期モデルはありません。';
       syncError = '';
@@ -818,14 +846,14 @@
   const syncButtonLabel = (model: ModelSummary) => {
     const activeJob = activeJobOf(model.id);
     if (activeJob) return '中断';
-    if (model.is_local) return '同期済';
+    if (isModelLocal(model)) return '同期済';
     return '同期';
   };
 
   const isSyncButtonDisabled = (model: ModelSummary) => {
     const activeJob = activeJobOf(model.id);
     if (activeJob) return false;
-    if (model.is_local) return true;
+    if (isModelLocal(model)) return true;
     if (syncAllPending) return true;
     if (bulkPending) return true;
     return false;
@@ -1347,7 +1375,7 @@
         {:else if displayedModels.length}
           {#each displayedModels as model}
             {@const activeJob = activeJobOf(model.id)}
-            {@const syncStatus = presentModelSyncStatus(activeJob, Boolean(model.is_local))}
+            {@const syncStatus = presentModelSyncStatus(activeJob, isModelLocal(model))}
             <tr
               class={`cursor-pointer border-t border-slate-200/60 transition focus-within:bg-slate-100/80 ${
                 selectedIds.includes(model.id) ? 'bg-slate-50/80' : 'hover:bg-slate-100/80'
@@ -1389,7 +1417,7 @@
                       >
                         {syncStatus.label}
                       </button>
-                    {:else if !model.is_local && !isArchiveTab}
+                    {:else if !isModelLocal(model) && !isArchiveTab}
                       <button
                         class="text-xs font-semibold text-brand hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
                         type="button"
@@ -1521,7 +1549,7 @@
                           >
                             {#if activeJob}
                               <StopCircle size={16} class="text-slate-500" />
-                            {:else if model.is_local}
+                            {:else if isModelLocal(model)}
                               <CheckCircle size={16} class="text-slate-500" />
                             {:else}
                               <CloudArrowDown size={16} class="text-slate-500" />
