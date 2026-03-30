@@ -14,6 +14,7 @@
   import PencilSimple from 'phosphor-svelte/lib/PencilSimple';
   import StopCircle from 'phosphor-svelte/lib/StopCircle';
   import TrashSimple from 'phosphor-svelte/lib/TrashSimple';
+  import XCircle from 'phosphor-svelte/lib/XCircle';
   import { toStore } from 'svelte/store';
   import toast from 'svelte-french-toast';
   import {
@@ -86,6 +87,7 @@
   let bulkPending = $state(false);
   let selectedIds = $state<string[]>([]);
   const modelStatusTab = $derived(parseModelStatusTab(page.url.searchParams.get('status')));
+  let previousStatusTab = $state<ModelStatusTab | null>(null);
   const modelSortKey = $derived(parseModelSortKey(page.url.searchParams.get('sort')));
   const modelSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
   const modelOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
@@ -260,6 +262,16 @@
     renameError = '';
   };
 
+  const resetViewState = () => {
+    clearSelection();
+    resetMessages();
+    resetArchiveDialog();
+    resetRenameDialog();
+    filterDialogOpen = false;
+    rowPendingId = '';
+    rowPendingAction = '';
+  };
+
   const removeSelectedIds = (ids: string[]) => {
     if (!ids.length) return;
     const idSet = new Set(ids);
@@ -316,6 +328,17 @@
     ) {
       selectedIds = nextSelectedIds;
     }
+  });
+
+  $effect(() => {
+    const currentStatusTab = modelStatusTab;
+    if (previousStatusTab === null) {
+      previousStatusTab = currentStatusTab;
+      return;
+    }
+    if (currentStatusTab === previousStatusTab) return;
+    previousStatusTab = currentStatusTab;
+    resetViewState();
   });
 
   const toggleSelectAllDisplayedModels = () => {
@@ -378,13 +401,7 @@
   const handleModelTabChange = (nextValue: string) => {
     const nextTab: ModelStatusTab = nextValue === 'archived' ? 'archived' : 'active';
     if (nextTab === modelStatusTab) return;
-    clearSelection();
-    resetMessages();
-    resetArchiveDialog();
-    resetRenameDialog();
-    rowPendingId = '';
-    rowPendingAction = '';
-    filterDialogOpen = false;
+    resetViewState();
     void goto(
       buildUrlWithQueryState(page.url, {
         status: nextTab !== 'active' ? nextTab : null,
@@ -477,6 +494,10 @@
   const canArchiveSelected = $derived(!isArchiveTab && selectedIds.length > 0 && !bulkPending && !syncAllPending);
   const canRestoreSelected = $derived(isArchiveTab && selectedIds.length > 0 && !bulkPending && !syncAllPending);
   const canDeleteSelected = $derived(isArchiveTab && selectedIds.length > 0 && !bulkPending && !syncAllPending);
+  const bulkMenuItemClass =
+    'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
+  const bulkMenuDangerItemClass =
+    'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
 
   const loadActiveJobs = async () => {
     const response = await api.storage.modelSyncJobs(false);
@@ -594,14 +615,6 @@
       syncError = err instanceof Error ? err.message : '全モデル同期に失敗しました。';
     } finally {
       syncAllPending = false;
-    }
-  };
-
-  const handleRefresh = async () => {
-    resetMessages();
-    await refetchModels();
-    if (modelStatusTab === 'active') {
-      await loadActiveJobs();
     }
   };
 
@@ -939,98 +952,132 @@
   <div class="flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-xl font-semibold text-slate-900">モデル一覧</h2>
     <div class="flex flex-wrap items-center gap-2">
-      {#if embedded && !isArchiveTab}
-        <button class="btn-ghost" type="button" onclick={handleSyncAll} disabled={syncPending || bulkPending || !models.length}>
-          {syncAllPending ? '全て同期中...' : '全て同期'}
-        </button>
+      {#if selectedIds.length > 0}
+        <span class="text-sm font-semibold text-slate-700">選択中: {selectedIds.length} 件</span>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger
+            class="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
+            aria-label="一括操作"
+          >
+            <DotsThree size={18} weight="bold" />
+            一括操作
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              class="z-50 min-w-[220px] rounded-xl border border-slate-200/80 bg-white/95 p-2 text-xs text-slate-700 shadow-lg backdrop-blur"
+              sideOffset={6}
+              align="end"
+              preventScroll={false}
+            >
+              <DropdownMenu.Group>
+                <DropdownMenu.GroupHeading
+                  class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                >
+                  選択
+                </DropdownMenu.GroupHeading>
+                <DropdownMenu.Item class={bulkMenuItemClass} onSelect={clearSelection}>
+                  <XCircle size={16} class="text-slate-500" />
+                  選択解除
+                </DropdownMenu.Item>
+              </DropdownMenu.Group>
+
+              <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+
+              <DropdownMenu.Group>
+                <DropdownMenu.GroupHeading
+                  class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                >
+                  一括操作
+                </DropdownMenu.GroupHeading>
+                {#if isArchiveTab}
+                  <DropdownMenu.Item
+                    class={bulkMenuItemClass}
+                    disabled={!canRestoreSelected}
+                    onSelect={() => void handleRestoreSelected()}
+                  >
+                    <ArrowArcLeft size={16} class="text-slate-500" />
+                    復元
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    class={bulkMenuDangerItemClass}
+                    disabled={!canDeleteSelected}
+                    onSelect={() => void handleDeleteSelected()}
+                  >
+                    <TrashSimple size={16} class="text-rose-500" />
+                    完全削除
+                  </DropdownMenu.Item>
+                {:else}
+                  <DropdownMenu.Item
+                    class={bulkMenuItemClass}
+                    disabled={!canSyncSelected}
+                    onSelect={() => void handleSyncSelected()}
+                  >
+                    <CloudArrowDown size={16} class="text-slate-500" />
+                    同期
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    class={bulkMenuDangerItemClass}
+                    disabled={!canArchiveSelected}
+                    onSelect={() => void handleArchiveSelected()}
+                  >
+                    <Archive size={16} class="text-rose-500" />
+                    アーカイブ
+                  </DropdownMenu.Item>
+                {/if}
+              </DropdownMenu.Group>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      {:else}
+        {#if embedded && !isArchiveTab}
+          <button class="btn-ghost" type="button" onclick={handleSyncAll} disabled={syncPending || bulkPending || !models.length}>
+            {syncAllPending ? '全て同期中...' : '全て同期'}
+          </button>
+        {/if}
+        <PaginationControls
+          currentPage={currentPage}
+          pageSize={PAGE_SIZE}
+          totalItems={totalModels}
+          disabled={$modelsQuery.isLoading}
+          compact={true}
+          onPageChange={navigateToPage}
+        />
+        <ListFilterPopover
+          bind:open={filterDialogOpen}
+          fields={modelFilterFields}
+          values={modelFilterValues}
+          defaults={modelFilterDefaults}
+          active={hasActiveModelFilters}
+          onApply={applyModelFilters}
+        />
       {/if}
-      <PaginationControls
-        currentPage={currentPage}
-        pageSize={PAGE_SIZE}
-        totalItems={totalModels}
-        disabled={$modelsQuery.isLoading}
-        compact={true}
-        onPageChange={navigateToPage}
-      />
-      <ListFilterPopover
-        bind:open={filterDialogOpen}
-        fields={modelFilterFields}
-        values={modelFilterValues}
-        defaults={modelFilterDefaults}
-        active={hasActiveModelFilters}
-        onApply={applyModelFilters}
-      />
-      <Tabs.Root value={modelStatusTab} onValueChange={handleModelTabChange}>
-        <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
-          <Tabs.Trigger
-            value="active"
-            class={tabTriggerClass('active')}
-          >
-            アクティブ
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="archived"
-            class={tabTriggerClass('archived')}
-          >
-            アーカイブ
-          </Tabs.Trigger>
-        </Tabs.List>
-      </Tabs.Root>
+      {#if !embedded}
+        <Tabs.Root value={modelStatusTab} onValueChange={handleModelTabChange}>
+          <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+            <Tabs.Trigger
+              value="active"
+              class={tabTriggerClass('active')}
+            >
+              アクティブ
+            </Tabs.Trigger>
+            <Tabs.Trigger
+              value="archived"
+              class={tabTriggerClass('archived')}
+            >
+              アーカイブ
+            </Tabs.Trigger>
+          </Tabs.List>
+        </Tabs.Root>
+      {/if}
     </div>
   </div>
   <p class="mt-2 text-xs text-slate-500">{helperText}</p>
-  {#if selectedIds.length > 0}
-    <div class="mt-4 nested-block-pane p-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <p class="text-sm font-semibold text-slate-900">選択中: {selectedIds.length} 件</p>
-        <button class="btn-ghost" type="button" onclick={clearSelection}>選択解除</button>
-      </div>
-      <div class="mt-4 flex flex-wrap items-center gap-3">
-        {#if isArchiveTab}
-          <button
-            class={`btn-primary ${canRestoreSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canRestoreSelected}
-            onclick={handleRestoreSelected}
-          >
-            復元
-          </button>
-          <button
-            class={`btn-ghost ${canDeleteSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canDeleteSelected}
-            onclick={handleDeleteSelected}
-          >
-            完全削除
-          </button>
-        {:else}
-          <button
-            class={`btn-primary ${canSyncSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canSyncSelected}
-            onclick={handleSyncSelected}
-          >
-            同期
-          </button>
-          <button
-            class={`btn-ghost ${canArchiveSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canArchiveSelected}
-            onclick={handleArchiveSelected}
-          >
-            アーカイブ
-          </button>
-        {/if}
-      </div>
-    </div>
-  {/if}
   {#if bulkMessage}
     <p class="mt-3 text-sm text-emerald-600">{bulkMessage}</p>
   {/if}
   {#if bulkError}
     <p class="mt-2 text-sm text-rose-600">{bulkError}</p>
   {/if}
-  <div class="mt-3 text-xs text-slate-500">選択中: {selectedIds.length} 件</div>
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">

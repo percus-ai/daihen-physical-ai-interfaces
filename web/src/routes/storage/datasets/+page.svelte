@@ -6,14 +6,17 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import Archive from 'phosphor-svelte/lib/Archive';
   import ArrowArcLeft from 'phosphor-svelte/lib/ArrowArcLeft';
+  import ArrowsMerge from 'phosphor-svelte/lib/ArrowsMerge';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
   import CloudArrowDown from 'phosphor-svelte/lib/CloudArrowDown';
+  import CloudArrowUp from 'phosphor-svelte/lib/CloudArrowUp';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import Eye from 'phosphor-svelte/lib/Eye';
   import FileText from 'phosphor-svelte/lib/FileText';
   import PencilSimple from 'phosphor-svelte/lib/PencilSimple';
   import StopCircle from 'phosphor-svelte/lib/StopCircle';
   import TrashSimple from 'phosphor-svelte/lib/TrashSimple';
+  import XCircle from 'phosphor-svelte/lib/XCircle';
   import { toStore } from 'svelte/store';
   import toast from 'svelte-french-toast';
   import {
@@ -37,6 +40,7 @@
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import { formatBytes, formatDate } from '$lib/format';
   import { presentDatasetSyncStatus } from '$lib/storage/transferStatus';
+  import DatasetMergeDialog from '$lib/components/storage/DatasetMergeDialog.svelte';
   import DatasetMergeProgressModal from '$lib/components/storage/DatasetMergeProgressModal.svelte';
   import DatasetSyncProgressModal from '$lib/components/storage/DatasetSyncProgressModal.svelte';
   import StorageArchiveConfirmDialog from '$lib/components/storage/StorageArchiveConfirmDialog.svelte';
@@ -81,7 +85,8 @@
 
   let filterDialogOpen = $state(false);
   let selectedIds = $state<string[]>([]);
-  let mergeName = $state('');
+  let mergeDialogOpen = $state(false);
+  let mergeDialogError = $state('');
   let actionMessage = $state('');
   let actionError = $state('');
   let actionLoading = $state(false);
@@ -103,6 +108,7 @@
   let rowPendingId = $state('');
   let rowPendingAction = $state<DatasetRowAction>('');
   const datasetStatusTab = $derived(parseDatasetStatusTab(page.url.searchParams.get('status')));
+  let previousStatusTab = $state<DatasetStatusTab | null>(null);
   const datasetSortKey = $derived(parseDatasetSortKey(page.url.searchParams.get('sort')));
   const datasetSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
   const datasetOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
@@ -190,6 +196,10 @@
   const canReupload = $derived(!isArchiveTab && selectedIds.length > 0 && !actionLoading);
   const canRestore = $derived(isArchiveTab && selectedIds.length > 0 && !actionLoading);
   const canDelete = $derived(isArchiveTab && selectedIds.length > 0 && !actionLoading);
+  const bulkMenuItemClass =
+    'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
+  const bulkMenuDangerItemClass =
+    'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
 
   const datasetOwnerOptions = $derived.by(() => {
     const options = new Map<string, string>();
@@ -285,6 +295,22 @@
     renameError = '';
   };
 
+  const resetMergeDialog = () => {
+    mergeDialogOpen = false;
+    mergeDialogError = '';
+  };
+
+  const resetViewState = () => {
+    clearSelection();
+    resetMessages();
+    resetArchiveDialog();
+    resetRenameDialog();
+    resetMergeDialog();
+    rowPendingId = '';
+    rowPendingAction = '';
+    filterDialogOpen = false;
+  };
+
   const removeSelectedIds = (ids: string[]) => {
     if (!ids.length) return;
     const idSet = new Set(ids);
@@ -359,6 +385,17 @@
     if (nextPage !== currentPage) {
       void navigateToPage(nextPage);
     }
+  });
+
+  $effect(() => {
+    const currentStatusTab = datasetStatusTab;
+    if (previousStatusTab === null) {
+      previousStatusTab = currentStatusTab;
+      return;
+    }
+    if (currentStatusTab === previousStatusTab) return;
+    previousStatusTab = currentStatusTab;
+    resetViewState();
   });
 
   $effect(() => {
@@ -590,12 +627,6 @@
     }
   }
 
-  const handleRefresh = async () => {
-    resetMessages();
-    await refetchDatasets();
-    await loadActiveJobs();
-  };
-
   const toggleSelectAllDisplayedDatasets = () => {
     if (allDisplayedDatasetsSelected) {
       selectedIds = selectedIds.filter((id) => !allDisplayedDatasetIds.includes(id));
@@ -630,14 +661,7 @@
   const handleDatasetTabChange = (nextValue: string) => {
     const nextTab: DatasetStatusTab = nextValue === 'archived' ? 'archived' : 'active';
     if (nextTab === datasetStatusTab) return;
-    clearSelection();
-    mergeName = '';
-    resetMessages();
-    resetArchiveDialog();
-    resetRenameDialog();
-    rowPendingId = '';
-    rowPendingAction = '';
-    filterDialogOpen = false;
+    resetViewState();
     void goto(
       buildUrlWithQueryState(page.url, {
         status: nextTab !== 'active' ? nextTab : null,
@@ -666,6 +690,12 @@
     renameDialogOpen = true;
   };
 
+  const openMergeDialog = () => {
+    if (!canMerge) return;
+    mergeDialogError = '';
+    mergeDialogOpen = true;
+  };
+
   const startMergeJob = async (payload: { dataset_name: string; source_dataset_ids: string[] }) => {
     const accepted = await api.storage.startDatasetMergeJob(payload);
     mergeJobId = accepted.job_id;
@@ -675,45 +705,52 @@
   const handleMergeCompleted = async (datasetId: string) => {
     actionMessage = `マージ完了: ${datasetId}`;
     actionError = '';
-    mergeName = '';
+    resetMergeDialog();
     selectedIds = [];
     await refetchDatasets();
   };
 
-  async function handleMerge() {
+  async function handleMerge(datasetName: string) {
     resetMessages();
+    mergeDialogError = '';
 
     if (selectedIds.length < 2) {
-      actionError = '2件以上のデータセットを選択してください。';
+      const message = '2件以上のデータセットを選択してください。';
+      mergeDialogError = message;
+      actionError = message;
       return;
     }
     if (profileMismatch || !profileName) {
-      actionError = '同一プロファイルのデータセットのみマージできます。';
+      const message = '同一プロファイルのデータセットのみマージできます。';
+      mergeDialogError = message;
+      actionError = message;
       return;
     }
 
-    const datasetName = mergeName.trim() || mergeDefaultName;
-    if (!datasetName) {
-      actionError = '新しいデータセット名を入力してください。';
+    const normalizedName = datasetName.trim() || mergeDefaultName;
+    if (!normalizedName) {
+      const message = '新しいデータセット名を入力してください。';
+      mergeDialogError = message;
+      actionError = message;
       return;
     }
-
-    const confirmed = confirm(`${selectedIds.length}件のデータセットを ${datasetName} にマージしますか？`);
-    if (!confirmed) return;
 
     actionLoading = true;
     const sourceIds = [...selectedIds];
 
     try {
       const payload = {
-        dataset_name: datasetName,
+        dataset_name: normalizedName,
         source_dataset_ids: sourceIds
       };
       lastMergePayload = payload;
       await startMergeJob(payload);
+      mergeDialogOpen = false;
       actionMessage = 'マージを開始しました。進捗を表示します。';
     } catch (err) {
-      actionError = err instanceof Error ? err.message : 'マージに失敗しました。';
+      const message = err instanceof Error ? err.message : 'マージに失敗しました。';
+      mergeDialogError = message;
+      actionError = message;
     } finally {
       actionLoading = false;
     }
@@ -990,6 +1027,16 @@
   });
 </script>
 
+<DatasetMergeDialog
+  bind:open={mergeDialogOpen}
+  selectedCount={selectedIds.length}
+  suggestedName={mergeDefaultName}
+  profileName={profileName ?? ''}
+  pending={actionLoading}
+  errorMessage={mergeDialogError}
+  onConfirm={handleMerge}
+/>
+
 <DatasetMergeProgressModal
   bind:open={mergeModalOpen}
   jobId={mergeJobId}
@@ -1044,119 +1091,146 @@
   <div class="flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-xl font-semibold text-slate-900">データセット一覧</h2>
     <div class="flex flex-wrap items-center gap-2">
-      <PaginationControls
-        currentPage={currentPage}
-        pageSize={PAGE_SIZE}
-        totalItems={totalDatasets}
-        disabled={$datasetsQuery.isLoading}
-        compact={true}
-        onPageChange={navigateToPage}
-      />
-      <ListFilterPopover
-        bind:open={filterDialogOpen}
-        fields={datasetFilterFields}
-        values={datasetFilterValues}
-        defaults={datasetFilterDefaults}
-        active={hasActiveDatasetFilters}
-        onApply={applyDatasetFilters}
-      />
-      <Tabs.Root value={datasetStatusTab} onValueChange={handleDatasetTabChange}>
-        <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
-          <Tabs.Trigger
-            value="active"
-            class={tabTriggerClass('active')}
+      {#if selectedIds.length > 0}
+        <span class="text-sm font-semibold text-slate-700">選択中: {selectedIds.length} 件</span>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger
+            class="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
+            aria-label="一括操作"
           >
-            アクティブ
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="archived"
-            class={tabTriggerClass('archived')}
-          >
-            アーカイブ
-          </Tabs.Trigger>
-        </Tabs.List>
-      </Tabs.Root>
+            <DotsThree size={18} weight="bold" />
+            一括操作
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              class="z-50 min-w-[220px] rounded-xl border border-slate-200/80 bg-white/95 p-2 text-xs text-slate-700 shadow-lg backdrop-blur"
+              sideOffset={6}
+              align="end"
+              preventScroll={false}
+            >
+              <DropdownMenu.Group>
+                <DropdownMenu.GroupHeading
+                  class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                >
+                  選択
+                </DropdownMenu.GroupHeading>
+                <DropdownMenu.Item class={bulkMenuItemClass} onSelect={clearSelection}>
+                  <XCircle size={16} class="text-slate-500" />
+                  選択解除
+                </DropdownMenu.Item>
+              </DropdownMenu.Group>
+
+              <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+
+              <DropdownMenu.Group>
+                <DropdownMenu.GroupHeading
+                  class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                >
+                  一括操作
+                </DropdownMenu.GroupHeading>
+                {#if isArchiveTab}
+                  <DropdownMenu.Item class={bulkMenuItemClass} disabled={!canRestore} onSelect={() => void handleRestoreSelected()}>
+                    <ArrowArcLeft size={16} class="text-slate-500" />
+                    復元
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    class={bulkMenuDangerItemClass}
+                    disabled={!canDelete}
+                    onSelect={() => void handleDeleteSelected()}
+                  >
+                    <TrashSimple size={16} class="text-rose-500" />
+                    完全削除
+                  </DropdownMenu.Item>
+                {:else}
+                  <DropdownMenu.Item class={bulkMenuItemClass} disabled={!canMerge} onSelect={openMergeDialog}>
+                    <ArrowsMerge size={16} class="text-slate-500" />
+                    マージ
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    class={bulkMenuItemClass}
+                    disabled={!canSyncSelected}
+                    onSelect={() => void handleSyncSelected()}
+                  >
+                    <CloudArrowDown size={16} class="text-slate-500" />
+                    同期
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    class={bulkMenuItemClass}
+                    disabled={!canReupload}
+                    onSelect={() => void handleReuploadSelected()}
+                  >
+                    <CloudArrowUp size={16} class="text-slate-500" />
+                    再送信
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    class={bulkMenuDangerItemClass}
+                    disabled={!canArchive}
+                    onSelect={() => void handleArchiveSelected()}
+                  >
+                    <Archive size={16} class="text-rose-500" />
+                    アーカイブ
+                  </DropdownMenu.Item>
+                {/if}
+              </DropdownMenu.Group>
+
+              {#if !isArchiveTab && (selectedIds.length < 2 || profileMismatch)}
+                <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+                <DropdownMenu.Group>
+                  <DropdownMenu.GroupHeading
+                    class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                  >
+                    情報
+                  </DropdownMenu.GroupHeading>
+                  {#if selectedIds.length < 2}
+                    <div class="px-3 pb-1 pt-0.5 text-[10px] text-slate-400">マージは 2 件以上の選択が必要です。</div>
+                  {/if}
+                  {#if profileMismatch}
+                    <div class="px-3 pb-1 pt-0.5 text-[10px] text-slate-400">マージは同一プロファイルのデータセットのみ実行できます。</div>
+                  {/if}
+                </DropdownMenu.Group>
+              {/if}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      {:else}
+        <PaginationControls
+          currentPage={currentPage}
+          pageSize={PAGE_SIZE}
+          totalItems={totalDatasets}
+          disabled={$datasetsQuery.isLoading}
+          compact={true}
+          onPageChange={navigateToPage}
+        />
+        <ListFilterPopover
+          bind:open={filterDialogOpen}
+          fields={datasetFilterFields}
+          values={datasetFilterValues}
+          defaults={datasetFilterDefaults}
+          active={hasActiveDatasetFilters}
+          onApply={applyDatasetFilters}
+        />
+      {/if}
+      {#if !embedded}
+        <Tabs.Root value={datasetStatusTab} onValueChange={handleDatasetTabChange}>
+          <Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+            <Tabs.Trigger
+              value="active"
+              class={tabTriggerClass('active')}
+            >
+              アクティブ
+            </Tabs.Trigger>
+            <Tabs.Trigger
+              value="archived"
+              class={tabTriggerClass('archived')}
+            >
+              アーカイブ
+            </Tabs.Trigger>
+          </Tabs.List>
+        </Tabs.Root>
+      {/if}
     </div>
   </div>
   <p class="mt-2 text-xs text-slate-500">{helperText}</p>
-  {#if selectedIds.length > 0}
-    <div class="mt-4 nested-block-pane p-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p class="text-sm font-semibold text-slate-900">選択中: {selectedIds.length} 件</p>
-          {#if !isArchiveTab && profileMismatch}
-            <p class="mt-1 text-xs text-rose-500">マージは同一プロファイルのデータセットのみ実行できます。</p>
-          {:else if !isArchiveTab && profileName}
-            <p class="mt-1 text-xs text-slate-500">merge profile: {profileName}</p>
-          {/if}
-        </div>
-        <button class="btn-ghost" type="button" onclick={clearSelection}>選択解除</button>
-      </div>
-      {#if isArchiveTab}
-        <div class="mt-4 flex flex-wrap items-center gap-3">
-          <button
-            class={`btn-primary ${canRestore ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canRestore}
-            onclick={handleRestoreSelected}
-          >
-            復元
-          </button>
-          <button
-            class={`btn-ghost ${canDelete ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canDelete}
-            onclick={handleDeleteSelected}
-          >
-            完全削除
-          </button>
-        </div>
-      {:else}
-        <div class="mt-4 flex flex-wrap items-end gap-3">
-          <label class="min-w-[220px] flex-1">
-            <span class="label">マージ先データセット名</span>
-            <input
-              class="input mt-2"
-              placeholder={mergeDefaultName || 'dataset_name'}
-              bind:value={mergeName}
-            />
-          </label>
-          <button
-            class={`btn-primary ${canMerge ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canMerge}
-            onclick={handleMerge}
-          >
-            マージ
-          </button>
-          <button
-            class={`btn-primary ${canSyncSelected ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canSyncSelected}
-            onclick={handleSyncSelected}
-          >
-            同期
-          </button>
-          <button
-            class={`btn-primary ${canReupload ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canReupload}
-            onclick={handleReuploadSelected}
-          >
-            再送信
-          </button>
-          <button
-            class={`btn-ghost ${canArchive ? '' : 'opacity-50 cursor-not-allowed'}`}
-            type="button"
-            disabled={!canArchive}
-            onclick={handleArchiveSelected}
-          >
-            アーカイブ
-          </button>
-        </div>
-      {/if}
-    </div>
-  {/if}
   {#if actionMessage}
     <p class="mt-3 text-sm text-emerald-600">{actionMessage}</p>
   {/if}
@@ -1169,7 +1243,6 @@
   {#if syncError}
     <p class="mt-2 text-sm text-rose-600">{syncError}</p>
   {/if}
-  <div class="mt-3 text-xs text-slate-500">選択中: {selectedIds.length} 件</div>
   <div class="mt-4 overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="text-left text-xs uppercase tracking-widest text-slate-400">

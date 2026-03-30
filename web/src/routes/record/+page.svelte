@@ -11,6 +11,7 @@
   import CloudArrowUp from 'phosphor-svelte/lib/CloudArrowUp';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import Eye from 'phosphor-svelte/lib/Eye';
+  import XCircle from 'phosphor-svelte/lib/XCircle';
   import { api, type BulkActionResponse, type TabSessionSubscription } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
@@ -355,6 +356,10 @@
   const selectedLocalRecordings = $derived(selectedRecordings.filter((recording) => Boolean(recording.is_local)));
   const canBulkReupload = $derived(selectedLocalRecordings.length > 0 && !bulkPending);
   const canBulkArchive = $derived(selectedRecordingIds.length > 0 && !bulkPending);
+  const bulkMenuItemClass =
+    'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
+  const bulkMenuDangerItemClass =
+    'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
   const applyBulkResponseMessage = (response: BulkActionResponse, label: string) => {
     const parts = [`成功 ${response.succeeded}`, `失敗 ${response.failed}`];
     if (response.skipped > 0) {
@@ -684,64 +689,103 @@
 </ActiveSessionSection>
 
 <section class="card p-6">
-  <div class="flex items-center justify-between">
+  <div class="flex flex-wrap items-center justify-between gap-3">
     <div>
       <h2 class="text-xl font-semibold text-slate-900">データセット履歴</h2>
       <p class="text-sm text-slate-600">収録済みデータセットの履歴です。</p>
     </div>
-    <div class="flex items-center gap-2">
-      <PaginationControls
-        currentPage={currentPage}
-        pageSize={PAGE_SIZE}
-        totalItems={totalRecordings}
-        disabled={$recordingsQuery.isLoading}
-        compact={true}
-        onPageChange={navigateToPage}
-      />
-      <ListFilterPopover
-        bind:open={filterDialogOpen}
-        fields={recordingFilterFields}
-        values={recordingFilterValues}
-        defaults={recordingFilterDefaults}
-        active={hasActiveRecordingFilters}
-        onApply={applyRecordFilters}
-      />
+    <div class="flex flex-wrap items-center gap-2">
+      {#if selectedRecordingIds.length > 0}
+        <span class="text-sm font-semibold text-slate-700">選択中: {selectedRecordingIds.length} 件</span>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger
+            class="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
+            aria-label="一括操作"
+          >
+            <DotsThree size={18} weight="bold" />
+            一括操作
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              class="z-50 min-w-[220px] rounded-xl border border-slate-200/80 bg-white/95 p-2 text-xs text-slate-700 shadow-lg backdrop-blur"
+              sideOffset={6}
+              align="end"
+              preventScroll={false}
+            >
+              <DropdownMenu.Group>
+                <DropdownMenu.GroupHeading
+                  class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                >
+                  選択
+                </DropdownMenu.GroupHeading>
+                <DropdownMenu.Item class={bulkMenuItemClass} onSelect={clearRecordingSelection}>
+                  <XCircle size={16} class="text-slate-500" />
+                  選択解除
+                </DropdownMenu.Item>
+              </DropdownMenu.Group>
+
+              <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+
+              <DropdownMenu.Group>
+                <DropdownMenu.GroupHeading
+                  class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                >
+                  一括操作
+                </DropdownMenu.GroupHeading>
+                <DropdownMenu.Item
+                  class={bulkMenuItemClass}
+                  disabled={!canBulkReupload}
+                  onSelect={() => void bulkReuploadRecordings()}
+                >
+                  <CloudArrowUp size={16} class="text-slate-500" />
+                  再送信
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  class={bulkMenuDangerItemClass}
+                  disabled={!canBulkArchive}
+                  onSelect={() => void bulkArchiveRecordings()}
+                >
+                  <Archive size={16} class="text-rose-500" />
+                  アーカイブ
+                </DropdownMenu.Item>
+              </DropdownMenu.Group>
+
+              {#if selectedRecordingIds.length !== selectedLocalRecordings.length}
+                <DropdownMenu.Separator class="-mx-2 my-1 h-px bg-slate-200/70" />
+                <DropdownMenu.Group>
+                  <DropdownMenu.GroupHeading
+                    class="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400"
+                  >
+                    情報
+                  </DropdownMenu.GroupHeading>
+                  <div class="px-3 pb-1 pt-0.5 text-[10px] text-slate-400">
+                    再送信はローカルデータがある {selectedLocalRecordings.length} 件のみ対象です。
+                  </div>
+                </DropdownMenu.Group>
+              {/if}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      {:else}
+        <PaginationControls
+          currentPage={currentPage}
+          pageSize={PAGE_SIZE}
+          totalItems={totalRecordings}
+          disabled={$recordingsQuery.isLoading}
+          compact={true}
+          onPageChange={navigateToPage}
+        />
+        <ListFilterPopover
+          bind:open={filterDialogOpen}
+          fields={recordingFilterFields}
+          values={recordingFilterValues}
+          defaults={recordingFilterDefaults}
+          active={hasActiveRecordingFilters}
+          onApply={applyRecordFilters}
+        />
+      {/if}
     </div>
   </div>
-  <p class="mt-3 text-xs text-slate-500">選択中: {selectedRecordingIds.length} 件</p>
-  {#if selectedRecordingIds.length > 0}
-    <div class="mt-4 nested-block-pane p-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p class="text-sm font-semibold text-slate-900">選択中: {selectedRecordingIds.length} 件</p>
-          {#if selectedRecordingIds.length !== selectedLocalRecordings.length}
-            <p class="mt-1 text-xs text-slate-500">
-              再送信はローカルデータがある {selectedLocalRecordings.length} 件のみ対象です。
-            </p>
-          {/if}
-        </div>
-        <button class="btn-ghost" type="button" onclick={clearRecordingSelection}>選択解除</button>
-      </div>
-      <div class="mt-4 flex flex-wrap items-center gap-3">
-        <button
-          class={`btn-primary ${canBulkReupload ? '' : 'opacity-50 cursor-not-allowed'}`}
-          type="button"
-          disabled={!canBulkReupload}
-          onclick={bulkReuploadRecordings}
-        >
-          再送信
-        </button>
-        <button
-          class={`btn-ghost ${canBulkArchive ? '' : 'opacity-50 cursor-not-allowed'}`}
-          type="button"
-          disabled={!canBulkArchive}
-          onclick={bulkArchiveRecordings}
-        >
-          アーカイブ
-        </button>
-      </div>
-    </div>
-  {/if}
   {#if bulkMessage}
     <p class="mt-3 text-sm text-emerald-600">{bulkMessage}</p>
   {/if}
