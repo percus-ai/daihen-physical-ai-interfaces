@@ -8,6 +8,9 @@
   import { toStore } from 'svelte/store';
   import toast from 'svelte-french-toast';
   import Archive from 'phosphor-svelte/lib/Archive';
+  import ArrowDown from 'phosphor-svelte/lib/ArrowDown';
+  import ArrowUp from 'phosphor-svelte/lib/ArrowUp';
+  import CaretUpDown from 'phosphor-svelte/lib/CaretUpDown';
   import CloudArrowUp from 'phosphor-svelte/lib/CloudArrowUp';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import Eye from 'phosphor-svelte/lib/Eye';
@@ -57,6 +60,14 @@
   type RecordingListResponse = {
     recordings?: RecordingSummary[];
     total?: number;
+    owner_options?: Array<{
+      user_id: string;
+      label: string;
+      owner_name?: string | null;
+      owner_email?: string | null;
+      total_count?: number;
+      available_count?: number;
+    }>;
   };
   type UserConfigResponse = {
     user_id?: string;
@@ -182,8 +193,8 @@
     const nextHref = buildUrlWithQueryState(page.url, {
       owner: values.owner !== 'all' ? values.owner : null,
       search: values.search || null,
-      sort: values.sort !== 'created_at' ? values.sort : null,
-      order: values.order !== 'desc' ? values.order : null,
+      sort: recordingSortKey !== 'created_at' ? recordingSortKey : null,
+      order: recordingSortOrder !== 'desc' ? recordingSortOrder : null,
       page: null
     });
     filterDialogOpen = false;
@@ -272,17 +283,16 @@
   };
   const ownerLabel = (recording: RecordingSummary) =>
     creatorLabel(recording.owner_name ?? recording.owner_email ?? recording.owner_user_id);
-  const recordingOwnerOptions = $derived.by(() => {
-    const options = new Map<string, string>();
-    for (const recording of recordings) {
-      const ownerId = String(recording.owner_user_id ?? '').trim();
-      if (!ownerId) continue;
-      options.set(ownerId, ownerLabel(recording));
-    }
-    return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
-  });
+  const recordingOwnerOptions = $derived($recordingsQuery.data?.owner_options ?? []);
   const recordingOwnerSelectOptions = $derived.by(() => {
-    const options = [{ value: 'all', label: '全員' }, ...recordingOwnerOptions.map((owner) => ({ value: owner.id, label: owner.label }))];
+    const options = [
+      { value: 'all', label: '全員' },
+      ...recordingOwnerOptions.map((owner) => ({
+        value: owner.user_id,
+        label: owner.label,
+        disabled: owner.available_count === 0 && owner.user_id !== recordingOwnerFilter
+      }))
+    ];
     if (recordingOwnerFilter !== 'all' && !options.some((option) => option.value === recordingOwnerFilter)) {
       options.push({ value: recordingOwnerFilter, label: recordingOwnerFilter });
     }
@@ -290,53 +300,27 @@
   });
   const recordingFilterDefaults = {
     search: '',
-    owner: 'all',
-    sort: 'created_at',
-    order: 'desc'
+    owner: 'all'
   };
   const recordingFilterValues = $derived({
     search: recordingSearch,
-    owner: recordingOwnerFilter,
-    sort: recordingSortKey,
-    order: recordingSortOrder
+    owner: recordingOwnerFilter
   });
   const recordingFilterFields = $derived<ListFilterField[]>([
     {
       type: 'text',
       key: 'search',
-      label: '検索',
-      placeholder: 'dataset / task / user'
+      label: 'データセット名',
+      placeholder: 'データセット名で検索'
     },
     {
       type: 'select',
       key: 'owner',
       label: '作成者',
       options: recordingOwnerSelectOptions
-    },
-    {
-      type: 'select',
-      key: 'sort',
-      label: '並び替え',
-      options: [
-        { value: 'created_at', label: '作成日時' },
-        { value: 'dataset_name', label: '名前' },
-        { value: 'episode_count', label: 'エピソード数' },
-        { value: 'status', label: 'アップロード状態' }
-      ]
-    },
-    {
-      type: 'select',
-      key: 'order',
-      label: '順序',
-      options: [
-        { value: 'desc', label: '降順' },
-        { value: 'asc', label: '昇順' }
-      ]
     }
   ]);
-  const hasActiveRecordingFilters = $derived(
-    Boolean(recordingSearch) || recordingOwnerFilter !== 'all' || recordingSortKey !== 'created_at' || recordingSortOrder !== 'desc'
-  );
+  const hasActiveRecordingFilters = $derived(Boolean(recordingSearch) || recordingOwnerFilter !== 'all');
   const currentUserId = $derived(String($userConfigQuery.data?.user_id ?? '').trim());
   const allDisplayedRecordingIds = $derived(displayedRecordings.map((recording) => recording.recording_id));
   const allDisplayedRecordingsSelected = $derived(
@@ -352,6 +336,29 @@
   const clearRecordingSelection = () => {
     selectedRecordingIds = [];
   };
+  const isSortedBy = (key: 'created_at' | 'dataset_name' | 'episode_count' | 'status') => recordingSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'dataset_name' | 'episode_count' | 'status') =>
+    !isSortedBy(key) ? CaretUpDown : recordingSortOrder === 'asc' ? ArrowUp : ArrowDown;
+  const DatasetNameSortIcon = $derived(sortIconFor('dataset_name'));
+  const EpisodeSortIcon = $derived(sortIconFor('episode_count'));
+  const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
+  const StatusSortIcon = $derived(sortIconFor('status'));
+  const handleSortChange = async (key: 'created_at' | 'dataset_name' | 'episode_count' | 'status') => {
+    const nextOrder: 'asc' | 'desc' = recordingSortKey === key ? (recordingSortOrder === 'asc' ? 'desc' : 'asc') : 'asc';
+    const nextHref = buildUrlWithQueryState(page.url, {
+      sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
+      order: nextOrder !== 'desc' ? nextOrder : null,
+      page: null
+    });
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
   const selectedRecordings = $derived(recordings.filter((recording) => selectedRecordingIds.includes(recording.recording_id)));
   const selectedLocalRecordings = $derived(selectedRecordings.filter((recording) => Boolean(recording.is_local)));
   const canBulkReupload = $derived(selectedLocalRecordings.length > 0 && !bulkPending);
@@ -360,6 +367,9 @@
     'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
   const bulkMenuDangerItemClass =
     'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
+  const sortIconClass = 'text-slate-400 transition group-hover:text-slate-600';
+  const sortableHeaderButtonClass =
+    'group inline-flex items-center gap-1 font-semibold text-slate-400 transition hover:text-slate-700';
   const applyBulkResponseMessage = (response: BulkActionResponse, label: string) => {
     const parts = [`成功 ${response.succeeded}`, `失敗 ${response.failed}`];
     if (response.skipped > 0) {
@@ -547,7 +557,7 @@
       recordingOwnerFilterInitialized = true;
       return;
     }
-    if (!recordingOwnerOptions.some((option) => option.id === currentUserId)) {
+    if (!recordingOwnerOptions.some((option) => option.user_id === currentUserId)) {
       recordingOwnerFilterInitialized = true;
       return;
     }
@@ -807,13 +817,35 @@
               />
             </div>
           </th>
-          <th class="pb-3">データセット</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('dataset_name')}>
+              データセット
+              <DatasetNameSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
-          <th class="pb-3">エピソード</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('episode_count')}>
+              エピソード
+              <EpisodeSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           <th class="pb-3">サイズ</th>
-          <th class="pb-3">作成日時</th>
-          <th class="pb-3 text-center">送信状態</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('created_at')}>
+              作成日時
+              <CreatedAtSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3 text-center">
+            <div class="flex justify-center">
+              <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('status')}>
+                送信状態
+                <StatusSortIcon size={14} class={sortIconClass} />
+              </button>
+            </div>
+          </th>
           <th class="pb-3 text-right">操作</th>
         </tr>
       </thead>

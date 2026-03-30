@@ -6,7 +6,10 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import Archive from 'phosphor-svelte/lib/Archive';
   import ArrowArcLeft from 'phosphor-svelte/lib/ArrowArcLeft';
+  import ArrowDown from 'phosphor-svelte/lib/ArrowDown';
+  import ArrowUp from 'phosphor-svelte/lib/ArrowUp';
   import ArrowsMerge from 'phosphor-svelte/lib/ArrowsMerge';
+  import CaretUpDown from 'phosphor-svelte/lib/CaretUpDown';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
   import CloudArrowDown from 'phosphor-svelte/lib/CloudArrowDown';
   import CloudArrowUp from 'phosphor-svelte/lib/CloudArrowUp';
@@ -69,6 +72,14 @@
   type DatasetListResponse = {
     datasets?: DatasetSummary[];
     total?: number;
+    owner_options?: Array<{
+      user_id: string;
+      label: string;
+      owner_name?: string | null;
+      owner_email?: string | null;
+      total_count?: number;
+      available_count?: number;
+    }>;
   };
 
   type DatasetStatusTab = 'active' | 'archived';
@@ -201,17 +212,16 @@
   const bulkMenuDangerItemClass =
     'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
 
-  const datasetOwnerOptions = $derived.by(() => {
-    const options = new Map<string, string>();
-    for (const dataset of datasets) {
-      const ownerId = String(dataset.owner_user_id ?? '').trim();
-      if (!ownerId) continue;
-      options.set(ownerId, ownerLabel(dataset));
-    }
-    return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
-  });
+  const datasetOwnerOptions = $derived($datasetsQuery.data?.owner_options ?? []);
   const datasetOwnerSelectOptions = $derived.by(() => {
-    const options = [{ value: 'all', label: '全員' }, ...datasetOwnerOptions.map((owner) => ({ value: owner.id, label: owner.label }))];
+    const options = [
+      { value: 'all', label: '全員' },
+      ...datasetOwnerOptions.map((owner) => ({
+        value: owner.user_id,
+        label: owner.label,
+        disabled: owner.available_count === 0 && owner.user_id !== datasetOwnerFilter
+      }))
+    ];
     if (datasetOwnerFilter !== 'all' && !options.some((option) => option.value === datasetOwnerFilter)) {
       options.push({ value: datasetOwnerFilter, label: datasetOwnerFilter });
     }
@@ -219,53 +229,30 @@
   });
   const datasetFilterDefaults = {
     search: '',
-    owner: 'all',
-    sort: 'created_at',
-    order: 'desc'
+    owner: 'all'
   };
   const datasetFilterValues = $derived({
     search: datasetSearch,
-    owner: datasetOwnerFilter,
-    sort: datasetSortKey,
-    order: datasetSortOrder
+    owner: datasetOwnerFilter
   });
   const datasetFilterFields = $derived<ListFilterField[]>([
     {
       type: 'text',
       key: 'search',
-      label: '検索',
-      placeholder: 'dataset / profile / user'
+      label: '名前',
+      placeholder: '名前で検索'
     },
     {
       type: 'select',
       key: 'owner',
       label: '作成者',
       options: datasetOwnerSelectOptions
-    },
-    {
-      type: 'select',
-      key: 'sort',
-      label: '並び替え',
-      options: [
-        { value: 'created_at', label: '作成日時' },
-        { value: 'name', label: '名前' },
-        { value: 'episode_count', label: 'エピソード数' },
-        { value: 'size_bytes', label: 'サイズ' }
-      ]
-    },
-    {
-      type: 'select',
-      key: 'order',
-      label: '順序',
-      options: [
-        { value: 'desc', label: '降順' },
-        { value: 'asc', label: '昇順' }
-      ]
     }
   ]);
-  const hasActiveDatasetFilters = $derived(
-    Boolean(datasetSearch) || datasetOwnerFilter !== 'all' || datasetSortKey !== 'created_at' || datasetSortOrder !== 'desc'
-  );
+  const hasActiveDatasetFilters = $derived(Boolean(datasetSearch) || datasetOwnerFilter !== 'all');
+  const sortIconClass = 'text-slate-400 transition group-hover:text-slate-600';
+  const sortableHeaderButtonClass =
+    'group inline-flex items-center gap-1 font-semibold text-slate-400 transition hover:text-slate-700';
 
   const allDisplayedDatasetIds = $derived(displayedDatasets.map((dataset) => dataset.id));
   const allDisplayedDatasetsSelected = $derived(
@@ -362,8 +349,8 @@
       status: datasetStatusTab !== 'active' ? datasetStatusTab : null,
       owner: values.owner !== 'all' ? values.owner : null,
       search: values.search || null,
-      sort: values.sort !== 'created_at' ? values.sort : null,
-      order: values.order !== 'desc' ? values.order : null,
+      sort: datasetSortKey !== 'created_at' ? datasetSortKey : null,
+      order: datasetSortOrder !== 'desc' ? datasetSortOrder : null,
       page: null
     });
     filterDialogOpen = false;
@@ -694,6 +681,30 @@
     if (!canMerge) return;
     mergeDialogError = '';
     mergeDialogOpen = true;
+  };
+
+  const isSortedBy = (key: 'created_at' | 'name' | 'episode_count' | 'size_bytes') => datasetSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'name' | 'episode_count' | 'size_bytes') =>
+    !isSortedBy(key) ? CaretUpDown : datasetSortOrder === 'asc' ? ArrowUp : ArrowDown;
+  const NameSortIcon = $derived(sortIconFor('name'));
+  const EpisodeSortIcon = $derived(sortIconFor('episode_count'));
+  const SizeSortIcon = $derived(sortIconFor('size_bytes'));
+  const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
+  const handleSortChange = async (key: 'created_at' | 'name' | 'episode_count' | 'size_bytes') => {
+    const nextOrder: 'asc' | 'desc' = datasetSortKey === key ? (datasetSortOrder === 'asc' ? 'desc' : 'asc') : 'asc';
+    const nextHref = buildUrlWithQueryState(page.url, {
+      sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
+      order: nextOrder !== 'desc' ? nextOrder : null,
+      page: null
+    });
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
   };
 
   const startMergeJob = async (payload: { dataset_name: string; source_dataset_ids: string[] }) => {
@@ -1258,12 +1269,32 @@
               />
             </div>
           </th>
-          <th class="pb-3">名前</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('name')}>
+              名前
+              <NameSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
-          <th class="pb-3">エピソード</th>
-          <th class="pb-3">サイズ</th>
-          <th class="pb-3">作成日時</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('episode_count')}>
+              エピソード
+              <EpisodeSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('size_bytes')}>
+              サイズ
+              <SizeSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('created_at')}>
+              作成日時
+              <CreatedAtSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           {#if !isArchiveTab}
             <th class="pb-3 text-center">同期状態</th>
           {/if}

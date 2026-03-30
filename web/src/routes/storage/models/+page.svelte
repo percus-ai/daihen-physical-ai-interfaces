@@ -6,6 +6,9 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import Archive from 'phosphor-svelte/lib/Archive';
   import ArrowArcLeft from 'phosphor-svelte/lib/ArrowArcLeft';
+  import ArrowDown from 'phosphor-svelte/lib/ArrowDown';
+  import ArrowUp from 'phosphor-svelte/lib/ArrowUp';
+  import CaretUpDown from 'phosphor-svelte/lib/CaretUpDown';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
   import CloudArrowDown from 'phosphor-svelte/lib/CloudArrowDown';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
@@ -64,6 +67,14 @@
   type ModelListResponse = {
     models?: ModelSummary[];
     total?: number;
+    owner_options?: Array<{
+      user_id: string;
+      label: string;
+      owner_name?: string | null;
+      owner_email?: string | null;
+      total_count?: number;
+      available_count?: number;
+    }>;
   };
 
   type ModelStatusTab = 'active' | 'archived';
@@ -169,17 +180,16 @@
     state === 'completed' || state === 'failed' || state === 'cancelled';
 
   const syncPending = $derived(syncAllPending);
-  const modelOwnerOptions = $derived.by(() => {
-    const options = new Map<string, string>();
-    for (const model of models) {
-      const ownerId = String(model.owner_user_id ?? '').trim();
-      if (!ownerId) continue;
-      options.set(ownerId, ownerLabel(model));
-    }
-    return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
-  });
+  const modelOwnerOptions = $derived($modelsQuery.data?.owner_options ?? []);
   const modelOwnerSelectOptions = $derived.by(() => {
-    const options = [{ value: 'all', label: '全員' }, ...modelOwnerOptions.map((owner) => ({ value: owner.id, label: owner.label }))];
+    const options = [
+      { value: 'all', label: '全員' },
+      ...modelOwnerOptions.map((owner) => ({
+        value: owner.user_id,
+        label: owner.label,
+        disabled: owner.available_count === 0 && owner.user_id !== modelOwnerFilter
+      }))
+    ];
     if (modelOwnerFilter !== 'all' && !options.some((option) => option.value === modelOwnerFilter)) {
       options.push({ value: modelOwnerFilter, label: modelOwnerFilter });
     }
@@ -187,53 +197,30 @@
   });
   const modelFilterDefaults = {
     search: '',
-    owner: 'all',
-    sort: 'created_at',
-    order: 'desc'
+    owner: 'all'
   };
   const modelFilterValues = $derived({
     search: modelSearch,
-    owner: modelOwnerFilter,
-    sort: modelSortKey,
-    order: modelSortOrder
+    owner: modelOwnerFilter
   });
   const modelFilterFields = $derived<ListFilterField[]>([
     {
       type: 'text',
       key: 'search',
-      label: '検索',
-      placeholder: 'model / policy / user'
+      label: '名前',
+      placeholder: '名前で検索'
     },
     {
       type: 'select',
       key: 'owner',
       label: '作成者',
       options: modelOwnerSelectOptions
-    },
-    {
-      type: 'select',
-      key: 'sort',
-      label: '並び替え',
-      options: [
-        { value: 'created_at', label: '作成日時' },
-        { value: 'name', label: '名前' },
-        { value: 'size_bytes', label: 'サイズ' },
-        { value: 'policy_type', label: 'ポリシー' }
-      ]
-    },
-    {
-      type: 'select',
-      key: 'order',
-      label: '順序',
-      options: [
-        { value: 'desc', label: '降順' },
-        { value: 'asc', label: '昇順' }
-      ]
     }
   ]);
-  const hasActiveModelFilters = $derived(
-    Boolean(modelSearch) || modelOwnerFilter !== 'all' || modelSortKey !== 'created_at' || modelSortOrder !== 'desc'
-  );
+  const hasActiveModelFilters = $derived(Boolean(modelSearch) || modelOwnerFilter !== 'all');
+  const sortIconClass = 'text-slate-400 transition group-hover:text-slate-600';
+  const sortableHeaderButtonClass =
+    'group inline-flex items-center gap-1 font-semibold text-slate-400 transition hover:text-slate-700';
   const allDisplayedModelIds = $derived(displayedModels.map((model) => model.id));
   const allDisplayedModelsSelected = $derived(
     allDisplayedModelIds.length > 0 && allDisplayedModelIds.every((id) => selectedIds.includes(id))
@@ -294,8 +281,8 @@
       status: modelStatusTab !== 'active' ? modelStatusTab : null,
       owner: values.owner !== 'all' ? values.owner : null,
       search: values.search || null,
-      sort: values.sort !== 'created_at' ? values.sort : null,
-      order: values.order !== 'desc' ? values.order : null,
+      sort: modelSortKey !== 'created_at' ? modelSortKey : null,
+      order: modelSortOrder !== 'desc' ? modelSortOrder : null,
       page: null
     });
     filterDialogOpen = false;
@@ -374,6 +361,29 @@
   };
 
   const activeJobOf = (modelId: string) => activeJobsByModelId[modelId] ?? null;
+  const isSortedBy = (key: 'created_at' | 'name' | 'size_bytes' | 'policy_type') => modelSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'name' | 'size_bytes' | 'policy_type') =>
+    !isSortedBy(key) ? CaretUpDown : modelSortOrder === 'asc' ? ArrowUp : ArrowDown;
+  const NameSortIcon = $derived(sortIconFor('name'));
+  const PolicySortIcon = $derived(sortIconFor('policy_type'));
+  const SizeSortIcon = $derived(sortIconFor('size_bytes'));
+  const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
+  const handleSortChange = async (key: 'created_at' | 'name' | 'size_bytes' | 'policy_type') => {
+    const nextOrder: 'asc' | 'desc' = modelSortKey === key ? (modelSortOrder === 'asc' ? 'desc' : 'asc') : 'asc';
+    const nextHref = buildUrlWithQueryState(page.url, {
+      sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
+      order: nextOrder !== 'desc' ? nextOrder : null,
+      page: null
+    });
+    const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
+    if (nextHref === currentHref) return;
+    await goto(nextHref, {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+      invalidateAll: false
+    });
+  };
   const openModelSyncModal = (jobId: string) => {
     if (!jobId) return;
     selectedJobId = jobId;
@@ -1093,12 +1103,32 @@
               />
             </div>
           </th>
-          <th class="pb-3">名前</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('name')}>
+              名前
+              <NameSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           <th class="pb-3">作成者</th>
           <th class="pb-3">プロファイル</th>
-          <th class="pb-3">ポリシー</th>
-          <th class="pb-3">サイズ</th>
-          <th class="pb-3">作成日時</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('policy_type')}>
+              ポリシー
+              <PolicySortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('size_bytes')}>
+              サイズ
+              <SizeSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('created_at')}>
+              作成日時
+              <CreatedAtSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           {#if !isArchiveTab}
             <th class="pb-3 text-center">同期状態</th>
           {/if}

@@ -1,6 +1,7 @@
 export type ListFilterOption = {
   value: string;
   label: string;
+  disabled?: boolean;
 };
 
 export type ListFilterTextField = {

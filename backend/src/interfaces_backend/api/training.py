@@ -43,6 +43,7 @@ from interfaces_backend.models.training import (
     JobInfo,
     JobListResponse,
     JobListSortBy,
+    TrainingOwnerFilterOption,
     JobDetailResponse,
     JobLogsResponse,
     JobProgressResponse,
@@ -2053,6 +2054,45 @@ def _normalize_query_text(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
 
 
+def _build_training_owner_filter_options(
+    all_jobs: list[dict],
+    available_jobs: list[dict],
+    owner_directory,
+) -> list[TrainingOwnerFilterOption]:
+    total_counts: dict[str, int] = {}
+    available_counts: dict[str, int] = {}
+
+    for job in all_jobs:
+        owner_id = str(job.get("owner_user_id") or "").strip()
+        if not owner_id:
+            continue
+        total_counts[owner_id] = total_counts.get(owner_id, 0) + 1
+
+    for job in available_jobs:
+        owner_id = str(job.get("owner_user_id") or "").strip()
+        if not owner_id:
+            continue
+        available_counts[owner_id] = available_counts.get(owner_id, 0) + 1
+
+    options: list[TrainingOwnerFilterOption] = []
+    for owner_id, total_count in total_counts.items():
+        owner_entry = owner_directory.get(owner_id)
+        label = ((owner_entry.name or "").strip() if owner_entry else "") or ((owner_entry.email or "").strip() if owner_entry else "") or owner_id
+        options.append(
+            TrainingOwnerFilterOption(
+                user_id=owner_id,
+                label=label,
+                owner_name=owner_entry.name or None if owner_entry else None,
+                owner_email=owner_entry.email or None if owner_entry else None,
+                total_count=total_count,
+                available_count=available_counts.get(owner_id, 0),
+            )
+        )
+
+    options.sort(key=lambda option: (option.label.lower(), option.user_id))
+    return options
+
+
 async def _list_jobs(
     days: int = 365,
     owner_user_id: Optional[str] = None,
@@ -2061,7 +2101,7 @@ async def _list_jobs(
     sort_order: SortOrder = "desc",
     limit: Optional[int] = None,
     offset: int = 0,
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, list[TrainingOwnerFilterOption]]:
     """List jobs from DB.
 
     Args:
@@ -2070,8 +2110,6 @@ async def _list_jobs(
     """
     async def _fetch_with(client: AsyncClient) -> list[dict]:
         query = client.table(DB_TABLE).select("*").is_("deleted_at", "null")
-        if owner_user_id:
-            query = query.eq("owner_user_id", owner_user_id)
         response = await query.execute()
         return response.data or []
 
@@ -2113,7 +2151,7 @@ async def _list_jobs(
         [str(job.get("dataset_id") or "").strip() for job in filtered]
     )
 
-    enriched: list[dict] = []
+    available_jobs: list[dict] = []
     normalized_search = _normalize_query_text(search)
     for job in filtered:
         owner_id = str(job.get("owner_user_id") or "").strip()
@@ -2125,21 +2163,19 @@ async def _list_jobs(
         enriched_job["owner_name"] = owner_entry.name or None if owner_entry else None
         enriched_job["dataset_name"] = dataset_name_map.get(dataset_id) or None
 
-        if normalized_search:
-            searchable_values = (
-                enriched_job.get("job_id"),
-                enriched_job.get("job_name"),
-                enriched_job.get("dataset_name"),
-                enriched_job.get("dataset_id"),
-                enriched_job.get("policy_type"),
-                enriched_job.get("status"),
-                enriched_job.get("owner_name"),
-                enriched_job.get("owner_email"),
-            )
-            if not any(normalized_search in _normalize_query_text(value) for value in searchable_values):
-                continue
+        if normalized_search and normalized_search not in _normalize_query_text(enriched_job.get("job_name")):
+            continue
 
-        enriched.append(enriched_job)
+        available_jobs.append(enriched_job)
+
+    owner_options = _build_training_owner_filter_options(filtered, available_jobs, owner_directory)
+    enriched = available_jobs
+    if owner_user_id:
+        normalized_owner_user_id = str(owner_user_id).strip()
+        enriched = [
+            job for job in available_jobs
+            if str(job.get("owner_user_id") or "").strip() == normalized_owner_user_id
+        ]
 
     reverse = sort_order == "desc"
 
@@ -2160,7 +2196,7 @@ async def _list_jobs(
         enriched = enriched[offset:]
     if limit is not None:
         enriched = enriched[:limit]
-    return enriched, total
+    return enriched, total, owner_options
 
 
 async def _resolve_dataset_names(dataset_ids: list[str]) -> dict[str, str]:
@@ -4856,7 +4892,7 @@ async def list_jobs(
     Args:
         days: Return jobs from past N days (running jobs always included)
     """
-    jobs_data, total = await _list_jobs(
+    jobs_data, total, owner_options = await _list_jobs(
         days,
         owner_user_id=owner_user_id,
         search=search,
@@ -4885,7 +4921,7 @@ async def list_jobs(
         return coerced
 
     jobs = [JobInfo(**_coerce_jobinfo_fields(j)) for j in jobs_data]
-    return JobListResponse(jobs=jobs, total=total)
+    return JobListResponse(jobs=jobs, total=total, owner_options=owner_options)
 
 
 @router.get("/jobs/{job_id}", response_model=JobDetailResponse)

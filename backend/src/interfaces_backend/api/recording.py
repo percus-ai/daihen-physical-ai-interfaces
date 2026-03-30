@@ -136,6 +136,16 @@ class RecordingInfo(BaseModel):
 class RecordingListResponse(BaseModel):
     recordings: List[RecordingInfo]
     total: int
+    owner_options: List["RecordingOwnerFilterOption"] = Field(default_factory=list)
+
+
+class RecordingOwnerFilterOption(BaseModel):
+    user_id: str
+    label: str
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
+    total_count: int = 0
+    available_count: int = 0
 
 
 class RecordingValidateResponse(BaseModel):
@@ -877,6 +887,45 @@ def _normalize_query_text(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _build_recording_owner_filter_options(
+    all_rows: list[dict[str, Any]],
+    available_rows: list[dict[str, Any]],
+    owner_directory,
+) -> list[RecordingOwnerFilterOption]:
+    total_counts: dict[str, int] = {}
+    available_counts: dict[str, int] = {}
+
+    for row in all_rows:
+        owner_id = str(row.get("owner_user_id") or "").strip()
+        if not owner_id:
+            continue
+        total_counts[owner_id] = total_counts.get(owner_id, 0) + 1
+
+    for row in available_rows:
+        owner_id = str(row.get("owner_user_id") or "").strip()
+        if not owner_id:
+            continue
+        available_counts[owner_id] = available_counts.get(owner_id, 0) + 1
+
+    options: list[RecordingOwnerFilterOption] = []
+    for owner_id, total_count in total_counts.items():
+        owner_entry = owner_directory.get(owner_id)
+        label = ((owner_entry.name or "").strip() if owner_entry else "") or ((owner_entry.email or "").strip() if owner_entry else "") or owner_id
+        options.append(
+            RecordingOwnerFilterOption(
+                user_id=owner_id,
+                label=label,
+                owner_name=owner_entry.name or None if owner_entry else None,
+                owner_email=owner_entry.email or None if owner_entry else None,
+                total_count=total_count,
+                available_count=available_counts.get(owner_id, 0),
+            )
+        )
+
+    options.sort(key=lambda option: (option.label.lower(), option.user_id))
+    return options
+
+
 async def _list_recordings(
     *,
     owner_user_id: str | None = None,
@@ -885,7 +934,7 @@ async def _list_recordings(
     sort_order: SortOrder = "desc",
     limit: int | None = None,
     offset: int = 0,
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, list[RecordingOwnerFilterOption]]:
     client = await get_supabase_async_client()
     rows = (
         await client.table("datasets")
@@ -901,30 +950,28 @@ async def _list_recordings(
     )
 
     normalized_search = _normalize_query_text(search)
-    records: list[dict] = []
+    available_records: list[dict] = []
     for row in filtered:
         normalized_owner_user_id = str(row.get("owner_user_id") or "").strip()
-        if owner_user_id and normalized_owner_user_id != owner_user_id:
-            continue
 
         owner_entry = owner_directory.get(normalized_owner_user_id)
         enriched_row = dict(row)
         enriched_row["owner_email"] = owner_entry.email or None if owner_entry else None
         enriched_row["owner_name"] = owner_entry.name or None if owner_entry else None
 
-        if normalized_search:
-            searchable_values = (
-                enriched_row.get("id"),
-                enriched_row.get("name"),
-                enriched_row.get("task_detail"),
-                enriched_row.get("profile_name"),
-                enriched_row.get("owner_name"),
-                enriched_row.get("owner_email"),
-            )
-            if not any(normalized_search in _normalize_query_text(value) for value in searchable_values):
-                continue
+        if normalized_search and normalized_search not in _normalize_query_text(enriched_row.get("name")):
+            continue
 
-        records.append(enriched_row)
+        available_records.append(enriched_row)
+
+    owner_options = _build_recording_owner_filter_options(filtered, available_records, owner_directory)
+    records = available_records
+    if owner_user_id:
+        normalized_owner_user_id = str(owner_user_id).strip()
+        records = [
+            record for record in available_records
+            if str(record.get("owner_user_id") or "").strip() == normalized_owner_user_id
+        ]
 
     reverse = sort_order == "desc"
 
@@ -945,7 +992,7 @@ async def _list_recordings(
         records = records[offset:]
     if limit is not None:
         records = records[:limit]
-    return records, total
+    return records, total, owner_options
 
 
 @router.get("/recordings", response_model=RecordingListResponse)
@@ -957,7 +1004,7 @@ async def list_recordings(
     limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
 ):
-    recordings_data, total = await _list_recordings(
+    recordings_data, total, owner_options = await _list_recordings(
         owner_user_id=owner_user_id,
         search=search,
         sort_by=sort_by,
@@ -992,7 +1039,7 @@ async def list_recordings(
                 is_uploaded=bool(str(row.get("content_hash") or "").strip()),
             )
         )
-    return RecordingListResponse(recordings=recordings, total=total)
+    return RecordingListResponse(recordings=recordings, total=total, owner_options=owner_options)
 
 
 @router.get(

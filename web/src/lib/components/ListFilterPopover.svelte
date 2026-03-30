@@ -75,7 +75,7 @@
 <Popover.Root bind:open={open}>
   <Popover.Trigger class={triggerClass}>
     <FunnelSimple size={16} />
-    フィルタ
+    表示設定
   </Popover.Trigger>
   <Popover.Portal>
     <Popover.Content
@@ -87,7 +87,7 @@
     >
       <form onsubmit={handleApply}>
         <div class="flex items-center justify-between gap-3">
-          <h3 class="text-sm font-semibold text-slate-900">フィルタ</h3>
+          <h3 class="text-sm font-semibold text-slate-900">表示設定</h3>
         </div>
 
         <div class="mt-4 space-y-4">
@@ -111,7 +111,7 @@
                   onchange={(event) => updateDraftValue(field.key, event.currentTarget.value)}
                 >
                   {#each field.options as option}
-                    <option value={option.value}>{option.label}</option>
+                    <option value={option.value} disabled={option.disabled}>{option.label}</option>
                   {/each}
                 </select>
               {/if}

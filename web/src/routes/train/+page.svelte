@@ -28,6 +28,14 @@
   type JobListResponse = {
     jobs?: TrainingJob[];
     total?: number;
+    owner_options?: Array<{
+      user_id: string;
+      label: string;
+      owner_name?: string | null;
+      owner_email?: string | null;
+      total_count?: number;
+      available_count?: number;
+    }>;
   };
   const JOB_SORT_KEYS = ['created_at', 'updated_at', 'job_name', 'status'] as const;
   const parseJobSortKey = (value: string | null): 'created_at' | 'updated_at' | 'job_name' | 'status' =>
@@ -87,17 +95,16 @@
   };
   const ownerLabel = (job: TrainingJob) =>
     creatorLabel(job.owner_name ?? job.owner_email ?? job.owner_user_id);
-  const jobOwnerOptions = $derived.by(() => {
-    const options = new Map<string, string>();
-    for (const job of jobs) {
-      const ownerId = String(job.owner_user_id ?? '').trim();
-      if (!ownerId) continue;
-      options.set(ownerId, ownerLabel(job));
-    }
-    return Array.from(options, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
-  });
+  const jobOwnerOptions = $derived($jobsQuery.data?.owner_options ?? []);
   const jobOwnerSelectOptions = $derived.by(() => {
-    const options = [{ value: 'all', label: '全員' }, ...jobOwnerOptions.map((owner) => ({ value: owner.id, label: owner.label }))];
+    const options = [
+      { value: 'all', label: '全員' },
+      ...jobOwnerOptions.map((owner) => ({
+        value: owner.user_id,
+        label: owner.label,
+        disabled: owner.available_count === 0 && owner.user_id !== jobOwnerFilter
+      }))
+    ];
     if (jobOwnerFilter !== 'all' && !options.some((option) => option.value === jobOwnerFilter)) {
       options.push({ value: jobOwnerFilter, label: jobOwnerFilter });
     }
@@ -119,8 +126,8 @@
     {
       type: 'text',
       key: 'search',
-      label: '検索',
-      placeholder: 'job / dataset / user'
+      label: 'ジョブ名',
+      placeholder: 'ジョブ名で検索'
     },
     {
       type: 'select',

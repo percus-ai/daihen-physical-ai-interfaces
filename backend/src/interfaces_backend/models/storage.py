@@ -46,6 +46,16 @@ class DatasetListResponse(BaseModel):
 
     datasets: List[DatasetInfo]
     total: int
+    owner_options: List["OwnerFilterOption"] = Field(default_factory=list)
+
+
+class OwnerFilterOption(BaseModel):
+    user_id: str = Field(..., description="Owner user id")
+    label: str = Field(..., description="Display label")
+    owner_name: Optional[str] = Field(None, description="Owner display name")
+    owner_email: Optional[str] = Field(None, description="Owner email")
+    total_count: int = Field(0, description="Total matching items in the current page scope")
+    available_count: int = Field(0, description="Matching items under the current filters excluding owner")
 
 
 StorageSortOrder = Literal["asc", "desc"]
@@ -59,7 +69,7 @@ class DatasetListQuery(BaseModel):
     owner_user_id: Optional[str] = Field(None, description="Filter by owner user id")
     status: Optional[str] = Field(None, description="Filter by dataset status")
     dataset_type: Optional[str] = Field(None, description="Filter by dataset type")
-    search: Optional[str] = Field(None, description="Search dataset id and name")
+    search: Optional[str] = Field(None, description="Search dataset name")
     limit: Optional[int] = Field(None, ge=1, le=500, description="Maximum number of results to return")
     offset: int = Field(0, ge=0, description="Number of matching rows to skip")
     sort_by: DatasetListSortBy = Field("created_at", description="Dataset list sort field")
@@ -152,6 +162,7 @@ class ModelListResponse(BaseModel):
 
     models: List[ModelInfo]
     total: int
+    owner_options: List[OwnerFilterOption] = Field(default_factory=list)
 
 
 class ModelListQuery(BaseModel):
@@ -161,7 +172,7 @@ class ModelListQuery(BaseModel):
     status: Optional[str] = Field(None, description="Filter by model status")
     policy_type: Optional[str] = Field(None, description="Filter by policy type")
     dataset_id: Optional[str] = Field(None, description="Filter by source dataset id")
-    search: Optional[str] = Field(None, description="Search model id and name")
+    search: Optional[str] = Field(None, description="Search model name")
     limit: Optional[int] = Field(None, ge=1, le=500, description="Maximum number of results to return")
     offset: int = Field(0, ge=0, description="Number of matching rows to skip")
     sort_by: ModelListSortBy = Field("created_at", description="Model list sort field")

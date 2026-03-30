@@ -57,6 +57,7 @@ from interfaces_backend.models.storage import (
     ModelListQuery,
     ModelListResponse,
     ModelListSortBy,
+    OwnerFilterOption,
     ModelSyncJobAcceptedResponse,
     ModelSyncJobCancelResponse,
     ModelSyncJobListResponse,
@@ -512,7 +513,7 @@ def _apply_common_storage_list_filters(query, *, include_archived: bool, status:
         query = query.eq("owner_user_id", owner_user_id)
     if search:
         escaped = search.replace(",", "\\,")
-        query = query.or_(f"id.ilike.%{escaped}%,name.ilike.%{escaped}%")
+        query = query.ilike("name", f"%{escaped}%")
     return query
 
 
@@ -562,6 +563,68 @@ def _apply_storage_list_sort_and_paging(query, *, sort_by: str, sort_order: Stor
     return query
 
 
+def _build_owner_filter_options(
+    all_rows: list[dict[str, Any]],
+    available_rows: list[dict[str, Any]],
+    owner_directory,
+) -> list[OwnerFilterOption]:
+    total_counts: dict[str, int] = {}
+    available_counts: dict[str, int] = {}
+
+    for row in all_rows:
+        owner_id = str(row.get("owner_user_id") or "").strip()
+        if not owner_id:
+            continue
+        total_counts[owner_id] = total_counts.get(owner_id, 0) + 1
+
+    for row in available_rows:
+        owner_id = str(row.get("owner_user_id") or "").strip()
+        if not owner_id:
+            continue
+        available_counts[owner_id] = available_counts.get(owner_id, 0) + 1
+
+    options: list[OwnerFilterOption] = []
+    for owner_id, total_count in total_counts.items():
+        owner_entry = owner_directory.get(owner_id)
+        label = (
+            (owner_entry.name or "").strip()
+            or (owner_entry.email or "").strip()
+            or owner_id
+        )
+        options.append(
+            OwnerFilterOption(
+                user_id=owner_id,
+                label=label,
+                owner_name=owner_entry.name or None if owner_entry else None,
+                owner_email=owner_entry.email or None if owner_entry else None,
+                total_count=total_count,
+                available_count=available_counts.get(owner_id, 0),
+            )
+        )
+
+    options.sort(key=lambda option: (option.label.lower(), option.user_id))
+    return options
+
+
+async def _load_storage_owner_rows(table_name: str, list_query, *, include_search: bool) -> list[dict]:
+    query_model = list_query.model_copy(
+        update={
+            "owner_user_id": None,
+            "search": list_query.search if include_search else None,
+            "limit": None,
+            "offset": 0,
+        }
+    )
+    client = await get_supabase_async_client()
+    query = client.table(table_name).select("owner_user_id")
+    if table_name == "datasets":
+        query = _apply_dataset_list_filters(query, query_model)
+    else:
+        query = _apply_model_list_filters(query, query_model)
+    result = await query.execute()
+    return result.data or []
+
+
 async def _load_dataset_rows(list_query: DatasetListQuery) -> tuple[list[dict], int]:
     client = await get_supabase_async_client()
     query = client.table("datasets").select("*", count="exact")
@@ -600,7 +663,15 @@ async def _load_model_rows(list_query: ModelListQuery) -> tuple[list[dict], int]
 
 async def _list_datasets(list_query: DatasetListQuery) -> DatasetListResponse:
     rows, total = await _load_dataset_rows(list_query)
-    owner_directory = await resolve_user_directory_entries([str(row.get("owner_user_id") or "").strip() for row in rows])
+    owner_rows = await _load_storage_owner_rows("datasets", list_query, include_search=False)
+    available_owner_rows = await _load_storage_owner_rows("datasets", list_query, include_search=True)
+    owner_directory = await resolve_user_directory_entries(
+        [
+            str(row.get("owner_user_id") or "").strip()
+            for row in [*rows, *owner_rows, *available_owner_rows]
+        ]
+    )
+    owner_options = _build_owner_filter_options(owner_rows, available_owner_rows, owner_directory)
     datasets = []
     for row in rows:
         dataset = _dataset_row_to_info(row)
@@ -609,12 +680,20 @@ async def _list_datasets(list_query: DatasetListQuery) -> DatasetListResponse:
         dataset.owner_email = owner_entry.email or None if owner_entry else None
         dataset.owner_name = owner_entry.name or None if owner_entry else None
         datasets.append(dataset)
-    return DatasetListResponse(datasets=datasets, total=total)
+    return DatasetListResponse(datasets=datasets, total=total, owner_options=owner_options)
 
 
 async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
     rows, total = await _load_model_rows(list_query)
-    owner_directory = await resolve_user_directory_entries([str(row.get("owner_user_id") or "").strip() for row in rows])
+    owner_rows = await _load_storage_owner_rows("models", list_query, include_search=False)
+    available_owner_rows = await _load_storage_owner_rows("models", list_query, include_search=True)
+    owner_directory = await resolve_user_directory_entries(
+        [
+            str(row.get("owner_user_id") or "").strip()
+            for row in [*rows, *owner_rows, *available_owner_rows]
+        ]
+    )
+    owner_options = _build_owner_filter_options(owner_rows, available_owner_rows, owner_directory)
     models = []
     for row in rows:
         model = _model_row_to_info(row)
@@ -623,7 +702,7 @@ async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
         model.owner_email = owner_entry.email or None if owner_entry else None
         model.owner_name = owner_entry.name or None if owner_entry else None
         models.append(model)
-    return ModelListResponse(models=models, total=total)
+    return ModelListResponse(models=models, total=total, owner_options=owner_options)
 
 
 async def _require_dataset_row(client, dataset_id: str) -> dict:
@@ -658,7 +737,7 @@ async def list_datasets(
     owner_user_id: Optional[str] = Query(None, description="Filter by owner user id"),
     status: Optional[str] = Query(None, description="Filter by dataset status"),
     dataset_type: Optional[str] = Query(None, description="Filter by dataset type"),
-    search: Optional[str] = Query(None, description="Search dataset id and name"),
+    search: Optional[str] = Query(None, description="Search dataset name"),
     limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
     sort_by: DatasetListSortBy = Query("created_at", description="Sort field"),
@@ -1369,7 +1448,7 @@ async def list_models(
     status: Optional[str] = Query(None, description="Filter by model status"),
     policy_type: Optional[str] = Query(None, description="Filter by policy type"),
     dataset_id: Optional[str] = Query(None, description="Filter by source dataset id"),
-    search: Optional[str] = Query(None, description="Search model id and name"),
+    search: Optional[str] = Query(None, description="Search model name"),
     limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
     sort_by: ModelListSortBy = Query("created_at", description="Sort field"),
