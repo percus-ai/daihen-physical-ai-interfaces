@@ -40,6 +40,9 @@ from interfaces_backend.core.request_auth import (
     refresh_session_from_refresh_token,
 )
 from interfaces_backend.models.training import (
+    BulkActionRequest,
+    BulkActionResponse,
+    BulkActionResult,
     JobInfo,
     JobListResponse,
     JobListSortBy,
@@ -49,6 +52,7 @@ from interfaces_backend.models.training import (
     JobLogsResponse,
     JobProgressResponse,
     JobActionResponse,
+    JobUpdateRequest,
     JobStatusCheckResponse,
     JobStatusUpdate,
     JobCreateRequest,
@@ -188,6 +192,21 @@ def _default_author_user_id() -> str:
         return get_current_user_id()
     except ValueError:
         return "unknown"
+
+
+def _build_bulk_action_response(
+    results: list[BulkActionResult], requested: int | None = None
+) -> BulkActionResponse:
+    succeeded = sum(1 for result in results if result.status == "succeeded")
+    failed = sum(1 for result in results if result.status == "failed")
+    skipped = sum(1 for result in results if result.status == "skipped")
+    return BulkActionResponse(
+        requested=requested if requested is not None else len(results),
+        succeeded=succeeded,
+        failed=failed,
+        skipped=skipped,
+        results=results,
+    )
 
 
 def _resolve_websocket_supabase_session(websocket: WebSocket) -> Optional[dict]:
@@ -5671,6 +5690,49 @@ async def stop_job(job_id: str):
         success=success,
         message=message,
     )
+
+
+@router.patch("/jobs/{job_id}", response_model=JobActionResponse)
+async def update_job(job_id: str, request: JobUpdateRequest):
+    """Update editable job fields."""
+    get_current_user_id()
+    job_data = await _load_job(job_id)
+    if not job_data:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    update_payload = request.model_dump(exclude_unset=True)
+    if "job_name" in update_payload:
+        next_name = str(update_payload.get("job_name") or "").strip()
+        if not next_name:
+            raise HTTPException(status_code=422, detail="job_name must not be empty")
+        job_data["job_name"] = next_name
+
+    if not update_payload:
+        return JobActionResponse(job_id=job_id, success=True, message="更新する項目がありません")
+
+    await _save_job(job_data)
+    return JobActionResponse(job_id=job_id, success=True, message="学習ジョブを更新しました")
+
+
+async def _archive_job_for_bulk(job_id: str) -> BulkActionResult:
+    record = await _load_job(job_id, include_deleted=True)
+    if not record:
+        return BulkActionResult(id=job_id, status="failed", message="Job not found")
+    if record.get("deleted_at"):
+        return BulkActionResult(id=job_id, status="skipped", message="既にアーカイブ済みです")
+
+    record["deleted_at"] = datetime.now().isoformat()
+    await _save_job(record)
+    return BulkActionResult(id=job_id, status="succeeded", message="アーカイブしました")
+
+
+@router.post("/jobs/bulk/archive", response_model=BulkActionResponse)
+async def bulk_archive_jobs(request: BulkActionRequest):
+    get_current_user_id()
+    results: list[BulkActionResult] = []
+    for job_id in request.ids:
+        results.append(await _archive_job_for_bulk(job_id))
+    return _build_bulk_action_response(results, requested=len(request.ids))
 
 
 def _delete_verda_instance(instance_id: str, wait_timeout: int = 30) -> bool:

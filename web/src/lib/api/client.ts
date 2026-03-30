@@ -1456,7 +1456,17 @@ export const api = {
       ),
     instanceStatus: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/instance-status`),
     stopJob: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/stop`, { method: 'POST' }),
+    updateJob: (jobId: string, payload: { job_name?: string }) =>
+      fetchApi(`/api/training/jobs/${jobId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }),
     deleteJob: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}`, { method: 'DELETE' }),
+    bulkArchiveJobs: (ids: string[]) =>
+      fetchApi<BulkActionResponse>('/api/training/jobs/bulk/archive', {
+        method: 'POST',
+        body: JSON.stringify({ ids })
+      }),
     logs: (jobId: string, logType: string, lines: number = 30) =>
       fetchApi(`/api/training/jobs/${jobId}/logs?log_type=${logType}&lines=${lines}`),
     downloadLogs: (jobId: string, logType: string) =>

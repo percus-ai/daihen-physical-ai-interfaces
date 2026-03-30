@@ -153,6 +153,40 @@ class JobActionResponse(BaseModel):
     message: str
 
 
+class JobUpdateRequest(BaseModel):
+    """Request to update editable job fields."""
+
+    job_name: Optional[str] = None
+
+
+BulkActionResultStatus = Literal["succeeded", "failed", "skipped"]
+
+
+class BulkActionRequest(BaseModel):
+    """Request for bulk job operations."""
+
+    ids: list[str] = Field(default_factory=list)
+
+
+class BulkActionResult(BaseModel):
+    """Per-item result for a bulk operation."""
+
+    id: str
+    status: BulkActionResultStatus
+    message: str = ""
+    job_id: Optional[str] = None
+
+
+class BulkActionResponse(BaseModel):
+    """Summary response for a bulk operation."""
+
+    requested: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    skipped: int = 0
+    results: list[BulkActionResult] = Field(default_factory=list)
+
+
 class JobStatusUpdate(BaseModel):
     """Status update for a job."""
 
