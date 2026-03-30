@@ -36,6 +36,18 @@
       total_count?: number;
       available_count?: number;
     }>;
+    status_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
+    policy_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
   };
   const JOB_SORT_KEYS = ['created_at', 'updated_at', 'job_name', 'status'] as const;
   const parseJobSortKey = (value: string | null): 'created_at' | 'updated_at' | 'job_name' | 'status' =>
@@ -48,7 +60,11 @@
   const jobSortKey = $derived(parseJobSortKey(page.url.searchParams.get('sort')));
   const jobSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
   const jobOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
+  const jobStatusFilter = $derived(page.url.searchParams.get('job_status') || 'all');
+  const jobPolicyFilter = $derived(page.url.searchParams.get('policy') || 'all');
   const jobSearch = $derived(page.url.searchParams.get('search') || '');
+  const createdFrom = $derived(page.url.searchParams.get('created_from') || '');
+  const createdTo = $derived(page.url.searchParams.get('created_to') || '');
 
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
@@ -60,7 +76,11 @@
         'jobs',
         {
           ownerUserId: jobOwnerFilter === 'all' ? undefined : jobOwnerFilter,
+          status: jobStatusFilter === 'all' ? undefined : jobStatusFilter,
+          policyType: jobPolicyFilter === 'all' ? undefined : jobPolicyFilter,
           search: jobSearch || undefined,
+          createdFrom: createdFrom || undefined,
+          createdTo: createdTo || undefined,
           sortBy: jobSortKey,
           sortOrder: jobSortOrder,
           limit: PAGE_SIZE,
@@ -70,7 +90,11 @@
       queryFn: () =>
         api.training.jobs({
           ownerUserId: jobOwnerFilter === 'all' ? undefined : jobOwnerFilter,
+          status: jobStatusFilter === 'all' ? undefined : jobStatusFilter,
+          policyType: jobPolicyFilter === 'all' ? undefined : jobPolicyFilter,
           search: jobSearch || undefined,
+          createdFrom: createdFrom || undefined,
+          createdTo: createdTo || undefined,
           sortBy: jobSortKey,
           sortOrder: jobSortOrder,
           limit: PAGE_SIZE,
@@ -96,6 +120,8 @@
   const ownerLabel = (job: TrainingJob) =>
     creatorLabel(job.owner_name ?? job.owner_email ?? job.owner_user_id);
   const jobOwnerOptions = $derived($jobsQuery.data?.owner_options ?? []);
+  const jobStatusOptions = $derived($jobsQuery.data?.status_options ?? []);
+  const jobPolicyOptions = $derived($jobsQuery.data?.policy_options ?? []);
   const jobOwnerSelectOptions = $derived.by(() => {
     const options = [
       { value: 'all', label: '全員' },
@@ -110,32 +136,92 @@
     }
     return options;
   });
+  const jobStatusSelectOptions = $derived.by(() => {
+    const options = [
+      { value: 'all', label: 'すべて' },
+      ...jobStatusOptions.map((status) => ({
+        value: status.value,
+        label: status.label,
+        disabled: status.available_count === 0 && status.value !== jobStatusFilter
+      }))
+    ];
+    if (jobStatusFilter !== 'all' && !options.some((option) => option.value === jobStatusFilter)) {
+      options.push({ value: jobStatusFilter, label: jobStatusFilter });
+    }
+    return options;
+  });
+  const jobPolicySelectOptions = $derived.by(() => {
+    const options = [
+      { value: 'all', label: 'すべて' },
+      ...jobPolicyOptions.map((policy) => ({
+        value: policy.value,
+        label: policy.label,
+        disabled: policy.available_count === 0 && policy.value !== jobPolicyFilter
+      }))
+    ];
+    if (jobPolicyFilter !== 'all' && !options.some((option) => option.value === jobPolicyFilter)) {
+      options.push({ value: jobPolicyFilter, label: jobPolicyFilter });
+    }
+    return options;
+  });
   const trainingFilterDefaults = {
     search: '',
     owner: 'all',
+    job_status: 'all',
+    policy: 'all',
+    created_from: '',
+    created_to: '',
     sort: 'created_at',
     order: 'desc'
   };
   const trainingFilterValues = $derived({
     search: jobSearch,
     owner: jobOwnerFilter,
+    job_status: jobStatusFilter,
+    policy: jobPolicyFilter,
+    created_from: createdFrom,
+    created_to: createdTo,
     sort: jobSortKey,
     order: jobSortOrder
   });
   const trainingFilterFields = $derived<ListFilterField[]>([
     {
+      section: '検索',
       type: 'text',
       key: 'search',
       label: 'ジョブ名',
       placeholder: 'ジョブ名で検索'
     },
     {
+      section: '条件',
       type: 'select',
       key: 'owner',
       label: '作成者',
       options: jobOwnerSelectOptions
     },
     {
+      section: '条件',
+      type: 'select',
+      key: 'job_status',
+      label: '状態',
+      options: jobStatusSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'policy',
+      label: 'ポリシー',
+      options: jobPolicySelectOptions
+    },
+    {
+      section: '期間・範囲',
+      type: 'date-range',
+      keyFrom: 'created_from',
+      keyTo: 'created_to',
+      label: '作成日時'
+    },
+    {
+      section: '並び順',
       type: 'select',
       key: 'sort',
       label: '並び替え',
@@ -147,6 +233,7 @@
       ]
     },
     {
+      section: '並び順',
       type: 'select',
       key: 'order',
       label: '順序',
@@ -157,7 +244,14 @@
     }
   ]);
   const hasActiveJobFilters = $derived(
-    Boolean(jobSearch) || jobOwnerFilter !== 'all' || jobSortKey !== 'created_at' || jobSortOrder !== 'desc'
+    Boolean(jobSearch) ||
+      jobOwnerFilter !== 'all' ||
+      jobStatusFilter !== 'all' ||
+      jobPolicyFilter !== 'all' ||
+      Boolean(createdFrom) ||
+      Boolean(createdTo) ||
+      jobSortKey !== 'created_at' ||
+      jobSortOrder !== 'desc'
   );
 
   const navigateToPage = async (nextPage: number) => {
@@ -174,7 +268,11 @@
   const applyTrainingFilters = async (values: Record<string, string>) => {
     const nextHref = buildUrlWithQueryState(page.url, {
       owner: values.owner !== 'all' ? values.owner : null,
+      job_status: values.job_status !== 'all' ? values.job_status : null,
+      policy: values.policy !== 'all' ? values.policy : null,
       search: values.search || null,
+      created_from: values.created_from || null,
+      created_to: values.created_to || null,
       sort: values.sort !== 'created_at' ? values.sort : null,
       order: values.order !== 'desc' ? values.order : null,
       page: null

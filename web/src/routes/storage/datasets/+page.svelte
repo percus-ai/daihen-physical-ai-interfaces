@@ -80,6 +80,24 @@
       total_count?: number;
       available_count?: number;
     }>;
+    profile_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
+    dataset_type_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
+    sync_status_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
   };
 
   type DatasetStatusTab = 'active' | 'archived';
@@ -123,7 +141,16 @@
   const datasetSortKey = $derived(parseDatasetSortKey(page.url.searchParams.get('sort')));
   const datasetSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
   const datasetOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
+  const datasetProfileFilter = $derived(page.url.searchParams.get('profile') || 'all');
+  const datasetTypeFilter = $derived(page.url.searchParams.get('dataset_type') || 'all');
+  const datasetSyncFilter = $derived(page.url.searchParams.get('sync_status') || 'all');
   const datasetSearch = $derived(page.url.searchParams.get('search') || '');
+  const datasetCreatedFrom = $derived(page.url.searchParams.get('created_from') || '');
+  const datasetCreatedTo = $derived(page.url.searchParams.get('created_to') || '');
+  const datasetSizeMin = $derived(page.url.searchParams.get('size_min') || '');
+  const datasetSizeMax = $derived(page.url.searchParams.get('size_max') || '');
+  const datasetEpisodeMin = $derived(page.url.searchParams.get('episodes_min') || '');
+  const datasetEpisodeMax = $derived(page.url.searchParams.get('episodes_max') || '');
   let jobsById = $state<Record<string, DatasetSyncJobStatus>>({});
   let activeJobsByDatasetId = $state<Record<string, DatasetSyncJobStatus>>({});
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
@@ -132,17 +159,35 @@
 
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
+  const parseOptionalInt = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return undefined;
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
 
   const datasetsQuery = createQuery<DatasetListResponse>(
     toStore(() => {
       const status = datasetStatusTab;
       const ownerUserId = datasetOwnerFilter === 'all' ? undefined : datasetOwnerFilter;
+      const profileName = datasetProfileFilter === 'all' ? undefined : datasetProfileFilter;
+      const datasetType = datasetTypeFilter === 'all' ? undefined : datasetTypeFilter;
+      const syncStatus = datasetSyncFilter === 'all' ? undefined : datasetSyncFilter;
       const search = datasetSearch || undefined;
       return {
         queryKey: qk.storage.datasets({
           status,
           ownerUserId,
+          profileName,
+          datasetType,
+          syncStatus,
           search,
+          createdFrom: datasetCreatedFrom || undefined,
+          createdTo: datasetCreatedTo || undefined,
+          sizeMin: parseOptionalInt(datasetSizeMin),
+          sizeMax: parseOptionalInt(datasetSizeMax),
+          episodeCountMin: parseOptionalInt(datasetEpisodeMin),
+          episodeCountMax: parseOptionalInt(datasetEpisodeMax),
           sortBy: datasetSortKey,
           sortOrder: datasetSortOrder,
           limit: PAGE_SIZE,
@@ -152,7 +197,16 @@
           api.storage.datasets({
             status,
             ownerUserId,
+            profileName,
+            datasetType,
+            syncStatus,
             search,
+            createdFrom: datasetCreatedFrom || undefined,
+            createdTo: datasetCreatedTo || undefined,
+            sizeMin: parseOptionalInt(datasetSizeMin),
+            sizeMax: parseOptionalInt(datasetSizeMax),
+            episodeCountMin: parseOptionalInt(datasetEpisodeMin),
+            episodeCountMax: parseOptionalInt(datasetEpisodeMax),
             sortBy: datasetSortKey,
             sortOrder: datasetSortOrder,
             limit: PAGE_SIZE,
@@ -213,6 +267,26 @@
     'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-rose-600 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
 
   const datasetOwnerOptions = $derived($datasetsQuery.data?.owner_options ?? []);
+  const datasetProfileOptions = $derived($datasetsQuery.data?.profile_options ?? []);
+  const datasetTypeOptions = $derived($datasetsQuery.data?.dataset_type_options ?? []);
+  const datasetSyncOptions = $derived($datasetsQuery.data?.sync_status_options ?? []);
+  const withAllOption = (
+    currentValue: string,
+    options: Array<{ value: string; label: string; available_count?: number }>
+  ) => {
+    const nextOptions = [
+      { value: 'all', label: 'すべて' },
+      ...options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        disabled: option.available_count === 0 && option.value !== currentValue
+      }))
+    ];
+    if (currentValue !== 'all' && !nextOptions.some((option) => option.value === currentValue)) {
+      nextOptions.push({ value: currentValue, label: currentValue });
+    }
+    return nextOptions;
+  };
   const datasetOwnerSelectOptions = $derived.by(() => {
     const options = [
       { value: 'all', label: '全員' },
@@ -227,29 +301,114 @@
     }
     return options;
   });
+  const datasetProfileSelectOptions = $derived(withAllOption(datasetProfileFilter, datasetProfileOptions));
+  const datasetTypeSelectOptions = $derived(withAllOption(datasetTypeFilter, datasetTypeOptions));
+  const datasetSyncSelectOptions = $derived(withAllOption(datasetSyncFilter, datasetSyncOptions));
   const datasetFilterDefaults = {
     search: '',
-    owner: 'all'
+    owner: 'all',
+    profile: 'all',
+    dataset_type: 'all',
+    sync_status: 'all',
+    created_from: '',
+    created_to: '',
+    size_min: '',
+    size_max: '',
+    episodes_min: '',
+    episodes_max: ''
   };
   const datasetFilterValues = $derived({
     search: datasetSearch,
-    owner: datasetOwnerFilter
+    owner: datasetOwnerFilter,
+    profile: datasetProfileFilter,
+    dataset_type: datasetTypeFilter,
+    sync_status: datasetSyncFilter,
+    created_from: datasetCreatedFrom,
+    created_to: datasetCreatedTo,
+    size_min: datasetSizeMin,
+    size_max: datasetSizeMax,
+    episodes_min: datasetEpisodeMin,
+    episodes_max: datasetEpisodeMax
   });
   const datasetFilterFields = $derived<ListFilterField[]>([
     {
+      section: '検索',
       type: 'text',
       key: 'search',
       label: '名前',
       placeholder: '名前で検索'
     },
     {
+      section: '条件',
       type: 'select',
       key: 'owner',
       label: '作成者',
       options: datasetOwnerSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'profile',
+      label: 'プロファイル',
+      options: datasetProfileSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'dataset_type',
+      label: '種別',
+      options: datasetTypeSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'sync_status',
+      label: '同期状態',
+      options: datasetSyncSelectOptions
+    },
+    {
+      section: '期間・範囲',
+      type: 'date-range',
+      keyFrom: 'created_from',
+      keyTo: 'created_to',
+      label: '作成日時'
+    },
+    {
+      section: '期間・範囲',
+      type: 'number-range',
+      keyMin: 'size_min',
+      keyMax: 'size_max',
+      label: 'サイズ',
+      min: 0,
+      step: 1,
+      placeholderMin: '最小',
+      placeholderMax: '最大'
+    },
+    {
+      section: '期間・範囲',
+      type: 'number-range',
+      keyMin: 'episodes_min',
+      keyMax: 'episodes_max',
+      label: 'エピソード数',
+      min: 0,
+      step: 1,
+      placeholderMin: '最小',
+      placeholderMax: '最大'
     }
   ]);
-  const hasActiveDatasetFilters = $derived(Boolean(datasetSearch) || datasetOwnerFilter !== 'all');
+  const hasActiveDatasetFilters = $derived(
+    Boolean(datasetSearch) ||
+      datasetOwnerFilter !== 'all' ||
+      datasetProfileFilter !== 'all' ||
+      datasetTypeFilter !== 'all' ||
+      datasetSyncFilter !== 'all' ||
+      Boolean(datasetCreatedFrom) ||
+      Boolean(datasetCreatedTo) ||
+      Boolean(datasetSizeMin) ||
+      Boolean(datasetSizeMax) ||
+      Boolean(datasetEpisodeMin) ||
+      Boolean(datasetEpisodeMax)
+  );
   const sortIconClass = 'text-slate-400 transition group-hover:text-slate-600';
   const sortableHeaderButtonClass =
     'group inline-flex items-center gap-1 font-semibold text-slate-400 transition hover:text-slate-700';
@@ -348,7 +507,16 @@
     const nextHref = buildUrlWithQueryState(page.url, {
       status: datasetStatusTab !== 'active' ? datasetStatusTab : null,
       owner: values.owner !== 'all' ? values.owner : null,
+      profile: values.profile !== 'all' ? values.profile : null,
+      dataset_type: values.dataset_type !== 'all' ? values.dataset_type : null,
+      sync_status: values.sync_status !== 'all' ? values.sync_status : null,
       search: values.search || null,
+      created_from: values.created_from || null,
+      created_to: values.created_to || null,
+      size_min: values.size_min || null,
+      size_max: values.size_max || null,
+      episodes_min: values.episodes_min || null,
+      episodes_max: values.episodes_max || null,
       sort: datasetSortKey !== 'created_at' ? datasetSortKey : null,
       order: datasetSortOrder !== 'desc' ? datasetSortOrder : null,
       page: null

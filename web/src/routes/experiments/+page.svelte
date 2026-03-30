@@ -60,14 +60,30 @@
   let filterDialogOpen = $state(false);
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const selectedModel = $derived(page.url.searchParams.get('model_id') || '');
+  const selectedProfileInstance = $derived(page.url.searchParams.get('profile_instance_id') || '');
+  const updatedFrom = $derived(page.url.searchParams.get('updated_from') || '');
+  const updatedTo = $derived(page.url.searchParams.get('updated_to') || '');
+  const evaluationCountMin = $derived(page.url.searchParams.get('evaluation_count_min') || '');
+  const evaluationCountMax = $derived(page.url.searchParams.get('evaluation_count_max') || '');
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
+  const parseOptionalInt = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return undefined;
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
 
   const experimentsQuery = createQuery<ExperimentListResponse>(
     toStore(() => ({
-      queryKey: ['experiments', selectedModel, currentPage],
+      queryKey: ['experiments', selectedModel, selectedProfileInstance, updatedFrom, updatedTo, evaluationCountMin, evaluationCountMax, currentPage],
       queryFn: () =>
         api.experiments.list({
           model_id: selectedModel || undefined,
+          profile_instance_id: selectedProfileInstance || undefined,
+          updated_from: updatedFrom || undefined,
+          updated_to: updatedTo || undefined,
+          evaluation_count_min: parseOptionalInt(evaluationCountMin),
+          evaluation_count_max: parseOptionalInt(evaluationCountMax),
           limit: PAGE_SIZE,
           offset: (currentPage - 1) * PAGE_SIZE
         })
@@ -93,13 +109,24 @@
       : ''
   );
   const experimentFilterDefaults = {
-    model_id: ''
+    model_id: '',
+    profile_instance_id: '',
+    updated_from: '',
+    updated_to: '',
+    evaluation_count_min: '',
+    evaluation_count_max: ''
   };
   const experimentFilterValues = $derived({
-    model_id: selectedModel
+    model_id: selectedModel,
+    profile_instance_id: selectedProfileInstance,
+    updated_from: updatedFrom,
+    updated_to: updatedTo,
+    evaluation_count_min: evaluationCountMin,
+    evaluation_count_max: evaluationCountMax
   });
   const experimentFilterFields = $derived<ListFilterField[]>([
     {
+      section: '条件',
       type: 'select',
       key: 'model_id',
       label: 'モデル',
@@ -110,9 +137,41 @@
           label: model.name ?? model.id
         }))
       ]
+    },
+    {
+      section: '条件',
+      type: 'text',
+      key: 'profile_instance_id',
+      label: 'プロファイル',
+      placeholder: 'プロファイル ID で絞り込み'
+    },
+    {
+      section: '期間・範囲',
+      type: 'date-range',
+      keyFrom: 'updated_from',
+      keyTo: 'updated_to',
+      label: '更新日時'
+    },
+    {
+      section: '期間・範囲',
+      type: 'number-range',
+      keyMin: 'evaluation_count_min',
+      keyMax: 'evaluation_count_max',
+      label: '評価回数',
+      min: 0,
+      step: 1,
+      placeholderMin: '最小',
+      placeholderMax: '最大'
     }
   ]);
-  const hasActiveFilters = $derived(Boolean(selectedModel));
+  const hasActiveFilters = $derived(
+    Boolean(selectedModel) ||
+      Boolean(selectedProfileInstance) ||
+      Boolean(updatedFrom) ||
+      Boolean(updatedTo) ||
+      Boolean(evaluationCountMin) ||
+      Boolean(evaluationCountMax)
+  );
 
   const navigateToPage = async (nextPage: number) => {
     const href = buildPageHref(page.url, nextPage);
@@ -128,6 +187,11 @@
   const applyExperimentFilters = async (values: Record<string, string>) => {
     const nextHref = buildUrlWithQueryState(page.url, {
       model_id: values.model_id || null,
+      profile_instance_id: values.profile_instance_id || null,
+      updated_from: values.updated_from || null,
+      updated_to: values.updated_to || null,
+      evaluation_count_min: values.evaluation_count_min || null,
+      evaluation_count_max: values.evaluation_count_max || null,
       page: null
     });
     filterDialogOpen = false;

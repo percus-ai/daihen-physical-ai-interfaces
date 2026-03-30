@@ -68,6 +68,18 @@
       total_count?: number;
       available_count?: number;
     }>;
+    profile_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
+    upload_status_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
   };
   type UserConfigResponse = {
     user_id?: string;
@@ -144,9 +156,23 @@
   const recordingSortKey = $derived(parseRecordingSortKey(page.url.searchParams.get('sort')));
   const recordingSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
   const recordingOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
+  const recordingProfileFilter = $derived(page.url.searchParams.get('profile') || 'all');
+  const recordingUploadFilter = $derived(page.url.searchParams.get('upload_status') || 'all');
   const recordingSearch = $derived(page.url.searchParams.get('search') || '');
+  const recordingCreatedFrom = $derived(page.url.searchParams.get('created_from') || '');
+  const recordingCreatedTo = $derived(page.url.searchParams.get('created_to') || '');
+  const recordingSizeMin = $derived(page.url.searchParams.get('size_min') || '');
+  const recordingSizeMax = $derived(page.url.searchParams.get('size_max') || '');
+  const recordingEpisodeMin = $derived(page.url.searchParams.get('episodes_min') || '');
+  const recordingEpisodeMax = $derived(page.url.searchParams.get('episodes_max') || '');
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
   const recordingSortQuery = $derived(recordingSortKey === 'status' ? 'upload_status' : recordingSortKey);
+  const parseOptionalInt = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return undefined;
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
 
   const recordingsQuery = createQuery<RecordingListResponse>(
     toStore(() => ({
@@ -155,7 +181,15 @@
         'recordings',
         {
           ownerUserId: recordingOwnerFilter === 'all' ? undefined : recordingOwnerFilter,
+          profileName: recordingProfileFilter === 'all' ? undefined : recordingProfileFilter,
+          uploadStatus: recordingUploadFilter === 'all' ? undefined : recordingUploadFilter,
           search: recordingSearch || undefined,
+          createdFrom: recordingCreatedFrom || undefined,
+          createdTo: recordingCreatedTo || undefined,
+          sizeMin: parseOptionalInt(recordingSizeMin),
+          sizeMax: parseOptionalInt(recordingSizeMax),
+          episodeCountMin: parseOptionalInt(recordingEpisodeMin),
+          episodeCountMax: parseOptionalInt(recordingEpisodeMax),
           sortBy: recordingSortQuery,
           sortOrder: recordingSortOrder,
           limit: PAGE_SIZE,
@@ -165,7 +199,15 @@
       queryFn: () =>
         api.recording.list({
           ownerUserId: recordingOwnerFilter === 'all' ? undefined : recordingOwnerFilter,
+          profileName: recordingProfileFilter === 'all' ? undefined : recordingProfileFilter,
+          uploadStatus: recordingUploadFilter === 'all' ? undefined : recordingUploadFilter,
           search: recordingSearch || undefined,
+          createdFrom: recordingCreatedFrom || undefined,
+          createdTo: recordingCreatedTo || undefined,
+          sizeMin: parseOptionalInt(recordingSizeMin),
+          sizeMax: parseOptionalInt(recordingSizeMax),
+          episodeCountMin: parseOptionalInt(recordingEpisodeMin),
+          episodeCountMax: parseOptionalInt(recordingEpisodeMax),
           sortBy: recordingSortQuery,
           sortOrder: recordingSortOrder,
           limit: PAGE_SIZE,
@@ -192,7 +234,15 @@
   const applyRecordFilters = async (values: Record<string, string>) => {
     const nextHref = buildUrlWithQueryState(page.url, {
       owner: values.owner !== 'all' ? values.owner : null,
+      profile: values.profile !== 'all' ? values.profile : null,
+      upload_status: values.upload_status !== 'all' ? values.upload_status : null,
       search: values.search || null,
+      created_from: values.created_from || null,
+      created_to: values.created_to || null,
+      size_min: values.size_min || null,
+      size_max: values.size_max || null,
+      episodes_min: values.episodes_min || null,
+      episodes_max: values.episodes_max || null,
       sort: recordingSortKey !== 'created_at' ? recordingSortKey : null,
       order: recordingSortOrder !== 'desc' ? recordingSortOrder : null,
       page: null
@@ -298,29 +348,122 @@
     }
     return options;
   });
+  const recordingProfileOptions = $derived($recordingsQuery.data?.profile_options ?? []);
+  const recordingUploadOptions = $derived($recordingsQuery.data?.upload_status_options ?? []);
+  const withAllOption = (
+    currentValue: string,
+    options: Array<{ value: string; label: string; available_count?: number }>
+  ) => {
+    const nextOptions = [
+      { value: 'all', label: 'すべて' },
+      ...options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        disabled: option.available_count === 0 && option.value !== currentValue
+      }))
+    ];
+    if (currentValue !== 'all' && !nextOptions.some((option) => option.value === currentValue)) {
+      nextOptions.push({ value: currentValue, label: currentValue });
+    }
+    return nextOptions;
+  };
+  const recordingProfileSelectOptions = $derived(withAllOption(recordingProfileFilter, recordingProfileOptions));
+  const recordingUploadSelectOptions = $derived(withAllOption(recordingUploadFilter, recordingUploadOptions));
   const recordingFilterDefaults = {
     search: '',
-    owner: 'all'
+    owner: 'all',
+    profile: 'all',
+    upload_status: 'all',
+    created_from: '',
+    created_to: '',
+    size_min: '',
+    size_max: '',
+    episodes_min: '',
+    episodes_max: ''
   };
   const recordingFilterValues = $derived({
     search: recordingSearch,
-    owner: recordingOwnerFilter
+    owner: recordingOwnerFilter,
+    profile: recordingProfileFilter,
+    upload_status: recordingUploadFilter,
+    created_from: recordingCreatedFrom,
+    created_to: recordingCreatedTo,
+    size_min: recordingSizeMin,
+    size_max: recordingSizeMax,
+    episodes_min: recordingEpisodeMin,
+    episodes_max: recordingEpisodeMax
   });
   const recordingFilterFields = $derived<ListFilterField[]>([
     {
+      section: '検索',
       type: 'text',
       key: 'search',
       label: 'データセット名',
       placeholder: 'データセット名で検索'
     },
     {
+      section: '条件',
       type: 'select',
       key: 'owner',
       label: '作成者',
       options: recordingOwnerSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'profile',
+      label: 'プロファイル',
+      options: recordingProfileSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'upload_status',
+      label: '送信状態',
+      options: recordingUploadSelectOptions
+    },
+    {
+      section: '期間・範囲',
+      type: 'date-range',
+      keyFrom: 'created_from',
+      keyTo: 'created_to',
+      label: '作成日時'
+    },
+    {
+      section: '期間・範囲',
+      type: 'number-range',
+      keyMin: 'size_min',
+      keyMax: 'size_max',
+      label: 'サイズ',
+      min: 0,
+      step: 1,
+      placeholderMin: '最小',
+      placeholderMax: '最大'
+    },
+    {
+      section: '期間・範囲',
+      type: 'number-range',
+      keyMin: 'episodes_min',
+      keyMax: 'episodes_max',
+      label: 'エピソード数',
+      min: 0,
+      step: 1,
+      placeholderMin: '最小',
+      placeholderMax: '最大'
     }
   ]);
-  const hasActiveRecordingFilters = $derived(Boolean(recordingSearch) || recordingOwnerFilter !== 'all');
+  const hasActiveRecordingFilters = $derived(
+    Boolean(recordingSearch) ||
+      recordingOwnerFilter !== 'all' ||
+      recordingProfileFilter !== 'all' ||
+      recordingUploadFilter !== 'all' ||
+      Boolean(recordingCreatedFrom) ||
+      Boolean(recordingCreatedTo) ||
+      Boolean(recordingSizeMin) ||
+      Boolean(recordingSizeMax) ||
+      Boolean(recordingEpisodeMin) ||
+      Boolean(recordingEpisodeMax)
+  );
   const currentUserId = $derived(String($userConfigQuery.data?.user_id ?? '').trim());
   const allDisplayedRecordingIds = $derived(displayedRecordings.map((recording) => recording.recording_id));
   const allDisplayedRecordingsSelected = $derived(

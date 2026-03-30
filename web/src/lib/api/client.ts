@@ -538,7 +538,14 @@ export type StorageDatasetListQuery = {
   ownerUserId?: string;
   status?: string;
   datasetType?: string;
+  syncStatus?: string;
   search?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  sizeMin?: number;
+  sizeMax?: number;
+  episodeCountMin?: number;
+  episodeCountMax?: number;
   limit?: number;
   offset?: number;
   sortBy?: StorageDatasetSortBy;
@@ -552,7 +559,12 @@ export type StorageModelListQuery = {
   status?: string;
   policyType?: string;
   datasetId?: string;
+  syncStatus?: string;
   search?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  sizeMin?: number;
+  sizeMax?: number;
   limit?: number;
   offset?: number;
   sortBy?: StorageModelSortBy;
@@ -561,7 +573,15 @@ export type StorageModelListQuery = {
 
 export type RecordingListQuery = {
   ownerUserId?: string;
+  profileName?: string;
+  uploadStatus?: string;
   search?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  sizeMin?: number;
+  sizeMax?: number;
+  episodeCountMin?: number;
+  episodeCountMax?: number;
   sortBy?: RecordingSortBy;
   sortOrder?: StorageSortOrder;
   limit?: number;
@@ -571,7 +591,11 @@ export type RecordingListQuery = {
 export type TrainingJobListQuery = {
   days?: number;
   ownerUserId?: string;
+  status?: string;
+  policyType?: string;
   search?: string;
+  createdFrom?: string;
+  createdTo?: string;
   sortBy?: TrainingJobSortBy;
   sortOrder?: StorageSortOrder;
   limit?: number;
@@ -1082,7 +1106,15 @@ export const api = {
       fetchApi(
         `/api/recording/recordings${buildQueryString({
           owner_user_id: query.ownerUserId,
+          profile_name: query.profileName,
+          upload_status: query.uploadStatus,
           search: query.search,
+          created_from: query.createdFrom,
+          created_to: query.createdTo,
+          size_min: query.sizeMin,
+          size_max: query.sizeMax,
+          episode_count_min: query.episodeCountMin,
+          episode_count_max: query.episodeCountMax,
           sort_by: query.sortBy,
           sort_order: query.sortOrder,
           limit: query.limit,
@@ -1173,7 +1205,14 @@ export const api = {
           owner_user_id: query.ownerUserId,
           status: query.status,
           dataset_type: query.datasetType,
+          sync_status: query.syncStatus,
           search: query.search,
+          created_from: query.createdFrom,
+          created_to: query.createdTo,
+          size_min: query.sizeMin,
+          size_max: query.sizeMax,
+          episode_count_min: query.episodeCountMin,
+          episode_count_max: query.episodeCountMax,
           limit: query.limit,
           offset: query.offset,
           sort_by: query.sortBy,
@@ -1189,7 +1228,12 @@ export const api = {
           status: query.status,
           policy_type: query.policyType,
           dataset_id: query.datasetId,
+          sync_status: query.syncStatus,
           search: query.search,
+          created_from: query.createdFrom,
+          created_to: query.createdTo,
+          size_min: query.sizeMin,
+          size_max: query.sizeMax,
           limit: query.limit,
           offset: query.offset,
           sort_by: query.sortBy,
@@ -1311,10 +1355,23 @@ export const api = {
       fetchApi(`/api/storage/archive/models/${modelId}`, { method: 'DELETE' })
   },
   experiments: {
-    list: (params: { model_id?: string; profile_instance_id?: string; limit?: number; offset?: number } = {}) => {
+    list: (params: {
+      model_id?: string;
+      profile_instance_id?: string;
+      updated_from?: string;
+      updated_to?: string;
+      evaluation_count_min?: number;
+      evaluation_count_max?: number;
+      limit?: number;
+      offset?: number;
+    } = {}) => {
       const query = new URLSearchParams();
       if (params.model_id) query.set('model_id', params.model_id);
       if (params.profile_instance_id) query.set('profile_instance_id', params.profile_instance_id);
+      if (params.updated_from) query.set('updated_from', params.updated_from);
+      if (params.updated_to) query.set('updated_to', params.updated_to);
+      if (typeof params.evaluation_count_min === 'number') query.set('evaluation_count_min', String(params.evaluation_count_min));
+      if (typeof params.evaluation_count_max === 'number') query.set('evaluation_count_max', String(params.evaluation_count_max));
       if (typeof params.limit === 'number') query.set('limit', String(params.limit));
       if (typeof params.offset === 'number') query.set('offset', String(params.offset));
       const queryString = query.toString();
@@ -1376,7 +1433,11 @@ export const api = {
         `/api/training/jobs${buildQueryString({
           days: query.days,
           owner_user_id: query.ownerUserId,
+          status: query.status,
+          policy_type: query.policyType,
           search: query.search,
+          created_from: query.createdFrom,
+          created_to: query.createdTo,
           sort_by: query.sortBy,
           sort_order: query.sortOrder,
           limit: query.limit,

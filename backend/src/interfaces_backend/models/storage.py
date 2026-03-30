@@ -47,6 +47,9 @@ class DatasetListResponse(BaseModel):
     datasets: List[DatasetInfo]
     total: int
     owner_options: List["OwnerFilterOption"] = Field(default_factory=list)
+    profile_options: List["ValueFilterOption"] = Field(default_factory=list)
+    dataset_type_options: List["ValueFilterOption"] = Field(default_factory=list)
+    sync_status_options: List["ValueFilterOption"] = Field(default_factory=list)
 
 
 class OwnerFilterOption(BaseModel):
@@ -56,6 +59,13 @@ class OwnerFilterOption(BaseModel):
     owner_email: Optional[str] = Field(None, description="Owner email")
     total_count: int = Field(0, description="Total matching items in the current page scope")
     available_count: int = Field(0, description="Matching items under the current filters excluding owner")
+
+
+class ValueFilterOption(BaseModel):
+    value: str = Field(..., description="Raw filter value")
+    label: str = Field(..., description="Display label")
+    total_count: int = Field(0, description="Total matching items in the current page scope")
+    available_count: int = Field(0, description="Matching items under the current filters excluding this field")
 
 
 StorageSortOrder = Literal["asc", "desc"]
@@ -69,7 +79,14 @@ class DatasetListQuery(BaseModel):
     owner_user_id: Optional[str] = Field(None, description="Filter by owner user id")
     status: Optional[str] = Field(None, description="Filter by dataset status")
     dataset_type: Optional[str] = Field(None, description="Filter by dataset type")
+    sync_status: Optional[str] = Field(None, description="Filter by sync status")
     search: Optional[str] = Field(None, description="Search dataset name")
+    created_from: Optional[str] = Field(None, description="Filter by creation time lower bound")
+    created_to: Optional[str] = Field(None, description="Filter by creation time upper bound")
+    size_min: Optional[int] = Field(None, ge=0, description="Minimum dataset size in bytes")
+    size_max: Optional[int] = Field(None, ge=0, description="Maximum dataset size in bytes")
+    episode_count_min: Optional[int] = Field(None, ge=0, description="Minimum episode count")
+    episode_count_max: Optional[int] = Field(None, ge=0, description="Maximum episode count")
     limit: Optional[int] = Field(None, ge=1, le=500, description="Maximum number of results to return")
     offset: int = Field(0, ge=0, description="Number of matching rows to skip")
     sort_by: DatasetListSortBy = Field("created_at", description="Dataset list sort field")
@@ -163,6 +180,9 @@ class ModelListResponse(BaseModel):
     models: List[ModelInfo]
     total: int
     owner_options: List[OwnerFilterOption] = Field(default_factory=list)
+    profile_options: List[ValueFilterOption] = Field(default_factory=list)
+    policy_type_options: List[ValueFilterOption] = Field(default_factory=list)
+    sync_status_options: List[ValueFilterOption] = Field(default_factory=list)
 
 
 class ModelListQuery(BaseModel):
@@ -172,7 +192,12 @@ class ModelListQuery(BaseModel):
     status: Optional[str] = Field(None, description="Filter by model status")
     policy_type: Optional[str] = Field(None, description="Filter by policy type")
     dataset_id: Optional[str] = Field(None, description="Filter by source dataset id")
+    sync_status: Optional[str] = Field(None, description="Filter by sync status")
     search: Optional[str] = Field(None, description="Search model name")
+    created_from: Optional[str] = Field(None, description="Filter by creation time lower bound")
+    created_to: Optional[str] = Field(None, description="Filter by creation time upper bound")
+    size_min: Optional[int] = Field(None, ge=0, description="Minimum model size in bytes")
+    size_max: Optional[int] = Field(None, ge=0, description="Maximum model size in bytes")
     limit: Optional[int] = Field(None, ge=1, le=500, description="Maximum number of results to return")
     offset: int = Field(0, ge=0, description="Number of matching rows to skip")
     sort_by: ModelListSortBy = Field("created_at", description="Model list sort field")

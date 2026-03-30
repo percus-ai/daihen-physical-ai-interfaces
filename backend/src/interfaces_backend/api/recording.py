@@ -137,6 +137,8 @@ class RecordingListResponse(BaseModel):
     recordings: List[RecordingInfo]
     total: int
     owner_options: List["RecordingOwnerFilterOption"] = Field(default_factory=list)
+    profile_options: List["RecordingValueFilterOption"] = Field(default_factory=list)
+    upload_status_options: List["RecordingValueFilterOption"] = Field(default_factory=list)
 
 
 class RecordingOwnerFilterOption(BaseModel):
@@ -144,6 +146,13 @@ class RecordingOwnerFilterOption(BaseModel):
     label: str
     owner_name: Optional[str] = None
     owner_email: Optional[str] = None
+    total_count: int = 0
+    available_count: int = 0
+
+
+class RecordingValueFilterOption(BaseModel):
+    value: str
+    label: str
     total_count: int = 0
     available_count: int = 0
 
@@ -197,6 +206,111 @@ def _to_float(value: Any, *, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_query_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_optional_text(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _parse_filter_datetime(value: str | None) -> datetime | None:
+    normalized = _normalize_optional_text(value)
+    if not normalized:
+        return None
+    try:
+        if len(normalized) == 10:
+            return datetime.fromisoformat(f"{normalized}T00:00:00+00:00")
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _matches_datetime_range(value: Any, start: datetime | None, end: datetime | None) -> bool:
+    if start is None and end is None:
+        return True
+    normalized = _normalize_optional_text(value)
+    if not normalized:
+        return False
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    if start and parsed < start:
+        return False
+    if end and parsed > end:
+        return False
+    return True
+
+
+def _matches_int_range(value: Any, minimum: int | None, maximum: int | None) -> bool:
+    if minimum is None and maximum is None:
+        return True
+    parsed = _to_int(value, default=0)
+    if minimum is not None and parsed < minimum:
+        return False
+    if maximum is not None and parsed > maximum:
+        return False
+    return True
+
+
+def _normalize_upload_filter_value(status_snapshot: dict[str, Any], is_uploaded: bool) -> str:
+    normalized_status = _normalize_query_text(status_snapshot.get("status"))
+    if normalized_status == "running":
+        return "running"
+    if normalized_status == "failed":
+        return "failed"
+    return "uploaded" if is_uploaded else "idle"
+
+
+def _upload_filter_label(value: str) -> str:
+    return {
+        "running": "送信中",
+        "failed": "失敗",
+        "uploaded": "送信済",
+        "idle": "未送信",
+    }.get(value, value)
+
+
+def _build_recording_value_filter_options(
+    all_records: list[dict],
+    available_records: list[dict],
+    *,
+    value_getter,
+    label_getter=None,
+) -> list[RecordingValueFilterOption]:
+    total_counts: dict[str, int] = {}
+    available_counts: dict[str, int] = {}
+
+    for record in all_records:
+        value = _normalize_optional_text(value_getter(record))
+        if not value:
+            continue
+        total_counts[value] = total_counts.get(value, 0) + 1
+
+    for record in available_records:
+        value = _normalize_optional_text(value_getter(record))
+        if not value:
+            continue
+        available_counts[value] = available_counts.get(value, 0) + 1
+
+    options = [
+        RecordingValueFilterOption(
+            value=value,
+            label=label_getter(value) if label_getter else value,
+            total_count=total_count,
+            available_count=available_counts.get(value, 0),
+        )
+        for value, total_count in total_counts.items()
+    ]
+    options.sort(key=lambda option: (option.label.lower(), option.value))
+    return options
 
 
 def _build_continue_plan_from_row(row: dict) -> RecordingContinuePlanResponse:
@@ -929,13 +1043,28 @@ def _build_recording_owner_filter_options(
 async def _list_recordings(
     *,
     owner_user_id: str | None = None,
+    profile_name: str | None = None,
+    upload_status: str | None = None,
     search: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    size_min: int | None = None,
+    size_max: int | None = None,
+    episode_count_min: int | None = None,
+    episode_count_max: int | None = None,
     sort_by: RecordingListSortBy = "created_at",
     sort_order: SortOrder = "desc",
     limit: int | None = None,
     offset: int = 0,
-) -> tuple[list[dict], int, list[RecordingOwnerFilterOption]]:
+) -> tuple[
+    list[dict],
+    int,
+    list[RecordingOwnerFilterOption],
+    list[RecordingValueFilterOption],
+    list[RecordingValueFilterOption],
+]:
     client = await get_supabase_async_client()
+    lifecycle = get_dataset_lifecycle()
     rows = (
         await client.table("datasets")
         .select(
@@ -950,7 +1079,14 @@ async def _list_recordings(
     )
 
     normalized_search = _normalize_query_text(search)
-    available_records: list[dict] = []
+    normalized_profile_name = _normalize_optional_text(profile_name)
+    normalized_upload_status = _normalize_optional_text(upload_status)
+    created_from_dt = _parse_filter_datetime(created_from)
+    created_to_dt = _parse_filter_datetime(created_to)
+    if created_to_dt and len(str(created_to or "").strip()) == 10:
+        created_to_dt = created_to_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    enriched_records: list[dict] = []
     for row in filtered:
         normalized_owner_user_id = str(row.get("owner_user_id") or "").strip()
 
@@ -958,20 +1094,49 @@ async def _list_recordings(
         enriched_row = dict(row)
         enriched_row["owner_email"] = owner_entry.email or None if owner_entry else None
         enriched_row["owner_name"] = owner_entry.name or None if owner_entry else None
+        upload_snapshot = lifecycle.get_dataset_upload_status(str(row.get("id") or ""))
+        enriched_row["upload_filter_value"] = _normalize_upload_filter_value(
+            upload_snapshot,
+            bool(str(row.get("content_hash") or "").strip()),
+        )
+        enriched_records.append(enriched_row)
 
-        if normalized_search and normalized_search not in _normalize_query_text(enriched_row.get("name")):
-            continue
+    def _matches(record: dict, *, skip_owner: bool = False, skip_profile: bool = False, skip_upload: bool = False) -> bool:
+        if normalized_search and normalized_search not in _normalize_query_text(record.get("name")):
+            return False
+        if not skip_profile and normalized_profile_name and _normalize_optional_text(record.get("profile_name")) != normalized_profile_name:
+            return False
+        if not skip_upload and normalized_upload_status and _normalize_optional_text(record.get("upload_filter_value")) != normalized_upload_status:
+            return False
+        if not skip_owner and owner_user_id and str(record.get("owner_user_id") or "").strip() != str(owner_user_id).strip():
+            return False
+        if not _matches_datetime_range(record.get("created_at"), created_from_dt, created_to_dt):
+            return False
+        if not _matches_int_range(record.get("size_bytes"), size_min, size_max):
+            return False
+        if not _matches_int_range(record.get("episode_count"), episode_count_min, episode_count_max):
+            return False
+        return True
 
-        available_records.append(enriched_row)
+    available_records = [record for record in enriched_records if _matches(record, skip_owner=True)]
+    owner_available_records = available_records
+    profile_available_records = [record for record in enriched_records if _matches(record, skip_profile=True)]
+    upload_available_records = [record for record in enriched_records if _matches(record, skip_upload=True)]
 
-    owner_options = _build_recording_owner_filter_options(filtered, available_records, owner_directory)
-    records = available_records
-    if owner_user_id:
-        normalized_owner_user_id = str(owner_user_id).strip()
-        records = [
-            record for record in available_records
-            if str(record.get("owner_user_id") or "").strip() == normalized_owner_user_id
-        ]
+    owner_options = _build_recording_owner_filter_options(filtered, owner_available_records, owner_directory)
+    profile_options = _build_recording_value_filter_options(
+        enriched_records,
+        profile_available_records,
+        value_getter=lambda record: record.get("profile_name"),
+    )
+    upload_status_options = _build_recording_value_filter_options(
+        enriched_records,
+        upload_available_records,
+        value_getter=lambda record: record.get("upload_filter_value"),
+        label_getter=_upload_filter_label,
+    )
+
+    records = [record for record in enriched_records if _matches(record)]
 
     reverse = sort_order == "desc"
 
@@ -998,21 +1163,37 @@ async def _list_recordings(
         records = records[offset:]
     if limit is not None:
         records = records[:limit]
-    return records, total, owner_options
+    return records, total, owner_options, profile_options, upload_status_options
 
 
 @router.get("/recordings", response_model=RecordingListResponse)
 async def list_recordings(
     owner_user_id: Optional[str] = Query(None, description="Filter by owner user id"),
-    search: Optional[str] = Query(None, description="Search recording, task, profile, and owner fields"),
+    profile_name: Optional[str] = Query(None, description="Filter by profile name"),
+    upload_status: Optional[str] = Query(None, description="Filter by upload status"),
+    search: Optional[str] = Query(None, description="Search recording name"),
+    created_from: Optional[str] = Query(None, description="Created-at lower bound"),
+    created_to: Optional[str] = Query(None, description="Created-at upper bound"),
+    size_min: Optional[int] = Query(None, ge=0, description="Minimum size in bytes"),
+    size_max: Optional[int] = Query(None, ge=0, description="Maximum size in bytes"),
+    episode_count_min: Optional[int] = Query(None, ge=0, description="Minimum episode count"),
+    episode_count_max: Optional[int] = Query(None, ge=0, description="Maximum episode count"),
     sort_by: RecordingListSortBy = Query("created_at", description="Sort field"),
     sort_order: SortOrder = Query("desc", description="Sort direction"),
     limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
 ):
-    recordings_data, total, owner_options = await _list_recordings(
+    recordings_data, total, owner_options, profile_options, upload_status_options = await _list_recordings(
         owner_user_id=owner_user_id,
+        profile_name=profile_name,
+        upload_status=upload_status,
         search=search,
+        created_from=created_from,
+        created_to=created_to,
+        size_min=size_min,
+        size_max=size_max,
+        episode_count_min=episode_count_min,
+        episode_count_max=episode_count_max,
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,
@@ -1045,7 +1226,13 @@ async def list_recordings(
                 is_uploaded=bool(str(row.get("content_hash") or "").strip()),
             )
         )
-    return RecordingListResponse(recordings=recordings, total=total, owner_options=owner_options)
+    return RecordingListResponse(
+        recordings=recordings,
+        total=total,
+        owner_options=owner_options,
+        profile_options=profile_options,
+        upload_status_options=upload_status_options,
+    )
 
 
 @router.get(

@@ -90,6 +90,8 @@ class JobListResponse(BaseModel):
     jobs: list[JobInfo]
     total: int
     owner_options: list["TrainingOwnerFilterOption"] = Field(default_factory=list)
+    status_options: list["TrainingValueFilterOption"] = Field(default_factory=list)
+    policy_options: list["TrainingValueFilterOption"] = Field(default_factory=list)
 
 
 class TrainingOwnerFilterOption(BaseModel):
@@ -97,6 +99,13 @@ class TrainingOwnerFilterOption(BaseModel):
     label: str
     owner_name: Optional[str] = None
     owner_email: Optional[str] = None
+    total_count: int = 0
+    available_count: int = 0
+
+
+class TrainingValueFilterOption(BaseModel):
+    value: str
+    label: str
     total_count: int = 0
     available_count: int = 0
 

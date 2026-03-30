@@ -44,6 +44,7 @@ from interfaces_backend.models.training import (
     JobListResponse,
     JobListSortBy,
     TrainingOwnerFilterOption,
+    TrainingValueFilterOption,
     JobDetailResponse,
     JobLogsResponse,
     JobProgressResponse,
@@ -140,6 +141,8 @@ _ISO_FRACTION_TZ_PATTERN = re.compile(r"^(?P<prefix>.+?T\d{2}:\d{2}:\d{2})(?:\.(
 
 def _parse_job_created_at(value: str) -> datetime:
     normalized = value.strip()
+    if len(normalized) == 10:
+        return datetime.fromisoformat(f"{normalized}T00:00:00+00:00")
     match = _ISO_FRACTION_TZ_PATTERN.match(normalized)
     if not match:
         raise ValueError(f"Unsupported created_at format: {value!r}")
@@ -2093,15 +2096,60 @@ def _build_training_owner_filter_options(
     return options
 
 
+def _build_training_value_filter_options(
+    all_jobs: list[dict],
+    available_jobs: list[dict],
+    *,
+    value_getter,
+    label_getter=None,
+) -> list[TrainingValueFilterOption]:
+    total_counts: dict[str, int] = {}
+    available_counts: dict[str, int] = {}
+
+    for job in all_jobs:
+        value = str(value_getter(job) or "").strip()
+        if not value:
+            continue
+        total_counts[value] = total_counts.get(value, 0) + 1
+
+    for job in available_jobs:
+        value = str(value_getter(job) or "").strip()
+        if not value:
+            continue
+        available_counts[value] = available_counts.get(value, 0) + 1
+
+    options = [
+        TrainingValueFilterOption(
+            value=value,
+            label=label_getter(value) if label_getter else value,
+            total_count=total_count,
+            available_count=available_counts.get(value, 0),
+        )
+        for value, total_count in total_counts.items()
+    ]
+    options.sort(key=lambda option: (option.label.lower(), option.value))
+    return options
+
+
 async def _list_jobs(
     days: int = 365,
     owner_user_id: Optional[str] = None,
     search: Optional[str] = None,
+    status: Optional[str] = None,
+    policy_type: Optional[str] = None,
+    created_from: Optional[str] = None,
+    created_to: Optional[str] = None,
     sort_by: JobListSortBy = "created_at",
     sort_order: SortOrder = "desc",
     limit: Optional[int] = None,
     offset: int = 0,
-) -> tuple[list[dict], int, list[TrainingOwnerFilterOption]]:
+) -> tuple[
+    list[dict],
+    int,
+    list[TrainingOwnerFilterOption],
+    list[TrainingValueFilterOption],
+    list[TrainingValueFilterOption],
+]:
     """List jobs from DB.
 
     Args:
@@ -2151,7 +2199,14 @@ async def _list_jobs(
         [str(job.get("dataset_id") or "").strip() for job in filtered]
     )
 
-    available_jobs: list[dict] = []
+    normalized_status = _normalize_query_text(status)
+    normalized_policy_type = _normalize_query_text(policy_type)
+    created_from_dt = _parse_job_created_at(created_from) if created_from else None
+    created_to_dt = _parse_job_created_at(created_to) if created_to else None
+    if created_to_dt and len(str(created_to or "").strip()) == 10:
+        created_to_dt = created_to_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    enriched_jobs: list[dict] = []
     normalized_search = _normalize_query_text(search)
     for job in filtered:
         owner_id = str(job.get("owner_user_id") or "").strip()
@@ -2163,19 +2218,47 @@ async def _list_jobs(
         enriched_job["owner_name"] = owner_entry.name or None if owner_entry else None
         enriched_job["dataset_name"] = dataset_name_map.get(dataset_id) or None
 
-        if normalized_search and normalized_search not in _normalize_query_text(enriched_job.get("job_name")):
-            continue
+        enriched_jobs.append(enriched_job)
 
-        available_jobs.append(enriched_job)
+    def _matches(job: dict, *, skip_owner: bool = False, skip_status: bool = False, skip_policy: bool = False) -> bool:
+        if normalized_search and normalized_search not in _normalize_query_text(job.get("job_name")):
+            return False
+        if not skip_owner and owner_user_id and str(job.get("owner_user_id") or "").strip() != str(owner_user_id).strip():
+            return False
+        if not skip_status and normalized_status and _normalize_query_text(job.get("status")) != normalized_status:
+            return False
+        if not skip_policy and normalized_policy_type and _normalize_query_text(job.get("policy_type")) != normalized_policy_type:
+            return False
+        if created_from_dt or created_to_dt:
+            created_at = job.get("created_at")
+            if not created_at:
+                return False
+            try:
+                created = _parse_job_created_at(str(created_at))
+            except Exception:
+                return False
+            if created_from_dt and created < created_from_dt:
+                return False
+            if created_to_dt and created > created_to_dt:
+                return False
+        return True
+
+    available_jobs = [job for job in enriched_jobs if _matches(job, skip_owner=True)]
+    status_available_jobs = [job for job in enriched_jobs if _matches(job, skip_status=True)]
+    policy_available_jobs = [job for job in enriched_jobs if _matches(job, skip_policy=True)]
 
     owner_options = _build_training_owner_filter_options(filtered, available_jobs, owner_directory)
-    enriched = available_jobs
-    if owner_user_id:
-        normalized_owner_user_id = str(owner_user_id).strip()
-        enriched = [
-            job for job in available_jobs
-            if str(job.get("owner_user_id") or "").strip() == normalized_owner_user_id
-        ]
+    status_options = _build_training_value_filter_options(
+        enriched_jobs,
+        status_available_jobs,
+        value_getter=lambda job: job.get("status"),
+    )
+    policy_options = _build_training_value_filter_options(
+        enriched_jobs,
+        policy_available_jobs,
+        value_getter=lambda job: job.get("policy_type"),
+    )
+    enriched = [job for job in enriched_jobs if _matches(job)]
 
     reverse = sort_order == "desc"
 
@@ -2196,7 +2279,7 @@ async def _list_jobs(
         enriched = enriched[offset:]
     if limit is not None:
         enriched = enriched[:limit]
-    return enriched, total, owner_options
+    return enriched, total, owner_options, status_options, policy_options
 
 
 async def _resolve_dataset_names(dataset_ids: list[str]) -> dict[str, str]:
@@ -4881,7 +4964,11 @@ async def websocket_verda_storage(websocket: WebSocket):
 async def list_jobs(
     days: int = Query(365, ge=1, le=365),
     owner_user_id: Optional[str] = Query(None),
-    search: Optional[str] = Query(None, description="Search job, dataset, policy, and owner fields"),
+    search: Optional[str] = Query(None, description="Search job name"),
+    status: Optional[str] = Query(None, description="Filter by job status"),
+    policy_type: Optional[str] = Query(None, description="Filter by policy type"),
+    created_from: Optional[str] = Query(None, description="Created-at lower bound"),
+    created_to: Optional[str] = Query(None, description="Created-at upper bound"),
     sort_by: JobListSortBy = Query("created_at", description="Sort field"),
     sort_order: SortOrder = Query("desc", description="Sort direction"),
     limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
@@ -4892,10 +4979,14 @@ async def list_jobs(
     Args:
         days: Return jobs from past N days (running jobs always included)
     """
-    jobs_data, total, owner_options = await _list_jobs(
+    jobs_data, total, owner_options, status_options, policy_options = await _list_jobs(
         days,
         owner_user_id=owner_user_id,
         search=search,
+        status=status,
+        policy_type=policy_type,
+        created_from=created_from,
+        created_to=created_to,
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,
@@ -4921,7 +5012,13 @@ async def list_jobs(
         return coerced
 
     jobs = [JobInfo(**_coerce_jobinfo_fields(j)) for j in jobs_data]
-    return JobListResponse(jobs=jobs, total=total, owner_options=owner_options)
+    return JobListResponse(
+        jobs=jobs,
+        total=total,
+        owner_options=owner_options,
+        status_options=status_options,
+        policy_options=policy_options,
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=JobDetailResponse)

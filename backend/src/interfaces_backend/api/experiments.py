@@ -224,6 +224,10 @@ async def create_experiment(request: ExperimentCreateRequest):
 async def list_experiments(
     model_id: Optional[str] = Query(None, description="Filter by model"),
     profile_instance_id: Optional[str] = Query(None, description="Filter by profile instance"),
+    updated_from: Optional[str] = Query(None, description="Updated-at lower bound"),
+    updated_to: Optional[str] = Query(None, description="Updated-at upper bound"),
+    evaluation_count_min: Optional[int] = Query(None, ge=0, description="Minimum evaluation count"),
+    evaluation_count_max: Optional[int] = Query(None, ge=0, description="Maximum evaluation count"),
     limit: int = Query(100, description="Max rows"),
     offset: int = Query(0, description="Offset"),
 ):
@@ -234,6 +238,17 @@ async def list_experiments(
         query = query.eq("model_id", model_id)
     if profile_instance_id:
         query = query.eq("profile_instance_id", profile_instance_id)
+    if updated_from:
+        query = query.gte("updated_at", updated_from)
+    if updated_to:
+        normalized_updated_to = updated_to.strip()
+        if len(normalized_updated_to) == 10:
+            normalized_updated_to = f"{normalized_updated_to}T23:59:59.999999+00:00"
+        query = query.lte("updated_at", normalized_updated_to)
+    if evaluation_count_min is not None:
+        query = query.gte("evaluation_count", evaluation_count_min)
+    if evaluation_count_max is not None:
+        query = query.lte("evaluation_count", evaluation_count_max)
     if limit > 0:
         query = query.range(offset, offset + limit - 1)
     response = await query.execute()

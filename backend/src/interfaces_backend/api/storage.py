@@ -58,6 +58,7 @@ from interfaces_backend.models.storage import (
     ModelListResponse,
     ModelListSortBy,
     OwnerFilterOption,
+    ValueFilterOption,
     ModelSyncJobAcceptedResponse,
     ModelSyncJobCancelResponse,
     ModelSyncJobListResponse,
@@ -517,6 +518,24 @@ def _apply_common_storage_list_filters(query, *, include_archived: bool, status:
     return query
 
 
+def _normalize_datetime_filter_start(value: Optional[str]) -> Optional[str]:
+    normalized = _normalize_optional_text(value)
+    if not normalized:
+        return None
+    if len(normalized) == 10:
+        return f"{normalized}T00:00:00+00:00"
+    return normalized
+
+
+def _normalize_datetime_filter_end(value: Optional[str]) -> Optional[str]:
+    normalized = _normalize_optional_text(value)
+    if not normalized:
+        return None
+    if len(normalized) == 10:
+        return f"{normalized}T23:59:59.999999+00:00"
+    return normalized
+
+
 def _apply_dataset_list_filters(query, list_query: DatasetListQuery):
     query = _apply_common_storage_list_filters(
         query,
@@ -527,10 +546,28 @@ def _apply_dataset_list_filters(query, list_query: DatasetListQuery):
     )
     profile_name = _normalize_optional_text(list_query.profile_name)
     dataset_type = _normalize_optional_text(list_query.dataset_type)
+    created_from = _normalize_datetime_filter_start(list_query.created_from)
+    created_to = _normalize_datetime_filter_end(list_query.created_to)
+    size_min = list_query.size_min
+    size_max = list_query.size_max
+    episode_count_min = list_query.episode_count_min
+    episode_count_max = list_query.episode_count_max
     if profile_name:
         query = query.eq("profile_name", profile_name)
     if dataset_type:
         query = query.eq("dataset_type", dataset_type)
+    if created_from:
+        query = query.gte("created_at", created_from)
+    if created_to:
+        query = query.lte("created_at", created_to)
+    if size_min is not None:
+        query = query.gte("size_bytes", size_min)
+    if size_max is not None:
+        query = query.lte("size_bytes", size_max)
+    if episode_count_min is not None:
+        query = query.gte("episode_count", episode_count_min)
+    if episode_count_max is not None:
+        query = query.lte("episode_count", episode_count_max)
     return query
 
 
@@ -545,12 +582,25 @@ def _apply_model_list_filters(query, list_query: ModelListQuery):
     profile_name = _normalize_optional_text(list_query.profile_name)
     policy_type = _normalize_optional_text(list_query.policy_type)
     dataset_id = _normalize_optional_text(list_query.dataset_id)
+    created_from = _normalize_datetime_filter_start(list_query.created_from)
+    created_to = _normalize_datetime_filter_end(list_query.created_to)
+    size_min = list_query.size_min
+    size_max = list_query.size_max
     if profile_name:
         query = query.eq("profile_name", profile_name)
     if policy_type:
         query = query.eq("policy_type", policy_type)
     if dataset_id:
-        query = query.eq("dataset_id", dataset_id)
+        escaped = dataset_id.replace(",", "\\,")
+        query = query.ilike("dataset_id", f"%{escaped}%")
+    if created_from:
+        query = query.gte("created_at", created_from)
+    if created_to:
+        query = query.lte("created_at", created_to)
+    if size_min is not None:
+        query = query.gte("size_bytes", size_min)
+    if size_max is not None:
+        query = query.lte("size_bytes", size_max)
     return query
 
 
@@ -563,34 +613,54 @@ def _apply_storage_list_sort_and_paging(query, *, sort_by: str, sort_order: Stor
     return query
 
 
+def _dataset_sync_status_value(dataset_id: str, active_jobs_by_dataset_id: dict[str, DatasetSyncJobStatus], is_local: bool) -> str:
+    job = active_jobs_by_dataset_id.get(dataset_id)
+    if job and job.state in {"queued", "running"}:
+        return "syncing"
+    if is_local:
+        return "synced"
+    return "not_synced"
+
+
+def _model_sync_status_value(model_id: str, active_jobs_by_model_id: dict[str, ModelSyncJobStatus], is_local: bool) -> str:
+    job = active_jobs_by_model_id.get(model_id)
+    if job and job.state in {"queued", "running"}:
+        return "syncing"
+    if is_local:
+        return "synced"
+    return "not_synced"
+
+
+def _sync_status_label(value: str) -> str:
+    if value == "syncing":
+        return "同期中"
+    if value == "synced":
+        return "同期済"
+    return "未同期"
+
+
 def _build_owner_filter_options(
-    all_rows: list[dict[str, Any]],
-    available_rows: list[dict[str, Any]],
+    items: list[DatasetInfo | ModelInfo],
+    available_items: list[DatasetInfo | ModelInfo],
     owner_directory,
 ) -> list[OwnerFilterOption]:
     total_counts: dict[str, int] = {}
     available_counts: dict[str, int] = {}
 
-    for row in all_rows:
-        owner_id = str(row.get("owner_user_id") or "").strip()
-        if not owner_id:
-            continue
-        total_counts[owner_id] = total_counts.get(owner_id, 0) + 1
+    for item in items:
+        owner_id = str(item.owner_user_id or "").strip()
+        if owner_id:
+            total_counts[owner_id] = total_counts.get(owner_id, 0) + 1
 
-    for row in available_rows:
-        owner_id = str(row.get("owner_user_id") or "").strip()
-        if not owner_id:
-            continue
-        available_counts[owner_id] = available_counts.get(owner_id, 0) + 1
+    for item in available_items:
+        owner_id = str(item.owner_user_id or "").strip()
+        if owner_id:
+            available_counts[owner_id] = available_counts.get(owner_id, 0) + 1
 
     options: list[OwnerFilterOption] = []
     for owner_id, total_count in total_counts.items():
         owner_entry = owner_directory.get(owner_id)
-        label = (
-            (owner_entry.name or "").strip()
-            or (owner_entry.email or "").strip()
-            or owner_id
-        )
+        label = ((owner_entry.name or "").strip() or (owner_entry.email or "").strip() or owner_id) if owner_entry else owner_id
         options.append(
             OwnerFilterOption(
                 user_id=owner_id,
@@ -606,23 +676,39 @@ def _build_owner_filter_options(
     return options
 
 
-async def _load_storage_owner_rows(table_name: str, list_query, *, include_search: bool) -> list[dict]:
-    query_model = list_query.model_copy(
-        update={
-            "owner_user_id": None,
-            "search": list_query.search if include_search else None,
-            "limit": None,
-            "offset": 0,
-        }
-    )
-    client = await get_supabase_async_client()
-    query = client.table(table_name).select("owner_user_id")
-    if table_name == "datasets":
-        query = _apply_dataset_list_filters(query, query_model)
-    else:
-        query = _apply_model_list_filters(query, query_model)
-    result = await query.execute()
-    return result.data or []
+def _build_value_filter_options(
+    items: list[Any],
+    available_items: list[Any],
+    *,
+    value_getter: Callable[[Any], str],
+    label_getter: Optional[Callable[[str], str]] = None,
+) -> list[ValueFilterOption]:
+    total_counts: dict[str, int] = {}
+    available_counts: dict[str, int] = {}
+
+    for item in items:
+        value = str(value_getter(item) or "").strip()
+        if value:
+            total_counts[value] = total_counts.get(value, 0) + 1
+
+    for item in available_items:
+        value = str(value_getter(item) or "").strip()
+        if value:
+            available_counts[value] = available_counts.get(value, 0) + 1
+
+    options: list[ValueFilterOption] = []
+    for value, total_count in total_counts.items():
+        options.append(
+            ValueFilterOption(
+                value=value,
+                label=label_getter(value) if label_getter else value,
+                total_count=total_count,
+                available_count=available_counts.get(value, 0),
+            )
+        )
+
+    options.sort(key=lambda option: (option.label.lower(), option.value))
+    return options
 
 
 def _normalize_sort_text(value: Any) -> str:
@@ -668,19 +754,23 @@ async def _load_model_rows(list_query: ModelListQuery) -> tuple[list[dict], int]
 
 
 async def _list_datasets(list_query: DatasetListQuery) -> DatasetListResponse:
-    rows, total = await _load_dataset_rows(list_query)
-    owner_rows = await _load_storage_owner_rows("datasets", list_query, include_search=False)
-    available_owner_rows = await _load_storage_owner_rows("datasets", list_query, include_search=True)
-    owner_directory = await resolve_user_directory_entries(
-        [
-            str(row.get("owner_user_id") or "").strip()
-            for row in [*rows, *owner_rows, *available_owner_rows]
-        ]
+    base_query = list_query.model_copy(
+        update={
+            "owner_user_id": None,
+            "profile_name": None,
+            "dataset_type": None,
+            "sync_status": None,
+            "limit": None,
+            "offset": 0,
+        }
     )
-    owner_options = _build_owner_filter_options(owner_rows, available_owner_rows, owner_directory)
+    rows, _ = await _load_dataset_rows(base_query)
+    owner_directory = await resolve_user_directory_entries(
+        [str(row.get("owner_user_id") or "").strip() for row in rows]
+    )
     active_jobs = get_dataset_sync_jobs_service().list(user_id=require_user_id(), include_terminal=False).jobs
     active_jobs_by_dataset_id = {job.dataset_id: job for job in active_jobs}
-    datasets = []
+    datasets: list[DatasetInfo] = []
     for row in rows:
         dataset = _dataset_row_to_info(row)
         owner_user_id = str(row.get("owner_user_id") or "").strip()
@@ -688,6 +778,54 @@ async def _list_datasets(list_query: DatasetListQuery) -> DatasetListResponse:
         dataset.owner_email = owner_entry.email or None if owner_entry else None
         dataset.owner_name = owner_entry.name or None if owner_entry else None
         datasets.append(dataset)
+
+    def _matches(dataset: DatasetInfo, *, ignore: frozenset[str] = frozenset()) -> bool:
+        if "owner_user_id" not in ignore:
+            owner_filter = _normalize_optional_text(list_query.owner_user_id)
+            if owner_filter and _normalize_optional_text(dataset.owner_user_id) != owner_filter:
+                return False
+        if "profile_name" not in ignore:
+            profile_filter = _normalize_optional_text(list_query.profile_name)
+            if profile_filter and _normalize_optional_text(dataset.profile_name) != profile_filter:
+                return False
+        if "dataset_type" not in ignore:
+            dataset_type_filter = _normalize_optional_text(list_query.dataset_type)
+            if dataset_type_filter and _normalize_optional_text(dataset.dataset_type) != dataset_type_filter:
+                return False
+        if "sync_status" not in ignore:
+            sync_status_filter = _normalize_optional_text(list_query.sync_status)
+            if sync_status_filter:
+                current_sync_status = _dataset_sync_status_value(
+                    dataset.id, active_jobs_by_dataset_id, bool(dataset.is_local)
+                )
+                if current_sync_status != sync_status_filter:
+                    return False
+        return True
+
+    owner_options = _build_owner_filter_options(
+        datasets,
+        [dataset for dataset in datasets if _matches(dataset, ignore=frozenset({"owner_user_id"}))],
+        owner_directory,
+    )
+    profile_options = _build_value_filter_options(
+        datasets,
+        [dataset for dataset in datasets if _matches(dataset, ignore=frozenset({"profile_name"}))],
+        value_getter=lambda dataset: dataset.profile_name or "",
+    )
+    dataset_type_options = _build_value_filter_options(
+        datasets,
+        [dataset for dataset in datasets if _matches(dataset, ignore=frozenset({"dataset_type"}))],
+        value_getter=lambda dataset: dataset.dataset_type or "",
+    )
+    sync_status_options = _build_value_filter_options(
+        datasets,
+        [dataset for dataset in datasets if _matches(dataset, ignore=frozenset({"sync_status"}))],
+        value_getter=lambda dataset: _dataset_sync_status_value(
+            dataset.id, active_jobs_by_dataset_id, bool(dataset.is_local)
+        ),
+        label_getter=_sync_status_label,
+    )
+    filtered = [dataset for dataset in datasets if _matches(dataset)]
 
     reverse = list_query.sort_order == "desc"
 
@@ -710,27 +848,39 @@ async def _list_datasets(list_query: DatasetListQuery) -> DatasetListResponse:
             primary = str(dataset.created_at or "")
         return primary, str(dataset.id or "")
 
-    datasets.sort(key=_sort_key, reverse=reverse)
-    paged = datasets[list_query.offset:]
+    filtered.sort(key=_sort_key, reverse=reverse)
+    total = len(filtered)
+    paged = filtered[list_query.offset:]
     if list_query.limit is not None:
         paged = paged[:list_query.limit]
-    return DatasetListResponse(datasets=paged, total=total, owner_options=owner_options)
+    return DatasetListResponse(
+        datasets=paged,
+        total=total,
+        owner_options=owner_options,
+        profile_options=profile_options,
+        dataset_type_options=dataset_type_options,
+        sync_status_options=sync_status_options,
+    )
 
 
 async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
-    rows, total = await _load_model_rows(list_query)
-    owner_rows = await _load_storage_owner_rows("models", list_query, include_search=False)
-    available_owner_rows = await _load_storage_owner_rows("models", list_query, include_search=True)
-    owner_directory = await resolve_user_directory_entries(
-        [
-            str(row.get("owner_user_id") or "").strip()
-            for row in [*rows, *owner_rows, *available_owner_rows]
-        ]
+    base_query = list_query.model_copy(
+        update={
+            "owner_user_id": None,
+            "profile_name": None,
+            "policy_type": None,
+            "sync_status": None,
+            "limit": None,
+            "offset": 0,
+        }
     )
-    owner_options = _build_owner_filter_options(owner_rows, available_owner_rows, owner_directory)
+    rows, _ = await _load_model_rows(base_query)
+    owner_directory = await resolve_user_directory_entries(
+        [str(row.get("owner_user_id") or "").strip() for row in rows]
+    )
     active_jobs = get_model_sync_jobs_service().list(user_id=require_user_id(), include_terminal=False).jobs
     active_jobs_by_model_id = {job.model_id: job for job in active_jobs}
-    models = []
+    models: list[ModelInfo] = []
     for row in rows:
         model = _model_row_to_info(row)
         owner_user_id = str(row.get("owner_user_id") or "").strip()
@@ -738,6 +888,54 @@ async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
         model.owner_email = owner_entry.email or None if owner_entry else None
         model.owner_name = owner_entry.name or None if owner_entry else None
         models.append(model)
+
+    def _matches(model: ModelInfo, *, ignore: frozenset[str] = frozenset()) -> bool:
+        if "owner_user_id" not in ignore:
+            owner_filter = _normalize_optional_text(list_query.owner_user_id)
+            if owner_filter and _normalize_optional_text(model.owner_user_id) != owner_filter:
+                return False
+        if "profile_name" not in ignore:
+            profile_filter = _normalize_optional_text(list_query.profile_name)
+            if profile_filter and _normalize_optional_text(model.profile_name) != profile_filter:
+                return False
+        if "policy_type" not in ignore:
+            policy_filter = _normalize_optional_text(list_query.policy_type)
+            if policy_filter and _normalize_optional_text(model.policy_type) != policy_filter:
+                return False
+        if "sync_status" not in ignore:
+            sync_status_filter = _normalize_optional_text(list_query.sync_status)
+            if sync_status_filter:
+                current_sync_status = _model_sync_status_value(
+                    model.id, active_jobs_by_model_id, bool(model.is_local)
+                )
+                if current_sync_status != sync_status_filter:
+                    return False
+        return True
+
+    owner_options = _build_owner_filter_options(
+        models,
+        [model for model in models if _matches(model, ignore=frozenset({"owner_user_id"}))],
+        owner_directory,
+    )
+    profile_options = _build_value_filter_options(
+        models,
+        [model for model in models if _matches(model, ignore=frozenset({"profile_name"}))],
+        value_getter=lambda model: model.profile_name or "",
+    )
+    policy_type_options = _build_value_filter_options(
+        models,
+        [model for model in models if _matches(model, ignore=frozenset({"policy_type"}))],
+        value_getter=lambda model: model.policy_type or "",
+    )
+    sync_status_options = _build_value_filter_options(
+        models,
+        [model for model in models if _matches(model, ignore=frozenset({"sync_status"}))],
+        value_getter=lambda model: _model_sync_status_value(
+            model.id, active_jobs_by_model_id, bool(model.is_local)
+        ),
+        label_getter=_sync_status_label,
+    )
+    filtered = [model for model in models if _matches(model)]
 
     reverse = list_query.sort_order == "desc"
 
@@ -760,11 +958,19 @@ async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
             primary = str(model.created_at or "")
         return primary, str(model.id or "")
 
-    models.sort(key=_sort_key, reverse=reverse)
-    paged = models[list_query.offset:]
+    filtered.sort(key=_sort_key, reverse=reverse)
+    total = len(filtered)
+    paged = filtered[list_query.offset:]
     if list_query.limit is not None:
         paged = paged[:list_query.limit]
-    return ModelListResponse(models=paged, total=total, owner_options=owner_options)
+    return ModelListResponse(
+        models=paged,
+        total=total,
+        owner_options=owner_options,
+        profile_options=profile_options,
+        policy_type_options=policy_type_options,
+        sync_status_options=sync_status_options,
+    )
 
 
 async def _require_dataset_row(client, dataset_id: str) -> dict:
@@ -799,7 +1005,14 @@ async def list_datasets(
     owner_user_id: Optional[str] = Query(None, description="Filter by owner user id"),
     status: Optional[str] = Query(None, description="Filter by dataset status"),
     dataset_type: Optional[str] = Query(None, description="Filter by dataset type"),
+    sync_status: Optional[str] = Query(None, description="Filter by sync status"),
     search: Optional[str] = Query(None, description="Search dataset name"),
+    created_from: Optional[str] = Query(None, description="Filter by creation time lower bound"),
+    created_to: Optional[str] = Query(None, description="Filter by creation time upper bound"),
+    size_min: Optional[int] = Query(None, ge=0, description="Minimum size in bytes"),
+    size_max: Optional[int] = Query(None, ge=0, description="Maximum size in bytes"),
+    episode_count_min: Optional[int] = Query(None, ge=0, description="Minimum episode count"),
+    episode_count_max: Optional[int] = Query(None, ge=0, description="Maximum episode count"),
     limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
     sort_by: DatasetListSortBy = Query("created_at", description="Sort field"),
@@ -813,7 +1026,14 @@ async def list_datasets(
             owner_user_id=owner_user_id,
             status=status,
             dataset_type=dataset_type,
+            sync_status=sync_status,
             search=search,
+            created_from=created_from,
+            created_to=created_to,
+            size_min=size_min,
+            size_max=size_max,
+            episode_count_min=episode_count_min,
+            episode_count_max=episode_count_max,
             limit=limit,
             offset=offset,
             sort_by=sort_by,
@@ -1510,7 +1730,12 @@ async def list_models(
     status: Optional[str] = Query(None, description="Filter by model status"),
     policy_type: Optional[str] = Query(None, description="Filter by policy type"),
     dataset_id: Optional[str] = Query(None, description="Filter by source dataset id"),
+    sync_status: Optional[str] = Query(None, description="Filter by sync status"),
     search: Optional[str] = Query(None, description="Search model name"),
+    created_from: Optional[str] = Query(None, description="Filter by creation time lower bound"),
+    created_to: Optional[str] = Query(None, description="Filter by creation time upper bound"),
+    size_min: Optional[int] = Query(None, ge=0, description="Minimum size in bytes"),
+    size_max: Optional[int] = Query(None, ge=0, description="Maximum size in bytes"),
     limit: Optional[int] = Query(None, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
     sort_by: ModelListSortBy = Query("created_at", description="Sort field"),
@@ -1525,7 +1750,12 @@ async def list_models(
             status=status,
             policy_type=policy_type,
             dataset_id=dataset_id,
+            sync_status=sync_status,
             search=search,
+            created_from=created_from,
+            created_to=created_to,
+            size_min=size_min,
+            size_max=size_max,
             limit=limit,
             offset=offset,
             sort_by=sort_by,

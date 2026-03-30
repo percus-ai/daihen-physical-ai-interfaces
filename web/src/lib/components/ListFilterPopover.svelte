@@ -2,7 +2,7 @@
   import FunnelSimple from 'phosphor-svelte/lib/FunnelSimple';
   import { Button, Popover } from 'bits-ui';
   import { preventModalAutoFocus } from '$lib/components/modal/focus';
-  import { resolveFilterValues, type ListFilterField } from '$lib/listFilters';
+  import { getFieldKeys, resolveFilterValues, type ListFilterField } from '$lib/listFilters';
 
   type Props = {
     open?: boolean;
@@ -49,15 +49,36 @@
     };
   };
 
+  const sections = $derived.by(() => {
+    const orderedSections: string[] = [];
+    const fieldsBySection = new Map<string, ListFilterField[]>();
+    for (const field of fields) {
+      const section = field.section ?? '条件';
+      if (!fieldsBySection.has(section)) {
+        orderedSections.push(section);
+        fieldsBySection.set(section, []);
+      }
+      fieldsBySection.get(section)?.push(field);
+    }
+    return orderedSections.map((section) => ({
+      section,
+      fields: fieldsBySection.get(section) ?? []
+    }));
+  });
+
   const resetDraft = () => {
     draftValues = resolveFilterValues(fields, defaults, defaults);
   };
 
   const hasChanges = $derived.by(() =>
-    fields.some((field) => (draftValues[field.key] ?? '') !== (values[field.key] ?? defaults[field.key] ?? ''))
+    fields.some((field) =>
+      getFieldKeys(field).some((key) => (draftValues[key] ?? '') !== (values[key] ?? defaults[key] ?? ''))
+    )
   );
   const canClear = $derived.by(() =>
-    fields.some((field) => (draftValues[field.key] ?? defaults[field.key] ?? '') !== (defaults[field.key] ?? ''))
+    fields.some((field) =>
+      getFieldKeys(field).some((key) => (draftValues[key] ?? defaults[key] ?? '') !== (defaults[key] ?? ''))
+    )
   );
 
   const handleApply = async (event?: SubmitEvent) => {
@@ -90,32 +111,83 @@
           <h3 class="text-sm font-semibold text-slate-900">表示設定</h3>
         </div>
 
-        <div class="mt-4 space-y-4">
-          {#each fields as field (field.key)}
-            <label class="block text-sm text-slate-700">
-              <span class="label">{field.label}</span>
-              {#if field.type === 'text'}
-                <input
-                  class="input mt-2"
-                  type="text"
-                  value={draftValues[field.key] ?? ''}
-                  placeholder={field.placeholder ?? ''}
-                  disabled={pending}
-                  oninput={(event) => updateDraftValue(field.key, event.currentTarget.value)}
-                />
-              {:else}
-                <select
-                  class="input mt-2"
-                  value={draftValues[field.key] ?? ''}
-                  disabled={pending}
-                  onchange={(event) => updateDraftValue(field.key, event.currentTarget.value)}
-                >
-                  {#each field.options as option}
-                    <option value={option.value} disabled={option.disabled}>{option.label}</option>
-                  {/each}
-                </select>
-              {/if}
-            </label>
+        <div class="mt-4 space-y-5">
+          {#each sections as { section, fields: sectionFields } (section)}
+            <section>
+              <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{section}</h4>
+              <div class="mt-3 space-y-4">
+                {#each sectionFields as field (`${section}:${field.label}`)}
+                  <label class="block text-sm text-slate-700">
+                    <span class="label">{field.label}</span>
+                    {#if field.type === 'text'}
+                      <input
+                        class="input mt-2"
+                        type="text"
+                        value={draftValues[field.key] ?? ''}
+                        placeholder={field.placeholder ?? ''}
+                        disabled={pending}
+                        oninput={(event) => updateDraftValue(field.key, event.currentTarget.value)}
+                      />
+                    {:else if field.type === 'select'}
+                      <select
+                        class="input mt-2"
+                        value={draftValues[field.key] ?? ''}
+                        disabled={pending}
+                        onchange={(event) => updateDraftValue(field.key, event.currentTarget.value)}
+                      >
+                        {#each field.options as option}
+                          <option value={option.value} disabled={option.disabled}>{option.label}</option>
+                        {/each}
+                      </select>
+                    {:else if field.type === 'date-range'}
+                      <div class="mt-2 grid grid-cols-2 gap-2">
+                        <input
+                          class="input"
+                          type="date"
+                          value={draftValues[field.keyFrom] ?? ''}
+                          placeholder={field.placeholderFrom ?? ''}
+                          disabled={pending}
+                          oninput={(event) => updateDraftValue(field.keyFrom, event.currentTarget.value)}
+                        />
+                        <input
+                          class="input"
+                          type="date"
+                          value={draftValues[field.keyTo] ?? ''}
+                          placeholder={field.placeholderTo ?? ''}
+                          disabled={pending}
+                          oninput={(event) => updateDraftValue(field.keyTo, event.currentTarget.value)}
+                        />
+                      </div>
+                    {:else}
+                      <div class="mt-2 grid grid-cols-2 gap-2">
+                        <input
+                          class="input"
+                          type="number"
+                          value={draftValues[field.keyMin] ?? ''}
+                          placeholder={field.placeholderMin ?? ''}
+                          min={field.min}
+                          max={field.max}
+                          step={field.step ?? 1}
+                          disabled={pending}
+                          oninput={(event) => updateDraftValue(field.keyMin, event.currentTarget.value)}
+                        />
+                        <input
+                          class="input"
+                          type="number"
+                          value={draftValues[field.keyMax] ?? ''}
+                          placeholder={field.placeholderMax ?? ''}
+                          min={field.min}
+                          max={field.max}
+                          step={field.step ?? 1}
+                          disabled={pending}
+                          oninput={(event) => updateDraftValue(field.keyMax, event.currentTarget.value)}
+                        />
+                      </div>
+                    {/if}
+                  </label>
+                {/each}
+              </div>
+            </section>
           {/each}
         </div>
 

@@ -75,6 +75,24 @@
       total_count?: number;
       available_count?: number;
     }>;
+    profile_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
+    policy_type_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
+    sync_status_options?: Array<{
+      value: string;
+      label: string;
+      total_count?: number;
+      available_count?: number;
+    }>;
   };
 
   type ModelStatusTab = 'active' | 'archived';
@@ -102,7 +120,15 @@
   const modelSortKey = $derived(parseModelSortKey(page.url.searchParams.get('sort')));
   const modelSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
   const modelOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
+  const modelProfileFilter = $derived(page.url.searchParams.get('profile') || 'all');
+  const modelPolicyFilter = $derived(page.url.searchParams.get('policy') || 'all');
+  const modelSyncFilter = $derived(page.url.searchParams.get('sync_status') || 'all');
   const modelSearch = $derived(page.url.searchParams.get('search') || '');
+  const modelDatasetFilter = $derived(page.url.searchParams.get('dataset') || '');
+  const modelCreatedFrom = $derived(page.url.searchParams.get('created_from') || '');
+  const modelCreatedTo = $derived(page.url.searchParams.get('created_to') || '');
+  const modelSizeMin = $derived(page.url.searchParams.get('size_min') || '');
+  const modelSizeMax = $derived(page.url.searchParams.get('size_max') || '');
   let jobsById = $state<Record<string, ModelSyncJobStatus>>({});
   let activeJobsByModelId = $state<Record<string, ModelSyncJobStatus>>({});
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
@@ -121,17 +147,34 @@
 
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
+  const parseOptionalInt = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return undefined;
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
 
   const modelsQuery = createQuery<ModelListResponse>(
     toStore(() => {
       const status = modelStatusTab;
       const ownerUserId = modelOwnerFilter === 'all' ? undefined : modelOwnerFilter;
+      const profileName = modelProfileFilter === 'all' ? undefined : modelProfileFilter;
+      const policyType = modelPolicyFilter === 'all' ? undefined : modelPolicyFilter;
+      const syncStatus = modelSyncFilter === 'all' ? undefined : modelSyncFilter;
       const search = modelSearch || undefined;
       return {
         queryKey: qk.storage.models({
           status,
           ownerUserId,
+          profileName,
+          policyType,
+          datasetId: modelDatasetFilter || undefined,
+          syncStatus,
           search,
+          createdFrom: modelCreatedFrom || undefined,
+          createdTo: modelCreatedTo || undefined,
+          sizeMin: parseOptionalInt(modelSizeMin),
+          sizeMax: parseOptionalInt(modelSizeMax),
           sortBy: modelSortKey,
           sortOrder: modelSortOrder,
           limit: PAGE_SIZE,
@@ -141,7 +184,15 @@
           api.storage.models({
             status,
             ownerUserId,
+            profileName,
+            policyType,
+            datasetId: modelDatasetFilter || undefined,
+            syncStatus,
             search,
+            createdFrom: modelCreatedFrom || undefined,
+            createdTo: modelCreatedTo || undefined,
+            sizeMin: parseOptionalInt(modelSizeMin),
+            sizeMax: parseOptionalInt(modelSizeMax),
             sortBy: modelSortKey,
             sortOrder: modelSortOrder,
             limit: PAGE_SIZE,
@@ -181,6 +232,26 @@
 
   const syncPending = $derived(syncAllPending);
   const modelOwnerOptions = $derived($modelsQuery.data?.owner_options ?? []);
+  const modelProfileOptions = $derived($modelsQuery.data?.profile_options ?? []);
+  const modelPolicyOptions = $derived($modelsQuery.data?.policy_type_options ?? []);
+  const modelSyncOptions = $derived($modelsQuery.data?.sync_status_options ?? []);
+  const withAllOption = (
+    currentValue: string,
+    options: Array<{ value: string; label: string; available_count?: number }>
+  ) => {
+    const nextOptions = [
+      { value: 'all', label: 'すべて' },
+      ...options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        disabled: option.available_count === 0 && option.value !== currentValue
+      }))
+    ];
+    if (currentValue !== 'all' && !nextOptions.some((option) => option.value === currentValue)) {
+      nextOptions.push({ value: currentValue, label: currentValue });
+    }
+    return nextOptions;
+  };
   const modelOwnerSelectOptions = $derived.by(() => {
     const options = [
       { value: 'all', label: '全員' },
@@ -195,29 +266,107 @@
     }
     return options;
   });
+  const modelProfileSelectOptions = $derived(withAllOption(modelProfileFilter, modelProfileOptions));
+  const modelPolicySelectOptions = $derived(withAllOption(modelPolicyFilter, modelPolicyOptions));
+  const modelSyncSelectOptions = $derived(withAllOption(modelSyncFilter, modelSyncOptions));
   const modelFilterDefaults = {
     search: '',
-    owner: 'all'
+    owner: 'all',
+    profile: 'all',
+    policy: 'all',
+    sync_status: 'all',
+    dataset: '',
+    created_from: '',
+    created_to: '',
+    size_min: '',
+    size_max: ''
   };
   const modelFilterValues = $derived({
     search: modelSearch,
-    owner: modelOwnerFilter
+    owner: modelOwnerFilter,
+    profile: modelProfileFilter,
+    policy: modelPolicyFilter,
+    sync_status: modelSyncFilter,
+    dataset: modelDatasetFilter,
+    created_from: modelCreatedFrom,
+    created_to: modelCreatedTo,
+    size_min: modelSizeMin,
+    size_max: modelSizeMax
   });
   const modelFilterFields = $derived<ListFilterField[]>([
     {
+      section: '検索',
       type: 'text',
       key: 'search',
       label: '名前',
       placeholder: '名前で検索'
     },
     {
+      section: '条件',
       type: 'select',
       key: 'owner',
       label: '作成者',
       options: modelOwnerSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'profile',
+      label: 'プロファイル',
+      options: modelProfileSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'policy',
+      label: 'ポリシー',
+      options: modelPolicySelectOptions
+    },
+    {
+      section: '条件',
+      type: 'select',
+      key: 'sync_status',
+      label: '同期状態',
+      options: modelSyncSelectOptions
+    },
+    {
+      section: '条件',
+      type: 'text',
+      key: 'dataset',
+      label: '元データセット',
+      placeholder: 'データセット ID で絞り込み'
+    },
+    {
+      section: '期間・範囲',
+      type: 'date-range',
+      keyFrom: 'created_from',
+      keyTo: 'created_to',
+      label: '作成日時'
+    },
+    {
+      section: '期間・範囲',
+      type: 'number-range',
+      keyMin: 'size_min',
+      keyMax: 'size_max',
+      label: 'サイズ',
+      min: 0,
+      step: 1,
+      placeholderMin: '最小',
+      placeholderMax: '最大'
     }
   ]);
-  const hasActiveModelFilters = $derived(Boolean(modelSearch) || modelOwnerFilter !== 'all');
+  const hasActiveModelFilters = $derived(
+    Boolean(modelSearch) ||
+      modelOwnerFilter !== 'all' ||
+      modelProfileFilter !== 'all' ||
+      modelPolicyFilter !== 'all' ||
+      modelSyncFilter !== 'all' ||
+      Boolean(modelDatasetFilter) ||
+      Boolean(modelCreatedFrom) ||
+      Boolean(modelCreatedTo) ||
+      Boolean(modelSizeMin) ||
+      Boolean(modelSizeMax)
+  );
   const sortIconClass = 'text-slate-400 transition group-hover:text-slate-600';
   const sortableHeaderButtonClass =
     'group inline-flex items-center gap-1 font-semibold text-slate-400 transition hover:text-slate-700';
@@ -280,7 +429,15 @@
     const nextHref = buildUrlWithQueryState(page.url, {
       status: modelStatusTab !== 'active' ? modelStatusTab : null,
       owner: values.owner !== 'all' ? values.owner : null,
+      profile: values.profile !== 'all' ? values.profile : null,
+      policy: values.policy !== 'all' ? values.policy : null,
+      sync_status: values.sync_status !== 'all' ? values.sync_status : null,
       search: values.search || null,
+      dataset: values.dataset || null,
+      created_from: values.created_from || null,
+      created_to: values.created_to || null,
+      size_min: values.size_min || null,
+      size_max: values.size_max || null,
       sort: modelSortKey !== 'created_at' ? modelSortKey : null,
       order: modelSortOrder !== 'desc' ? modelSortOrder : null,
       page: null
