@@ -894,10 +894,78 @@ def test_list_jobs_includes_recent_vast_jobs_with_five_digit_fraction(monkeypatc
     async def fake_get_supabase_async_client():
         return _Client()
 
-    monkeypatch.setattr(training, "get_supabase_async_client", fake_get_supabase_async_client)
+    async def fake_resolve_user_directory_entries(_user_ids):
+        return {}
 
-    result = asyncio.run(training._list_jobs(days=365, owner_user_id="user-123"))
-    assert [job["job_id"] for job in result] == ["job-vast-1", "job-vast-2"]
+    async def fake_resolve_dataset_names(_dataset_ids):
+        return {}
+
+    monkeypatch.setattr(training, "get_supabase_async_client", fake_get_supabase_async_client)
+    monkeypatch.setattr(training, "resolve_user_directory_entries", fake_resolve_user_directory_entries)
+    monkeypatch.setattr(training, "_resolve_dataset_names", fake_resolve_dataset_names)
+
+    jobs, total, *_ = asyncio.run(training._list_jobs(days=365))
+    assert total == 2
+    assert [job["job_id"] for job in jobs] == ["job-vast-1", "job-vast-2"]
+
+
+def test_list_jobs_status_filter_uses_query_parameter(monkeypatch):
+    rows = [
+        {
+            "job_id": "job-1",
+            "job_name": "first completed",
+            "status": "completed",
+            "policy_type": "pi05",
+            "owner_user_id": "user-1",
+            "created_at": "2026-03-08T05:15:57.42918+00:00",
+            "deleted_at": None,
+        },
+        {
+            "job_id": "job-2",
+            "job_name": "second failed",
+            "status": "failed",
+            "policy_type": "pi05",
+            "owner_user_id": "user-1",
+            "created_at": "2026-03-08T04:39:08.34181+00:00",
+            "deleted_at": None,
+        },
+    ]
+
+    class _Query:
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def is_(self, *_args, **_kwargs):
+            return self
+
+        async def execute(self):
+            return types.SimpleNamespace(data=rows)
+
+    class _Client:
+        def table(self, _name: str):
+            return _Query()
+
+    async def fake_get_supabase_async_client():
+        return _Client()
+
+    async def fake_resolve_user_directory_entries(_user_ids):
+        return {}
+
+    async def fake_resolve_dataset_names(_dataset_ids):
+        return {}
+
+    monkeypatch.setattr(training, "get_supabase_async_client", fake_get_supabase_async_client)
+    monkeypatch.setattr(training, "resolve_user_directory_entries", fake_resolve_user_directory_entries)
+    monkeypatch.setattr(training, "_resolve_dataset_names", fake_resolve_dataset_names)
+
+    jobs, total, _, status_options, _ = asyncio.run(training._list_jobs(days=365, status="failed"))
+
+    assert total == 1
+    assert [job["job_id"] for job in jobs] == ["job-2"]
+    assert [(option.value, option.total_count, option.available_count) for option in status_options] == [
+        ("completed", 1, 1),
+        ("failed", 1, 1),
+    ]
 
 
 def test_revive_rejects_non_verda_job(monkeypatch):

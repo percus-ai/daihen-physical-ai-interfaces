@@ -126,15 +126,23 @@
     creatorLabel(job.owner_name ?? job.owner_email ?? job.owner_user_id);
   const presentJobStatus = (status?: string | null) => {
     const normalized = String(status ?? '').trim().toLowerCase();
-    if (!normalized) return '-';
-    if (normalized === 'starting') return '開始中';
-    if (normalized === 'deploying') return 'デプロイ中';
-    if (normalized === 'running') return '実行中';
-    if (normalized === 'completed') return '完了';
-    if (normalized === 'failed') return '失敗';
-    if (normalized === 'stopped') return '停止';
-    if (normalized === 'terminated') return '終了';
-    return status ?? '-';
+    if (!normalized) return { label: '-', tone: 'default' as const };
+    if (normalized === 'starting') return { label: '開始中', tone: 'info' as const };
+    if (normalized === 'deploying') return { label: 'デプロイ中', tone: 'info' as const };
+    if (normalized === 'running') return { label: '実行中', tone: 'info' as const };
+    if (normalized === 'completed') return { label: '完了', tone: 'success' as const };
+    if (normalized === 'failed') return { label: '失敗', tone: 'error' as const };
+    if (normalized === 'stopped') return { label: '停止', tone: 'muted' as const };
+    if (normalized === 'terminated') return { label: '終了', tone: 'muted' as const };
+    return { label: status ?? '-', tone: 'default' as const };
+  };
+  const jobStatusClass = (status?: string | null) => {
+    const presentation = presentJobStatus(status);
+    if (presentation.tone === 'success') return 'text-emerald-600';
+    if (presentation.tone === 'error') return 'text-rose-600';
+    if (presentation.tone === 'info') return 'text-sky-600';
+    if (presentation.tone === 'muted') return 'text-slate-500';
+    return 'text-slate-600';
   };
   const jobOwnerOptions = $derived($jobsQuery.data?.owner_options ?? []);
   const jobStatusOptions = $derived($jobsQuery.data?.status_options ?? []);
@@ -421,6 +429,7 @@
           <tr><td class="py-3" colspan="7">読み込み中...</td></tr>
         {:else if displayedJobs.length}
           {#each displayedJobs as job}
+            {@const jobStatus = presentJobStatus(job.status)}
             <tr
               class="cursor-pointer border-t border-slate-200/60 transition hover:bg-slate-50 focus-within:bg-slate-50"
               tabindex="0"
@@ -441,7 +450,11 @@
                 </span>
               </td>
               <td class="py-3">{job.policy_type ?? '-'}</td>
-              <td class="py-3 text-slate-600">{presentJobStatus(job.status)}</td>
+              <td class="py-3">
+                <span class={`text-xs font-semibold ${jobStatusClass(job.status)}`}>
+                  {jobStatus.label}
+                </span>
+              </td>
               <td class="py-3 whitespace-nowrap">{formatDate(job.created_at)}</td>
               <td class="py-3 whitespace-nowrap" title={formatDate(job.updated_at)}>
                 {formatRelativeDate(job.updated_at, nowMs)}

@@ -2176,8 +2176,8 @@ async def _list_jobs(
     cutoff_date = datetime.now() - timedelta(days=days)
     filtered = []
     for job in jobs:
-        status = job.get("status")
-        if status in ("running", "starting"):
+        job_status = job.get("status")
+        if job_status in ("running", "starting"):
             filtered.append(job)
             continue
         created_at = job.get("created_at")
