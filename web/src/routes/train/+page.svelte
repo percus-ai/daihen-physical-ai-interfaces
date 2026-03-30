@@ -128,7 +128,7 @@
     const normalized = String(status ?? '').trim().toLowerCase();
     if (!normalized) return { label: '-', tone: 'default' as const };
     if (normalized === 'starting') return { label: '開始中', tone: 'info' as const };
-    if (normalized === 'deploying') return { label: 'デプロイ中', tone: 'info' as const };
+    if (normalized === 'deploying') return { label: '配備中', tone: 'info' as const };
     if (normalized === 'running') return { label: '実行中', tone: 'info' as const };
     if (normalized === 'completed') return { label: '完了', tone: 'success' as const };
     if (normalized === 'failed') return { label: '失敗', tone: 'error' as const };
@@ -139,7 +139,7 @@
   const jobStatusClass = (status?: string | null) => {
     const presentation = presentJobStatus(status);
     if (presentation.tone === 'success') return 'text-emerald-600';
-    if (presentation.tone === 'error') return 'text-rose-600';
+    if (presentation.tone === 'error') return 'text-rose-500';
     if (presentation.tone === 'info') return 'text-sky-600';
     if (presentation.tone === 'muted') return 'text-slate-500';
     return 'text-slate-600';
@@ -166,12 +166,12 @@
       { value: 'all', label: 'すべて' },
       ...jobStatusOptions.map((status) => ({
         value: status.value,
-        label: status.label,
+        label: presentJobStatus(status.value).label,
         disabled: status.available_count === 0 && status.value !== jobStatusFilter
       }))
     ];
     if (jobStatusFilter !== 'all' && !options.some((option) => option.value === jobStatusFilter)) {
-      options.push({ value: jobStatusFilter, label: jobStatusFilter });
+      options.push({ value: jobStatusFilter, label: presentJobStatus(jobStatusFilter).label });
     }
     return options;
   });
