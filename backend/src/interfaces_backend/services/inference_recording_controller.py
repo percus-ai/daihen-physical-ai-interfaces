@@ -233,6 +233,7 @@ class InferenceRecordingController:
         session: SessionState,
         task: str | None,
         denoising_steps: int | None,
+        num_episodes: int | None = None,
         episode_time_s: float | None = None,
         reset_time_s: float | None = None,
     ) -> dict | None:
@@ -259,6 +260,7 @@ class InferenceRecordingController:
             )
             return None
 
+        batch_size = max(int(num_episodes or self._batch_size), 1)
         dataset_id = generate_dataset_id()
         next_state = InferenceRecordingState(
             inference_session_id=session.id,
@@ -270,8 +272,8 @@ class InferenceRecordingController:
             episode_time_s=max(float(episode_time_s or self._default_episode_time_s), 1.0),
             reset_time_s=max(float(reset_time_s or self._default_reset_time_s), 0.0),
             denoising_steps=denoising_steps,
-            batch_size=self._batch_size,
-            target_total_episodes=self._batch_size,
+            batch_size=batch_size,
+            target_total_episodes=batch_size,
             cameras=cameras,
             arm_streams=arm_streams,
         )

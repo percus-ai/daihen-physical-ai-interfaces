@@ -12,7 +12,12 @@ class InferenceModelInfo(BaseModel):
 
     model_id: str = Field(..., description="Model ID")
     name: str = Field(..., description="Display name")
+    owner_user_id: Optional[str] = Field(None, description="Owner user id")
+    owner_name: Optional[str] = Field(None, description="Owner display name")
+    profile_name: Optional[str] = Field(None, description="VLAbor profile name")
     policy_type: Optional[str] = Field(None, description="LeRobot policy type")
+    training_steps: Optional[int] = Field(None, description="Training steps")
+    batch_size: Optional[int] = Field(None, description="Training batch size")
     source: str = Field("local", description="Model source")
     size_mb: float = Field(0.0, description="Directory size in MB")
     is_loaded: bool = Field(False, description="Selected by active worker")
@@ -25,6 +30,28 @@ class InferenceModelInfo(BaseModel):
 
 class InferenceModelsResponse(BaseModel):
     models: list[InferenceModelInfo] = Field(default_factory=list)
+    owner_options: list["InferenceOwnerOption"] = Field(default_factory=list)
+    profile_options: list["InferenceValueOption"] = Field(default_factory=list)
+    training_steps_options: list["InferenceNumericOption"] = Field(default_factory=list)
+    batch_size_options: list["InferenceNumericOption"] = Field(default_factory=list)
+
+
+class InferenceOwnerOption(BaseModel):
+    user_id: str = Field(..., description="Owner user id")
+    label: str = Field(..., description="Display label")
+    total_count: int = Field(0, description="Matching model count")
+
+
+class InferenceValueOption(BaseModel):
+    value: str = Field(..., description="Filter value")
+    label: str = Field(..., description="Display label")
+    total_count: int = Field(0, description="Matching model count")
+
+
+class InferenceNumericOption(BaseModel):
+    value: int = Field(..., description="Numeric filter value")
+    label: str = Field(..., description="Display label")
+    total_count: int = Field(0, description="Matching model count")
 
 
 class InferenceDeviceInfo(BaseModel):
@@ -104,7 +131,9 @@ class InferencePolicyOptions(BaseModel):
 class InferenceRunnerStartRequest(BaseModel):
     model_id: str
     device: Optional[str] = None
+    profile: Optional[str] = None
     task: Optional[str] = None
+    num_episodes: Optional[int] = Field(None, ge=1)
     policy_options: Optional[InferencePolicyOptions] = None
 
 

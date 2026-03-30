@@ -10,10 +10,13 @@ from fastapi import APIRouter, HTTPException
 
 from interfaces_backend.models.inference import (
     InferenceDeviceCompatibilityResponse,
+    InferenceNumericOption,
     InferenceRecordingDecisionRequest,
     InferenceRecordingDecisionResponse,
     InferenceModelInfo,
     InferenceModelsResponse,
+    InferenceOwnerOption,
+    InferenceValueOption,
     InferenceRunnerStartRequest,
     InferenceRunnerControlResponse,
     InferenceRunnerSettingsApplyRequest,
@@ -30,6 +33,7 @@ from interfaces_backend.services.inference_session import get_inference_session_
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.startup_operations import get_startup_operations_service
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
+from interfaces_backend.services.user_directory import resolve_user_directory_entries
 from percus_ai.db import get_supabase_async_client
 from percus_ai.storage.paths import get_datasets_dir, get_models_dir
 from lerobot.datasets.utils import load_tasks
@@ -218,7 +222,7 @@ async def _list_db_models() -> list[InferenceModelInfo]:
         client = await get_supabase_async_client()
         rows = (
             await client.table("models")
-            .select("id,name,policy_type,size_bytes,source,status,dataset_id")
+            .select("id,name,owner_user_id,profile_name,policy_type,training_steps,batch_size,size_bytes,source,status,dataset_id")
             .eq("status", "active")
             .execute()
         ).data or []
@@ -227,6 +231,9 @@ async def _list_db_models() -> list[InferenceModelInfo]:
         return []
 
     task_candidates_by_model = await _load_task_candidates_by_model(client, rows)
+    owner_directory = await resolve_user_directory_entries(
+        [str(row.get("owner_user_id") or "").strip() for row in rows]
+    )
     models_dir = get_models_dir()
     db_models: list[InferenceModelInfo] = []
     for row in rows:
@@ -235,13 +242,20 @@ async def _list_db_models() -> list[InferenceModelInfo]:
             continue
         local_exists = (models_dir / model_id).exists()
         name = str(row.get("name") or model_id).strip() or model_id
+        owner_user_id = str(row.get("owner_user_id") or "").strip() or None
+        owner_entry = owner_directory.get(owner_user_id or "")
         policy_type = row.get("policy_type")
         source = str(row.get("source") or ("local" if local_exists else "r2")).strip() or "r2"
         db_models.append(
             InferenceModelInfo(
                 model_id=model_id,
                 name=name,
+                owner_user_id=owner_user_id,
+                owner_name=owner_entry.name or None if owner_entry else None,
+                profile_name=str(row.get("profile_name") or "").strip() or None,
                 policy_type=policy_type if isinstance(policy_type, str) and policy_type else None,
+                training_steps=int(row.get("training_steps")) if row.get("training_steps") is not None else None,
+                batch_size=int(row.get("batch_size")) if row.get("batch_size") is not None else None,
                 source=source,
                 size_mb=_to_size_mb(row.get("size_bytes")),
                 is_loaded=False,
@@ -265,7 +279,12 @@ def _merge_models(
         merged[local.model_id] = InferenceModelInfo(
             model_id=existing.model_id,
             name=existing.name or local.name,
+            owner_user_id=existing.owner_user_id or local.owner_user_id,
+            owner_name=existing.owner_name or local.owner_name,
+            profile_name=existing.profile_name or local.profile_name,
             policy_type=local.policy_type or existing.policy_type,
+            training_steps=existing.training_steps or local.training_steps,
+            batch_size=existing.batch_size or local.batch_size,
             source=existing.source or local.source,
             size_mb=local.size_mb if local.size_mb > 0 else existing.size_mb,
             is_loaded=bool(existing.is_loaded or local.is_loaded),
@@ -286,12 +305,82 @@ def _merge_models(
     )
 
 
+def _build_owner_options(models: Sequence[InferenceModelInfo]) -> list[InferenceOwnerOption]:
+    counts: dict[tuple[str, str], int] = {}
+    for model in models:
+        user_id = str(model.owner_user_id or "").strip()
+        if not user_id:
+            continue
+        label = str(model.owner_name or user_id).strip() or user_id
+        key = (user_id, label)
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        InferenceOwnerOption(user_id=user_id, label=label, total_count=total_count)
+        for (user_id, label), total_count in sorted(counts.items(), key=lambda item: item[0][1].lower())
+    ]
+
+
+def _build_value_options(
+    models: Sequence[InferenceModelInfo],
+    *,
+    value_getter,
+) -> list[InferenceValueOption]:
+    counts: dict[str, int] = {}
+    for model in models:
+        value = str(value_getter(model) or "").strip()
+        if not value:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    return [
+        InferenceValueOption(value=value, label=value, total_count=counts[value])
+        for value in sorted(counts.keys(), key=str.lower)
+    ]
+
+
+def _build_numeric_options(
+    models: Sequence[InferenceModelInfo],
+    *,
+    value_getter,
+) -> list[InferenceNumericOption]:
+    counts: dict[int, int] = {}
+    for model in models:
+        raw_value = value_getter(model)
+        if raw_value is None:
+            continue
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if value < 0:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    return [
+        InferenceNumericOption(value=value, label=str(value), total_count=counts[value])
+        for value in sorted(counts.keys())
+    ]
+
+
 @router.get("/models", response_model=InferenceModelsResponse)
 async def list_models():
     runtime_models = get_inference_runtime_manager().list_models()
     db_models = await _list_db_models()
     models = _merge_models(db_models, runtime_models)
-    return InferenceModelsResponse(models=models)
+    return InferenceModelsResponse(
+        models=models,
+        owner_options=_build_owner_options(models),
+        profile_options=_build_value_options(
+            models,
+            value_getter=lambda model: model.profile_name,
+        ),
+        training_steps_options=_build_numeric_options(
+            models,
+            value_getter=lambda model: model.training_steps,
+        ),
+        batch_size_options=_build_numeric_options(
+            models,
+            value_getter=lambda model: model.batch_size,
+        ),
+    )
 
 
 @router.get("/device-compatibility", response_model=InferenceDeviceCompatibilityResponse)
@@ -325,7 +414,9 @@ async def _run_inference_start_operation(
     *,
     model_id: str,
     device: str | None,
+    profile: str | None,
     task: str | None,
+    num_episodes: int | None,
     policy_options: dict[str, object] | None,
 ) -> None:
     operations = get_startup_operations_service()
@@ -335,7 +426,9 @@ async def _run_inference_start_operation(
         state = await manager.create(
             model_id=model_id,
             device=device,
+            profile=profile,
             task=task,
+            num_episodes=num_episodes,
             policy_options=policy_options,
             progress_callback=progress_callback,
         )
@@ -375,7 +468,9 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
             operation.operation_id,
             model_id=request.model_id,
             device=request.device,
+            profile=request.profile,
             task=request.task,
+            num_episodes=request.num_episodes,
             policy_options=(
                 request.policy_options.model_dump(mode="python", exclude_none=True)
                 if request.policy_options
@@ -390,7 +485,12 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
         operation_id=operation.operation_id,
         success=True,
         message="Inference start operation accepted.",
-        details={"model_id": request.model_id, "device": request.device},
+        details={
+            "model_id": request.model_id,
+            "device": request.device,
+            "profile": request.profile,
+            "num_episodes": request.num_episodes,
+        },
     )
     return operation
 

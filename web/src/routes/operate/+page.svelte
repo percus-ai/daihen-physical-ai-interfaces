@@ -14,67 +14,24 @@
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
+  import InferenceModelSelector from '$lib/components/InferenceModelSelector.svelte';
   import TaskCandidateCombobox from '$lib/components/TaskCandidateCombobox.svelte';
+  import { formatBytes } from '$lib/format';
   import { START_PHASE_LABELS } from '$lib/operate/startupPhases';
+  import type {
+    InferenceDeviceCompatibilityResponse,
+    InferenceModel,
+    InferenceModelsResponse,
+    InferenceRunnerStatusResponse,
+    OperateStatusResponse,
+    RunnerStatus
+  } from '$lib/types/inference';
   import type { SystemStatusSnapshot } from '$lib/types/systemStatus';
 
-  type InferenceModel = {
-    model_id?: string;
-    name?: string;
-    policy_type?: string;
-    source?: string;
-    size_mb?: number;
-    is_loaded?: boolean;
-    is_local?: boolean;
-    task_candidates?: string[];
-  };
   const PI0_POLICY_TYPES = new Set(['pi0', 'pi05']);
 
-  type InferenceModelsResponse = {
-    models?: InferenceModel[];
-  };
-
-  type InferenceDeviceCompatibilityResponse = {
-    devices?: Array<{
-      device?: string;
-      available?: boolean;
-      memory_total_mb?: number | null;
-      memory_free_mb?: number | null;
-    }>;
-    recommended?: string;
-  };
-
-  type RunnerStatus = {
-    active?: boolean;
-    session_id?: string;
-    task?: string;
-    queue_length?: number;
-    last_error?: string;
-  };
-
-  type InferenceRunnerStatusResponse = {
-    runner_status?: RunnerStatus;
-    gpu_host_status?: {
-      status?: string;
-      session_id?: string;
-      pid?: number;
-      last_error?: string;
-    };
-  };
-
-  type OperateStatusResponse = {
-    network?: {
-      status?: string;
-      details?: {
-        zmq?: { status?: string };
-        zenoh?: { status?: string };
-        rosbridge?: { status?: string };
-      };
-    };
-  };
-
   type OperateStatusStreamPayload = {
-    vlabor_status?: Record<string, any>;
+    vlabor_status?: Record<string, unknown>;
     inference_runner_status?: InferenceRunnerStatusResponse;
     operate_status?: OperateStatusResponse;
   };
@@ -100,15 +57,10 @@
   });
 
   const resolveModelId = (model: InferenceModel) => model.model_id ?? model.name ?? '';
-
-  const formatBytes = (bytes?: number) => {
-    const value = Number(bytes ?? 0);
-    if (!Number.isFinite(value) || value <= 0) return '0 B';
-    if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-    if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(2)} MB`;
-    if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
-    return `${Math.round(value)} B`;
-  };
+  const formatDeviceMemory = (memoryMb?: number | null) =>
+    typeof memoryMb === 'number' && Number.isFinite(memoryMb) && memoryMb > 0
+      ? formatBytes(memoryMb * 1024 * 1024)
+      : '-';
 
   const refetchQuery = async (snapshot?: { refetch?: () => Promise<unknown> }) => {
     if (snapshot && typeof snapshot.refetch === 'function') {
@@ -122,6 +74,7 @@
   let taskInput = $state('');
   let taskInputMode = $state<'auto' | 'manual'>('auto');
   let taskModelId = $state('');
+  let numEpisodesInput = $state('20');
   let denoisingStepsInput = $state('10');
   let inferenceStartError = $state('');
   let inferenceStopError = $state('');
@@ -147,9 +100,27 @@
   });
 
   $effect(() => {
-    if (!selectedDevice && $inferenceDeviceQuery.data?.recommended) {
-      selectedDevice = $inferenceDeviceQuery.data.recommended ?? '';
-    }
+    const devices = ($inferenceDeviceQuery.data?.devices ?? []).filter((device) => Boolean(device.device));
+    const availableDevices = devices.filter((device) => device.available);
+    const recommendedAvailable = availableDevices.find((device) => device.device === $inferenceDeviceQuery.data?.recommended);
+    const recommendedNonCpu = recommendedAvailable?.device && recommendedAvailable.device !== 'cpu' ? recommendedAvailable : null;
+    const firstNonCpu = availableDevices.find((device) => device.device !== 'cpu');
+    const preferredDevice =
+      recommendedNonCpu?.device ??
+      firstNonCpu?.device ??
+      recommendedAvailable?.device ??
+      availableDevices[0]?.device ??
+      devices[0]?.device ??
+      'cpu';
+    const selectedAvailable = availableDevices.some((device) => device.device === selectedDevice);
+    const shouldPromoteFromCpu =
+      selectedDevice === 'cpu' &&
+      Boolean(firstNonCpu?.device) &&
+      firstNonCpu?.device !== selectedDevice;
+
+    if (selectedAvailable && !shouldPromoteFromCpu) return;
+    selectedDevice =
+      preferredDevice;
   });
 
   const disposeStartupContributor = () => {
@@ -185,6 +156,17 @@
     inferenceStartPending = true;
     inferenceStartError = '';
     inferenceStopError = '';
+    const rawNumEpisodes = numEpisodesInput.trim();
+    let numEpisodes: number | undefined;
+    if (rawNumEpisodes) {
+      const parsed = Number.parseInt(rawNumEpisodes, 10);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        inferenceStartError = 'エピソード数は 1 以上の整数で入力してください。';
+        inferenceStartPending = false;
+        return;
+      }
+      numEpisodes = parsed;
+    }
     let denoisingSteps: number | undefined;
     if (supportsDenoisingSteps) {
       const raw = denoisingStepsInput.trim();
@@ -209,6 +191,7 @@
         model_id: selectedModelId,
         device: selectedDevice || $inferenceDeviceQuery.data?.recommended,
         task: taskInput.trim() || undefined,
+        num_episodes: numEpisodes,
         policy_options: policyOptions
       })) as StartupOperationAcceptedResponse;
       if (!result?.operation_id) {
@@ -258,9 +241,13 @@
   };
 
   const runnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus);
+  const inferenceModels = $derived($inferenceModelsQuery.data?.models ?? []);
+  const deviceOptions = $derived(($inferenceDeviceQuery.data?.devices ?? []).filter((device) => Boolean(device.device)));
+  const recommendedDevice = $derived($inferenceDeviceQuery.data?.recommended ?? 'cpu');
   const selectedModel = $derived(
-    ($inferenceModelsQuery.data?.models ?? []).find((item) => resolveModelId(item) === selectedModelId)
+    inferenceModels.find((item) => resolveModelId(item) === selectedModelId)
   );
+  const selectedDeviceInfo = $derived(deviceOptions.find((device) => device.device === selectedDevice) ?? null);
   const selectedPolicyType = $derived((selectedModel?.policy_type ?? '').toLowerCase());
   const taskCandidates = $derived(selectedModel?.task_candidates ?? []);
   const supportsDenoisingSteps = $derived(PI0_POLICY_TYPES.has(selectedPolicyType));
@@ -273,6 +260,13 @@
   const showStartupBlock = $derived(Boolean(startupStatus) && (startupActive || startupState === 'failed'));
   const startupPhaseLabel = $derived(START_PHASE_LABELS[startupStatus?.phase ?? ''] ?? (startupStatus?.phase ?? '-'));
   const startupDetail = $derived(startupStatus?.detail ?? {});
+  const startupPanelClass = $derived(
+    startupState === 'failed' ? 'border-rose-200 bg-rose-50/80' : 'border-emerald-200 bg-emerald-50/70'
+  );
+  const startupTextClass = $derived(startupState === 'failed' ? 'text-rose-800' : 'text-emerald-800');
+  const startupSubtextClass = $derived(startupState === 'failed' ? 'text-rose-900/80' : 'text-emerald-900/80');
+  const startupTrackClass = $derived(startupState === 'failed' ? 'bg-rose-100' : 'bg-emerald-100');
+  const startupBarClass = $derived(startupState === 'failed' ? 'bg-rose-500' : 'bg-emerald-500');
 
   $effect(() => {
     const modelId = selectedModelId;
@@ -443,101 +437,179 @@
   {/if}
 </ActiveSessionSection>
 
-<section class="card p-6">
-  <div class="flex flex-wrap items-center justify-between gap-4">
-    <div>
-      <h2 class="text-xl font-semibold text-slate-900">推論開始</h2>
-      <p class="mt-1 text-sm text-slate-600">
-        モデルとデバイスを選択して推論を開始します。
-      </p>
+<section class="card overflow-hidden">
+  <div class="border-b border-slate-200/80 bg-[linear-gradient(140deg,rgba(91,124,250,0.14),rgba(255,184,107,0.10),rgba(255,255,255,0.98))] px-6 py-6">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <p class="label">Launch Pad</p>
+        <h2 class="mt-2 text-2xl font-semibold tracking-tight text-slate-950">推論開始</h2>
+        <p class="mt-2 text-sm leading-6 text-slate-600">
+          モデル選択、実行デバイス、タスク指定を一つの面にまとめて起動まで進めます。
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="chip">{runnerActive ? '稼働中' : '待機中'}</span>
+        <span class="chip">device: {selectedDeviceInfo?.device ?? selectedDevice ?? recommendedDevice}</span>
+        {#if selectedModel}
+          <span class="chip">{selectedModel.policy_type ?? 'unknown'}</span>
+        {/if}
+      </div>
     </div>
   </div>
 
-  <div class="mt-4">
-    <div class="nested-block p-4">
+  <div class="grid gap-6 px-6 py-6 xl:grid-cols-[minmax(0,1.18fr)_296px]">
+    <section class="nested-block flex h-full flex-col justify-start p-5">
       <div class="flex items-start justify-between gap-3">
         <div>
-          <p class="label">推論</p>
-          <h3 class="text-lg font-semibold text-slate-900">推論開始</h3>
+          <p class="label">実行設定</p>
+          <h3 class="mt-2 text-xl font-semibold text-slate-950">ランタイム</h3>
         </div>
-        <span class="chip">{runnerActive ? '稼働中' : '待機'}</span>
+        <span class="chip bg-white">{selectedDeviceInfo?.device ?? selectedDevice ?? recommendedDevice}</span>
       </div>
-      <div class="mt-4 grid gap-4 text-sm text-slate-600">
-        <label class="text-sm font-semibold text-slate-700">
-          <span class="label">推論モデル</span>
-          <select class="input mt-2" bind:value={selectedModelId}>
-            {#if $inferenceModelsQuery.isLoading}
-              <option value="">読み込み中...</option>
-            {:else if $inferenceModelsQuery.data?.models?.length}
-              {#each $inferenceModelsQuery.data.models as model}
-                {@const modelId = resolveModelId(model)}
-                <option value={modelId}>
-                  {model.name ?? modelId} ({model.policy_type ?? 'unknown'}){model.is_local ? '' : ' / 未同期'}
-                </option>
-              {/each}
-            {:else}
-              <option value="">モデルがありません</option>
-            {/if}
-          </select>
-        </label>
 
-        <div class="grid gap-3 sm:grid-cols-2">
-          <label class="text-sm font-semibold text-slate-700">
+      <div class="mt-5 space-y-5">
+        <div>
+          <div class="flex items-center justify-between gap-2">
             <span class="label">デバイス</span>
-            <select class="input mt-2" bind:value={selectedDevice}>
-              {#if $inferenceDeviceQuery.isLoading}
-                <option value="">読み込み中...</option>
-              {:else}
-                {#each $inferenceDeviceQuery.data?.devices ?? [] as device}
-                  <option value={device.device} disabled={!device.available}>
-                    {device.device}{device.available ? '' : ' (不可)'}
-                  </option>
-                {/each}
-                {#if !$inferenceDeviceQuery.data?.devices?.length}
-                  <option value="cpu">cpu</option>
-                {/if}
-              {/if}
-            </select>
-            <p class="mt-2 text-xs text-slate-500">推奨: {$inferenceDeviceQuery.data?.recommended ?? 'cpu'}</p>
-          </label>
-
-          <div class="text-sm font-semibold text-slate-700">
-            <div class="flex items-center justify-between gap-2">
-              <span class="label">タスク説明</span>
+            <span class="text-xs text-slate-500">推奨: {recommendedDevice}</span>
+          </div>
+          <div class="mt-3 grid gap-2 sm:grid-cols-2">
+            {#each deviceOptions as device}
               <button
                 type="button"
-                class="text-xs font-semibold text-slate-500 transition hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300"
-                onclick={clearTaskInput}
-                disabled={!taskInput.trim()}
-                aria-label="タスク説明をクリア"
+                class={`rounded-2xl border px-4 py-3 text-left transition ${
+                  selectedDevice === device.device
+                    ? 'border-sky-300 bg-sky-50/40 shadow-[0_0_0_3px_rgba(14,165,233,0.08)]'
+                    : device.available
+                      ? 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                      : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                }`}
+                onclick={() => device.available && (selectedDevice = device.device ?? 'cpu')}
+                disabled={!device.available}
+                aria-pressed={selectedDevice === device.device}
               >
-                クリア
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold text-slate-900">{device.device}</p>
+                    <p class="mt-1 text-xs text-slate-500">{device.available ? '利用可能' : '利用不可'}</p>
+                  </div>
+                  {#if device.device === recommendedDevice}
+                    <span class="chip bg-emerald-50 text-emerald-700">推奨</span>
+                  {/if}
+                </div>
+                <p class="mt-3 text-xs text-slate-500">
+                  free {formatDeviceMemory(device.memory_free_mb)} / total {formatDeviceMemory(device.memory_total_mb)}
+                </p>
               </button>
-            </div>
-            <div class="mt-2">
-              <TaskCandidateCombobox
-                items={taskCandidates}
-                value={selectedTaskCandidate}
-                inputValue={taskInput}
-                placeholder="候補からタスクを選択"
-                emptyMessage="このモデルで利用可能なタスク候補はありません。"
-                onSelect={handleTaskCandidateSelect}
-                onInput={handleTaskInput}
-              />
-            </div>
-            {#if taskCandidates.length}
-              <p class="mt-2 text-xs text-slate-500">
-                候補選択または直接入力のどちらでもタスクを指定できます。
-              </p>
-            {:else}
-              <p class="mt-2 text-xs text-slate-500">
-                このモデルに紐づく active データセットのタスク候補はありません。直接入力してください。
-              </p>
+            {/each}
+            {#if deviceOptions.length === 0}
+              <div class="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-sm text-slate-500 sm:col-span-2">
+                デバイス情報を取得できないため、`cpu` を利用します。
+              </div>
             {/if}
           </div>
         </div>
+
+        <div>
+          <div class="flex items-center justify-between gap-2">
+            <span class="label">タスク説明</span>
+            <button
+              type="button"
+              class="text-xs font-semibold text-slate-500 transition hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300"
+              onclick={clearTaskInput}
+              disabled={!taskInput.trim()}
+              aria-label="タスク説明をクリア"
+            >
+              クリア
+            </button>
+          </div>
+          <div class="mt-3">
+            <TaskCandidateCombobox
+              items={taskCandidates}
+              value={selectedTaskCandidate}
+              inputValue={taskInput}
+              placeholder="候補からタスクを選択"
+              emptyMessage="このモデルで利用可能なタスク候補はありません。"
+              onSelect={handleTaskCandidateSelect}
+              onInput={handleTaskInput}
+            />
+          </div>
+          {#if taskCandidates.length}
+            <p class="mt-2 text-xs text-slate-500">
+              候補選択または直接入力のどちらでもタスクを指定できます。
+            </p>
+          {:else}
+            <p class="mt-2 text-xs text-slate-500">
+              このモデルに紐づく active データセットのタスク候補はありません。直接入力してください。
+            </p>
+          {/if}
+        </div>
+      </div>
+    </section>
+
+    <div class="space-y-4 self-start xl:sticky xl:top-6">
+      <InferenceModelSelector
+        models={inferenceModels}
+        ownerOptions={$inferenceModelsQuery.data?.owner_options ?? []}
+        profileOptions={$inferenceModelsQuery.data?.profile_options ?? []}
+        trainingStepsOptions={$inferenceModelsQuery.data?.training_steps_options ?? []}
+        batchSizeOptions={$inferenceModelsQuery.data?.batch_size_options ?? []}
+        selectedModelId={selectedModelId}
+        loading={$inferenceModelsQuery.isLoading}
+        disabled={runnerActive || inferenceStartPending || startupActive}
+        onSelect={(modelId) => {
+          selectedModelId = modelId;
+        }}
+      />
+
+      <section class="nested-block p-4">
+        <p class="label">起動</p>
+        <div class="mt-3 space-y-3">
+          <div class="text-xs text-slate-500">
+            {#if !selectedModel}
+              推論モデルを選択してください。
+            {:else if selectedModel.is_local}
+              ローカルモデルから起動します。
+            {:else}
+              モデル未同期のため起動前に同期処理が入る可能性があります。
+            {/if}
+          </div>
+          <Button.Root
+            class="btn-primary w-full"
+            type="button"
+            onclick={handleInferenceStart}
+            disabled={inferenceStartPending || startupActive || !selectedModelId || runnerActive}
+            aria-busy={inferenceStartPending}
+          >
+            {startupActive ? '準備中...' : '推論を開始'}
+          </Button.Root>
+          {#if inferenceStartError}
+            <p class="text-xs text-rose-600">{inferenceStartError}</p>
+          {/if}
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="border-t border-slate-200/80 px-6 py-6">
+    <section class="nested-block p-4">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <p class="label">詳細設定</p>
+        <p class="text-xs text-slate-500">必要な項目のみ指定</p>
+      </div>
+      <div class="mt-3 grid gap-4 md:grid-cols-[320px_320px]">
+        <label class="block w-full max-w-[320px]">
+          <span class="label">エピソード数</span>
+          <input
+            class="input mt-2"
+            type="text"
+            inputmode="numeric"
+            bind:value={numEpisodesInput}
+            placeholder="例: 20"
+          />
+        </label>
         {#if supportsDenoisingSteps}
-          <label class="text-sm font-semibold text-slate-700">
+          <label class="block w-full max-w-[320px]">
             <span class="label">Denoising Step</span>
             <input
               class="input mt-2"
@@ -546,54 +618,41 @@
               bind:value={denoisingStepsInput}
               placeholder="例: 10"
             />
-            <p class="mt-2 text-xs text-slate-500">空欄の場合はモデル既定値を使用します。</p>
           </label>
         {/if}
+      </div>
+    </section>
+  </div>
 
-        <div class="flex flex-wrap gap-3">
-          <Button.Root
-            class="btn-primary"
-            type="button"
-            onclick={handleInferenceStart}
-            disabled={inferenceStartPending || startupActive || !selectedModelId || runnerActive}
-            aria-busy={inferenceStartPending}
-          >
-            {startupActive ? '準備中...' : '推論を開始'}
-          </Button.Root>
+  {#if showStartupBlock}
+    <div class="border-t border-slate-200/80 px-6 py-5">
+      <div class={`rounded-2xl border p-4 ${startupPanelClass}`}>
+        <div class={`flex items-center justify-between gap-3 text-xs ${startupTextClass}`}>
+          <p>{startupStatus?.message ?? '推論セッションを準備中です...'}</p>
+          <p class="font-semibold">{Math.round(startupProgressPercent)}%</p>
         </div>
-        {#if showStartupBlock}
-          <div class="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3">
-            <div class="flex items-center justify-between gap-3 text-xs text-emerald-800">
-              <p>{startupStatus?.message ?? '推論セッションを準備中です...'}</p>
-              <p class="font-semibold">{Math.round(startupProgressPercent)}%</p>
-            </div>
-            <p class="mt-1 text-xs text-emerald-900/80">フェーズ: {startupPhaseLabel}</p>
-            <div class="mt-2 h-2 overflow-hidden rounded-full bg-emerald-100">
-              <div
-                class="h-full rounded-full bg-emerald-500 transition-[width] duration-300"
-                style={`width: ${startupProgressPercent}%;`}
-              ></div>
-            </div>
-            {#if (startupDetail.total_files ?? 0) > 0 || (startupDetail.total_bytes ?? 0) > 0}
-              <p class="mt-2 text-xs text-emerald-900/80">
-                {startupDetail.files_done ?? 0}/{startupDetail.total_files ?? 0} files
-                · {formatBytes(startupDetail.transferred_bytes)} / {formatBytes(startupDetail.total_bytes)}
-                {#if startupDetail.current_file}
-                  · {startupDetail.current_file}
-                {/if}
-              </p>
+        <p class={`mt-1 text-xs ${startupSubtextClass}`}>フェーズ: {startupPhaseLabel}</p>
+        <div class={`mt-3 h-2 overflow-hidden rounded-full ${startupTrackClass}`}>
+          <div
+            class={`h-full rounded-full transition-[width] duration-300 ${startupBarClass}`}
+            style={`width: ${startupProgressPercent}%;`}
+          ></div>
+        </div>
+        {#if (startupDetail.total_files ?? 0) > 0 || (startupDetail.total_bytes ?? 0) > 0}
+          <p class={`mt-3 text-xs ${startupSubtextClass}`}>
+            {startupDetail.files_done ?? 0}/{startupDetail.total_files ?? 0} files
+            · {formatBytes(startupDetail.transferred_bytes)} / {formatBytes(startupDetail.total_bytes)}
+            {#if startupDetail.current_file}
+              · {startupDetail.current_file}
             {/if}
-            {#if startupStreamError}
-              <p class="mt-2 text-xs text-amber-700">{startupStreamError}</p>
-            {/if}
-          </div>
+          </p>
         {/if}
-        {#if inferenceStartError}
-          <p class="text-xs text-rose-600">{inferenceStartError}</p>
+        {#if startupStreamError}
+          <p class="mt-3 text-xs text-amber-700">{startupStreamError}</p>
         {/if}
       </div>
     </div>
-  </div>
+  {/if}
 </section>
 
 <OperateStatusCards snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />

@@ -82,6 +82,58 @@ def test_list_models_merges_db_and_runtime(monkeypatch):
     assert models["model_local_only"].is_local is True
 
 
+def test_list_models_includes_filter_options(monkeypatch):
+    class _FakeRuntime:
+        def list_models(self):
+            return []
+
+    async def _fake_db_models():
+        return [
+            InferenceModelInfo(
+                model_id="model-a",
+                name="model-a",
+                owner_user_id="user-1",
+                owner_name="Alice",
+                profile_name="lab-alpha",
+                policy_type="pi0",
+                training_steps=10000,
+                batch_size=32,
+                source="r2",
+                size_mb=12.0,
+                is_loaded=False,
+                is_local=False,
+            ),
+            InferenceModelInfo(
+                model_id="model-b",
+                name="model-b",
+                owner_user_id="user-2",
+                owner_name="Bob",
+                profile_name="lab-beta",
+                policy_type="pi05",
+                training_steps=20000,
+                batch_size=16,
+                source="r2",
+                size_mb=24.0,
+                is_loaded=False,
+                is_local=False,
+            ),
+        ]
+
+    monkeypatch.setattr(inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime())
+    monkeypatch.setattr(inference_api, "_list_db_models", _fake_db_models)
+
+    response = asyncio.run(inference_api.list_models())
+
+    assert [item.label for item in response.owner_options] == ["Alice", "Bob"]
+    assert [item.total_count for item in response.owner_options] == [1, 1]
+    assert [item.value for item in response.profile_options] == ["lab-alpha", "lab-beta"]
+    assert [item.total_count for item in response.profile_options] == [1, 1]
+    assert [item.value for item in response.training_steps_options] == [10000, 20000]
+    assert [item.total_count for item in response.training_steps_options] == [1, 1]
+    assert [item.value for item in response.batch_size_options] == [16, 32]
+    assert [item.total_count for item in response.batch_size_options] == [1, 1]
+
+
 def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
     models_dir = tmp_path / "models"
     (models_dir / "model_local").mkdir(parents=True, exist_ok=True)
@@ -112,6 +164,7 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
                 {
                     "id": "model_local",
                     "name": "model_local",
+                    "profile_name": "lab-alpha",
                     "policy_type": "pi05",
                     "size_bytes": 0,
                     "source": "r2",
@@ -120,6 +173,7 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
                 {
                     "id": "model_remote",
                     "name": "model_remote",
+                    "profile_name": "lab-beta",
                     "policy_type": "pi0",
                     "size_bytes": 0,
                     "source": "r2",
@@ -136,12 +190,18 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(inference_api, "get_supabase_async_client", _fake_db_client)
     monkeypatch.setattr(inference_api, "get_models_dir", lambda: models_dir)
     monkeypatch.setattr(inference_api, "_load_task_candidates_by_model", _fake_task_candidates)
+    async def _fake_owner_directory(_ids):
+        return {}
+
+    monkeypatch.setattr(inference_api, "resolve_user_directory_entries", _fake_owner_directory)
 
     models = asyncio.run(inference_api._list_db_models())
     mapped = {item.model_id: item for item in models}
 
     assert mapped["model_local"].is_local is True
+    assert mapped["model_local"].profile_name == "lab-alpha"
     assert mapped["model_remote"].is_local is False
+    assert mapped["model_remote"].profile_name == "lab-beta"
     assert mapped["model_remote"].task_candidates == ["pick and place"]
 
 
@@ -442,7 +502,7 @@ def test_start_inference_runner_returns_operation_id(monkeypatch):
 
     response = asyncio.run(
         inference_api.start_inference_runner(
-            InferenceRunnerStartRequest(model_id="model-a", device="cpu", task="pick")
+            InferenceRunnerStartRequest(model_id="model-a", device="cpu", profile="lab-alpha", task="pick", num_episodes=12)
         )
     )
     assert response.operation_id == "op-infer"
@@ -475,11 +535,15 @@ def test_run_inference_start_operation_passes_policy_options(monkeypatch):
             "op-1",
             model_id="model-a",
             device="cpu",
+            profile="lab-alpha",
             task="pick",
+            num_episodes=12,
             policy_options={"pi0": {"denoising_steps": 12}},
         )
     )
 
     assert created_kwargs["model_id"] == "model-a"
+    assert created_kwargs["profile"] == "lab-alpha"
+    assert created_kwargs["num_episodes"] == 12
     assert created_kwargs["policy_options"] == {"pi0": {"denoising_steps": 12}}
     assert completed["target_session_id"] == "worker-session-1"

@@ -223,6 +223,11 @@ class InferenceSessionManager(BaseSessionManager):
         task_value: str,
         recording_status: dict[str, Any],
     ) -> None:
+        num_episodes = int(
+            recording_status.get("batch_size")
+            or state.extras.get("num_episodes")
+            or 20
+        )
         self._recording_sessions.register_external_session(
             session_id=dataset_id,
             profile=state.profile,
@@ -230,14 +235,14 @@ class InferenceSessionManager(BaseSessionManager):
             extras={
                 "dataset_name": f"eval-{state.id[:8]}",
                 "task": task_value,
-                "target_total_episodes": int(recording_status.get("batch_size") or 20),
+                "target_total_episodes": num_episodes,
                 "recording_started": True,
                 "external_owner": "inference",
                 "recorder_payload": self._build_inference_recording_payload(
                     dataset_id=dataset_id,
                     state=state,
                     task=task_value,
-                    num_episodes=int(recording_status.get("batch_size") or 20),
+                    num_episodes=num_episodes,
                     episode_time_s=float(recording_status.get("episode_time_s") or _DEFAULT_EPISODE_TIME_S),
                     reset_time_s=float(recording_status.get("reset_time_s") or _DEFAULT_RESET_TIME_S),
                 ),
@@ -251,6 +256,7 @@ class InferenceSessionManager(BaseSessionManager):
 
         task_value = str(state.extras.get("task") or "").strip()
         denoising_steps = state.extras.get("denoising_steps")
+        num_episodes = int(state.extras.get("num_episodes") or 20)
         episode_time_s = float(state.extras.get("episode_time_s") or _DEFAULT_EPISODE_TIME_S)
         reset_time_s = float(state.extras.get("reset_time_s") or _DEFAULT_RESET_TIME_S)
 
@@ -258,6 +264,7 @@ class InferenceSessionManager(BaseSessionManager):
             session=state,
             task=task_value,
             denoising_steps=int(denoising_steps) if denoising_steps is not None else None,
+            num_episodes=num_episodes,
             episode_time_s=episode_time_s,
             reset_time_s=reset_time_s,
         )
@@ -419,6 +426,7 @@ class InferenceSessionManager(BaseSessionManager):
             state.extras["model_id"] = kwargs["model_id"]
             state.extras["bridge_stream_config"] = bridge_stream_config
             state.extras["task"] = str(kwargs.get("task") or "").strip()
+            state.extras["num_episodes"] = max(int(kwargs.get("num_episodes") or 20), 1)
             state.extras["episode_time_s"] = _DEFAULT_EPISODE_TIME_S
             state.extras["reset_time_s"] = _DEFAULT_RESET_TIME_S
             state.extras["denoising_steps"] = self._extract_denoising_steps(kwargs.get("policy_options"))
@@ -551,6 +559,7 @@ class InferenceSessionManager(BaseSessionManager):
         status = self._recording_controller.get_status(active.id)
         if bool(active.extras.get("recording_started")):
             return status
+        status["num_episodes"] = int(active.extras.get("num_episodes") or 20)
         status["episode_time_s"] = float(active.extras.get("episode_time_s") or _DEFAULT_EPISODE_TIME_S)
         status["reset_time_s"] = float(active.extras.get("reset_time_s") or _DEFAULT_RESET_TIME_S)
         status["denoising_steps"] = active.extras.get("denoising_steps")

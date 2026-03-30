@@ -295,7 +295,9 @@ export type StartupOperationStatusResponse = {
 export type InferenceRunnerStartPayload = {
   model_id: string;
   device?: string;
+  profile?: string;
   task?: string;
+  num_episodes?: number;
   policy_options?: {
     pi0?: {
       denoising_steps?: number;

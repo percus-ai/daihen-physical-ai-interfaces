@@ -246,6 +246,7 @@ def test_resume_starts_recording_when_session_not_started() -> None:
     manager._sessions["session-1"].extras = {
         "worker_session_id": "worker-1",
         "task": "pick and place",
+        "num_episodes": 12,
         "episode_time_s": 45.0,
         "reset_time_s": 8.0,
         "denoising_steps": 6,
@@ -259,10 +260,11 @@ def test_resume_starts_recording_when_session_not_started() -> None:
             session,
             task,
             denoising_steps,
+            num_episodes=None,
             episode_time_s=None,
             reset_time_s=None,
         ):
-            _ = (task, denoising_steps, episode_time_s, reset_time_s)
+            _ = (task, denoising_steps, num_episodes, episode_time_s, reset_time_s)
             session.extras["dataset_id"] = "dataset-started"
             return {"success": True}
 
@@ -294,6 +296,7 @@ def test_apply_active_settings_updates_pending_values_before_start() -> None:
     manager._sessions["session-1"].extras = {
         "worker_session_id": "worker-1",
         "task": "old-task",
+        "num_episodes": 20,
         "episode_time_s": 60.0,
         "reset_time_s": 10.0,
         "denoising_steps": 8,
