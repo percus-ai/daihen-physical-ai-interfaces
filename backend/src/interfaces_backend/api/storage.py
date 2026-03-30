@@ -556,17 +556,73 @@ def _dataset_row_to_meta(row: dict) -> dict:
     return _dataset_row_to_info(row).model_dump()
 
 
+async def _load_dataset_row_optional(client, dataset_id: str) -> Optional[dict]:
+    try:
+        rows = (await client.table("datasets").select("*").eq("id", dataset_id).execute()).data or []
+    except Exception as exc:
+        logger.warning("Failed to load dataset row for %s: %s", dataset_id, exc)
+        return None
+    return rows[0] if rows else None
+
+
+def _join_task_detail_entries(entries: list[str]) -> Optional[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        text = _normalize_optional_text(entry)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    if not normalized:
+        return None
+    return "\n".join(normalized)
+
+
+async def _resolve_dataset_task_detail(client, row: dict, *, visited: Optional[set[str]] = None) -> Optional[str]:
+    direct = _normalize_optional_text(row.get("task_detail"))
+    if direct:
+        return direct
+
+    dataset_id = _normalize_optional_text(row.get("id"))
+    lineage = _normalize_source_datasets(row.get("source_datasets"))
+    if not dataset_id or not lineage:
+        return None
+
+    next_visited = set(visited or set())
+    if dataset_id in next_visited:
+        return None
+    next_visited.add(dataset_id)
+
+    entries: list[str] = []
+    multi_source = len(lineage) > 1
+
+    for source in lineage:
+        if source.dataset_id in next_visited:
+            continue
+
+        source_row = await _load_dataset_row_optional(client, source.dataset_id)
+        resolved_detail = None
+        if source_row:
+            resolved_detail = await _resolve_dataset_task_detail(client, source_row, visited=next_visited)
+        if not resolved_detail:
+            resolved_detail = source.task_detail
+        normalized_detail = _normalize_optional_text(resolved_detail)
+        if not normalized_detail:
+            continue
+        if multi_source:
+            entries.append(f"{source.name}: {normalized_detail}")
+            continue
+        entries.append(normalized_detail)
+
+    return _join_task_detail_entries(entries)
+
+
 async def _resolve_source_datasets(client, source_datasets: list[DatasetSourceInfo]) -> list[DatasetSourceInfo]:
     resolved: list[DatasetSourceInfo] = []
     for source in source_datasets:
         enriched = source.model_copy(deep=True)
-        try:
-            rows = (await client.table("datasets").select("*").eq("id", source.dataset_id).execute()).data or []
-        except Exception as exc:
-            logger.warning("Failed to load source dataset row for %s: %s", source.dataset_id, exc)
-            rows = []
-
-        row = rows[0] if rows else None
+        row = await _load_dataset_row_optional(client, source.dataset_id)
         if row:
             enriched.status = _normalize_optional_text(row.get("status"))
             enriched.episode_count = _coerce_int(row.get("episode_count"), 0)
@@ -575,7 +631,7 @@ async def _resolve_source_datasets(client, source_datasets: list[DatasetSourceIn
             if not enriched.content_hash:
                 enriched.content_hash = _normalize_optional_text(row.get("content_hash"))
             if not enriched.task_detail:
-                enriched.task_detail = _normalize_optional_text(row.get("task_detail"))
+                enriched.task_detail = await _resolve_dataset_task_detail(client, row)
         else:
             enriched.is_local = _dataset_is_local(source.dataset_id)
 
@@ -607,6 +663,8 @@ async def _resolve_dataset_info(client, row: dict) -> DatasetInfo:
     dataset.owner_email = owner_entry.email or None if owner_entry else None
     dataset.owner_name = owner_entry.name or None if owner_entry else None
 
+    if not dataset.task_detail:
+        dataset.task_detail = await _resolve_dataset_task_detail(client, row)
     if metadata is not None and not dataset.episode_count:
         dataset.episode_count = _coerce_int(getattr(metadata, "total_episodes", 0), 0)
     return dataset

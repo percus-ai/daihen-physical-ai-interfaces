@@ -311,3 +311,68 @@ def test_resolve_dataset_info_keeps_local_detail_empty_when_dataset_is_not_synce
 
     assert dataset.is_local is False
     assert dataset.detail is None
+
+
+def test_resolve_dataset_info_traces_task_detail_from_nested_merge_sources(monkeypatch, tmp_path: Path):
+    datasets_dir = tmp_path / "datasets"
+    datasets_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(storage_api, "get_datasets_dir", lambda: datasets_dir)
+
+    async def _fake_resolve_user_directory_entries(_ids):
+        return {}
+
+    monkeypatch.setattr(storage_api, "resolve_user_directory_entries", _fake_resolve_user_directory_entries)
+
+    client = _FakeClient(
+        {
+            "datasets": [
+                {
+                    "id": "dataset-main",
+                    "name": "Dataset Main",
+                    "dataset_type": "merged",
+                    "source_datasets": [
+                        {
+                            "dataset_id": "dataset-mid",
+                            "name": "Dataset Mid",
+                        }
+                    ],
+                },
+                {
+                    "id": "dataset-mid",
+                    "name": "Dataset Mid",
+                    "dataset_type": "merged",
+                    "source_datasets": [
+                        {
+                            "dataset_id": "dataset-leaf",
+                            "name": "Dataset Leaf",
+                        }
+                    ],
+                },
+                {
+                    "id": "dataset-leaf",
+                    "name": "Dataset Leaf",
+                    "dataset_type": "recorded",
+                    "task_detail": "stack blocks",
+                },
+            ]
+        }
+    )
+
+    dataset = asyncio.run(
+        storage_api._resolve_dataset_info(
+            client,
+            {
+                "id": "dataset-main",
+                "name": "Dataset Main",
+                "dataset_type": "merged",
+                "source_datasets": [
+                    {
+                        "dataset_id": "dataset-mid",
+                        "name": "Dataset Mid",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert dataset.task_detail == "stack blocks"
