@@ -15,6 +15,48 @@ class DatasetSourceInfo(BaseModel):
     name: str = Field(..., description="Source dataset name at merge time")
     content_hash: Optional[str] = Field(None, description="Source dataset content hash at merge time")
     task_detail: Optional[str] = Field(None, description="Source dataset task detail at merge time")
+    status: Optional[str] = Field(None, description="Current source dataset status when available")
+    episode_count: Optional[int] = Field(None, description="Current source dataset episode count when available")
+    size_bytes: Optional[int] = Field(None, description="Current source dataset size when available")
+    total_frames: Optional[int] = Field(None, description="Current source dataset frame count when available")
+    fps: Optional[float] = Field(None, description="Current source dataset fps when available")
+    duration_seconds: Optional[float] = Field(None, description="Current source dataset duration when available")
+    is_local: Optional[bool] = Field(None, description="Current source dataset local availability when available")
+
+
+class DatasetCameraInfo(BaseModel):
+    """Camera stream metadata for dataset detail views."""
+
+    key: str = Field(..., description="Camera feature key")
+    label: str = Field(..., description="Display label")
+    width: Optional[int] = Field(None, description="Camera width")
+    height: Optional[int] = Field(None, description="Camera height")
+    fps: Optional[float] = Field(None, description="Camera fps")
+    codec: Optional[str] = Field(None, description="Video codec")
+    pix_fmt: Optional[str] = Field(None, description="Pixel format")
+
+
+class DatasetSignalFieldInfo(BaseModel):
+    """Numeric signal field summary for dataset detail views."""
+
+    key: str = Field(..., description="Signal field key")
+    label: str = Field(..., description="Display label")
+    dtype: Optional[str] = Field(None, description="Signal dtype")
+    axis_count: int = Field(0, description="Axis dimension")
+    names: List[str] = Field(default_factory=list, description="Axis names")
+
+
+class DatasetDetailInfo(BaseModel):
+    """Integrated local-only detail block for dataset detail views."""
+
+    total_frames: Optional[int] = Field(None, description="Total frame count")
+    fps: Optional[float] = Field(None, description="Dataset fps")
+    duration_seconds: Optional[float] = Field(None, description="Total duration in seconds")
+    use_videos: Optional[bool] = Field(None, description="Dataset has playable videos")
+    camera_count: Optional[int] = Field(None, description="Number of camera streams")
+    signal_field_count: Optional[int] = Field(None, description="Number of supported signal fields")
+    cameras: List[DatasetCameraInfo] = Field(default_factory=list, description="Camera stream details")
+    signal_fields: List[DatasetSignalFieldInfo] = Field(default_factory=list, description="Signal field details")
 
 
 class DatasetInfo(BaseModel):
@@ -30,6 +72,9 @@ class DatasetInfo(BaseModel):
     source: str = Field("r2", description="Data source")
     status: str = Field("active", description="Data status")
     dataset_type: str = Field("recorded", description="Dataset type")
+    task_detail: Optional[str] = Field(None, description="Dataset task detail")
+    content_hash: Optional[str] = Field(None, description="Dataset content hash")
+    archived_at: Optional[str] = Field(None, description="Archive timestamp")
     source_datasets: List[DatasetSourceInfo] = Field(
         default_factory=list,
         description="Source datasets captured when this dataset was merged",
@@ -37,6 +82,7 @@ class DatasetInfo(BaseModel):
     episode_count: int = Field(0, description="Number of episodes")
     size_bytes: int = Field(0, description="Size in bytes")
     is_local: bool = Field(False, description="Dataset is downloaded locally")
+    detail: Optional[DatasetDetailInfo] = Field(None, description="Integrated local detail block")
     created_at: Optional[str] = Field(None, description="Creation time")
     updated_at: Optional[str] = Field(None, description="Last update time")
 

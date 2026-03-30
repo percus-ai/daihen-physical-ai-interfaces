@@ -46,9 +46,12 @@ from interfaces_backend.models.storage import (
     DatasetMergeJobAcceptedResponse,
     DatasetMergeJobStatus,
     DatasetInfo,
+    DatasetDetailInfo,
+    DatasetCameraInfo,
     DatasetListQuery,
     DatasetListResponse,
     DatasetListSortBy,
+    DatasetSignalFieldInfo,
     HuggingFaceDatasetImportRequest,
     HuggingFaceExportRequest,
     HuggingFaceModelImportRequest,
@@ -431,22 +434,119 @@ def _write_dataset_metadata_file(
     return compute_directory_size(dataset_root)
 
 
-def _dataset_row_to_info(row: dict) -> DatasetInfo:
+def _load_local_dataset_metadata(dataset_id: str, dataset_path: Optional[Path] = None) -> Optional[LeRobotDatasetMetadata]:
+    resolved_path = dataset_path or (get_datasets_dir() / dataset_id)
+    if not resolved_path.exists():
+        return None
+    try:
+        return LeRobotDatasetMetadata(dataset_id, root=resolved_path)
+    except Exception as exc:
+        logger.warning("Failed to load local dataset metadata for %s: %s", dataset_id, exc)
+        return None
+
+
+def _dataset_duration_seconds(metadata: LeRobotDatasetMetadata) -> Optional[float]:
+    total_frames = _coerce_int(getattr(metadata, "total_frames", 0), 0)
+    fps = _coerce_float(getattr(metadata, "fps", 0), 0.0)
+    if total_frames > 0 and fps > 0:
+        return float(total_frames) / fps
+
+    total_duration = 0.0
+    for episode_index in range(_coerce_int(getattr(metadata, "total_episodes", 0), 0)):
+        _, duration_s, _ = _episode_summary(metadata, episode_index)
+        total_duration += max(0.0, duration_s)
+    return total_duration if total_duration > 0 else None
+
+
+def _build_dataset_signal_field_infos(metadata: LeRobotDatasetMetadata) -> list[DatasetSignalFieldInfo]:
+    feature_map = metadata.features if isinstance(metadata.features, dict) else {}
+    fields: list[DatasetSignalFieldInfo] = []
+    excluded_keys = {"episode_index", "frame_index", "index", "task_index", "timestamp"}
+    for key in sorted(feature_map.keys()):
+        if key in excluded_keys:
+            continue
+        feature = feature_map.get(key)
+        if not _is_vector_feature(feature):
+            continue
+        shape = feature.get("shape") if isinstance(feature, dict) else []
+        axis_count = int(shape[0]) if isinstance(shape, (list, tuple)) and shape else 0
+        if axis_count < 1:
+            continue
+        fields.append(
+            DatasetSignalFieldInfo(
+                key=key,
+                label=key,
+                dtype=str(feature.get("dtype") or "") if isinstance(feature, dict) else "",
+                axis_count=axis_count,
+                names=_resolve_axis_names(feature, axis_count) if isinstance(feature, dict) else [],
+            )
+        )
+    return fields
+
+
+def _build_dataset_camera_infos(metadata: LeRobotDatasetMetadata) -> list[DatasetCameraInfo]:
+    cameras: list[DatasetCameraInfo] = []
+    feature_map = metadata.features if isinstance(metadata.features, dict) else {}
+    for video_key in metadata.video_keys:
+        feature = feature_map.get(video_key) if isinstance(feature_map, dict) else None
+        info = feature.get("info") if isinstance(feature, dict) else {}
+        cameras.append(
+            DatasetCameraInfo(
+                key=video_key,
+                label=_camera_label_from_key(video_key),
+                width=info.get("video.width"),
+                height=info.get("video.height"),
+                fps=info.get("video.fps"),
+                codec=info.get("video.codec"),
+                pix_fmt=info.get("video.pix_fmt"),
+            )
+        )
+    return cameras
+
+
+def _build_dataset_detail_info(metadata: LeRobotDatasetMetadata) -> DatasetDetailInfo:
+    cameras = _build_dataset_camera_infos(metadata)
+    signal_fields = _build_dataset_signal_field_infos(metadata)
+    total_frames = _coerce_int(getattr(metadata, "total_frames", 0), 0)
+    fps = _coerce_float(getattr(metadata, "fps", 0), 0.0)
+    return DatasetDetailInfo(
+        total_frames=total_frames if total_frames > 0 else None,
+        fps=fps if fps > 0 else None,
+        duration_seconds=_dataset_duration_seconds(metadata),
+        use_videos=bool(metadata.video_path) and len(metadata.video_keys) > 0,
+        camera_count=len(cameras),
+        signal_field_count=len(signal_fields),
+        cameras=cameras,
+        signal_fields=signal_fields,
+    )
+
+
+def _dataset_row_to_info(
+    row: dict,
+    *,
+    detail: Optional[DatasetDetailInfo] = None,
+    source_datasets: Optional[list[DatasetSourceInfo]] = None,
+) -> DatasetInfo:
     profile_snapshot = row.get("profile_snapshot")
     return DatasetInfo(
         id=row.get("id"),
         name=row.get("name") or row.get("id"),
         owner_user_id=row.get("owner_user_id"),
         owner_email=None,
+        owner_name=None,
         profile_name=_normalize_optional_text(row.get("profile_name")),
         profile_snapshot=profile_snapshot if isinstance(profile_snapshot, dict) else None,
         source=row.get("source") or "r2",
         status=row.get("status") or "active",
         dataset_type=row.get("dataset_type") or "recorded",
-        source_datasets=_normalize_source_datasets(row.get("source_datasets")),
+        task_detail=_normalize_optional_text(row.get("task_detail")),
+        content_hash=_normalize_optional_text(row.get("content_hash")),
+        archived_at=row.get("archived_at"),
+        source_datasets=source_datasets if source_datasets is not None else _normalize_source_datasets(row.get("source_datasets")),
         episode_count=row.get("episode_count") or 0,
         size_bytes=row.get("size_bytes") or 0,
         is_local=_dataset_is_local(row.get("id")),
+        detail=detail,
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -454,6 +554,62 @@ def _dataset_row_to_info(row: dict) -> DatasetInfo:
 
 def _dataset_row_to_meta(row: dict) -> dict:
     return _dataset_row_to_info(row).model_dump()
+
+
+async def _resolve_source_datasets(client, source_datasets: list[DatasetSourceInfo]) -> list[DatasetSourceInfo]:
+    resolved: list[DatasetSourceInfo] = []
+    for source in source_datasets:
+        enriched = source.model_copy(deep=True)
+        try:
+            rows = (await client.table("datasets").select("*").eq("id", source.dataset_id).execute()).data or []
+        except Exception as exc:
+            logger.warning("Failed to load source dataset row for %s: %s", source.dataset_id, exc)
+            rows = []
+
+        row = rows[0] if rows else None
+        if row:
+            enriched.status = _normalize_optional_text(row.get("status"))
+            enriched.episode_count = _coerce_int(row.get("episode_count"), 0)
+            enriched.size_bytes = _coerce_int(row.get("size_bytes"), 0)
+            enriched.is_local = _dataset_is_local(source.dataset_id)
+            if not enriched.content_hash:
+                enriched.content_hash = _normalize_optional_text(row.get("content_hash"))
+            if not enriched.task_detail:
+                enriched.task_detail = _normalize_optional_text(row.get("task_detail"))
+        else:
+            enriched.is_local = _dataset_is_local(source.dataset_id)
+
+        source_metadata = _load_local_dataset_metadata(source.dataset_id)
+        if source_metadata is not None:
+            detail = _build_dataset_detail_info(source_metadata)
+            enriched.total_frames = detail.total_frames
+            enriched.fps = detail.fps
+            enriched.duration_seconds = detail.duration_seconds
+            if enriched.episode_count is None:
+                enriched.episode_count = _coerce_int(getattr(source_metadata, "total_episodes", 0), 0)
+        resolved.append(enriched)
+    return resolved
+
+
+async def _resolve_dataset_info(client, row: dict) -> DatasetInfo:
+    dataset_id = str(row.get("id") or "").strip()
+    metadata = _load_local_dataset_metadata(dataset_id) if dataset_id else None
+    source_datasets = await _resolve_source_datasets(client, _normalize_source_datasets(row.get("source_datasets")))
+    dataset = _dataset_row_to_info(
+        row,
+        detail=_build_dataset_detail_info(metadata) if metadata is not None else None,
+        source_datasets=source_datasets,
+    )
+
+    owner_user_id = str(row.get("owner_user_id") or "").strip()
+    owner_directory = await resolve_user_directory_entries([owner_user_id] if owner_user_id else [])
+    owner_entry = owner_directory.get(owner_user_id)
+    dataset.owner_email = owner_entry.email or None if owner_entry else None
+    dataset.owner_name = owner_entry.name or None if owner_entry else None
+
+    if metadata is not None and not dataset.episode_count:
+        dataset.episode_count = _coerce_int(getattr(metadata, "total_episodes", 0), 0)
+    return dataset
 
 
 def _model_row_to_info(row: dict) -> ModelInfo:
@@ -1227,7 +1383,7 @@ async def get_dataset_merge_job(job_id: str):
 async def get_dataset(dataset_id: str):
     """Get dataset details from DB."""
     client = await get_supabase_async_client()
-    return _dataset_row_to_info(await _require_dataset_row(client, dataset_id))
+    return await _resolve_dataset_info(client, await _require_dataset_row(client, dataset_id))
 
 
 @router.patch("/datasets/{dataset_id:path}", response_model=DatasetInfo)
@@ -1239,7 +1395,7 @@ async def rename_dataset(dataset_id: str, request: StorageRenameRequest):
     client = await get_supabase_async_client()
     await _require_dataset_row(client, dataset_id)
     await client.table("datasets").update({"name": normalized_name}).eq("id", dataset_id).execute()
-    return _dataset_row_to_info(await _require_dataset_row(client, dataset_id))
+    return await _resolve_dataset_info(client, await _require_dataset_row(client, dataset_id))
 
 
 @router.get(

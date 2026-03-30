@@ -640,6 +640,77 @@ export type ArchiveBulkResponse = {
   errors?: string[];
 };
 
+export type StorageDatasetSourceInfo = {
+  dataset_id: string;
+  name: string;
+  content_hash?: string | null;
+  task_detail?: string | null;
+  status?: string | null;
+  episode_count?: number | null;
+  size_bytes?: number | null;
+  total_frames?: number | null;
+  fps?: number | null;
+  duration_seconds?: number | null;
+  is_local?: boolean | null;
+};
+
+export type StorageDatasetCameraInfo = {
+  key: string;
+  label: string;
+  width?: number | null;
+  height?: number | null;
+  fps?: number | null;
+  codec?: string | null;
+  pix_fmt?: string | null;
+};
+
+export type StorageDatasetSignalFieldInfo = {
+  key: string;
+  label: string;
+  dtype?: string | null;
+  axis_count: number;
+  names: string[];
+};
+
+export type StorageDatasetDetailInfo = {
+  total_frames?: number | null;
+  fps?: number | null;
+  duration_seconds?: number | null;
+  use_videos?: boolean | null;
+  camera_count?: number | null;
+  signal_field_count?: number | null;
+  cameras: StorageDatasetCameraInfo[];
+  signal_fields: StorageDatasetSignalFieldInfo[];
+};
+
+export type StorageDatasetInfo = {
+  id: string;
+  name: string;
+  owner_user_id?: string | null;
+  owner_email?: string | null;
+  owner_name?: string | null;
+  profile_name?: string | null;
+  profile_snapshot?: Record<string, unknown> | null;
+  source?: string | null;
+  status?: string | null;
+  dataset_type?: string | null;
+  task_detail?: string | null;
+  content_hash?: string | null;
+  archived_at?: string | null;
+  source_datasets: StorageDatasetSourceInfo[];
+  episode_count?: number | null;
+  size_bytes?: number | null;
+  is_local?: boolean;
+  detail?: StorageDatasetDetailInfo | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type StorageDatasetListResponse = {
+  datasets?: StorageDatasetInfo[];
+  total?: number;
+};
+
 export type TrainingReviveResult = {
   job_id: string;
   old_instance_id: string;
@@ -1198,7 +1269,7 @@ export const api = {
   },
   storage: {
     datasets: (query: StorageDatasetListQuery = {}) =>
-      fetchApi(
+      fetchApi<StorageDatasetListResponse>(
         `/api/storage/datasets${buildQueryString({
           include_archived: query.includeArchived,
           profile_name: query.profileName,
@@ -1240,9 +1311,9 @@ export const api = {
           sort_order: query.sortOrder
         })}`
       ),
-    dataset: (datasetId: string) => fetchApi(`/api/storage/datasets/${datasetId}`),
+    dataset: (datasetId: string) => fetchApi<StorageDatasetInfo>(`/api/storage/datasets/${datasetId}`),
     renameDataset: (datasetId: string, payload: StorageRenameRequest) =>
-      fetchApi(`/api/storage/datasets/${datasetId}`, {
+      fetchApi<StorageDatasetInfo>(`/api/storage/datasets/${datasetId}`, {
         method: 'PATCH',
         body: JSON.stringify(payload)
       }),

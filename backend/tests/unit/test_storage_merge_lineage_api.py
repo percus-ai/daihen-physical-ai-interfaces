@@ -1,9 +1,11 @@
+import asyncio
 import importlib.util
 import json
 import os
 import sys
 from pathlib import Path
 from types import ModuleType
+from types import SimpleNamespace
 
 os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
 
@@ -131,3 +133,181 @@ def test_write_dataset_metadata_file_persists_merge_lineage(tmp_path: Path):
             "task_detail": "place cube",
         },
     ]
+
+
+class _FakeQuery:
+    def __init__(self, rows_by_table, table_name: str):
+        self._rows_by_table = rows_by_table
+        self._table_name = table_name
+        self._eq_filters: list[tuple[str, object]] = []
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, key, value):
+        self._eq_filters.append((key, value))
+        return self
+
+    async def execute(self):
+        rows = list(self._rows_by_table.get(self._table_name, []))
+        for key, value in self._eq_filters:
+            rows = [row for row in rows if row.get(key) == value]
+        return SimpleNamespace(data=rows)
+
+
+class _FakeClient:
+    def __init__(self, rows_by_table):
+        self._rows_by_table = rows_by_table
+
+    def table(self, name: str):
+        return _FakeQuery(self._rows_by_table, name)
+
+
+def test_resolve_dataset_info_includes_integrated_local_detail(monkeypatch, tmp_path: Path):
+    datasets_dir = tmp_path / "datasets"
+    (datasets_dir / "dataset-main").mkdir(parents=True, exist_ok=True)
+    (datasets_dir / "dataset-source").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(storage_api, "get_datasets_dir", lambda: datasets_dir)
+
+    class _FakeMetadata:
+        def __init__(self, dataset_id: str, *, total_episodes: int, total_frames: int):
+            self.dataset_id = dataset_id
+            self.total_episodes = total_episodes
+            self.total_frames = total_frames
+            self.fps = 30
+            self.video_path = "videos"
+            self.video_keys = ["observation.images.front"]
+            self.features = {
+                "observation.images.front": {
+                    "dtype": "video",
+                    "shape": [1],
+                    "info": {
+                        "video.width": 640,
+                        "video.height": 480,
+                        "video.fps": 30,
+                        "video.codec": "h264",
+                        "video.pix_fmt": "yuv420p",
+                    },
+                },
+                "observation.state": {
+                    "dtype": "float32",
+                    "shape": [7],
+                    "names": ["j1", "j2", "j3", "j4", "j5", "j6", "j7"],
+                },
+            }
+            self.episodes = []
+
+    def _fake_metadata(dataset_id: str, root=None):
+        if dataset_id == "dataset-main":
+            return _FakeMetadata(dataset_id, total_episodes=12, total_frames=3600)
+        if dataset_id == "dataset-source":
+            return _FakeMetadata(dataset_id, total_episodes=5, total_frames=900)
+        raise AssertionError(f"unexpected dataset id: {dataset_id}")
+
+    async def _fake_resolve_user_directory_entries(_ids):
+        return {"user-1": SimpleNamespace(name="Owner One", email="owner@example.com")}
+
+    monkeypatch.setattr(storage_api, "LeRobotDatasetMetadata", _fake_metadata)
+    monkeypatch.setattr(storage_api, "resolve_user_directory_entries", _fake_resolve_user_directory_entries)
+
+    client = _FakeClient(
+        {
+            "datasets": [
+                {
+                    "id": "dataset-main",
+                    "name": "Dataset Main",
+                    "owner_user_id": "user-1",
+                    "status": "active",
+                    "dataset_type": "merged",
+                    "task_detail": "pick and place cubes",
+                    "content_hash": "md5:main",
+                    "episode_count": 12,
+                    "size_bytes": 2048,
+                    "source_datasets": [
+                        {
+                            "dataset_id": "dataset-source",
+                            "name": "Dataset Source",
+                            "content_hash": "md5:source",
+                            "task_detail": "source task",
+                        }
+                    ],
+                },
+                {
+                    "id": "dataset-source",
+                    "name": "Dataset Source",
+                    "status": "active",
+                    "dataset_type": "recorded",
+                    "task_detail": "source task",
+                    "episode_count": 5,
+                    "size_bytes": 1024,
+                    "content_hash": "md5:source",
+                },
+            ]
+        }
+    )
+
+    dataset = asyncio.run(
+        storage_api._resolve_dataset_info(
+            client,
+            {
+                "id": "dataset-main",
+                "name": "Dataset Main",
+                "owner_user_id": "user-1",
+                "status": "active",
+                "dataset_type": "merged",
+                "task_detail": "pick and place cubes",
+                "content_hash": "md5:main",
+                "episode_count": 12,
+                "size_bytes": 2048,
+                "source_datasets": [
+                    {
+                        "dataset_id": "dataset-source",
+                        "name": "Dataset Source",
+                        "content_hash": "md5:source",
+                        "task_detail": "source task",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert dataset.owner_name == "Owner One"
+    assert dataset.task_detail == "pick and place cubes"
+    assert dataset.detail is not None
+    assert dataset.detail.total_frames == 3600
+    assert dataset.detail.fps == 30
+    assert dataset.detail.camera_count == 1
+    assert dataset.detail.signal_field_count == 1
+    assert dataset.source_datasets[0].episode_count == 5
+    assert dataset.source_datasets[0].total_frames == 900
+    assert dataset.source_datasets[0].is_local is True
+
+
+def test_resolve_dataset_info_keeps_local_detail_empty_when_dataset_is_not_synced(monkeypatch, tmp_path: Path):
+    datasets_dir = tmp_path / "datasets"
+    datasets_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(storage_api, "get_datasets_dir", lambda: datasets_dir)
+
+    async def _fake_resolve_user_directory_entries(_ids):
+        return {}
+
+    monkeypatch.setattr(storage_api, "resolve_user_directory_entries", _fake_resolve_user_directory_entries)
+
+    dataset = asyncio.run(
+        storage_api._resolve_dataset_info(
+            _FakeClient({"datasets": []}),
+            {
+                "id": "dataset-remote",
+                "name": "Dataset Remote",
+                "status": "active",
+                "dataset_type": "recorded",
+                "episode_count": 3,
+                "size_bytes": 512,
+                "source_datasets": [],
+            },
+        )
+    )
+
+    assert dataset.is_local is False
+    assert dataset.detail is None
