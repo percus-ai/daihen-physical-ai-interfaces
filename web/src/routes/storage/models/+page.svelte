@@ -31,7 +31,15 @@
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
   import type { ListFilterField } from '$lib/listFilters';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
+  import {
+    DEFAULT_PAGE_SIZE,
+    PAGE_SIZE_OPTIONS,
+    buildPageHref,
+    buildUrlWithQueryState,
+    clampPage,
+    parsePageParam,
+    parsePageSizeParam
+  } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
   import {
@@ -145,7 +153,7 @@
   let rowPendingId = $state('');
   let rowPendingAction = $state<ModelRowAction>('');
 
-  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const pageSize = $derived(parsePageSizeParam(page.url.searchParams.get('page_size')));
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
   const parseOptionalInt = (value: string) => {
     const normalized = value.trim();
@@ -177,8 +185,8 @@
           sizeMax: parseOptionalInt(modelSizeMax),
           sortBy: modelSortKey,
           sortOrder: modelSortOrder,
-          limit: PAGE_SIZE,
-          offset: (currentPage - 1) * PAGE_SIZE
+          limit: pageSize,
+          offset: (currentPage - 1) * pageSize
         }),
         queryFn: () =>
           api.storage.models({
@@ -195,8 +203,8 @@
             sizeMax: parseOptionalInt(modelSizeMax),
             sortBy: modelSortKey,
             sortOrder: modelSortOrder,
-            limit: PAGE_SIZE,
-            offset: (currentPage - 1) * PAGE_SIZE
+            limit: pageSize,
+            offset: (currentPage - 1) * pageSize
           })
       };
     })
@@ -279,7 +287,8 @@
     created_from: '',
     created_to: '',
     size_min: '',
-    size_max: ''
+    size_max: '',
+    page_size: String(DEFAULT_PAGE_SIZE)
   };
   const modelFilterValues = $derived({
     search: modelSearch,
@@ -291,7 +300,8 @@
     created_from: modelCreatedFrom,
     created_to: modelCreatedTo,
     size_min: modelSizeMin,
-    size_max: modelSizeMax
+    size_max: modelSizeMax,
+    page_size: String(pageSize)
   });
   const modelFilterFields = $derived<ListFilterField[]>([
     {
@@ -353,6 +363,13 @@
       step: 1,
       placeholderMin: '最小',
       placeholderMax: '最大'
+    },
+    {
+      section: '表示',
+      type: 'select',
+      key: 'page_size',
+      label: '1ページの件数',
+      options: PAGE_SIZE_OPTIONS.map((size) => ({ value: String(size), label: `${size}件` }))
     }
   ]);
   const hasActiveModelFilters = $derived(
@@ -365,7 +382,8 @@
       Boolean(modelCreatedFrom) ||
       Boolean(modelCreatedTo) ||
       Boolean(modelSizeMin) ||
-      Boolean(modelSizeMax)
+      Boolean(modelSizeMax) ||
+      pageSize !== DEFAULT_PAGE_SIZE
   );
   const sortIconClass = 'text-slate-400 transition group-hover:text-slate-600';
   const sortableHeaderButtonClass =
@@ -438,6 +456,7 @@
       created_to: values.created_to || null,
       size_min: values.size_min || null,
       size_max: values.size_max || null,
+      page_size: values.page_size !== String(DEFAULT_PAGE_SIZE) ? values.page_size : null,
       sort: modelSortKey !== 'created_at' ? modelSortKey : null,
       order: modelSortOrder !== 'desc' ? modelSortOrder : null,
       page: null
@@ -457,7 +476,7 @@
     if ($modelsQuery.isLoading) {
       return;
     }
-    const nextPage = clampPage(currentPage, totalModels, PAGE_SIZE);
+    const nextPage = clampPage(currentPage, totalModels, pageSize);
     if (nextPage !== currentPage) {
       void navigateToPage(nextPage);
     }
@@ -1206,7 +1225,7 @@
         {/if}
         <PaginationControls
           currentPage={currentPage}
-          pageSize={PAGE_SIZE}
+          pageSize={pageSize}
           totalItems={totalModels}
           disabled={$modelsQuery.isLoading}
           compact={true}
@@ -1511,7 +1530,7 @@
   </div>
   <PaginationControls
     currentPage={currentPage}
-    pageSize={PAGE_SIZE}
+    pageSize={pageSize}
     totalItems={totalModels}
     disabled={$modelsQuery.isLoading}
     onPageChange={navigateToPage}

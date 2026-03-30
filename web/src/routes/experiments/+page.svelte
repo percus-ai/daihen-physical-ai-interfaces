@@ -10,7 +10,15 @@
   import { qk } from '$lib/queryKeys';
   import { formatDate, formatPercent } from '$lib/format';
   import { goto } from '$app/navigation';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
+  import {
+    DEFAULT_PAGE_SIZE,
+    PAGE_SIZE_OPTIONS,
+    buildPageHref,
+    buildUrlWithQueryState,
+    clampPage,
+    parsePageParam,
+    parsePageSizeParam
+  } from '$lib/pagination';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import FileText from 'phosphor-svelte/lib/FileText';
@@ -58,7 +66,7 @@
   });
 
   let filterDialogOpen = $state(false);
-  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const pageSize = $derived(parsePageSizeParam(page.url.searchParams.get('page_size')));
   const selectedModel = $derived(page.url.searchParams.get('model_id') || '');
   const selectedProfileInstance = $derived(page.url.searchParams.get('profile_instance_id') || '');
   const updatedFrom = $derived(page.url.searchParams.get('updated_from') || '');
@@ -84,8 +92,8 @@
           updated_to: updatedTo || undefined,
           evaluation_count_min: parseOptionalInt(evaluationCountMin),
           evaluation_count_max: parseOptionalInt(evaluationCountMax),
-          limit: PAGE_SIZE,
-          offset: (currentPage - 1) * PAGE_SIZE
+          limit: pageSize,
+          offset: (currentPage - 1) * pageSize
         })
     }))
   );
@@ -114,7 +122,8 @@
     updated_from: '',
     updated_to: '',
     evaluation_count_min: '',
-    evaluation_count_max: ''
+    evaluation_count_max: '',
+    page_size: String(DEFAULT_PAGE_SIZE)
   };
   const experimentFilterValues = $derived({
     model_id: selectedModel,
@@ -122,7 +131,8 @@
     updated_from: updatedFrom,
     updated_to: updatedTo,
     evaluation_count_min: evaluationCountMin,
-    evaluation_count_max: evaluationCountMax
+    evaluation_count_max: evaluationCountMax,
+    page_size: String(pageSize)
   });
   const experimentFilterFields = $derived<ListFilterField[]>([
     {
@@ -162,6 +172,13 @@
       step: 1,
       placeholderMin: '最小',
       placeholderMax: '最大'
+    },
+    {
+      section: '表示',
+      type: 'select',
+      key: 'page_size',
+      label: '1ページの件数',
+      options: PAGE_SIZE_OPTIONS.map((size) => ({ value: String(size), label: `${size}件` }))
     }
   ]);
   const hasActiveFilters = $derived(
@@ -170,7 +187,8 @@
       Boolean(updatedFrom) ||
       Boolean(updatedTo) ||
       Boolean(evaluationCountMin) ||
-      Boolean(evaluationCountMax)
+      Boolean(evaluationCountMax) ||
+      pageSize !== DEFAULT_PAGE_SIZE
   );
 
   const navigateToPage = async (nextPage: number) => {
@@ -192,6 +210,7 @@
       updated_to: values.updated_to || null,
       evaluation_count_min: values.evaluation_count_min || null,
       evaluation_count_max: values.evaluation_count_max || null,
+      page_size: values.page_size !== String(DEFAULT_PAGE_SIZE) ? values.page_size : null,
       page: null
     });
     filterDialogOpen = false;
@@ -217,7 +236,7 @@
     if ($experimentsQuery.isLoading) {
       return;
     }
-    const nextPage = clampPage(currentPage, totalExperiments, PAGE_SIZE);
+    const nextPage = clampPage(currentPage, totalExperiments, pageSize);
     if (nextPage !== currentPage) {
       void navigateToPage(nextPage);
     }
@@ -320,7 +339,7 @@
     <div class="flex items-center gap-2">
       <PaginationControls
         currentPage={currentPage}
-        pageSize={PAGE_SIZE}
+        pageSize={pageSize}
         totalItems={totalExperiments}
         disabled={$experimentsQuery.isLoading}
         compact={true}
@@ -494,7 +513,7 @@
   </div>
   <PaginationControls
     currentPage={currentPage}
-    pageSize={PAGE_SIZE}
+    pageSize={pageSize}
     totalItems={totalExperiments}
     disabled={$experimentsQuery.isLoading}
     onPageChange={navigateToPage}

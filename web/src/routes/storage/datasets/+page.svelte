@@ -33,7 +33,15 @@
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
   import type { ListFilterField } from '$lib/listFilters';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
+  import {
+    DEFAULT_PAGE_SIZE,
+    PAGE_SIZE_OPTIONS,
+    buildPageHref,
+    buildUrlWithQueryState,
+    clampPage,
+    parsePageParam,
+    parsePageSizeParam
+  } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import {
     registerTabRealtimeContributor,
@@ -157,7 +165,7 @@
   let datasetSyncModalOpen = $state(false);
   let selectedSyncJobId = $state('');
 
-  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const pageSize = $derived(parsePageSizeParam(page.url.searchParams.get('page_size')));
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
   const parseOptionalInt = (value: string) => {
     const normalized = value.trim();
@@ -190,8 +198,8 @@
           episodeCountMax: parseOptionalInt(datasetEpisodeMax),
           sortBy: datasetSortKey,
           sortOrder: datasetSortOrder,
-          limit: PAGE_SIZE,
-          offset: (currentPage - 1) * PAGE_SIZE
+          limit: pageSize,
+          offset: (currentPage - 1) * pageSize
         }),
         queryFn: () =>
           api.storage.datasets({
@@ -209,8 +217,8 @@
             episodeCountMax: parseOptionalInt(datasetEpisodeMax),
             sortBy: datasetSortKey,
             sortOrder: datasetSortOrder,
-            limit: PAGE_SIZE,
-            offset: (currentPage - 1) * PAGE_SIZE
+            limit: pageSize,
+            offset: (currentPage - 1) * pageSize
           })
       };
     })
@@ -315,7 +323,8 @@
     size_min: '',
     size_max: '',
     episodes_min: '',
-    episodes_max: ''
+    episodes_max: '',
+    page_size: String(DEFAULT_PAGE_SIZE)
   };
   const datasetFilterValues = $derived({
     search: datasetSearch,
@@ -328,7 +337,8 @@
     size_min: datasetSizeMin,
     size_max: datasetSizeMax,
     episodes_min: datasetEpisodeMin,
-    episodes_max: datasetEpisodeMax
+    episodes_max: datasetEpisodeMax,
+    page_size: String(pageSize)
   });
   const datasetFilterFields = $derived<ListFilterField[]>([
     {
@@ -394,6 +404,13 @@
       step: 1,
       placeholderMin: '最小',
       placeholderMax: '最大'
+    },
+    {
+      section: '表示',
+      type: 'select',
+      key: 'page_size',
+      label: '1ページの件数',
+      options: PAGE_SIZE_OPTIONS.map((size) => ({ value: String(size), label: `${size}件` }))
     }
   ]);
   const hasActiveDatasetFilters = $derived(
@@ -407,7 +424,8 @@
       Boolean(datasetSizeMin) ||
       Boolean(datasetSizeMax) ||
       Boolean(datasetEpisodeMin) ||
-      Boolean(datasetEpisodeMax)
+      Boolean(datasetEpisodeMax) ||
+      pageSize !== DEFAULT_PAGE_SIZE
   );
   const sortIconClass = 'text-slate-400 transition group-hover:text-slate-600';
   const sortableHeaderButtonClass =
@@ -517,6 +535,7 @@
       size_max: values.size_max || null,
       episodes_min: values.episodes_min || null,
       episodes_max: values.episodes_max || null,
+      page_size: values.page_size !== String(DEFAULT_PAGE_SIZE) ? values.page_size : null,
       sort: datasetSortKey !== 'created_at' ? datasetSortKey : null,
       order: datasetSortOrder !== 'desc' ? datasetSortOrder : null,
       page: null
@@ -536,7 +555,7 @@
     if ($datasetsQuery.isLoading) {
       return;
     }
-    const nextPage = clampPage(currentPage, totalDatasets, PAGE_SIZE);
+    const nextPage = clampPage(currentPage, totalDatasets, pageSize);
     if (nextPage !== currentPage) {
       void navigateToPage(nextPage);
     }
@@ -1377,7 +1396,7 @@
       {:else}
         <PaginationControls
           currentPage={currentPage}
-          pageSize={PAGE_SIZE}
+          pageSize={pageSize}
           totalItems={totalDatasets}
           disabled={$datasetsQuery.isLoading}
           compact={true}
@@ -1684,7 +1703,7 @@
   </div>
   <PaginationControls
     currentPage={currentPage}
-    pageSize={PAGE_SIZE}
+    pageSize={pageSize}
     totalItems={totalDatasets}
     disabled={$datasetsQuery.isLoading}
     onPageChange={navigateToPage}

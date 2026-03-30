@@ -1,4 +1,14 @@
 export const DEFAULT_PAGE_SIZE = 10;
+export const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+
+export const parsePageSizeParam = (value: string | null | undefined): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_PAGE_SIZE;
+  const normalized = Math.floor(parsed);
+  return PAGE_SIZE_OPTIONS.includes(normalized as (typeof PAGE_SIZE_OPTIONS)[number])
+    ? normalized
+    : DEFAULT_PAGE_SIZE;
+};
 
 export const parsePageParam = (value: string | null | undefined): number => {
   const parsed = Number(value);

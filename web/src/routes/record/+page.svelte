@@ -20,7 +20,15 @@
   import PaginationControls from '$lib/components/PaginationControls.svelte';
   import { formatBytes, formatDate } from '$lib/format';
   import type { ListFilterField } from '$lib/listFilters';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
+  import {
+    DEFAULT_PAGE_SIZE,
+    PAGE_SIZE_OPTIONS,
+    buildPageHref,
+    buildUrlWithQueryState,
+    clampPage,
+    parsePageParam,
+    parsePageSizeParam
+  } from '$lib/pagination';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import DatasetUploadProgressModal from '$lib/components/storage/DatasetUploadProgressModal.svelte';
@@ -130,7 +138,6 @@
     queryFn: () => api.user.config() as Promise<UserConfigResponse>
   });
 
-  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
   const RECORDING_SORT_KEYS = ['created_at', 'dataset_name', 'owner_name', 'profile_name', 'episode_count', 'size_bytes', 'status'] as const;
   const parseRecordingSortKey = (value: string | null): 'created_at' | 'dataset_name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'status' =>
     RECORDING_SORT_KEYS.includes((value ?? '') as (typeof RECORDING_SORT_KEYS)[number])
@@ -165,6 +172,7 @@
   const recordingSizeMax = $derived(page.url.searchParams.get('size_max') || '');
   const recordingEpisodeMin = $derived(page.url.searchParams.get('episodes_min') || '');
   const recordingEpisodeMax = $derived(page.url.searchParams.get('episodes_max') || '');
+  const pageSize = $derived(parsePageSizeParam(page.url.searchParams.get('page_size')));
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
   const recordingSortQuery = $derived(recordingSortKey === 'status' ? 'upload_status' : recordingSortKey);
   const parseOptionalInt = (value: string) => {
@@ -192,8 +200,8 @@
           episodeCountMax: parseOptionalInt(recordingEpisodeMax),
           sortBy: recordingSortQuery,
           sortOrder: recordingSortOrder,
-          limit: PAGE_SIZE,
-          offset: (currentPage - 1) * PAGE_SIZE
+          limit: pageSize,
+          offset: (currentPage - 1) * pageSize
         }
       ],
       queryFn: () =>
@@ -210,8 +218,8 @@
           episodeCountMax: parseOptionalInt(recordingEpisodeMax),
           sortBy: recordingSortQuery,
           sortOrder: recordingSortOrder,
-          limit: PAGE_SIZE,
-          offset: (currentPage - 1) * PAGE_SIZE
+          limit: pageSize,
+          offset: (currentPage - 1) * pageSize
         })
     }))
   );
@@ -243,6 +251,7 @@
       size_max: values.size_max || null,
       episodes_min: values.episodes_min || null,
       episodes_max: values.episodes_max || null,
+      page_size: values.page_size !== String(DEFAULT_PAGE_SIZE) ? values.page_size : null,
       sort: recordingSortKey !== 'created_at' ? recordingSortKey : null,
       order: recordingSortOrder !== 'desc' ? recordingSortOrder : null,
       page: null
@@ -379,7 +388,8 @@
     size_min: '',
     size_max: '',
     episodes_min: '',
-    episodes_max: ''
+    episodes_max: '',
+    page_size: String(DEFAULT_PAGE_SIZE)
   };
   const recordingFilterValues = $derived({
     search: recordingSearch,
@@ -391,7 +401,8 @@
     size_min: recordingSizeMin,
     size_max: recordingSizeMax,
     episodes_min: recordingEpisodeMin,
-    episodes_max: recordingEpisodeMax
+    episodes_max: recordingEpisodeMax,
+    page_size: String(pageSize)
   });
   const recordingFilterFields = $derived<ListFilterField[]>([
     {
@@ -450,6 +461,13 @@
       step: 1,
       placeholderMin: '最小',
       placeholderMax: '最大'
+    },
+    {
+      section: '表示',
+      type: 'select',
+      key: 'page_size',
+      label: '1ページの件数',
+      options: PAGE_SIZE_OPTIONS.map((size) => ({ value: String(size), label: `${size}件` }))
     }
   ]);
   const hasActiveRecordingFilters = $derived(
@@ -462,7 +480,8 @@
       Boolean(recordingSizeMin) ||
       Boolean(recordingSizeMax) ||
       Boolean(recordingEpisodeMin) ||
-      Boolean(recordingEpisodeMax)
+      Boolean(recordingEpisodeMax) ||
+      pageSize !== DEFAULT_PAGE_SIZE
   );
   const currentUserId = $derived(String($userConfigQuery.data?.user_id ?? '').trim());
   const allDisplayedRecordingIds = $derived(displayedRecordings.map((recording) => recording.recording_id));
@@ -690,7 +709,7 @@
     if ($recordingsQuery.isLoading) {
       return;
     }
-    const nextPage = clampPage(currentPage, totalRecordings, PAGE_SIZE);
+    const nextPage = clampPage(currentPage, totalRecordings, pageSize);
     if (nextPage !== currentPage) {
       void navigateToPage(nextPage);
     }
@@ -925,7 +944,7 @@
       {:else}
         <PaginationControls
           currentPage={currentPage}
-          pageSize={PAGE_SIZE}
+          pageSize={pageSize}
           totalItems={totalRecordings}
           disabled={$recordingsQuery.isLoading}
           compact={true}
@@ -1177,7 +1196,7 @@
   </div>
   <PaginationControls
     currentPage={currentPage}
-    pageSize={PAGE_SIZE}
+    pageSize={pageSize}
     totalItems={totalRecordings}
     disabled={$recordingsQuery.isLoading}
     onPageChange={navigateToPage}

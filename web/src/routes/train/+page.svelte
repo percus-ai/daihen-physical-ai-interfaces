@@ -18,7 +18,15 @@
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
   import { formatDate, formatRelativeDate } from '$lib/format';
   import type { ListFilterField } from '$lib/listFilters';
-  import { DEFAULT_PAGE_SIZE, buildPageHref, buildUrlWithQueryState, clampPage, parsePageParam } from '$lib/pagination';
+  import {
+    DEFAULT_PAGE_SIZE,
+    PAGE_SIZE_OPTIONS,
+    buildPageHref,
+    buildUrlWithQueryState,
+    clampPage,
+    parsePageParam,
+    parsePageSizeParam
+  } from '$lib/pagination';
 
   type TrainingJob = {
     job_id: string;
@@ -88,7 +96,7 @@
   const createdFrom = $derived(page.url.searchParams.get('created_from') || '');
   const createdTo = $derived(page.url.searchParams.get('created_to') || '');
 
-  const PAGE_SIZE = DEFAULT_PAGE_SIZE;
+  const pageSize = $derived(parsePageSizeParam(page.url.searchParams.get('page_size')));
   const currentPage = $derived(parsePageParam(page.url.searchParams.get('page')));
 
   const jobsQuery = createQuery<JobListResponse>(
@@ -105,8 +113,8 @@
           createdTo: createdTo || undefined,
           sortBy: jobSortKey,
           sortOrder: jobSortOrder,
-          limit: PAGE_SIZE,
-          offset: (currentPage - 1) * PAGE_SIZE
+          limit: pageSize,
+          offset: (currentPage - 1) * pageSize
         }
       ],
       queryFn: () =>
@@ -119,8 +127,8 @@
           createdTo: createdTo || undefined,
           sortBy: jobSortKey,
           sortOrder: jobSortOrder,
-          limit: PAGE_SIZE,
-          offset: (currentPage - 1) * PAGE_SIZE
+          limit: pageSize,
+          offset: (currentPage - 1) * pageSize
         })
     }))
   );
@@ -212,7 +220,8 @@
     job_status: 'all',
     policy: 'all',
     created_from: '',
-    created_to: ''
+    created_to: '',
+    page_size: String(DEFAULT_PAGE_SIZE)
   };
   const trainingFilterValues = $derived({
     search: jobSearch,
@@ -220,7 +229,8 @@
     job_status: jobStatusFilter,
     policy: jobPolicyFilter,
     created_from: createdFrom,
-    created_to: createdTo
+    created_to: createdTo,
+    page_size: String(pageSize)
   });
   const trainingFilterFields = $derived<ListFilterField[]>([
     {
@@ -257,6 +267,13 @@
       keyFrom: 'created_from',
       keyTo: 'created_to',
       label: '作成日時'
+    },
+    {
+      section: '表示',
+      type: 'select',
+      key: 'page_size',
+      label: '1ページの件数',
+      options: PAGE_SIZE_OPTIONS.map((size) => ({ value: String(size), label: `${size}件` }))
     }
   ]);
   const hasActiveJobFilters = $derived(
@@ -265,7 +282,8 @@
       jobStatusFilter !== 'all' ||
       jobPolicyFilter !== 'all' ||
       Boolean(createdFrom) ||
-      Boolean(createdTo)
+      Boolean(createdTo) ||
+      pageSize !== DEFAULT_PAGE_SIZE
   );
   const bulkMenuItemClass =
     'flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 hover:bg-slate-100 data-[disabled]:hover:bg-transparent';
@@ -404,6 +422,7 @@
       search: values.search || null,
       created_from: values.created_from || null,
       created_to: values.created_to || null,
+      page_size: values.page_size !== String(DEFAULT_PAGE_SIZE) ? values.page_size : null,
       page: null
     });
     filterDialogOpen = false;
@@ -429,7 +448,7 @@
     if ($jobsQuery.isLoading) {
       return;
     }
-    const nextPage = clampPage(currentPage, totalJobs, PAGE_SIZE);
+    const nextPage = clampPage(currentPage, totalJobs, pageSize);
     if (nextPage !== currentPage) {
       void navigateToPage(nextPage);
     }
@@ -569,7 +588,7 @@
       {:else}
         <PaginationControls
           currentPage={currentPage}
-          pageSize={PAGE_SIZE}
+          pageSize={pageSize}
           totalItems={totalJobs}
           disabled={$jobsQuery.isLoading}
           compact={true}
@@ -750,7 +769,7 @@
   </div>
   <PaginationControls
     currentPage={currentPage}
-    pageSize={PAGE_SIZE}
+    pageSize={pageSize}
     totalItems={totalJobs}
     disabled={$jobsQuery.isLoading}
     onPageChange={navigateToPage}
