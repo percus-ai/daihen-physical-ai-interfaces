@@ -1397,7 +1397,7 @@
                 </div>
               </td>
               <td class="py-3 font-semibold text-slate-800">
-                <span class="block max-w-[25ch] truncate" title={model.id}>
+                <span class="block max-w-[25ch] truncate" title={displayModelLabel(model)}>
                   {displayModelLabel(model)}
                 </span>
               </td>

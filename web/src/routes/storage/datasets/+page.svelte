@@ -1574,7 +1574,7 @@
                 </div>
               </td>
               <td class="py-3 font-semibold text-slate-800">
-                <span class="block max-w-[25ch] truncate" title={dataset.id}>
+                <span class="block max-w-[25ch] truncate" title={displayDatasetLabel(dataset)}>
                   {displayDatasetLabel(dataset)}
                 </span>
               </td>
