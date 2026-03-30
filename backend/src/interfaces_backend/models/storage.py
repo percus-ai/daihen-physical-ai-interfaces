@@ -201,6 +201,15 @@ class DatasetMergeJobAcceptedResponse(BaseModel):
 class ModelInfo(BaseModel):
     """Model information for API responses."""
 
+    class DatasetSummary(BaseModel):
+        id: str = Field(..., description="Dataset ID")
+        name: str = Field(..., description="Dataset name")
+        status: Optional[str] = Field(None, description="Dataset status")
+        profile_name: Optional[str] = Field(None, description="Dataset profile name")
+        episode_count: Optional[int] = Field(None, description="Dataset episode count")
+        size_bytes: Optional[int] = Field(None, description="Dataset size in bytes")
+        is_local: Optional[bool] = Field(None, description="Dataset is downloaded locally")
+
     id: str = Field(..., description="Model ID")
     name: str = Field(..., description="Model name")
     owner_user_id: Optional[str] = Field(None, description="Owner user id")
@@ -216,6 +225,8 @@ class ModelInfo(BaseModel):
     is_local: bool = Field(False, description="Model is downloaded locally")
     source: str = Field("r2", description="Data source")
     status: str = Field("active", description="Data status")
+    dataset: Optional[DatasetSummary] = Field(None, description="Linked dataset summary")
+    archived_at: Optional[str] = Field(None, description="Archive timestamp")
     created_at: Optional[str] = Field(None, description="Creation time")
     updated_at: Optional[str] = Field(None, description="Last update time")
 

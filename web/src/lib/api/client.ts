@@ -711,6 +711,36 @@ export type StorageDatasetListResponse = {
   total?: number;
 };
 
+export type StorageModelInfo = {
+  dataset?: {
+    id: string;
+    name: string;
+    status?: string | null;
+    profile_name?: string | null;
+    episode_count?: number | null;
+    size_bytes?: number | null;
+    is_local?: boolean | null;
+  } | null;
+  id: string;
+  name: string;
+  owner_user_id?: string | null;
+  owner_email?: string | null;
+  owner_name?: string | null;
+  dataset_id?: string | null;
+  profile_name?: string | null;
+  profile_snapshot?: Record<string, unknown> | null;
+  policy_type?: string | null;
+  training_steps?: number | null;
+  batch_size?: number | null;
+  size_bytes?: number | null;
+  is_local?: boolean;
+  source?: string | null;
+  status?: string | null;
+  archived_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 export type TrainingReviveResult = {
   job_id: string;
   old_instance_id: string;
@@ -1360,9 +1390,9 @@ export const api = {
       }),
     datasetMergeJob: (jobId: string) =>
       fetchApi<DatasetMergeJobStatus>(`/api/storage/dataset-merge/jobs/${encodeURIComponent(jobId)}`),
-    model: (modelId: string) => fetchApi(`/api/storage/models/${modelId}`),
+    model: (modelId: string) => fetchApi<StorageModelInfo>(`/api/storage/models/${modelId}`),
     renameModel: (modelId: string, payload: StorageRenameRequest) =>
-      fetchApi(`/api/storage/models/${modelId}`, {
+      fetchApi<StorageModelInfo>(`/api/storage/models/${modelId}`, {
         method: 'PATCH',
         body: JSON.stringify(payload)
       }),

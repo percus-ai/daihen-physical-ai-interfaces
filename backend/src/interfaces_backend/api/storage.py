@@ -688,18 +688,39 @@ def _model_row_to_info(row: dict) -> ModelInfo:
         is_local=_model_is_local(str(model_id)) if model_id else False,
         source=row.get("source") or "r2",
         status=row.get("status") or "active",
+        archived_at=row.get("archived_at"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
 
 
-async def _resolve_model_info(row: dict) -> ModelInfo:
+def _build_model_dataset_summary(row: Optional[dict]) -> Optional[ModelInfo.DatasetSummary]:
+    if not row:
+        return None
+    dataset_id = _normalize_optional_text(row.get("id"))
+    if not dataset_id:
+        return None
+    return ModelInfo.DatasetSummary(
+        id=dataset_id,
+        name=_normalize_optional_text(row.get("name")) or dataset_id,
+        status=_normalize_optional_text(row.get("status")),
+        profile_name=_normalize_optional_text(row.get("profile_name")),
+        episode_count=_coerce_int(row.get("episode_count"), 0),
+        size_bytes=_coerce_int(row.get("size_bytes"), 0),
+        is_local=_dataset_is_local(dataset_id),
+    )
+
+
+async def _resolve_model_info(client, row: dict) -> ModelInfo:
     model = _model_row_to_info(row)
     owner_user_id = str(row.get("owner_user_id") or "").strip()
     owner_directory = await resolve_user_directory_entries([owner_user_id])
     owner_entry = owner_directory.get(owner_user_id)
     model.owner_email = owner_entry.email or None if owner_entry else None
     model.owner_name = owner_entry.name or None if owner_entry else None
+    dataset_id = _normalize_optional_text(row.get("dataset_id"))
+    if dataset_id:
+        model.dataset = _build_model_dataset_summary(await _load_dataset_row_optional(client, dataset_id))
     return model
 
 
@@ -1982,7 +2003,7 @@ async def list_models(
 async def get_model(model_id: str):
     """Get model details from DB."""
     client = await get_supabase_async_client()
-    return await _resolve_model_info(await _require_model_row(client, model_id))
+    return await _resolve_model_info(client, await _require_model_row(client, model_id))
 
 
 @router.patch("/models/{model_id}", response_model=ModelInfo)
@@ -1994,7 +2015,7 @@ async def rename_model(model_id: str, request: StorageRenameRequest):
     client = await get_supabase_async_client()
     await _require_model_row(client, model_id)
     await client.table("models").update({"name": normalized_name}).eq("id", model_id).execute()
-    return await _resolve_model_info(await _require_model_row(client, model_id))
+    return await _resolve_model_info(client, await _require_model_row(client, model_id))
 
 
 @router.post("/models/{model_id}/sync", response_model=ModelSyncJobAcceptedResponse, status_code=202)

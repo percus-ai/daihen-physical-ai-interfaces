@@ -4,37 +4,27 @@
   import { page } from '$app/state';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import toast from 'svelte-french-toast';
-  import { api } from '$lib/api/client';
+  import { api, type StorageModelInfo } from '$lib/api/client';
   import { qk } from '$lib/queryKeys';
+  import { formatBytes } from '$lib/format';
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
-  import { formatBytes, formatDate } from '$lib/format';
-
-  type ModelInfo = {
-    id: string;
-    name?: string;
-    profile_name?: string;
-    dataset_id?: string;
-    policy_type?: string;
-    status?: string;
-    size_bytes?: number;
-    created_at?: string;
-    updated_at?: string;
-  };
+  import StorageModelOverviewCard from '$lib/components/storage/StorageModelOverviewCard.svelte';
 
   const modelId = $derived(page.params.modelId ?? '');
-
   const queryClient = useQueryClient();
 
-  const modelQuery = createQuery<ModelInfo>(
+  const modelQuery = createQuery<StorageModelInfo>(
     toStore(() => ({
       queryKey: qk.storage.model(modelId),
-      queryFn: () => api.storage.model(modelId) as Promise<ModelInfo>,
+      queryFn: () => api.storage.model(modelId),
       enabled: Boolean(modelId)
     }))
   );
 
   const model = $derived($modelQuery.data);
   const isArchived = $derived(model?.status === 'archived');
+  const displayName = $derived(model?.name ?? modelId);
+  const linkedDataset = $derived(model?.dataset ?? null);
 
   let actionMessage = $state('');
   let actionError = $state('');
@@ -42,11 +32,18 @@
   let renameDialogOpen = $state(false);
   let renamePending = $state(false);
   let renameError = $state('');
-  const displayName = $derived(model?.name ?? modelId);
+
+  const clearMessages = () => {
+    actionMessage = '';
+    actionError = '';
+  };
 
   const refetchModel = async () => {
     if (!modelId) return;
-    await queryClient.invalidateQueries({ queryKey: qk.storage.model(modelId) });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.storage.model(modelId) }),
+      queryClient.invalidateQueries({ queryKey: qk.storage.modelsPrefix() })
+    ]);
   };
 
   const resetRenameDialog = () => {
@@ -63,7 +60,6 @@
       await api.storage.renameModel(modelId, { name: nextName });
       resetRenameDialog();
       toast.success('名前を更新しました。');
-      await queryClient.invalidateQueries({ queryKey: qk.storage.modelsPrefix() });
       await refetchModel();
     } catch (err) {
       renameError = err instanceof Error ? err.message : '名前変更に失敗しました。';
@@ -73,11 +69,9 @@
   };
 
   async function handleArchive() {
-    actionMessage = '';
-    actionError = '';
-
+    clearMessages();
     if (!modelId) return;
-    const confirmed = confirm(`${modelId} をアーカイブしますか？`);
+    const confirmed = confirm(`${displayName} をアーカイブしますか？`);
     if (!confirmed) return;
 
     actionLoading = true;
@@ -93,11 +87,9 @@
   }
 
   async function handleRestore() {
-    actionMessage = '';
-    actionError = '';
-
+    clearMessages();
     if (!modelId) return;
-    const confirmed = confirm(`${modelId} を復元しますか？`);
+    const confirmed = confirm(`${displayName} を復元しますか？`);
     if (!confirmed) return;
 
     actionLoading = true;
@@ -123,11 +115,11 @@
 />
 
 <section class="card-strong p-8">
-  <p class="section-title">Storage</p>
-  <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
+  <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
-      <h1 class="text-3xl font-semibold text-slate-900">モデル詳細</h1>
-      <p class="mt-2 text-sm text-slate-600">モデルの状態と操作を確認します。</p>
+      <p class="section-title">Storage</p>
+      <h1 class="mt-2 text-3xl font-semibold text-slate-950">モデル詳細</h1>
+      <p class="mt-2 text-sm text-slate-600">モデルの同定情報と学習条件を整理して確認します。</p>
     </div>
     <div class="flex flex-wrap gap-2">
       <Button.Root class="btn-ghost" href="/storage/models">一覧へ戻る</Button.Root>
@@ -136,10 +128,106 @@
   </div>
 </section>
 
-<section class="card p-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-xl font-semibold text-slate-900">基本情報</h2>
-    {#if model}
+{#if $modelQuery.isLoading}
+  <section class="card p-6">
+    <p class="text-sm text-slate-600">読み込み中...</p>
+  </section>
+{:else if model}
+  <StorageModelOverviewCard {model} />
+
+  <section class="card p-6">
+    <div class="nested-block-header">
+      <div>
+        <p class="section-title">Dataset</p>
+        <h2 class="mt-2 text-xl font-semibold text-slate-950">学習データセット</h2>
+      </div>
+    </div>
+
+    {#if linkedDataset}
+      <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div class="nested-block-pane px-4 py-4 md:col-span-2">
+          <p class="label">データセット</p>
+          <a
+            class="mt-2 block break-all text-sm font-semibold text-slate-900 underline decoration-slate-300 underline-offset-2"
+            href={`/storage/datasets/${encodeURIComponent(linkedDataset.id)}`}
+          >
+            {linkedDataset.name}
+          </a>
+          <p class="mt-1 break-all font-mono text-xs text-slate-500">{linkedDataset.id}</p>
+        </div>
+        <div class="nested-block-pane px-4 py-4">
+          <p class="label">状態</p>
+          <p class="mt-2 text-sm font-semibold text-slate-900">
+            {linkedDataset.status === 'archived' ? 'アーカイブ済み' : linkedDataset.status ?? '-'}
+          </p>
+        </div>
+        <div class="nested-block-pane px-4 py-4">
+          <p class="label">同期状態</p>
+          <p class="mt-2 text-sm font-semibold text-slate-900">
+            {linkedDataset.is_local ? '同期済み' : '未同期'}
+          </p>
+        </div>
+        <div class="nested-block-pane px-4 py-4">
+          <p class="label">プロファイル</p>
+          <p class="mt-2 text-sm font-semibold text-slate-900">{linkedDataset.profile_name ?? '-'}</p>
+        </div>
+        <div class="nested-block-pane px-4 py-4">
+          <p class="label">エピソード数</p>
+          <p class="mt-2 text-sm font-semibold text-slate-900">{linkedDataset.episode_count ?? '-'}</p>
+        </div>
+        <div class="nested-block-pane px-4 py-4">
+          <p class="label">サイズ</p>
+          <p class="mt-2 text-sm font-semibold text-slate-900">
+            {linkedDataset.size_bytes !== null && linkedDataset.size_bytes !== undefined
+              ? formatBytes(linkedDataset.size_bytes)
+              : '-'}
+          </p>
+        </div>
+      </div>
+    {:else if model.dataset_id}
+      <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50/80 px-5 py-5 text-sm text-slate-500">
+        学習データセットの詳細を取得できませんでした。
+      </div>
+    {:else}
+      <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50/80 px-5 py-5 text-sm text-slate-500">
+        学習データセットは紐づいていません。
+      </div>
+    {/if}
+  </section>
+
+  <section class="card p-6">
+    <div class="nested-block-header">
+      <div>
+        <p class="section-title">Training</p>
+        <h2 class="mt-2 text-xl font-semibold text-slate-950">学習情報</h2>
+      </div>
+    </div>
+
+    <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div class="nested-block-pane px-4 py-4">
+        <p class="label">ポリシー種別</p>
+        <p class="mt-2 text-sm font-semibold text-slate-900">{model.policy_type ?? '-'}</p>
+      </div>
+      <div class="nested-block-pane px-4 py-4">
+        <p class="label">学習ステップ</p>
+        <p class="mt-2 text-sm font-semibold text-slate-900">{model.training_steps ?? '-'}</p>
+      </div>
+      <div class="nested-block-pane px-4 py-4">
+        <p class="label">バッチサイズ</p>
+        <p class="mt-2 text-sm font-semibold text-slate-900">{model.batch_size ?? '-'}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card p-6">
+    <div class="nested-block-header">
+      <div>
+        <p class="section-title">Actions</p>
+        <h2 class="mt-2 text-xl font-semibold text-slate-950">関連操作</h2>
+      </div>
+    </div>
+
+    <div class="mt-4 flex flex-wrap gap-2">
       <button
         class="btn-ghost"
         type="button"
@@ -151,78 +239,37 @@
       >
         名前変更
       </button>
-    {/if}
-  </div>
-  {#if $modelQuery.isLoading}
-    <p class="mt-4 text-sm text-slate-600">読み込み中...</p>
-  {:else if model}
-    <div class="mt-4 grid gap-4 text-sm text-slate-600 lg:grid-cols-2">
-      <div>
-        <p class="label">名前</p>
-        <p class="text-base font-semibold text-slate-800">{displayName}</p>
-      </div>
-      <div>
-        <p class="label">ID</p>
-        <p class="text-base font-semibold text-slate-800">{model.id}</p>
-      </div>
-      <div>
-        <p class="label">プロファイル</p>
-        <p class="text-base font-semibold text-slate-800">{model.profile_name ?? '-'}</p>
-      </div>
-      <div>
-        <p class="label">状態</p>
-        <p class="text-base font-semibold text-slate-800">{model.status}</p>
-      </div>
-      <div>
-        <p class="label">ポリシー</p>
-        <p class="text-base font-semibold text-slate-800">{model.policy_type ?? '-'}</p>
-      </div>
-      <div>
-        <p class="label">データセット</p>
-        <p class="text-base font-semibold text-slate-800">{model.dataset_id ?? '-'}</p>
-      </div>
-      <div>
-        <p class="label">サイズ</p>
-        <p class="text-base font-semibold text-slate-800">{formatBytes(model.size_bytes)}</p>
-      </div>
-      <div>
-        <p class="label">作成日時</p>
-        <p class="text-base font-semibold text-slate-800">{formatDate(model.created_at)}</p>
-      </div>
-      <div>
-        <p class="label">更新日時</p>
-        <p class="text-base font-semibold text-slate-800">{formatDate(model.updated_at)}</p>
-      </div>
-    </div>
-    <div class="mt-6 flex flex-wrap gap-2">
+
       {#if isArchived}
         <button
-          class={`btn-primary ${actionLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          class="btn-primary"
           type="button"
-          disabled={actionLoading}
+          disabled={actionLoading || renamePending}
           onclick={handleRestore}
         >
           復元
         </button>
       {:else}
         <button
-          class={`btn-ghost ${actionLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          class="btn-ghost"
           type="button"
-          disabled={actionLoading}
+          disabled={actionLoading || renamePending}
           onclick={handleArchive}
         >
           アーカイブ
         </button>
       {/if}
-      <Button.Root class="btn-ghost" href="/storage/models">モデル</Button.Root>
     </div>
-  {:else}
-    <p class="mt-4 text-sm text-slate-600">モデルが見つかりません。</p>
-  {/if}
-  {#if actionMessage}
-    <p class="mt-4 text-sm text-emerald-600">{actionMessage}</p>
-  {/if}
-  {#if actionError}
-    <p class="mt-2 text-sm text-rose-600">{actionError}</p>
-  {/if}
-</section>
+
+    {#if actionMessage}
+      <p class="mt-4 text-sm text-emerald-600">{actionMessage}</p>
+    {/if}
+    {#if actionError}
+      <p class="mt-2 text-sm text-rose-600">{actionError}</p>
+    {/if}
+  </section>
+{:else}
+  <section class="card p-6">
+    <p class="text-sm text-slate-600">モデルが見つかりません。</p>
+  </section>
+{/if}
