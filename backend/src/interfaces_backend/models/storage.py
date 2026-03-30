@@ -59,8 +59,8 @@ class OwnerFilterOption(BaseModel):
 
 
 StorageSortOrder = Literal["asc", "desc"]
-DatasetListSortBy = Literal["created_at", "updated_at", "name", "size_bytes", "episode_count"]
-ModelListSortBy = Literal["created_at", "updated_at", "name", "size_bytes", "policy_type"]
+DatasetListSortBy = Literal["created_at", "updated_at", "name", "owner_name", "profile_name", "size_bytes", "episode_count", "sync_status"]
+ModelListSortBy = Literal["created_at", "updated_at", "name", "owner_name", "profile_name", "size_bytes", "policy_type", "sync_status"]
 
 
 class DatasetListQuery(BaseModel):

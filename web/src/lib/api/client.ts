@@ -93,7 +93,7 @@ export type ExperimentAnalysisListResponse = {
   total?: number;
 };
 
-export type RecordingSortBy = 'created_at' | 'dataset_name' | 'episode_count' | 'upload_status';
+export type RecordingSortBy = 'created_at' | 'dataset_name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'upload_status';
 export type TrainingJobSortBy = 'created_at' | 'updated_at' | 'job_name' | 'status';
 
 export type ExperimentEvaluationSummary = {
@@ -529,8 +529,8 @@ export type ModelSyncJobCancelResponse = {
 };
 
 export type StorageSortOrder = 'asc' | 'desc';
-export type StorageDatasetSortBy = 'created_at' | 'updated_at' | 'name' | 'size_bytes' | 'episode_count';
-export type StorageModelSortBy = 'created_at' | 'updated_at' | 'name' | 'size_bytes' | 'policy_type';
+export type StorageDatasetSortBy = 'created_at' | 'updated_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'episode_count' | 'sync_status';
+export type StorageModelSortBy = 'created_at' | 'updated_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status';
 
 export type StorageDatasetListQuery = {
   includeArchived?: boolean;

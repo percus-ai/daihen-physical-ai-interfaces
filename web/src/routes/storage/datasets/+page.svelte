@@ -84,11 +84,11 @@
 
   type DatasetStatusTab = 'active' | 'archived';
   type DatasetRowAction = '' | 'restore' | 'delete';
-  const DATASET_SORT_KEYS = ['created_at', 'name', 'episode_count', 'size_bytes'] as const;
+  const DATASET_SORT_KEYS = ['created_at', 'name', 'owner_name', 'profile_name', 'episode_count', 'size_bytes', 'sync_status'] as const;
   const parseDatasetStatusTab = (value: string | null): DatasetStatusTab => (value === 'archived' ? 'archived' : 'active');
-  const parseDatasetSortKey = (value: string | null): 'created_at' | 'name' | 'episode_count' | 'size_bytes' =>
+  const parseDatasetSortKey = (value: string | null): 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status' =>
     DATASET_SORT_KEYS.includes((value ?? '') as (typeof DATASET_SORT_KEYS)[number])
-      ? ((value ?? '') as 'created_at' | 'name' | 'episode_count' | 'size_bytes')
+      ? ((value ?? '') as 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status')
       : 'created_at';
   const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
@@ -683,15 +683,18 @@
     mergeDialogOpen = true;
   };
 
-  const isSortedBy = (key: 'created_at' | 'name' | 'episode_count' | 'size_bytes') => datasetSortKey === key;
-  const sortIconFor = (key: 'created_at' | 'name' | 'episode_count' | 'size_bytes') =>
+  const isSortedBy = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status') => datasetSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status') =>
     !isSortedBy(key) ? CaretUpDown : datasetSortOrder === 'asc' ? ArrowUp : ArrowDown;
   const NameSortIcon = $derived(sortIconFor('name'));
+  const OwnerSortIcon = $derived(sortIconFor('owner_name'));
+  const ProfileSortIcon = $derived(sortIconFor('profile_name'));
   const EpisodeSortIcon = $derived(sortIconFor('episode_count'));
   const SizeSortIcon = $derived(sortIconFor('size_bytes'));
   const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
-  const handleSortChange = async (key: 'created_at' | 'name' | 'episode_count' | 'size_bytes') => {
-    const nextOrder: 'asc' | 'desc' = datasetSortKey === key ? (datasetSortOrder === 'asc' ? 'desc' : 'asc') : 'asc';
+  const SyncSortIcon = $derived(sortIconFor('sync_status'));
+  const handleSortChange = async (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status') => {
+    const nextOrder: 'asc' | 'desc' = datasetSortKey === key ? (datasetSortOrder === 'asc' ? 'desc' : 'asc') : 'desc';
     const nextHref = buildUrlWithQueryState(page.url, {
       sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
       order: nextOrder !== 'desc' ? nextOrder : null,
@@ -1275,8 +1278,18 @@
               <NameSortIcon size={14} class={sortIconClass} />
             </button>
           </th>
-          <th class="pb-3">作成者</th>
-          <th class="pb-3">プロファイル</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('owner_name')}>
+              作成者
+              <OwnerSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('profile_name')}>
+              プロファイル
+              <ProfileSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           <th class="pb-3">
             <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('episode_count')}>
               エピソード
@@ -1296,7 +1309,14 @@
             </button>
           </th>
           {#if !isArchiveTab}
-            <th class="pb-3 text-center">同期状態</th>
+            <th class="pb-3 text-center">
+              <div class="flex justify-center">
+                <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('sync_status')}>
+                  同期状態
+                  <SyncSortIcon size={14} class={sortIconClass} />
+                </button>
+              </div>
+            </th>
           {/if}
           <th class="pb-3 text-right">操作</th>
         </tr>

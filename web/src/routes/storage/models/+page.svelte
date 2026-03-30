@@ -79,11 +79,11 @@
 
   type ModelStatusTab = 'active' | 'archived';
   type ModelRowAction = '' | 'restore' | 'delete';
-  const MODEL_SORT_KEYS = ['created_at', 'name', 'size_bytes', 'policy_type'] as const;
+  const MODEL_SORT_KEYS = ['created_at', 'name', 'owner_name', 'profile_name', 'size_bytes', 'policy_type', 'sync_status'] as const;
   const parseModelStatusTab = (value: string | null): ModelStatusTab => (value === 'archived' ? 'archived' : 'active');
-  const parseModelSortKey = (value: string | null): 'created_at' | 'name' | 'size_bytes' | 'policy_type' =>
+  const parseModelSortKey = (value: string | null): 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status' =>
     MODEL_SORT_KEYS.includes((value ?? '') as (typeof MODEL_SORT_KEYS)[number])
-      ? ((value ?? '') as 'created_at' | 'name' | 'size_bytes' | 'policy_type')
+      ? ((value ?? '') as 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status')
       : 'created_at';
   const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
@@ -361,15 +361,18 @@
   };
 
   const activeJobOf = (modelId: string) => activeJobsByModelId[modelId] ?? null;
-  const isSortedBy = (key: 'created_at' | 'name' | 'size_bytes' | 'policy_type') => modelSortKey === key;
-  const sortIconFor = (key: 'created_at' | 'name' | 'size_bytes' | 'policy_type') =>
+  const isSortedBy = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status') => modelSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status') =>
     !isSortedBy(key) ? CaretUpDown : modelSortOrder === 'asc' ? ArrowUp : ArrowDown;
   const NameSortIcon = $derived(sortIconFor('name'));
+  const OwnerSortIcon = $derived(sortIconFor('owner_name'));
+  const ProfileSortIcon = $derived(sortIconFor('profile_name'));
   const PolicySortIcon = $derived(sortIconFor('policy_type'));
   const SizeSortIcon = $derived(sortIconFor('size_bytes'));
   const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
-  const handleSortChange = async (key: 'created_at' | 'name' | 'size_bytes' | 'policy_type') => {
-    const nextOrder: 'asc' | 'desc' = modelSortKey === key ? (modelSortOrder === 'asc' ? 'desc' : 'asc') : 'asc';
+  const SyncSortIcon = $derived(sortIconFor('sync_status'));
+  const handleSortChange = async (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status') => {
+    const nextOrder: 'asc' | 'desc' = modelSortKey === key ? (modelSortOrder === 'asc' ? 'desc' : 'asc') : 'desc';
     const nextHref = buildUrlWithQueryState(page.url, {
       sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
       order: nextOrder !== 'desc' ? nextOrder : null,
@@ -1109,8 +1112,18 @@
               <NameSortIcon size={14} class={sortIconClass} />
             </button>
           </th>
-          <th class="pb-3">作成者</th>
-          <th class="pb-3">プロファイル</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('owner_name')}>
+              作成者
+              <OwnerSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('profile_name')}>
+              プロファイル
+              <ProfileSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           <th class="pb-3">
             <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('policy_type')}>
               ポリシー
@@ -1130,7 +1143,14 @@
             </button>
           </th>
           {#if !isArchiveTab}
-            <th class="pb-3 text-center">同期状態</th>
+            <th class="pb-3 text-center">
+              <div class="flex justify-center">
+                <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('sync_status')}>
+                  同期状態
+                  <SyncSortIcon size={14} class={sortIconClass} />
+                </button>
+              </div>
+            </th>
           {/if}
           <th class="pb-3 text-right">操作</th>
         </tr>

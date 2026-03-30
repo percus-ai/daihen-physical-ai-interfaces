@@ -879,7 +879,7 @@ async def get_session_upload_status(session_id: str):
 # -- Recording management endpoints (DB / filesystem) ------------------------
 
 
-RecordingListSortBy = Literal["created_at", "dataset_name", "episode_count", "upload_status"]
+RecordingListSortBy = Literal["created_at", "dataset_name", "owner_name", "profile_name", "episode_count", "size_bytes", "upload_status"]
 SortOrder = Literal["asc", "desc"]
 
 
@@ -978,8 +978,14 @@ async def _list_recordings(
     def _sort_key(record: dict) -> tuple[object, str]:
         if sort_by == "dataset_name":
             primary = _normalize_query_text(record.get("name") or record.get("id"))
+        elif sort_by == "owner_name":
+            primary = _normalize_query_text(record.get("owner_name") or record.get("owner_email") or record.get("owner_user_id"))
+        elif sort_by == "profile_name":
+            primary = _normalize_query_text(record.get("profile_name"))
         elif sort_by == "episode_count":
             primary = int(record.get("episode_count") or 0)
+        elif sort_by == "size_bytes":
+            primary = int(record.get("size_bytes") or 0)
         elif sort_by == "upload_status":
             primary = 1 if str(record.get("content_hash") or "").strip() else 0
         else:

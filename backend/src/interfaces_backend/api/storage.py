@@ -625,18 +625,32 @@ async def _load_storage_owner_rows(table_name: str, list_query, *, include_searc
     return result.data or []
 
 
+def _normalize_sort_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _dataset_sync_rank(dataset_id: str, active_jobs_by_dataset_id: dict[str, DatasetSyncJobStatus], is_local: bool) -> tuple[int, float]:
+    job = active_jobs_by_dataset_id.get(dataset_id)
+    if job and job.state in {"queued", "running"}:
+        return (2, float(job.progress_percent or 0))
+    if is_local:
+        return (1, 100.0)
+    return (0, 0.0)
+
+
+def _model_sync_rank(model_id: str, active_jobs_by_model_id: dict[str, ModelSyncJobStatus], is_local: bool) -> tuple[int, float]:
+    job = active_jobs_by_model_id.get(model_id)
+    if job and job.state in {"queued", "running"}:
+        return (2, float(job.progress_percent or 0))
+    if is_local:
+        return (1, 100.0)
+    return (0, 0.0)
+
+
 async def _load_dataset_rows(list_query: DatasetListQuery) -> tuple[list[dict], int]:
     client = await get_supabase_async_client()
     query = client.table("datasets").select("*", count="exact")
     query = _apply_dataset_list_filters(query, list_query)
-
-    query = _apply_storage_list_sort_and_paging(
-        query,
-        sort_by=list_query.sort_by,
-        sort_order=list_query.sort_order,
-        offset=list_query.offset,
-        limit=list_query.limit,
-    )
     result = await query.execute()
     rows = result.data or []
     total = int(getattr(result, "count", len(rows)) or 0)
@@ -647,14 +661,6 @@ async def _load_model_rows(list_query: ModelListQuery) -> tuple[list[dict], int]
     client = await get_supabase_async_client()
     query = client.table("models").select("*", count="exact")
     query = _apply_model_list_filters(query, list_query)
-
-    query = _apply_storage_list_sort_and_paging(
-        query,
-        sort_by=list_query.sort_by,
-        sort_order=list_query.sort_order,
-        offset=list_query.offset,
-        limit=list_query.limit,
-    )
     result = await query.execute()
     rows = result.data or []
     total = int(getattr(result, "count", len(rows)) or 0)
@@ -672,6 +678,8 @@ async def _list_datasets(list_query: DatasetListQuery) -> DatasetListResponse:
         ]
     )
     owner_options = _build_owner_filter_options(owner_rows, available_owner_rows, owner_directory)
+    active_jobs = get_dataset_sync_jobs_service().list(user_id=require_user_id(), include_terminal=False).jobs
+    active_jobs_by_dataset_id = {job.dataset_id: job for job in active_jobs}
     datasets = []
     for row in rows:
         dataset = _dataset_row_to_info(row)
@@ -680,7 +688,33 @@ async def _list_datasets(list_query: DatasetListQuery) -> DatasetListResponse:
         dataset.owner_email = owner_entry.email or None if owner_entry else None
         dataset.owner_name = owner_entry.name or None if owner_entry else None
         datasets.append(dataset)
-    return DatasetListResponse(datasets=datasets, total=total, owner_options=owner_options)
+
+    reverse = list_query.sort_order == "desc"
+
+    def _sort_key(dataset: DatasetInfo) -> tuple[object, str]:
+        if list_query.sort_by == "name":
+            primary: object = _normalize_sort_text(dataset.name or dataset.id)
+        elif list_query.sort_by == "owner_name":
+            primary = _normalize_sort_text(dataset.owner_name or dataset.owner_email or dataset.owner_user_id)
+        elif list_query.sort_by == "profile_name":
+            primary = _normalize_sort_text(dataset.profile_name)
+        elif list_query.sort_by == "episode_count":
+            primary = int(dataset.episode_count or 0)
+        elif list_query.sort_by == "size_bytes":
+            primary = int(dataset.size_bytes or 0)
+        elif list_query.sort_by == "updated_at":
+            primary = str(dataset.updated_at or "")
+        elif list_query.sort_by == "sync_status":
+            primary = _dataset_sync_rank(dataset.id, active_jobs_by_dataset_id, bool(dataset.is_local))
+        else:
+            primary = str(dataset.created_at or "")
+        return primary, str(dataset.id or "")
+
+    datasets.sort(key=_sort_key, reverse=reverse)
+    paged = datasets[list_query.offset:]
+    if list_query.limit is not None:
+        paged = paged[:list_query.limit]
+    return DatasetListResponse(datasets=paged, total=total, owner_options=owner_options)
 
 
 async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
@@ -694,6 +728,8 @@ async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
         ]
     )
     owner_options = _build_owner_filter_options(owner_rows, available_owner_rows, owner_directory)
+    active_jobs = get_model_sync_jobs_service().list(user_id=require_user_id(), include_terminal=False).jobs
+    active_jobs_by_model_id = {job.model_id: job for job in active_jobs}
     models = []
     for row in rows:
         model = _model_row_to_info(row)
@@ -702,7 +738,33 @@ async def _list_models(list_query: ModelListQuery) -> ModelListResponse:
         model.owner_email = owner_entry.email or None if owner_entry else None
         model.owner_name = owner_entry.name or None if owner_entry else None
         models.append(model)
-    return ModelListResponse(models=models, total=total, owner_options=owner_options)
+
+    reverse = list_query.sort_order == "desc"
+
+    def _sort_key(model: ModelInfo) -> tuple[object, str]:
+        if list_query.sort_by == "name":
+            primary: object = _normalize_sort_text(model.name or model.id)
+        elif list_query.sort_by == "owner_name":
+            primary = _normalize_sort_text(model.owner_name or model.owner_email or model.owner_user_id)
+        elif list_query.sort_by == "profile_name":
+            primary = _normalize_sort_text(model.profile_name)
+        elif list_query.sort_by == "policy_type":
+            primary = _normalize_sort_text(model.policy_type)
+        elif list_query.sort_by == "size_bytes":
+            primary = int(model.size_bytes or 0)
+        elif list_query.sort_by == "updated_at":
+            primary = str(model.updated_at or "")
+        elif list_query.sort_by == "sync_status":
+            primary = _model_sync_rank(model.id, active_jobs_by_model_id, bool(model.is_local))
+        else:
+            primary = str(model.created_at or "")
+        return primary, str(model.id or "")
+
+    models.sort(key=_sort_key, reverse=reverse)
+    paged = models[list_query.offset:]
+    if list_query.limit is not None:
+        paged = paged[:list_query.limit]
+    return ModelListResponse(models=paged, total=total, owner_options=owner_options)
 
 
 async def _require_dataset_row(client, dataset_id: str) -> dict:

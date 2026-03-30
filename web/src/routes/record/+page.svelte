@@ -119,10 +119,10 @@
   });
 
   const PAGE_SIZE = DEFAULT_PAGE_SIZE;
-  const RECORDING_SORT_KEYS = ['created_at', 'dataset_name', 'episode_count', 'status'] as const;
-  const parseRecordingSortKey = (value: string | null): 'created_at' | 'dataset_name' | 'episode_count' | 'status' =>
+  const RECORDING_SORT_KEYS = ['created_at', 'dataset_name', 'owner_name', 'profile_name', 'episode_count', 'size_bytes', 'status'] as const;
+  const parseRecordingSortKey = (value: string | null): 'created_at' | 'dataset_name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'status' =>
     RECORDING_SORT_KEYS.includes((value ?? '') as (typeof RECORDING_SORT_KEYS)[number])
-      ? ((value ?? '') as 'created_at' | 'dataset_name' | 'episode_count' | 'status')
+      ? ((value ?? '') as 'created_at' | 'dataset_name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'status')
       : 'created_at';
   const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
@@ -336,15 +336,18 @@
   const clearRecordingSelection = () => {
     selectedRecordingIds = [];
   };
-  const isSortedBy = (key: 'created_at' | 'dataset_name' | 'episode_count' | 'status') => recordingSortKey === key;
-  const sortIconFor = (key: 'created_at' | 'dataset_name' | 'episode_count' | 'status') =>
+  const isSortedBy = (key: 'created_at' | 'dataset_name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'status') => recordingSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'dataset_name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'status') =>
     !isSortedBy(key) ? CaretUpDown : recordingSortOrder === 'asc' ? ArrowUp : ArrowDown;
   const DatasetNameSortIcon = $derived(sortIconFor('dataset_name'));
+  const OwnerSortIcon = $derived(sortIconFor('owner_name'));
+  const ProfileSortIcon = $derived(sortIconFor('profile_name'));
   const EpisodeSortIcon = $derived(sortIconFor('episode_count'));
+  const SizeSortIcon = $derived(sortIconFor('size_bytes'));
   const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
   const StatusSortIcon = $derived(sortIconFor('status'));
-  const handleSortChange = async (key: 'created_at' | 'dataset_name' | 'episode_count' | 'status') => {
-    const nextOrder: 'asc' | 'desc' = recordingSortKey === key ? (recordingSortOrder === 'asc' ? 'desc' : 'asc') : 'asc';
+  const handleSortChange = async (key: 'created_at' | 'dataset_name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'status') => {
+    const nextOrder: 'asc' | 'desc' = recordingSortKey === key ? (recordingSortOrder === 'asc' ? 'desc' : 'asc') : 'desc';
     const nextHref = buildUrlWithQueryState(page.url, {
       sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
       order: nextOrder !== 'desc' ? nextOrder : null,
@@ -823,15 +826,30 @@
               <DatasetNameSortIcon size={14} class={sortIconClass} />
             </button>
           </th>
-          <th class="pb-3">作成者</th>
-          <th class="pb-3">プロファイル</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('owner_name')}>
+              作成者
+              <OwnerSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('profile_name')}>
+              プロファイル
+              <ProfileSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           <th class="pb-3">
             <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('episode_count')}>
               エピソード
               <EpisodeSortIcon size={14} class={sortIconClass} />
             </button>
           </th>
-          <th class="pb-3">サイズ</th>
+          <th class="pb-3">
+            <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('size_bytes')}>
+              サイズ
+              <SizeSortIcon size={14} class={sortIconClass} />
+            </button>
+          </th>
           <th class="pb-3">
             <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('created_at')}>
               作成日時
