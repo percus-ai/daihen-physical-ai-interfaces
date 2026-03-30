@@ -618,6 +618,14 @@
     renameTarget = model;
     renameDialogOpen = true;
   };
+  const openModelDetail = async (modelId: string) => {
+    await goto(`/storage/models/${modelId}`);
+  };
+  const handleRowKeydown = async (event: KeyboardEvent, modelId: string) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    await openModelDetail(modelId);
+  };
 
   const normalizeJob = (job: ModelSyncJobStatus): ModelSyncJobStatus => {
     const progress = Number(job.progress_percent ?? 0);
@@ -1328,7 +1336,9 @@
               </div>
             </th>
           {/if}
-          <th class="pb-3 text-right">操作</th>
+          <th class="w-14 pb-3 pr-3">
+            <div class="ml-auto flex w-8 justify-center">操作</div>
+          </th>
         </tr>
       </thead>
       <tbody class="text-slate-600">
@@ -1338,8 +1348,17 @@
           {#each displayedModels as model}
             {@const activeJob = activeJobOf(model.id)}
             {@const syncStatus = presentModelSyncStatus(activeJob, Boolean(model.is_local))}
-            <tr class="border-t border-slate-200/60">
-              <td class="w-12 py-3 align-middle">
+            <tr
+              class={`cursor-pointer border-t border-slate-200/60 transition focus-within:bg-slate-100/80 ${
+                selectedIds.includes(model.id) ? 'bg-slate-50/80' : 'hover:bg-slate-100/80'
+              }`}
+              tabindex="0"
+              role="link"
+              aria-label={`${displayModelLabel(model)} の詳細を開く`}
+              onclick={() => void openModelDetail(model.id)}
+              onkeydown={(event) => void handleRowKeydown(event, model.id)}
+            >
+              <td class="w-12 py-3 align-middle" onclick={(event) => event.stopPropagation()}>
                 <div class="flex justify-center">
                   <input
                     type="checkbox"
@@ -1360,13 +1379,22 @@
               <td class="py-3">{formatBytes(model.size_bytes ?? 0)}</td>
               <td class="py-3">{formatDate(model.created_at)}</td>
               {#if !isArchiveTab}
-                <td class="py-3 text-center">
+                <td class="py-3 text-center" onclick={(event) => event.stopPropagation()}>
                   <div class="flex justify-center">
                     {#if syncStatus.kind === 'progress' && activeJob}
                       <button
                         class="text-xs font-semibold text-brand hover:underline"
                         type="button"
                         onclick={() => openModelSyncModal(activeJob.job_id)}
+                      >
+                        {syncStatus.label}
+                      </button>
+                    {:else if !model.is_local && !isArchiveTab}
+                      <button
+                        class="text-xs font-semibold text-brand hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
+                        type="button"
+                        disabled={isSyncButtonDisabled(model)}
+                        onclick={() => void handleSyncModel(model)}
                       >
                         {syncStatus.label}
                       </button>
@@ -1386,7 +1414,7 @@
                   </div>
                 </td>
               {/if}
-              <td class="py-3 text-right">
+              <td class="py-3 pr-3 text-right" onclick={(event) => event.stopPropagation()}>
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger
                     class="btn-ghost ml-auto h-8 w-8 p-0 text-slate-600"
@@ -1410,9 +1438,7 @@
                         </DropdownMenu.GroupHeading>
                         <DropdownMenu.Item
                           class="flex items-center gap-2 rounded-lg px-3 py-2 font-semibold text-slate-700 hover:bg-slate-100"
-                          onSelect={() => {
-                            window.location.href = `/storage/models/${model.id}`;
-                          }}
+                          onSelect={() => void openModelDetail(model.id)}
                         >
                           <FileText size={16} class="text-slate-500" />
                           詳細を開く

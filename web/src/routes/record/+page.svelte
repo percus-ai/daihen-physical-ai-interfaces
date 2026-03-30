@@ -1026,7 +1026,9 @@
               </button>
             </div>
           </th>
-          <th class="pb-3 text-right">操作</th>
+          <th class="w-14 pb-3 pr-3">
+            <div class="ml-auto flex w-8 justify-center">操作</div>
+          </th>
         </tr>
       </thead>
       <tbody class="text-slate-600">
@@ -1096,7 +1098,7 @@
                   {/if}
                 </div>
               </td>
-              <td class="py-3 text-right">
+              <td class="py-3 pr-3 text-right">
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger
                     class="btn-ghost ml-auto h-8 w-8 p-0 text-slate-600"
