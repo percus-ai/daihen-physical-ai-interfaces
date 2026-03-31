@@ -149,6 +149,7 @@
 
   type MetricPoint = { step?: number; loss?: number; ts?: string };
   let activeLogSnapshotKey = $state('');
+  let loadedLogSnapshotKey = $state('');
 
   const jobInfo = $derived($jobQuery.data?.job);
   const provisionOperation = $derived($jobQuery.data?.provision_operation ?? null);
@@ -709,7 +710,7 @@
     realtimeContributor = null;
     resetLogAppendState();
     activeLogSnapshotKey = registrationKey;
-    void loadLogsSnapshot(currentJobId, currentLogsType, logLines);
+    loadedLogSnapshotKey = '';
 
     streamStatus = 'connecting';
     realtimeContributor = registerTabRealtimeContributor({
@@ -724,6 +725,7 @@
       realtimeContributor?.dispose();
       realtimeContributor = null;
       activeLogSnapshotKey = '';
+      loadedLogSnapshotKey = '';
       logStreamActive = false;
     };
   });
@@ -733,6 +735,30 @@
       return;
     }
     realtimeContributor.setSubscriptions(buildRealtimeSubscriptions(jobId, logsType, logLines));
+  });
+
+  $effect(() => {
+    const currentJobId = jobId;
+    const currentJob = jobInfo;
+    const currentStatus = status;
+    const currentLogsType = logsType;
+    if (!currentJobId || !currentJob) {
+      return;
+    }
+
+    const shouldLoadSnapshot =
+      !currentJob.ip || !['running', 'starting', 'deploying'].includes(currentStatus);
+    if (!shouldLoadSnapshot) {
+      return;
+    }
+
+    const snapshotKey = `${currentJobId}:${currentLogsType}`;
+    if (loadedLogSnapshotKey === snapshotKey) {
+      return;
+    }
+    loadedLogSnapshotKey = snapshotKey;
+    activeLogSnapshotKey = snapshotKey;
+    void loadLogsSnapshot(currentJobId, currentLogsType, logLines);
   });
 </script>
 
