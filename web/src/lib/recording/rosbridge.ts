@@ -1,6 +1,10 @@
 import { getBackendUrl } from '$lib/config';
 
 type RosbridgeStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
+export type RosTopicInfo = {
+  name: string;
+  type: string;
+};
 
 type SubscriptionOptions = {
   type?: string;
@@ -16,10 +20,18 @@ type Subscription = {
   options: SubscriptionOptions;
 };
 
+type PendingServiceCall = {
+  resolve: (payload: Record<string, unknown>) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 class RosbridgeClient {
   private ws: WebSocket | null = null;
   private status: RosbridgeStatus = 'idle';
   private subscriptions = new Map<string, Subscription>();
+  private pendingServiceCalls = new Map<string, PendingServiceCall>();
+  private serviceRequestSeq = 0;
   private connectPromise: Promise<void> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
@@ -69,17 +81,24 @@ class RosbridgeClient {
         } catch {
           return;
         }
-        if (!payload || payload.op !== 'publish') return;
-        const topic = payload.topic as string | undefined;
-        if (!topic) return;
-        const sub = this.subscriptions.get(topic);
-        if (!sub) return;
-        for (const handler of sub.handlers) {
-          handler(payload.msg as Record<string, unknown>);
+        if (!payload) return;
+        if (payload.op === 'publish') {
+          const topic = payload.topic as string | undefined;
+          if (!topic) return;
+          const sub = this.subscriptions.get(topic);
+          if (!sub) return;
+          for (const handler of sub.handlers) {
+            handler(payload.msg as Record<string, unknown>);
+          }
+          return;
+        }
+        if (payload.op === 'service_response') {
+          this.handleServiceResponse(payload);
         }
       };
 
       ws.onerror = () => {
+        this.rejectPendingServiceCalls(new Error('rosbridge connection error'));
         this.updateStatus('error');
         this.connectPromise = null;
         this.scheduleReconnect();
@@ -87,6 +106,7 @@ class RosbridgeClient {
       };
 
       ws.onclose = () => {
+        this.rejectPendingServiceCalls(new Error('rosbridge connection closed'));
         this.updateStatus('disconnected');
         this.connectPromise = null;
         this.ws = null;
@@ -148,6 +168,83 @@ class RosbridgeClient {
   private sendUnsubscribe(topic: string) {
     if (!this.ws || this.status !== 'connected') return;
     this.ws.send(JSON.stringify({ op: 'unsubscribe', topic }));
+  }
+
+  async callService(
+    service: string,
+    args: Record<string, unknown> = {},
+    timeoutMs = 3000
+  ): Promise<Record<string, unknown>> {
+    if (!service) {
+      throw new Error('service is required');
+    }
+    await this.connect();
+    if (!this.ws || this.status !== 'connected') {
+      throw new Error('rosbridge is not connected');
+    }
+
+    const id = `svc-${Date.now()}-${++this.serviceRequestSeq}`;
+    const payload = {
+      op: 'call_service',
+      service,
+      args,
+      id
+    };
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingServiceCalls.delete(id);
+        reject(new Error(`service call timed out: ${service}`));
+      }, timeoutMs);
+      this.pendingServiceCalls.set(id, { resolve, reject, timer });
+      try {
+        this.ws?.send(JSON.stringify(payload));
+      } catch {
+        clearTimeout(timer);
+        this.pendingServiceCalls.delete(id);
+        reject(new Error(`failed to call service: ${service}`));
+      }
+    });
+  }
+
+  async listTopics(timeoutMs = 3000): Promise<RosTopicInfo[]> {
+    const response = await this.callService('/rosapi/topics', {}, timeoutMs);
+    const values = response.values as Record<string, unknown> | undefined;
+    const topicNamesRaw = values?.topics;
+    const topicTypesRaw = values?.types;
+    const topicNames = Array.isArray(topicNamesRaw)
+      ? topicNamesRaw.filter((value): value is string => typeof value === 'string')
+      : [];
+    const topicTypes = Array.isArray(topicTypesRaw) ? topicTypesRaw : [];
+
+    return topicNames.map((name, index) => ({
+      name,
+      type: typeof topicTypes[index] === 'string' ? topicTypes[index] : ''
+    }));
+  }
+
+  private handleServiceResponse(payload: Record<string, unknown>) {
+    const id = payload.id != null ? String(payload.id) : '';
+    if (!id) return;
+    const pending = this.pendingServiceCalls.get(id);
+    if (!pending) return;
+
+    clearTimeout(pending.timer);
+    this.pendingServiceCalls.delete(id);
+    const result = payload.result;
+    if (result === false) {
+      pending.reject(new Error('rosbridge service call failed'));
+      return;
+    }
+    pending.resolve(payload);
+  }
+
+  private rejectPendingServiceCalls(error: Error) {
+    for (const [id, pending] of this.pendingServiceCalls.entries()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pendingServiceCalls.delete(id);
+    }
   }
 
   private scheduleReconnect() {
