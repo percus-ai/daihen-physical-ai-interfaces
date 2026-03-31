@@ -1352,6 +1352,10 @@ def _check_instance_status(job_data: dict) -> Optional[str]:
     return _check_instance_via_api(instance_id)
 
 
+async def _check_instance_status_async(job_data: dict) -> Optional[str]:
+    return await asyncio.to_thread(_check_instance_status, job_data)
+
+
 def _is_terminated_instance_status(status: str) -> bool:
     return status in {
         "offline",
@@ -1438,7 +1442,7 @@ async def _should_preserve_job_from_remote_status(
         return None, None
 
     await _refresh_job_ssh_target_if_needed(job_data)
-    remote_status = _check_remote_status(job_data)
+    remote_status = await _check_remote_status_async(job_data)
     if remote_status in {"running", "starting"}:
         return remote_status, f"Provider status stale; remote process is {remote_status}"
 
@@ -1459,7 +1463,7 @@ async def _refresh_job_status_from_instance(job_data: dict) -> Optional[str]:
     instance_id = job_data.get("instance_id")
     if not instance_id:
         return None
-    instance_status = _check_instance_status(job_data)
+    instance_status = await _check_instance_status_async(job_data)
     preserved_remote_status, _ = await _should_preserve_job_from_remote_status(job_data, instance_status)
     if preserved_remote_status:
         return preserved_remote_status
@@ -1523,7 +1527,7 @@ async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
         try:
             from percus_ai.training.providers.vast import get_instance
 
-            current = get_instance(instance_id)
+            current = await asyncio.to_thread(get_instance, instance_id)
         except Exception:
             return job_data
 
@@ -1584,7 +1588,7 @@ async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
     instance_id = str(job_data.get("instance_id") or "").strip()
     ip = str(job_data.get("ip") or "").strip()
     if instance_id:
-        current_status = _check_instance_status(job_data)
+        current_status = await _check_instance_status_async(job_data)
     else:
         current_status = None
 
@@ -1596,7 +1600,7 @@ async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
     client = _get_verda_client()
     if not client:
         return job_data
-    revive_instance = _find_latest_running_revive_instance(client, job_id)
+    revive_instance = await asyncio.to_thread(_find_latest_running_revive_instance, client, job_id)
     if not revive_instance:
         return job_data
 
@@ -3347,6 +3351,10 @@ def _check_remote_status(job_data: dict) -> str:
         conn.disconnect()
 
 
+async def _check_remote_status_async(job_data: dict) -> str:
+    return await asyncio.to_thread(_check_remote_status, job_data)
+
+
 def _get_remote_logs(
     job_data: dict, lines: int = 100, log_type: str = "training"
 ) -> Optional[str]:
@@ -3367,6 +3375,14 @@ def _get_remote_logs(
         return None
     finally:
         conn.disconnect()
+
+
+async def _get_remote_logs_async(
+    job_data: dict,
+    lines: int = 100,
+    log_type: str = "training",
+) -> Optional[str]:
+    return await asyncio.to_thread(_get_remote_logs, job_data, lines, log_type)
 
 
 def _get_remote_log_file(
@@ -3392,6 +3408,19 @@ def _get_remote_log_file(
         return None
     finally:
         conn.disconnect()
+
+
+async def _get_remote_log_file_async(
+    job_data: dict,
+    log_type: str = "training",
+    timeout: int = 15,
+) -> Optional[str]:
+    return await asyncio.to_thread(
+        _get_remote_log_file,
+        job_data,
+        log_type,
+        timeout,
+    )
 
 
 def _should_try_r2_first(job_data: dict) -> bool:
@@ -3493,6 +3522,14 @@ def _get_logs_from_r2(job_data: dict, lines: int, log_type: str) -> Optional[str
         return None
 
 
+async def _get_logs_from_r2_async(
+    job_data: dict,
+    lines: int,
+    log_type: str,
+) -> Optional[str]:
+    return await asyncio.to_thread(_get_logs_from_r2, job_data, lines, log_type)
+
+
 def _get_full_logs_from_r2(job_data: dict, log_type: str) -> Optional[str]:
     r2 = _get_logs_r2_sync_service()
     if not r2:
@@ -3511,6 +3548,13 @@ def _get_full_logs_from_r2(job_data: dict, log_type: str) -> Optional[str]:
         return None
 
 
+async def _get_full_logs_from_r2_async(
+    job_data: dict,
+    log_type: str,
+) -> Optional[str]:
+    return await asyncio.to_thread(_get_full_logs_from_r2, job_data, log_type)
+
+
 def _check_logs_in_r2(job_data: dict, log_type: str) -> dict:
     r2 = _get_logs_r2_sync_service()
     job_id = job_data.get("job_id") or job_data.get("id")
@@ -3524,6 +3568,10 @@ def _check_logs_in_r2(job_data: dict, log_type: str) -> dict:
         return {"exists": True, "key": key, "error": None}
     except Exception as e:
         return {"exists": False, "key": key, "error": str(e)}
+
+
+async def _check_logs_in_r2_async(job_data: dict, log_type: str) -> dict:
+    return await asyncio.to_thread(_check_logs_in_r2, job_data, log_type)
 
 
 async def _get_remote_progress(job_id: str) -> Optional[dict]:
@@ -3580,9 +3628,11 @@ async def _get_latest_metric(job_id: str, split: str) -> Optional[dict]:
 
 
 async def _get_latest_metrics(job_id: str) -> tuple[Optional[dict], Optional[dict]]:
-    return await _get_latest_metric(job_id, "train"), await _get_latest_metric(
-        job_id, "val"
+    train_metric, val_metric = await asyncio.gather(
+        _get_latest_metric(job_id, "train"),
+        _get_latest_metric(job_id, "val"),
     )
+    return train_metric, val_metric
 
 
 async def _get_metrics_series(job_id: str, split: str, limit: int) -> list[dict]:
@@ -5071,15 +5121,24 @@ async def get_job(job_id: str):
     job = JobInfo(**job_coerced)
     remote_status = None
     progress = None
-    latest_train_metrics, latest_val_metrics = await _get_latest_metrics(job_id)
     summary = job_data.get("summary")
     early_stopping = job_data.get("early_stopping")
     training_config = job_data.get("training_config")
-    provision_operation = await _resolve_job_provision_operation(job_data)
-
-    # Progress is derived from Supabase metrics
     if job.status in ("running", "starting", "deploying"):
-        progress = await _get_remote_progress(job_id)
+        (
+            (latest_train_metrics, latest_val_metrics),
+            provision_operation,
+            progress,
+        ) = await asyncio.gather(
+            _get_latest_metrics(job_id),
+            _resolve_job_provision_operation(job_data),
+            _get_remote_progress(job_id),
+        )
+    else:
+        (latest_train_metrics, latest_val_metrics), provision_operation = await asyncio.gather(
+            _get_latest_metrics(job_id),
+            _resolve_job_provision_operation(job_data),
+        )
 
     return JobDetailResponse(
         job=job,
@@ -5116,10 +5175,10 @@ async def get_job_logs(
     source = "remote"
     logs = None
     if remote_allowed:
-        logs = _get_remote_logs(job_data, lines, log_type=log_type)
+        logs = await _get_remote_logs_async(job_data, lines, log_type=log_type)
     if logs is None:
         source = "r2"
-        logs = _get_logs_from_r2(job_data, lines, log_type)
+        logs = await _get_logs_from_r2_async(job_data, lines, log_type)
     if logs is None:
         raise HTTPException(
             status_code=503, detail="Could not connect to remote instance"
@@ -5163,21 +5222,21 @@ async def download_job_logs(
         remote_allowed = False
 
     if _should_try_r2_first(job_data):
-        logs = _get_full_logs_from_r2(job_data, log_type)
+        logs = await _get_full_logs_from_r2_async(job_data, log_type)
         if logs is None and remote_allowed:
-            logs = _get_remote_log_file(job_data, log_type=log_type, timeout=30)
+            logs = await _get_remote_log_file_async(job_data, log_type=log_type, timeout=30)
             if logs is None:
-                logs = _get_remote_logs(job_data, lines=5000, log_type=log_type)
+                logs = await _get_remote_logs_async(job_data, lines=5000, log_type=log_type)
     else:
         logs = None
         if remote_allowed:
-            logs = _get_remote_log_file(job_data, log_type=log_type, timeout=30)
+            logs = await _get_remote_log_file_async(job_data, log_type=log_type, timeout=30)
             if logs is None:
-                logs = _get_remote_logs(job_data, lines=5000, log_type=log_type)
+                logs = await _get_remote_logs_async(job_data, lines=5000, log_type=log_type)
         if logs is None:
-            logs = _get_full_logs_from_r2(job_data, log_type)
+            logs = await _get_full_logs_from_r2_async(job_data, log_type)
     if logs is None:
-        r2_status = _check_logs_in_r2(job_data, log_type)
+        r2_status = await _check_logs_in_r2_async(job_data, log_type)
         raise HTTPException(
             status_code=503,
             detail=(
@@ -5197,7 +5256,7 @@ async def get_job_logs_status(
     job_data = await _load_job(job_id)
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
-    r2_status = _check_logs_in_r2(job_data, log_type)
+    r2_status = await _check_logs_in_r2_async(job_data, log_type)
     return {
         "job_id": job_id,
         "log_type": log_type,
@@ -5230,15 +5289,17 @@ async def get_job_metrics(
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    train = await _get_metrics_series(job_id, "train", limit)
-    val = await _get_metrics_series(job_id, "val", limit)
+    train, val = await asyncio.gather(
+        _get_metrics_series(job_id, "train", limit),
+        _get_metrics_series(job_id, "val", limit),
+    )
 
     # Fallback to R2 archive if DB has no metrics for a terminal job
     from_archive = False
     if not train and not val and job_data.get("status") in (
         "completed", "stopped", "terminated", "failed",
     ):
-        archived = _get_metrics_from_r2(job_id)
+        archived = await asyncio.to_thread(_get_metrics_from_r2, job_id)
         if archived:
             train = [m for m in archived if m.get("split") == "train"][:limit]
             val = [m for m in archived if m.get("split") == "val"][:limit]
@@ -5273,7 +5334,7 @@ async def get_instance_status(job_id: str):
     message = ""
 
     if instance_id:
-        instance_status = _check_instance_status(job_data)
+        instance_status = await _check_instance_status_async(job_data)
         if instance_status is None:
             message = f"Instance not found in {provider_display} (may be deleted)"
         elif instance_status == "running":
@@ -5288,7 +5349,7 @@ async def get_instance_status(job_id: str):
     # Check remote process status if instance is running and has IP
     remote_process_status = None
     if instance_status == "running" and ip:
-        remote_process_status = _check_remote_status(job_data)
+        remote_process_status = await _check_remote_status_async(job_data)
         if remote_process_status == "running":
             message = "Instance running, training in progress"
         elif remote_process_status == "stopped":
