@@ -457,7 +457,7 @@
     </div>
   </div>
 
-  <div class="grid gap-6 px-6 py-6 xl:grid-cols-[minmax(0,1.18fr)_296px]">
+  <div class="grid gap-6 px-6 py-6 xl:grid-cols-[minmax(0,1fr)_360px]">
     <section class="nested-block flex h-full flex-col justify-start p-5">
       <div class="flex items-start justify-between gap-3">
         <div>
