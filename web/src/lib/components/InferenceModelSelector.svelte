@@ -817,7 +817,8 @@
   .preview-query {
     container-type: inline-size;
     width: 100%;
-    padding-inline: 0.5rem;
+    padding-inline-start: 0.25rem;
+    padding-inline-end: 0.5rem;
   }
 
   .preview-grid {
@@ -841,7 +842,8 @@
 
   @media (min-width: 1056px) {
     .preview-query {
-      padding-inline: 0.5rem;
+      padding-inline-start: 0.25rem;
+      padding-inline-end: 0.5rem;
     }
   }
 
