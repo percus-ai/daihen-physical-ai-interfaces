@@ -785,8 +785,22 @@ def _node_topics_from_parameters(parameters: dict[str, Any]) -> list[str]:
     topics = parameters.get("topics")
     if not isinstance(topics, dict):
         return []
+    # Determine which streams are disabled so we can skip their topics.
+    streams = parameters.get("streams")
+    disabled_topic_keys: set[str] = set()
+    if isinstance(streams, dict):
+        _stream_to_topic_key = {
+            "pointcloud_enabled": "pointcloud",
+            "depth_colormap_enabled": "depth_colormap",
+            "infrared_enabled": "infrared",
+        }
+        for stream_flag, topic_key in _stream_to_topic_key.items():
+            if stream_flag in streams and not _as_bool(streams[stream_flag]):
+                disabled_topic_keys.add(topic_key)
     results: list[str] = []
-    for value in topics.values():
+    for key, value in topics.items():
+        if key in disabled_topic_keys:
+            continue
         topic = str(value or "").strip()
         if not topic:
             continue
