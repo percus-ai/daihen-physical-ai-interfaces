@@ -489,7 +489,7 @@
       onOpenAutoFocus={preventModalAutoFocus}
       onCloseAutoFocus={preventModalAutoFocus}
     >
-      <div class="flex h-full w-full flex-col overflow-hidden rounded-[26px] border border-slate-200/90 bg-white shadow-[0_32px_72px_-40px_rgba(15,23,42,0.28)] modal:h-[788px] modal:w-[795px] modal:max-w-[calc(100vw-96px)]">
+      <div class="flex h-full w-full flex-col overflow-hidden rounded-[26px] border border-slate-200/90 bg-white shadow-[0_32px_72px_-40px_rgba(15,23,42,0.28)] modal:h-[788px] modal:w-[825px] modal:max-w-[calc(100vw-96px)]">
         <div class="flex items-center justify-between gap-6 border-b border-slate-200/80 px-4 pb-3 pt-4 modal:px-8 modal:pb-3 modal:pt-6">
           <div>
             <p class="label">推論モデル</p>
@@ -504,12 +504,12 @@
           </Button.Root>
         </div>
 
-        <div class="min-h-0 flex-1 overflow-y-auto px-4 pt-4 modal:overflow-visible modal:px-8 modal:pb-6">
+        <div class="min-h-0 flex-1 overflow-y-auto px-4 pt-4 modal:overflow-visible modal:px-10 modal:pb-6">
           <div class="modal-grid grid min-h-full grid-cols-1 gap-6 modal:h-full modal:grid-cols-[1fr_336px]">
             <div class="flex min-h-0 flex-col modal:grid modal:h-full modal:grid-rows-[auto_minmax(0,1fr)_auto]">
               <div class="flex flex-wrap items-center justify-between gap-4">
-                <Tabs.Root value={activeCollectionTab} onValueChange={handleCollectionTabChange} class="pr-4">
-                  <Tabs.List class="inline-grid grid-cols-3 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
+                <Tabs.Root value={activeCollectionTab} onValueChange={handleCollectionTabChange} class="w-full pr-4">
+                  <Tabs.List class="inline-grid w-full grid-cols-3 gap-1 rounded-full border border-slate-200/70 bg-slate-100/80 p-1">
                     <Tabs.Trigger value="all" class={collectionTabTriggerClass}>
                       全て
                       <span class="ml-1 text-xs text-slate-400">{normalizedModels.length}</span>
