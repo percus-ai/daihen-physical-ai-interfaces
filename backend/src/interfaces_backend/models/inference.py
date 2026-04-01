@@ -12,6 +12,7 @@ class InferenceModelInfo(BaseModel):
 
     model_id: str = Field(..., description="Model ID")
     name: str = Field(..., description="Display name")
+    created_at: Optional[str] = Field(None, description="Model registration timestamp")
     owner_user_id: Optional[str] = Field(None, description="Owner user id")
     owner_name: Optional[str] = Field(None, description="Owner display name")
     profile_name: Optional[str] = Field(None, description="VLAbor profile name")

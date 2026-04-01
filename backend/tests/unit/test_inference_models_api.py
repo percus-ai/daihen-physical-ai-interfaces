@@ -46,6 +46,7 @@ def test_list_models_merges_db_and_runtime(monkeypatch):
             InferenceModelInfo(
                 model_id="model_shared",
                 name="shared_display",
+                created_at="2026-03-01T00:00:00Z",
                 policy_type=None,
                 source="r2",
                 size_mb=0.0,
@@ -55,6 +56,7 @@ def test_list_models_merges_db_and_runtime(monkeypatch):
             InferenceModelInfo(
                 model_id="model_remote_only",
                 name="model_remote_only",
+                created_at="2026-03-20T00:00:00Z",
                 policy_type="pi0",
                 source="r2",
                 size_mb=12.0,
@@ -68,11 +70,15 @@ def test_list_models_merges_db_and_runtime(monkeypatch):
 
     response = asyncio.run(inference_api.list_models())
     models = {item.model_id: item for item in response.models}
+    ordered_model_ids = [item.model_id for item in response.models]
+
+    assert ordered_model_ids == ["model_remote_only", "model_shared", "model_local_only"]
 
     assert "model_shared" in models
     assert models["model_shared"].is_local is True
     assert models["model_shared"].is_loaded is True
     assert models["model_shared"].policy_type == "pi05"
+    assert models["model_shared"].created_at == "2026-03-01T00:00:00Z"
 
     assert "model_remote_only" in models
     assert models["model_remote_only"].is_local is False
@@ -164,6 +170,7 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
                 {
                     "id": "model_local",
                     "name": "model_local",
+                    "created_at": "2026-03-01T00:00:00Z",
                     "profile_name": "lab-alpha",
                     "policy_type": "pi05",
                     "size_bytes": 0,
@@ -173,6 +180,7 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
                 {
                     "id": "model_remote",
                     "name": "model_remote",
+                    "created_at": "2026-03-20T00:00:00Z",
                     "profile_name": "lab-beta",
                     "policy_type": "pi0",
                     "size_bytes": 0,
@@ -199,8 +207,10 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
     mapped = {item.model_id: item for item in models}
 
     assert mapped["model_local"].is_local is True
+    assert mapped["model_local"].created_at == "2026-03-01T00:00:00Z"
     assert mapped["model_local"].profile_name == "lab-alpha"
     assert mapped["model_remote"].is_local is False
+    assert mapped["model_remote"].created_at == "2026-03-20T00:00:00Z"
     assert mapped["model_remote"].profile_name == "lab-beta"
     assert mapped["model_remote"].task_candidates == ["pick and place"]
 

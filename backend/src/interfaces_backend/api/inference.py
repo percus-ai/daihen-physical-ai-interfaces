@@ -222,7 +222,7 @@ async def _list_db_models() -> list[InferenceModelInfo]:
         client = await get_supabase_async_client()
         rows = (
             await client.table("models")
-            .select("id,name,owner_user_id,profile_name,policy_type,training_steps,batch_size,size_bytes,source,status,dataset_id")
+            .select("id,name,created_at,owner_user_id,profile_name,policy_type,training_steps,batch_size,size_bytes,source,status,dataset_id")
             .eq("status", "active")
             .execute()
         ).data or []
@@ -250,6 +250,7 @@ async def _list_db_models() -> list[InferenceModelInfo]:
             InferenceModelInfo(
                 model_id=model_id,
                 name=name,
+                created_at=str(row.get("created_at") or "").strip() or None,
                 owner_user_id=owner_user_id,
                 owner_name=owner_entry.name or None if owner_entry else None,
                 profile_name=str(row.get("profile_name") or "").strip() or None,
@@ -279,6 +280,7 @@ def _merge_models(
         merged[local.model_id] = InferenceModelInfo(
             model_id=existing.model_id,
             name=existing.name or local.name,
+            created_at=existing.created_at or local.created_at,
             owner_user_id=existing.owner_user_id or local.owner_user_id,
             owner_name=existing.owner_name or local.owner_name,
             profile_name=existing.profile_name or local.profile_name,
@@ -295,14 +297,12 @@ def _merge_models(
             ),
         )
 
-    return sorted(
+    ordered_models = sorted(
         merged.values(),
-        key=lambda item: (
-            not item.is_loaded,
-            not item.is_local,
-            (item.name or item.model_id).lower(),
-        ),
+        key=lambda item: (item.name or item.model_id).lower(),
     )
+    ordered_models.sort(key=lambda item: item.created_at or "", reverse=True)
+    return ordered_models
 
 
 def _build_owner_options(models: Sequence[InferenceModelInfo]) -> list[InferenceOwnerOption]:

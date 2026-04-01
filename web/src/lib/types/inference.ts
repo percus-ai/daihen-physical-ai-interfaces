@@ -1,6 +1,7 @@
 export type InferenceModel = {
   model_id?: string;
   name?: string;
+  created_at?: string | null;
   owner_user_id?: string | null;
   owner_name?: string | null;
   profile_name?: string | null;

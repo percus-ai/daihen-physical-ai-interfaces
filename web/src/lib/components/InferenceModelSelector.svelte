@@ -96,6 +96,7 @@
     if (typeof sizeMb !== 'number' || Number.isNaN(sizeMb) || sizeMb <= 0) return 'サイズ未取得';
     return formatBytes(sizeMb * 1024 * 1024);
   };
+  const normalizeCreatedAt = (value?: string | null) => String(value ?? '').trim();
   const includesNormalized = (target: string, query: string) =>
     target.toLocaleLowerCase('ja-JP').includes(query.toLocaleLowerCase('ja-JP'));
 
@@ -143,8 +144,11 @@
       })
       .filter((model) => model.id)
       .sort((left, right) => {
-        if (Boolean(left.is_loaded) !== Boolean(right.is_loaded)) return left.is_loaded ? -1 : 1;
-        if (Boolean(left.is_local) !== Boolean(right.is_local)) return left.is_local ? -1 : 1;
+        const leftCreatedAt = normalizeCreatedAt(left.created_at);
+        const rightCreatedAt = normalizeCreatedAt(right.created_at);
+        if (leftCreatedAt !== rightCreatedAt) {
+          return rightCreatedAt.localeCompare(leftCreatedAt, 'en');
+        }
         return left.displayName.localeCompare(right.displayName, 'ja');
       })
   );
@@ -386,7 +390,7 @@
       onOpenAutoFocus={preventModalAutoFocus}
       onCloseAutoFocus={preventModalAutoFocus}
     >
-      <div class="flex h-full w-full flex-col overflow-hidden rounded-[26px] border border-slate-200/90 bg-white shadow-[0_32px_72px_-40px_rgba(15,23,42,0.28)] modal:h-[788px] modal:w-[960px] modal:max-w-[calc(100vw-96px)]">
+      <div class="flex h-full w-full flex-col overflow-hidden rounded-[26px] border border-slate-200/90 bg-white shadow-[0_32px_72px_-40px_rgba(15,23,42,0.28)] modal:h-[788px] modal:w-[775px] modal:max-w-[calc(100vw-96px)]">
         <div class="flex items-center justify-between gap-6 border-b border-slate-200/80 px-4 pb-3 pt-4 modal:px-8 modal:pb-3 modal:pt-6">
           <div>
             <p class="label">推論モデル</p>
@@ -456,7 +460,7 @@
                     </div>
                   </div>
                 {:else}
-                  <div class="mt-3 flex h-[106px] w-full items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/70 px-4 text-sm text-slate-500 modal:w-[250px]">
+                  <div class="mt-3 flex h-[106px] w-full items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/70 px-4 text-sm text-slate-500">
                     条件に合う候補がありません。
                   </div>
                 {/if}
@@ -717,21 +721,4 @@
     gap: 0.75rem;
   }
 
-  @container (min-width: 500px) {
-    .preview-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-
-  @media (min-width: 1056px) {
-    .preview-grid {
-      grid-template-columns: repeat(2, 250px);
-      justify-content: start;
-      column-gap: 0.75rem;
-    }
-
-    .preview-grid .model-option-card {
-      width: 250px;
-    }
-  }
 </style>
