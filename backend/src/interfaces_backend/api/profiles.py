@@ -203,6 +203,9 @@ async def get_active_profile_status():
         name = str(spec.get("name") or "").strip()
         if not name:
             continue
+        # Skip disabled cameras to avoid clutter in device status UI
+        if not spec.get("enabled", True):
+            continue
         expected_topics = [str(item).strip() for item in (spec.get("topics") or []) if str(item).strip()]
         if not expected_topics:
             expected_topics = [f"/{name}/image_raw", f"/{name}/image_raw/compressed"]

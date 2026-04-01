@@ -406,7 +406,18 @@ def extract_status_camera_specs(snapshot: dict[str, Any]) -> list[dict[str, Any]
             node_name = _render_setting(args.get("node_name"), settings)
             enabled = _render_setting(action.get("enabled", True), settings)
             if package == "fv_realsense":
-                base_topic = f"/{node_name}/color/image_raw"
+                # fv_realsense publishes with underscore separator (e.g. /d405_color/image_raw),
+                # not slash (e.g. /d405/color/image_raw). Read the actual topic from
+                # the node's config file when available, otherwise use the underscore convention.
+                config_path = _resolve_config_path(args.get("config_file"), settings)
+                config_params = _config_parameters(config_path, str(node_name or "")) if config_path else {}
+                config_topics = config_params.get("topics")
+                color_topic = ""
+                if isinstance(config_topics, dict):
+                    color_topic = str(config_topics.get("color") or config_topics.get("color_compressed") or "").strip()
+                if not color_topic:
+                    color_topic = f"/{node_name}_color/image_raw"
+                base_topic = color_topic
             else:
                 base_topic = f"/{node_name}/image_raw"
             add_camera(node_name, enabled=enabled, topics=_topic_candidates(base_topic))
