@@ -1,16 +1,11 @@
-"""Torch info utilities using subprocess to avoid numpy conflicts.
+"""Torch info utilities using subprocess to avoid numpy conflicts."""
 
-This module provides functions to get PyTorch/CUDA information without
-directly importing torch, which prevents numpy version conflicts with
-bundled-torch (compiled with numpy 1.x).
-"""
-
-import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from percus_ai.environment.torch_runtime_probe import run_torch_runtime_probe
 
 # Cache for torch info
 _torch_info_cache: Optional[Dict[str, Any]] = None
@@ -61,61 +56,20 @@ def get_torch_info(use_cache: bool = True) -> Dict[str, Any]:
     probe_python = bundled_torch / ".venv" / "bin" / "python"
     python_exe = str(probe_python) if probe_python.exists() else sys.executable
 
-    # Python code to run in subprocess
-    torch_check_code = '''
-import json
-import torch
-info = {
-    "torch_version": torch.__version__,
-    "cuda_available": torch.cuda.is_available(),
-    "cuda_version": None,
-    "gpu_name": None,
-    "gpu_count": 0,
-    "mps_available": False,
-    "cuda_memory_total": None,
-    "cuda_memory_free": None,
-    "error": None,
-}
-if info["cuda_available"]:
-    info["cuda_version"] = torch.version.cuda or "N/A"
-    info["gpu_count"] = torch.cuda.device_count()
-    if info["gpu_count"] > 0:
-        info["gpu_name"] = torch.cuda.get_device_name(0)
-        props = torch.cuda.get_device_properties(0)
-        info["gpu_capability"] = f"sm_{props.major}{props.minor}"
-        info["cuda_memory_total"] = props.total_memory / (1024 * 1024)  # MB
-        info["cuda_memory_free"] = (
-            props.total_memory - torch.cuda.memory_allocated(0)
-        ) / (1024 * 1024)  # MB
-        if hasattr(torch.cuda, "get_arch_list"):
-            info["cuda_supported_arches"] = torch.cuda.get_arch_list()
-            if info["cuda_supported_arches"]:
-                info["cuda_compatible"] = info["gpu_capability"] in info["cuda_supported_arches"]
-            else:
-                info["cuda_compatible"] = True
-        else:
-            info["cuda_supported_arches"] = None
-            info["cuda_compatible"] = True
-else:
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        info["mps_available"] = True
-print(json.dumps(info))
-'''
-
     try:
-        result = subprocess.run(
-            [python_exe, "-c", torch_check_code],
-            capture_output=True,
-            text=True,
-            timeout=15,
+        ok, payload = run_torch_runtime_probe(
+            python_path=python_exe,
             env=env,
+            cwd=Path.cwd(),
+            timeout=15,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            info = json.loads(result.stdout.strip())
+        if ok:
+            info = payload
         else:
-            info["error"] = (result.stderr or result.stdout or "").strip() or "Failed to get PyTorch info"
-    except subprocess.TimeoutExpired:
-        info["error"] = "Timeout checking PyTorch"
+            info["error"] = (
+                str(payload.get("stderr") or payload.get("stdout") or payload.get("error") or "").strip()
+                or "Failed to get PyTorch info"
+            )
     except Exception as e:
         info["error"] = str(e)
 

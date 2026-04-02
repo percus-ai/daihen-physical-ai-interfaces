@@ -49,6 +49,7 @@ from interfaces_backend.utils.docker_compose import (
 from interfaces_backend.utils.docker_services import get_docker_service_summary
 from percus_ai.environment.env_manager import EnvironmentManager
 from percus_ai.environment.platform import Platform
+from percus_ai.environment.torch_runtime_probe import run_torch_runtime_probe
 
 _RUNTIME_TTL_S = 600.0
 _RUNTIME_CHECK_INTERVAL_S = 5.0
@@ -938,58 +939,18 @@ print(json.dumps({"nodes": nodes, "topics": topics, "all_topics": topic_names}))
             ]
             probe_env["PYTHONPATH"] = ":".join(extra_paths + [probe_env.get("PYTHONPATH", "")]).rstrip(":")
 
-        code = """
-import json
-import torch
-
-payload = {
-    "torch_version": getattr(torch, "__version__", None),
-    "cuda_available": bool(torch.cuda.is_available()),
-    "cuda_version": getattr(torch.version, "cuda", None),
-    "gpu_capability": None,
-    "cuda_compatible": None,
-    "arch_list": [],
-    "torchvision_version": None,
-    "torchaudio_version": None,
-}
-try:
-    import torchvision
-    payload["torchvision_version"] = getattr(torchvision, "__version__", None)
-except Exception:
-    pass
-try:
-    import torchaudio
-    payload["torchaudio_version"] = getattr(torchaudio, "__version__", None)
-except Exception:
-    pass
-if payload["cuda_available"] and torch.cuda.device_count() > 0:
-    props = torch.cuda.get_device_properties(0)
-    payload["gpu_capability"] = f"sm_{props.major}{props.minor}"
-    if hasattr(torch.cuda, "get_arch_list"):
-        payload["arch_list"] = list(torch.cuda.get_arch_list())
-        if payload["arch_list"]:
-            payload["cuda_compatible"] = payload["gpu_capability"] in payload["arch_list"]
-print(json.dumps(payload))
-""".strip()
-
-        result = subprocess.run(
-            [str(python_path), "-c", code],
-            capture_output=True,
-            text=True,
-            cwd=self._root_dir,
+        ok, payload = run_torch_runtime_probe(
+            python_path=python_path,
             env=probe_env,
+            cwd=self._root_dir,
             timeout=30,
         )
-        if result.returncode != 0:
+        if not ok:
             group.level = "error"
-            group.details.error = (result.stderr or result.stdout or "").strip() or "runtime probe failed"
-            return group
-
-        try:
-            payload = json.loads(result.stdout.strip() or "{}")
-        except json.JSONDecodeError:
-            group.level = "error"
-            group.details.error = "runtime probe output parse failed"
+            group.details.error = (
+                str(payload.get("stderr") or payload.get("stdout") or payload.get("error") or "").strip()
+                or "runtime probe failed"
+            )
             return group
 
         torch_version = str(payload.get("torch_version") or "").strip() or None
