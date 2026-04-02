@@ -15,7 +15,7 @@
     type TrainingJobLogsSubscription,
     type TrainingJobMetricsSubscription,
     type TrainingJobOperationStatusResponse,
-    type TrainingJobOperationSubscription,
+    type TrainingJobOperationsSubscription,
     type TrainingJobProvisionSubscription,
     type TrainingProvisionOperationStatusResponse
   } from '$lib/api/client';
@@ -72,7 +72,6 @@
   type JobDetailResponse = {
     job?: JobInfo;
     provision_operation?: TrainingProvisionOperationStatusResponse | null;
-    operations?: TrainingJobOperationStatusResponse[];
     training_config?: TrainingConfig;
     summary?: Record<string, unknown> | null;
   };
@@ -156,6 +155,7 @@
   let checkpointUploadError = $state('');
   let checkpointUploadResult: RemoteCheckpointUploadResult | null = $state(null);
   let checkpointUploadOperationSnapshot: TrainingJobOperationStatusResponse | null = $state(null);
+  let trainingJobOperations: TrainingJobOperationStatusResponse[] = $state([]);
 
   type MetricPoint = { step?: number; loss?: number; ts?: string };
   let activeLogSnapshotKey = $state('');
@@ -165,7 +165,6 @@
   const provisionOperation = $derived($jobQuery.data?.provision_operation ?? null);
   const trainingConfig = $derived($jobQuery.data?.training_config ?? {});
   const summary = $derived($jobQuery.data?.summary ?? {});
-  const jobOperations = $derived($jobQuery.data?.operations ?? []);
   const metrics = $derived($metricsQuery.data ?? null);
   const metricsLoading = $derived(Boolean($metricsQuery.isFetching));
   const metricsError = $derived(
@@ -307,10 +306,52 @@
     })()
   );
 
+  const getLatestOperationByKind = (
+    operations: TrainingJobOperationStatusResponse[] | undefined,
+    kind: 'checkpoint_upload' | 'rescue_cpu'
+  ): TrainingJobOperationStatusResponse | null => {
+    return (
+      (operations ?? [])
+        .filter((item) => item.kind === kind)
+        .sort((left, right) => String(right.updated_at ?? '').localeCompare(String(left.updated_at ?? '')))[0] ??
+      null
+    );
+  };
+
+  const activeCheckpointOperation = $derived(
+    getLatestOperationByKind(trainingJobOperations, 'checkpoint_upload')
+  );
+  const activeRescueOperation = $derived(
+    getLatestOperationByKind(trainingJobOperations, 'rescue_cpu')
+  );
+
+  const hasSameOperationSnapshot = (
+    left: TrainingJobOperationStatusResponse | null,
+    right: TrainingJobOperationStatusResponse | null
+  ): boolean => {
+    if (!left || !right) return false;
+    return (
+      left.operation_id === right.operation_id &&
+      String(left.updated_at ?? '') === String(right.updated_at ?? '')
+    );
+  };
+
   $effect(() => {
-    if (!jobId) return;
-    applyCheckpointUploadOperationSnapshot(getLatestOperationByKind(jobOperations, 'checkpoint_upload'));
-    applyRescueCpuOperationSnapshot(getLatestOperationByKind(jobOperations, 'rescue_cpu'));
+    if (!activeCheckpointOperation) {
+      return;
+    }
+    if (!hasSameOperationSnapshot(checkpointUploadOperationSnapshot, activeCheckpointOperation)) {
+      applyCheckpointUploadOperationSnapshot(activeCheckpointOperation, { fromRealtime: true });
+    }
+  });
+
+  $effect(() => {
+    if (!activeRescueOperation) {
+      return;
+    }
+    if (!hasSameOperationSnapshot(rescueCpuOperationSnapshot, activeRescueOperation)) {
+      applyRescueCpuOperationSnapshot(activeRescueOperation, { fromRealtime: true });
+    }
   });
 
   const setProvisionOperationSnapshot = (
@@ -334,13 +375,6 @@
   const setMetricsSnapshot = (targetJobId: string, snapshot: MetricsResponse) => {
     if (!targetJobId) return;
     queryClient.setQueryData<MetricsResponse>(['training', 'job', targetJobId, 'metrics'], snapshot);
-  };
-
-  const getLatestOperationByKind = (
-    operations: TrainingJobOperationStatusResponse[] | undefined,
-    kind: 'checkpoint_upload' | 'rescue_cpu'
-  ): TrainingJobOperationStatusResponse | null => {
-    return (operations ?? []).find((item) => item.kind === kind) ?? null;
   };
 
   const isOperationActive = (snapshot: TrainingJobOperationStatusResponse | null): boolean => {
@@ -462,22 +496,12 @@
       };
       subscriptions.push(logsSubscription);
     }
-    if (isOperationActive(checkpointUploadOperationSnapshot) && checkpointUploadOperationSnapshot?.operation_id) {
-      const checkpointOperationSubscription: TrainingJobOperationSubscription = {
-        subscription_id: `train.job.${targetJobId}.operation.${checkpointUploadOperationSnapshot.operation_id}`,
-        kind: 'training.job.operation',
-        params: { operation_id: checkpointUploadOperationSnapshot.operation_id }
-      };
-      subscriptions.push(checkpointOperationSubscription);
-    }
-    if (isOperationActive(rescueCpuOperationSnapshot) && rescueCpuOperationSnapshot?.operation_id) {
-      const rescueOperationSubscription: TrainingJobOperationSubscription = {
-        subscription_id: `train.job.${targetJobId}.operation.${rescueCpuOperationSnapshot.operation_id}`,
-        kind: 'training.job.operation',
-        params: { operation_id: rescueCpuOperationSnapshot.operation_id }
-      };
-      subscriptions.push(rescueOperationSubscription);
-    }
+    const operationsSubscription: TrainingJobOperationsSubscription = {
+      subscription_id: `train.job.${targetJobId}.operations`,
+      kind: 'training.job.operations',
+      params: { job_id: targetJobId }
+    };
+    subscriptions.push(operationsSubscription);
     return subscriptions;
   };
 
@@ -539,14 +563,10 @@
           setMetricsSnapshot(targetJobId, event.payload as MetricsResponse);
         }
         return;
-      case 'training.job.operation':
+      case 'training.job.operations':
         if (event.op === 'snapshot') {
-          const snapshot = event.payload as TrainingJobOperationStatusResponse;
-          if (snapshot.kind === 'checkpoint_upload') {
-            applyCheckpointUploadOperationSnapshot(snapshot, { fromRealtime: true });
-          } else if (snapshot.kind === 'rescue_cpu') {
-            applyRescueCpuOperationSnapshot(snapshot, { fromRealtime: true });
-          }
+          const payload = event.payload as { operations?: TrainingJobOperationStatusResponse[] };
+          trainingJobOperations = payload.operations ?? [];
         }
         return;
       case 'training.job.logs':
@@ -618,9 +638,9 @@
     rescueCpuCopied = false;
 
     try {
-      const accepted = await api.training.startRescueCpuOperation(jobId);
-      const snapshot = await api.training.trainingJobOperation(accepted.operation_id);
-      applyRescueCpuOperationSnapshot(snapshot);
+      await api.training.startRescueCpuOperation(jobId);
+      rescueCpuPhase = 'queued';
+      rescueCpuMessage = 'CPU rescue の開始を受け付けました。';
       await refresh();
     } catch (error) {
       rescueCpuError = error instanceof Error ? error.message : 'CPU rescue に失敗しました。';
@@ -670,12 +690,9 @@
     checkpointUploadResult = null;
 
     try {
-      const accepted = await api.training.startCheckpointUploadOperation(
-        jobId,
-        selectedRemoteCheckpoint
-      );
-      const snapshot = await api.training.trainingJobOperation(accepted.operation_id);
-      applyCheckpointUploadOperationSnapshot(snapshot);
+      await api.training.startCheckpointUploadOperation(jobId, selectedRemoteCheckpoint);
+      checkpointUploadPhase = 'queued';
+      checkpointUploadMessage = 'チェックポイント登録の開始を受け付けました。';
       await refresh();
     } catch (error) {
       checkpointUploadError =
@@ -819,6 +836,7 @@
       checkpointUploadError = '';
       checkpointUploadResult = null;
       checkpointUploadOperationSnapshot = null;
+      trainingJobOperations = [];
     }
   });
 

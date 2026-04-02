@@ -1791,14 +1791,6 @@ async def _resolve_job_provision_operation(job_data: dict) -> Optional[TrainingP
     return snapshot
 
 
-def _resolve_job_operations(job_id: str) -> list[TrainingJobOperationStatusResponse]:
-    user_id = get_current_user_id()
-    if not user_id:
-        return []
-    operations = get_training_job_operations_service()
-    return operations.list_for_job(user_id=user_id, job_id=job_id)
-
-
 def _update_cleanup_status_sync(job_id: str, status: str) -> None:
     _run_async(_update_cleanup_status(job_id, status))
 
@@ -5313,12 +5305,9 @@ async def get_job(job_id: str):
             _get_latest_metrics(job_id),
             _resolve_job_provision_operation(job_data),
         )
-    operations = _resolve_job_operations(job_id)
-
     return JobDetailResponse(
         job=job,
         provision_operation=provision_operation,
-        operations=operations,
         remote_status=remote_status,
         progress=progress,
         latest_train_metrics=latest_train_metrics,

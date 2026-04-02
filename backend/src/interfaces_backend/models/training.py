@@ -119,7 +119,6 @@ class JobDetailResponse(BaseModel):
 
     job: JobInfo
     provision_operation: Optional["TrainingProvisionOperationStatusResponse"] = None
-    operations: list["TrainingJobOperationStatusResponse"] = Field(default_factory=list)
     remote_status: Optional[str] = None
     progress: Optional[dict] = None
     latest_train_metrics: Optional[dict] = None

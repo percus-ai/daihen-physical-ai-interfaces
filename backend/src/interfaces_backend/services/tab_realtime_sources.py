@@ -28,7 +28,7 @@ from interfaces_backend.models.realtime import (
     TrainingJobCoreSubscription,
     TrainingJobLogsSubscription,
     TrainingJobMetricsSubscription,
-    TrainingJobOperationSubscription,
+    TrainingJobOperationsSubscription,
     TrainingJobProvisionSubscription,
 )
 
@@ -74,7 +74,7 @@ class TabRealtimeSourceRegistry:
             return 0.5
         if isinstance(subscription, TrainingProvisionOperationSubscription):
             return 0.5
-        if isinstance(subscription, TrainingJobOperationSubscription):
+        if isinstance(subscription, TrainingJobOperationsSubscription):
             return 0.5
         if isinstance(subscription, StorageModelSyncSubscription):
             return 0.5
@@ -189,18 +189,23 @@ class TabRealtimeSourceRegistry:
                 )
                 return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
 
-            if isinstance(subscription, TrainingJobOperationSubscription):
+            if isinstance(subscription, TrainingJobOperationsSubscription):
                 from percus_ai.db import get_current_user_id
                 from interfaces_backend.services.training_job_operations import (
                     get_training_job_operations_service,
                 )
 
                 user_id = get_current_user_id()
-                snapshot = get_training_job_operations_service().get(
+                snapshots = get_training_job_operations_service().list_for_job(
                     user_id=user_id,
-                    operation_id=subscription.params.operation_id,
+                    job_id=subscription.params.job_id,
                 )
-                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+                return RealtimeSourcePollResult(
+                    payload={
+                        "job_id": subscription.params.job_id,
+                        "operations": [item.model_dump(mode="json") for item in snapshots],
+                    }
+                )
 
             if isinstance(subscription, StorageModelSyncSubscription):
                 from interfaces_backend.services.session_manager import require_user_id

@@ -388,17 +388,7 @@ def test_list_remote_job_checkpoints_returns_rescue_hint_when_ssh_unavailable(mo
     assert "SSH接続に失敗" in response.message
 
 
-def test_get_job_includes_training_job_operations(monkeypatch):
-    operation = training.TrainingJobOperationStatusResponse(
-        operation_id="op-1",
-        job_id="job-1",
-        kind="checkpoint_upload",
-        state="running",
-        phase="uploading_checkpoint",
-        progress_percent=42.0,
-        message="uploading",
-    )
-
+def test_get_job_omits_training_job_operations_from_detail(monkeypatch):
     async def fake_load_job(_job_id: str):
         return {
             **_job(),
@@ -412,22 +402,10 @@ def test_get_job_includes_training_job_operations(monkeypatch):
     monkeypatch.setattr(training, "_load_job", fake_load_job)
     monkeypatch.setattr(training, "_get_latest_metrics", lambda _job_id: asyncio.sleep(0, result=({}, {})))
     monkeypatch.setattr(training, "_resolve_job_provision_operation", lambda _job_data: asyncio.sleep(0, result=None))
-    monkeypatch.setattr(training, "get_current_user_id", lambda: "user-1")
-
-    class _Ops:
-        @staticmethod
-        def list_for_job(*, user_id: str, job_id: str):
-            assert user_id == "user-1"
-            assert job_id == "job-1"
-            return [operation]
-
-    monkeypatch.setattr(training, "get_training_job_operations_service", lambda: _Ops())
 
     response = asyncio.run(training.get_job("job-1"))
 
-    assert len(response.operations) == 1
-    assert response.operations[0].operation_id == "op-1"
-    assert response.operations[0].kind == "checkpoint_upload"
+    assert response.job.job_id == "job-1"
 
 
 def test_start_checkpoint_upload_operation_accepts_and_starts_background_worker(monkeypatch):

@@ -186,11 +186,6 @@ class TrainingProvisionOperationSubscription(_SubscriptionBase):
     params: StartupOperationParams
 
 
-class TrainingJobOperationSubscription(_SubscriptionBase):
-    kind: Literal["training.job.operation"]
-    params: StartupOperationParams
-
-
 class StorageModelSyncSubscription(_SubscriptionBase):
     kind: Literal["storage.model-sync"]
     params: StorageJobParams
@@ -216,6 +211,11 @@ class TrainingJobProvisionSubscription(_SubscriptionBase):
     params: TrainingJobRefParams
 
 
+class TrainingJobOperationsSubscription(_SubscriptionBase):
+    kind: Literal["training.job.operations"]
+    params: TrainingJobRefParams
+
+
 class TrainingJobMetricsSubscription(_SubscriptionBase):
     kind: Literal["training.job.metrics"]
     params: TrainingJobMetricsParams
@@ -236,12 +236,12 @@ TabSessionSubscription = Annotated[
     | RecordingUploadStatusSubscription
     | StartupOperationSubscription
     | TrainingProvisionOperationSubscription
-    | TrainingJobOperationSubscription
     | StorageModelSyncSubscription
     | StorageDatasetSyncSubscription
     | StorageDatasetMergeSubscription
     | TrainingJobCoreSubscription
     | TrainingJobProvisionSubscription
+    | TrainingJobOperationsSubscription
     | TrainingJobMetricsSubscription
     | TrainingJobLogsSubscription,
     Field(discriminator="kind"),

@@ -181,10 +181,10 @@ export type TrainingProvisionOperationSubscription = RealtimeSubscriptionBase & 
   };
 };
 
-export type TrainingJobOperationSubscription = RealtimeSubscriptionBase & {
-  kind: 'training.job.operation';
+export type TrainingJobOperationsSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.operations';
   params: {
-    operation_id: string;
+    job_id: string;
   };
 };
 
@@ -250,7 +250,7 @@ export type TabSessionSubscription =
   | RecordingUploadStatusSubscription
   | StartupOperationSubscription
   | TrainingProvisionOperationSubscription
-  | TrainingJobOperationSubscription
+  | TrainingJobOperationsSubscription
   | StorageModelSyncSubscription
   | StorageDatasetSyncSubscription
   | StorageDatasetMergeSubscription
@@ -1639,10 +1639,6 @@ export const api = {
         {
           method: 'POST'
         }
-      ),
-    trainingJobOperation: (operationId: string) =>
-      fetchApi<TrainingJobOperationStatusResponse>(
-        `/api/training/operations/${encodeURIComponent(operationId)}`
       ),
     gpuAvailability: (provider: 'verda' | 'vast') =>
       fetchApi(`/api/training/gpu-availability?provider=${encodeURIComponent(provider)}`),
