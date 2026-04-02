@@ -13,6 +13,7 @@
     saveRecentModelIds,
     toggleFavoriteModelId
   } from '$lib/inference/modelPickerStorage';
+  import { resolveInferenceModelId, sortInferenceModelsByRecency } from '$lib/inference/modelSelection';
   import { preventModalAutoFocus } from '$lib/components/modal/focus';
   import type {
     InferenceModel,
@@ -94,7 +95,6 @@
   const collectionTabTriggerClass =
     'rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm';
 
-  const resolveModelId = (model: InferenceModel) => String(model.model_id ?? model.name ?? '').trim();
   const formatPolicyLabel = (value?: string) => String(value || 'unknown').trim() || 'unknown';
   const formatOwnerLabel = (model: InferenceModel) =>
     String(model.owner_name ?? model.owner_user_id ?? '作成者未取得').trim() || '作成者未取得';
@@ -112,16 +112,15 @@
     if (typeof sizeMb !== 'number' || Number.isNaN(sizeMb) || sizeMb <= 0) return 'サイズ未取得';
     return formatBytes(sizeMb * 1024 * 1024);
   };
-  const normalizeCreatedAt = (value?: string | null) => String(value ?? '').trim();
   const includesNormalized = (target: string, query: string) =>
     target.toLocaleLowerCase('ja-JP').includes(query.toLocaleLowerCase('ja-JP'));
   const isSameModelIdList = (left: string[], right: string[]) =>
     left.length === right.length && left.every((value, index) => value === right[index]);
 
   const normalizedModels = $derived.by<NormalizedModel[]>(() =>
-    [...models]
+    sortInferenceModelsByRecency(models)
       .map((model) => {
-        const id = resolveModelId(model);
+        const id = resolveInferenceModelId(model);
         const displayName = String(model.name ?? id).trim() || id;
         const taskCandidates = (model.task_candidates ?? []).map((task) => String(task).trim()).filter(Boolean);
         const ownerLabel = formatOwnerLabel(model);
@@ -159,15 +158,6 @@
             .join(' ')
             .toLocaleLowerCase('ja-JP')
         };
-      })
-      .filter((model) => model.id)
-      .sort((left, right) => {
-        const leftCreatedAt = normalizeCreatedAt(left.created_at);
-        const rightCreatedAt = normalizeCreatedAt(right.created_at);
-        if (leftCreatedAt !== rightCreatedAt) {
-          return rightCreatedAt.localeCompare(leftCreatedAt, 'en');
-        }
-        return left.displayName.localeCompare(right.displayName, 'ja');
       })
   );
   const favoriteModelIdSet = $derived(new Set(favoriteModelIds));

@@ -15,13 +15,13 @@
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
   import InferenceModelSelector from '$lib/components/InferenceModelSelector.svelte';
-  import { recordRecentModelUsage } from '$lib/inference/modelPickerStorage';
+  import { loadRecentModelIds, recordRecentModelUsage } from '$lib/inference/modelPickerStorage';
+  import { selectInitialInferenceModelId, resolveInferenceModelId, sortInferenceModelsByRecency } from '$lib/inference/modelSelection';
   import TaskCandidateCombobox from '$lib/components/TaskCandidateCombobox.svelte';
   import { formatBytes } from '$lib/format';
   import { START_PHASE_LABELS } from '$lib/operate/startupPhases';
   import type {
     InferenceDeviceCompatibilityResponse,
-    InferenceModel,
     InferenceModelsResponse,
     InferenceRunnerStatusResponse,
     OperateStatusResponse,
@@ -57,7 +57,6 @@
     queryFn: api.operate.status
   });
 
-  const resolveModelId = (model: InferenceModel) => model.model_id ?? model.name ?? '';
   const formatDeviceMemory = (memoryMb?: number | null) =>
     typeof memoryMb === 'number' && Number.isFinite(memoryMb) && memoryMb > 0
       ? formatBytes(memoryMb * 1024 * 1024)
@@ -96,7 +95,10 @@
   const emptyRunnerStatus: RunnerStatus = {};
   $effect(() => {
     if (!selectedModelId && $inferenceModelsQuery.data?.models?.length) {
-      selectedModelId = resolveModelId($inferenceModelsQuery.data.models[0]);
+      selectedModelId = selectInitialInferenceModelId(
+        $inferenceModelsQuery.data.models,
+        browser ? loadRecentModelIds() : []
+      );
     }
   });
 
@@ -245,11 +247,11 @@
   };
 
   const runnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus);
-  const inferenceModels = $derived($inferenceModelsQuery.data?.models ?? []);
+  const inferenceModels = $derived(sortInferenceModelsByRecency($inferenceModelsQuery.data?.models ?? []));
   const deviceOptions = $derived(($inferenceDeviceQuery.data?.devices ?? []).filter((device) => Boolean(device.device)));
   const recommendedDevice = $derived($inferenceDeviceQuery.data?.recommended ?? 'cpu');
   const selectedModel = $derived(
-    inferenceModels.find((item) => resolveModelId(item) === selectedModelId)
+    inferenceModels.find((item) => resolveInferenceModelId(item) === selectedModelId)
   );
   const selectedDeviceInfo = $derived(deviceOptions.find((device) => device.device === selectedDevice) ?? null);
   const selectedPolicyType = $derived((selectedModel?.policy_type ?? '').toLowerCase());
