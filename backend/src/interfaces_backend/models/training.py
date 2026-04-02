@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -119,6 +119,7 @@ class JobDetailResponse(BaseModel):
 
     job: JobInfo
     provision_operation: Optional["TrainingProvisionOperationStatusResponse"] = None
+    operations: list["TrainingJobOperationStatusResponse"] = Field(default_factory=list)
     remote_status: Optional[str] = None
     progress: Optional[dict] = None
     latest_train_metrics: Optional[dict] = None
@@ -372,6 +373,8 @@ class JobCreateResponse(BaseModel):
 
 
 TrainingProvisionOperationState = Literal["queued", "running", "completed", "failed", "cancelled"]
+TrainingJobOperationKind = Literal["checkpoint_upload", "rescue_cpu"]
+TrainingJobOperationState = Literal["queued", "running", "completed", "failed", "cancelled"]
 
 
 class TrainingProvisionOperationAcceptedResponse(BaseModel):
@@ -394,6 +397,37 @@ class TrainingProvisionOperationStatusResponse(BaseModel):
     provider: Literal["verda", "vast"]
     instance_id: Optional[str] = None
     job_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
+class TrainingJobOperationAcceptedResponse(BaseModel):
+    """Accepted response for training job operation."""
+
+    accepted: bool = True
+    operation_id: str
+    job_id: str
+    kind: TrainingJobOperationKind
+    state: TrainingJobOperationState = "queued"
+    message: str = "accepted"
+    reused: bool = False
+
+
+class TrainingJobOperationStatusResponse(BaseModel):
+    """Current status for a training job operation."""
+
+    operation_id: str
+    job_id: str
+    kind: TrainingJobOperationKind
+    state: TrainingJobOperationState
+    phase: str = "queued"
+    progress_percent: float = 0.0
+    message: Optional[str] = None
+    error: Optional[str] = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] | None = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     started_at: Optional[str] = None
@@ -562,8 +596,8 @@ class VastStorageActionResult(BaseModel):
     failed: list[VerdaStorageActionFailure] = Field(default_factory=list)
 
 
-class JobReviveResponse(BaseModel):
-    """Response for reviving a terminated instance with restored storage."""
+class RescueCPUResponse(BaseModel):
+    """Response for starting a CPU rescue instance for checkpoint extraction."""
 
     job_id: str
     old_instance_id: str
@@ -584,6 +618,9 @@ class RemoteCheckpointListResponse(BaseModel):
     job_id: str
     checkpoint_names: list[str] = Field(default_factory=list)
     checkpoint_root: str
+    ssh_available: bool = True
+    requires_rescue_cpu: bool = False
+    message: str = ""
 
 
 class RemoteCheckpointUploadRequest(BaseModel):

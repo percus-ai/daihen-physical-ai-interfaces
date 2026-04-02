@@ -59,6 +59,8 @@ from interfaces_backend.models.training import (
     JobCreateResponse,
     TrainingProvisionOperationAcceptedResponse,
     TrainingProvisionOperationStatusResponse,
+    TrainingJobOperationAcceptedResponse,
+    TrainingJobOperationStatusResponse,
     JobMetricsResponse,
     InstanceStatusResponse,
     # Checkpoint models
@@ -89,7 +91,7 @@ from interfaces_backend.models.training import (
     VastStorageActionResult,
     VastStorageItem,
     VastStorageListResponse,
-    JobReviveResponse,
+    RescueCPUResponse,
     RemoteCheckpointListResponse,
     RemoteCheckpointUploadRequest,
     RemoteCheckpointUploadResponse,
@@ -116,6 +118,9 @@ from interfaces_backend.services.settings_service import resolve_huggingface_tok
 from interfaces_backend.services.training_provision_operations import (
     cleanup_provision_instance,
     get_training_provision_operations_service,
+)
+from interfaces_backend.services.training_job_operations import (
+    get_training_job_operations_service,
 )
 from interfaces_backend.services.user_directory import resolve_user_directory_entries
 
@@ -1482,9 +1487,9 @@ async def _refresh_job_status_from_instance(job_data: dict) -> Optional[str]:
     return instance_status
 
 
-def _find_latest_running_revive_instance(client: VerdaClient, job_id: str):
-    """Find latest running revive instance for a job."""
-    target_hostname = f"revive-{job_id[:8]}"
+def _find_latest_running_rescue_cpu_instance(client: VerdaClient, job_id: str):
+    """Find latest running rescue CPU instance for a job."""
+    target_hostname = f"rescue-cpu-{job_id[:8]}"
     try:
         instances = client.instances.get()
     except Exception:
@@ -1513,7 +1518,7 @@ def _find_latest_running_revive_instance(client: VerdaClient, job_id: str):
 
 
 async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
-    """Refresh job SSH target to running revived instance when stale."""
+    """Refresh job SSH target to running rescue CPU instance when stale."""
     job_id = str(job_data.get("job_id") or "").strip()
     if not job_id:
         return job_data
@@ -1600,13 +1605,17 @@ async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
     client = _get_verda_client()
     if not client:
         return job_data
-    revive_instance = await asyncio.to_thread(_find_latest_running_revive_instance, client, job_id)
-    if not revive_instance:
+    rescue_instance = await asyncio.to_thread(
+        _find_latest_running_rescue_cpu_instance,
+        client,
+        job_id,
+    )
+    if not rescue_instance:
         return job_data
 
-    revive_id = str(getattr(revive_instance, "id", "") or "").strip()
-    revive_ip = str(getattr(revive_instance, "ip", "") or "").strip()
-    if not revive_id or not revive_ip:
+    rescue_instance_id = str(getattr(rescue_instance, "id", "") or "").strip()
+    rescue_ip = str(getattr(rescue_instance, "ip", "") or "").strip()
+    if not rescue_instance_id or not rescue_ip:
         return job_data
 
     old_instance_id = instance_id or "none"
@@ -1614,18 +1623,18 @@ async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
     ssh_private_key = _select_preferred_ssh_private_key(job_data.get("ssh_private_key"))
     ssh_user = str(job_data.get("ssh_user") or "").strip() or _get_default_ssh_user()
 
-    job_data["instance_id"] = revive_id
-    job_data["ip"] = revive_ip
+    job_data["instance_id"] = rescue_instance_id
+    job_data["ip"] = rescue_ip
     job_data["ssh_user"] = ssh_user
     job_data["ssh_private_key"] = ssh_private_key
     await _save_job(job_data)
     logger.info(
-        "Rebound job SSH target to revived instance: job_id=%s old_instance_id=%s old_ip=%s new_instance_id=%s new_ip=%s",
+        "Rebound job SSH target to rescue CPU instance: job_id=%s old_instance_id=%s old_ip=%s new_instance_id=%s new_ip=%s",
         job_id,
         old_instance_id,
         old_ip,
-        revive_id,
-        revive_ip,
+        rescue_instance_id,
+        rescue_ip,
     )
     return job_data
 
@@ -1780,6 +1789,14 @@ async def _resolve_job_provision_operation(job_data: dict) -> Optional[TrainingP
     if snapshot.state == "completed" and job_status != "starting":
         return None
     return snapshot
+
+
+def _resolve_job_operations(job_id: str) -> list[TrainingJobOperationStatusResponse]:
+    user_id = get_current_user_id()
+    if not user_id:
+        return []
+    operations = get_training_job_operations_service()
+    return operations.list_for_job(user_id=user_id, job_id=job_id)
 
 
 def _update_cleanup_status_sync(job_id: str, status: str) -> None:
@@ -2545,6 +2562,133 @@ def _format_byte_size(size_bytes: int) -> str:
     return f"{int(max(size_bytes, 0))} B"
 
 
+def _coerce_int(value: object) -> int:
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _clamp_progress_percent(value: float) -> float:
+    return round(min(max(float(value), 0.0), 100.0), 2)
+
+
+def _interpolate_progress(
+    *,
+    current_bytes: int,
+    total_bytes: int,
+    start_percent: float,
+    end_percent: float,
+) -> float:
+    if total_bytes <= 0:
+        return _clamp_progress_percent(start_percent)
+    ratio = min(max(float(current_bytes) / float(total_bytes), 0.0), 1.0)
+    return _clamp_progress_percent(start_percent + ((end_percent - start_percent) * ratio))
+
+
+def _decorate_checkpoint_upload_progress(payload: dict) -> dict:
+    decorated = dict(payload)
+    event_type = str(decorated.get("type") or "").strip()
+    phase = "uploading_checkpoint"
+    progress_percent = 0.0
+
+    if event_type in {"start", "connecting_ssh"}:
+        phase = "connecting_ssh"
+        progress_percent = 5.0 if event_type == "start" else 10.0
+    elif event_type == "validating":
+        phase = "validating"
+        progress_percent = 15.0
+    elif event_type in {"downloading", "registering", "direct_upload", "direct_upload_fallback", "scanning"}:
+        phase = "scanning"
+        progress_percent = 20.0
+    elif event_type in {"uploading", "uploading_file", "uploaded", "direct_upload_complete"}:
+        phase = "uploading_checkpoint"
+        current_bytes = _coerce_int(
+            decorated.get("transferred_bytes") or decorated.get("bytes_done_total")
+        )
+        total_bytes = _coerce_int(decorated.get("total_bytes") or decorated.get("total_size"))
+        if event_type in {"uploaded", "direct_upload_complete"}:
+            progress_percent = 80.0
+        else:
+            progress_percent = _interpolate_progress(
+                current_bytes=current_bytes,
+                total_bytes=total_bytes,
+                start_percent=20.0,
+                end_percent=80.0,
+            )
+    elif event_type == "updating_last":
+        phase = "updating_checkpoint_index"
+        progress_percent = 85.0
+    elif event_type in {"uploading_model", "model_uploaded"}:
+        phase = "copying_model_artifact"
+        progress_percent = 90.0 if event_type == "uploading_model" else 95.0
+    elif event_type in {"registering_model", "model_registered"}:
+        phase = "registering_model"
+        progress_percent = 97.0 if event_type == "registering_model" else 100.0
+    elif event_type == "complete":
+        phase = "completed"
+        progress_percent = 100.0
+    elif event_type == "error":
+        phase = "failed"
+        progress_percent = 100.0
+
+    decorated["phase"] = phase
+    decorated["progress_percent"] = progress_percent
+    return decorated
+
+
+def _decorate_rescue_cpu_progress(payload: dict) -> dict:
+    decorated = dict(payload)
+    event_type = str(decorated.get("type") or "").strip()
+    phase = "loading_storage"
+    progress_percent = 0.0
+
+    if event_type == "start":
+        phase = "loading_storage"
+        progress_percent = 2.0
+    elif event_type == "loading_storage":
+        phase = "loading_storage"
+        progress_percent = 8.0
+    elif event_type in {
+        "detaching_from_other",
+        "stopping_old_instance",
+        "detaching_storage",
+        "detached_storage",
+        "waiting_detach_propagation",
+    }:
+        phase = "detaching_storage"
+        detaching_map = {
+            "detaching_from_other": 18.0,
+            "stopping_old_instance": 24.0,
+            "detaching_storage": 34.0,
+            "waiting_detach_propagation": 40.0,
+            "detached_storage": 45.0,
+        }
+        progress_percent = detaching_map.get(event_type, 25.0)
+    elif event_type in {"select_instance", "creating_instance"}:
+        phase = "creating_instance"
+        progress_percent = 55.0 if event_type == "select_instance" else 65.0
+    elif event_type == "waiting_ip":
+        phase = "waiting_ip"
+        progress_percent = 75.0
+    elif event_type == "waiting_ssh":
+        phase = "waiting_ssh"
+        progress_percent = 88.0
+    elif event_type == "switching_job_target":
+        phase = "switching_job_target"
+        progress_percent = 96.0
+    elif event_type == "complete":
+        phase = "completed"
+        progress_percent = 100.0
+    elif event_type == "error":
+        phase = "failed"
+        progress_percent = 100.0
+
+    decorated["phase"] = phase
+    decorated["progress_percent"] = progress_percent
+    return decorated
+
+
 def _normalize_env_value(value: object) -> str:
     return str(value or "").strip().strip("\"'")
 
@@ -2793,7 +2937,7 @@ def _upload_remote_checkpoint_to_r2_direct(
         f"if [ -x {shlex.quote(framework_python)} ]; then PYTHON_BIN={shlex.quote(framework_python)}; "
         "elif command -v python3 >/dev/null 2>&1; then PYTHON_BIN=python3; "
         "elif command -v python >/dev/null 2>&1; then PYTHON_BIN=python; "
-        "else echo '{\"type\":\"error\",\"message\":\"Python runtime not found on rescue instance\"}'; exit 127; fi; "
+        "else echo '{\"type\":\"error\",\"message\":\"Python runtime not found on current SSH target\"}'; exit 127; fi; "
         f"{export_lines} \"$PYTHON_BIN\" {shlex.quote(script_path)}"
     )
 
@@ -2975,6 +3119,8 @@ def _upload_remote_checkpoint_to_r2(
                 "type": "uploading",
                 "message": message,
                 "step": step,
+                "transferred_bytes": transferred_bytes,
+                "total_bytes": total_bytes,
             }
         )
         last_emit_time = now
@@ -3038,7 +3184,10 @@ async def _upload_selected_remote_checkpoint_with_progress(
     checkpoint_name: str,
     emit_progress: Callable[[dict], None],
 ) -> dict:
-    emit_progress({"type": "start", "message": "チェックポイント登録を開始しました"})
+    def emit_checkpoint_progress(payload: dict) -> None:
+        emit_progress(_decorate_checkpoint_upload_progress(payload))
+
+    emit_checkpoint_progress({"type": "start", "message": "チェックポイント登録を開始しました"})
 
     job_data = await _load_job(job_id, include_deleted=True)
     if not job_data:
@@ -3071,7 +3220,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
         checkpoint_root = _get_remote_checkpoint_root(job_data)
         remote_checkpoint_path = f"{checkpoint_root.rstrip('/')}/{checkpoint_name}"
 
-        emit_progress({"type": "connecting_ssh", "message": "インスタンスへ接続中..."})
+        emit_checkpoint_progress({"type": "connecting_ssh", "message": "インスタンスへ接続中..."})
         conn = _get_ssh_connection_for_job(job_data, timeout=30)
         if not conn:
             raise HTTPException(
@@ -3080,7 +3229,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
             )
 
         try:
-            emit_progress({"type": "validating", "message": "checkpoint存在を確認中..."})
+            emit_checkpoint_progress({"type": "validating", "message": "checkpoint存在を確認中..."})
             check_cmd = f"test -d {shlex.quote(remote_checkpoint_path)}"
             exit_code, _, _ = conn.exec_command(check_cmd, timeout=15)
             if exit_code != 0:
@@ -3089,7 +3238,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
                     detail=f"Remote checkpoint not found: {remote_checkpoint_path}",
                 )
 
-            emit_progress(
+            emit_checkpoint_progress(
                 {
                     "type": "downloading",
                     "message": "checkpointの転送準備中...",
@@ -3097,15 +3246,15 @@ async def _upload_selected_remote_checkpoint_with_progress(
                 }
             )
 
-            emit_progress({"type": "registering", "message": "checkpoint index登録中..."})
+            emit_checkpoint_progress({"type": "registering", "message": "checkpoint index登録中..."})
             _register_job_for_checkpoint_if_needed(checkpoint_mgr, job_data)
 
             direct_upload_error: Exception | None = None
             try:
-                emit_progress(
+                emit_checkpoint_progress(
                     {
                         "type": "direct_upload",
-                        "message": "rescue instance から R2 へ直接転送します...",
+                        "message": "現在の SSH 接続先から R2 へ直接転送します...",
                         "step": step,
                     }
                 )
@@ -3116,7 +3265,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
                     checkpoint_job_name=checkpoint_job_name,
                     step=step,
                     remote_checkpoint_path=remote_checkpoint_path,
-                    emit_progress=emit_progress,
+                    emit_progress=emit_checkpoint_progress,
                 )
             except Exception as exc:
                 direct_upload_error = exc
@@ -3126,11 +3275,11 @@ async def _upload_selected_remote_checkpoint_with_progress(
                     step,
                     exc,
                 )
-                emit_progress(
+                emit_checkpoint_progress(
                     {
                         "type": "direct_upload_fallback",
                         "message": (
-                            "rescue instance からの直接転送に失敗したため、"
+                            "現在の SSH 接続先からの直接転送に失敗したため、"
                             "バックエンド経由転送に切り替えます..."
                         ),
                         "step": step,
@@ -3142,20 +3291,20 @@ async def _upload_selected_remote_checkpoint_with_progress(
                     checkpoint_job_name=checkpoint_job_name,
                     step=step,
                     remote_checkpoint_path=remote_checkpoint_path,
-                    emit_progress=emit_progress,
+                    emit_progress=emit_checkpoint_progress,
                 )
             if direct_upload_error is None:
-                emit_progress(
+                emit_checkpoint_progress(
                     {
                         "type": "direct_upload_complete",
-                        "message": "rescue instance からの直接転送が完了しました",
+                        "message": "現在の SSH 接続先からの直接転送が完了しました",
                         "step": step,
                     }
                 )
         finally:
             conn.disconnect()
     else:
-        emit_progress(
+        emit_checkpoint_progress(
             {
                 "type": "uploaded",
                 "message": "R2には既に登録済みのためアップロードをスキップしました",
@@ -3168,7 +3317,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
     r2_step_path = (
         f"s3://{checkpoint_mgr.sync.bucket}/{prefix}checkpoints/{checkpoint_job_name}/step_{step:06d}"
     )
-    emit_progress(
+    emit_checkpoint_progress(
         {
             "type": "uploaded",
             "message": "R2登録が完了しました",
@@ -3176,7 +3325,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
             "step": step,
         }
     )
-    emit_progress(
+    emit_checkpoint_progress(
         {
             "type": "uploading_model",
             "message": "推論モデルをR2へ反映中...",
@@ -3194,7 +3343,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
             status_code=500,
             detail=f"モデルアーティファクトのR2反映に失敗しました: {exc}",
         ) from exc
-    emit_progress(
+    emit_checkpoint_progress(
         {
             "type": "model_uploaded",
             "message": (
@@ -3206,7 +3355,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
             "model_r2_path": model_r2_path,
         }
     )
-    emit_progress(
+    emit_checkpoint_progress(
         {
             "type": "registering_model",
             "message": "モデルをDBへ登録中...",
@@ -3231,7 +3380,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
                 f"{exc}. 同じチェックポイントで再実行してください。"
             ),
         ) from exc
-    emit_progress(
+    emit_checkpoint_progress(
         {
             "type": "model_registered",
             "message": "モデルDB登録が完了しました",
@@ -5139,10 +5288,12 @@ async def get_job(job_id: str):
             _get_latest_metrics(job_id),
             _resolve_job_provision_operation(job_data),
         )
+    operations = _resolve_job_operations(job_id)
 
     return JobDetailResponse(
         job=job,
         provision_operation=provision_operation,
+        operations=operations,
         remote_status=remote_status,
         progress=progress,
         latest_train_metrics=latest_train_metrics,
@@ -5381,6 +5532,7 @@ async def list_remote_job_checkpoints(job_id: str):
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
     job_data = await _refresh_job_ssh_target_if_needed(job_data)
+    checkpoint_root = _get_remote_checkpoint_root(job_data)
 
     try:
         checkpoint_names, checkpoint_root = await asyncio.to_thread(
@@ -5388,27 +5540,46 @@ async def list_remote_job_checkpoints(job_id: str):
         )
     except RuntimeError as exc:
         detail = str(exc)
-        status_code = 404 if "見つかりません" in detail else 503
-        raise HTTPException(status_code=status_code, detail=detail)
+        ssh_available = "SSH接続に失敗" not in detail
+        requires_rescue_cpu = (
+            not ssh_available
+            and _get_job_provider(job_data) == "verda"
+            and str(job_data.get("status") or "").strip().lower()
+            in {"completed", "failed", "stopped", "terminated"}
+        )
+        return RemoteCheckpointListResponse(
+            job_id=job_id,
+            checkpoint_names=[],
+            checkpoint_root=checkpoint_root,
+            ssh_available=ssh_available,
+            requires_rescue_cpu=requires_rescue_cpu,
+            message=detail,
+        )
 
     return RemoteCheckpointListResponse(
         job_id=job_id,
         checkpoint_names=checkpoint_names,
         checkpoint_root=checkpoint_root,
+        ssh_available=True,
+        requires_rescue_cpu=False,
+        message="",
     )
 
 
-@router.post("/jobs/{job_id}/revive", response_model=JobReviveResponse)
-async def revive_job_instance(job_id: str):
-    """Revive a terminated instance by restoring its OS volume and starting a CPU instance."""
-    result = await _revive_job_with_progress(job_id, lambda _msg: None)
-    return JobReviveResponse(**result)
+@router.post("/jobs/{job_id}/rescue-cpu", response_model=RescueCPUResponse)
+async def rescue_job_cpu_instance(job_id: str):
+    """Start a CPU rescue instance for checkpoint extraction."""
+    result = await _rescue_cpu_job_with_progress(job_id, lambda _msg: None)
+    return RescueCPUResponse(**result)
 
 
-async def _revive_job_with_progress(
+async def _rescue_cpu_job_with_progress(
     job_id: str, emit_progress: Callable[[dict], None]
 ) -> dict:
-    emit_progress({"type": "start", "message": "蘇生を開始しました"})
+    def emit_rescue_progress(payload: dict) -> None:
+        emit_progress(_decorate_rescue_cpu_progress(payload))
+
+    emit_rescue_progress({"type": "start", "message": "CPU rescue を開始しました"})
     job_data = await _load_job(job_id, include_deleted=True)
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -5419,7 +5590,7 @@ async def _revive_job_with_progress(
     if _get_job_provider(job_data) != "verda":
         raise HTTPException(
             status_code=400,
-            detail="revive は cloud.provider=verda のジョブのみ対応しています",
+            detail="rescue-cpu は cloud.provider=verda のジョブのみ対応しています",
         )
 
     client = _get_verda_client()
@@ -5429,7 +5600,7 @@ async def _revive_job_with_progress(
             detail="Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)",
         )
 
-    emit_progress({"type": "loading_storage", "message": "ストレージ情報を取得中..."})
+    emit_rescue_progress({"type": "loading_storage", "message": "ストレージ情報を取得中..."})
     volumes_by_id = _collect_verda_volumes(client)
     picked = _pick_os_volume_from_instance_record(client, volumes_by_id, instance_id)
     if not picked:
@@ -5452,7 +5623,7 @@ async def _revive_job_with_progress(
     detach_ready_statuses = {"offline", "discontinued", "deleted"}
     attached_instance_id = getattr(volume, "instance_id", None)
     if attached_instance_id and attached_instance_id != instance_id:
-        emit_progress(
+        emit_rescue_progress(
             {
                 "type": "detaching_from_other",
                 "message": "別インスタンスからデタッチ中...",
@@ -5468,7 +5639,7 @@ async def _revive_job_with_progress(
 
     instance_status = _check_instance_via_api(instance_id)
     if instance_status is not None and instance_status not in detach_ready_statuses:
-        emit_progress(
+        emit_rescue_progress(
             {
                 "type": "stopping_old_instance",
                 "message": "旧インスタンス停止中...",
@@ -5480,7 +5651,7 @@ async def _revive_job_with_progress(
             client, instance_id, allowed_statuses=detach_ready_statuses
         )
 
-    emit_progress(
+    emit_rescue_progress(
         {
             "type": "detaching_storage",
             "message": "ストレージをデタッチ中...",
@@ -5490,9 +5661,9 @@ async def _revive_job_with_progress(
     volume = _ensure_volume_active_and_detached(
         client,
         volume_id,
-        emit_progress=emit_progress,
+        emit_progress=emit_rescue_progress,
     )
-    emit_progress(
+    emit_rescue_progress(
         {
             "type": "detached_storage",
             "message": "ストレージのデタッチ完了",
@@ -5500,7 +5671,7 @@ async def _revive_job_with_progress(
         }
     )
 
-    emit_progress({"type": "select_instance", "message": "CPUインスタンスを選択中..."})
+    emit_rescue_progress({"type": "select_instance", "message": "CPUインスタンスを選択中..."})
     instance_type = _select_cpu_instance_type(client)
     ssh_key_name = os.environ.get("VERDA_SSH_KEY_NAME", "")
     if not ssh_key_name:
@@ -5511,9 +5682,9 @@ async def _revive_job_with_progress(
 
     preferred_location = getattr(volume, "location", None) or "auto"
     location = _find_location(client, instance_type, preferred_location, is_spot=False)
-    hostname = f"revive-{job_id[:8]}"
+    hostname = f"rescue-cpu-{job_id[:8]}"
 
-    emit_progress(
+    emit_rescue_progress(
         {"type": "creating_instance", "message": "CPUインスタンスを作成中..."}
     )
     instance = _create_verda_instance_from_volume(
@@ -5523,8 +5694,8 @@ async def _revive_job_with_progress(
         ssh_key_id=ssh_key_id,
         location=location,
         hostname=hostname,
-        description=f"Revive job: {job_id}",
-        emit_progress=emit_progress,
+        description=f"Rescue CPU job: {job_id}",
+        emit_progress=emit_rescue_progress,
     )
     new_instance_id = instance.id
 
@@ -5539,7 +5710,7 @@ async def _revive_job_with_progress(
                 break
         except Exception:
             pass
-        emit_progress(
+        emit_rescue_progress(
             {
                 "type": "waiting_ip",
                 "message": "IP割り当て待機中...",
@@ -5554,8 +5725,48 @@ async def _revive_job_with_progress(
 
     ssh_private_key = _select_preferred_ssh_private_key(job_data.get("ssh_private_key"))
     ssh_user = job_data.get("ssh_user") or _get_default_ssh_user()
+    ssh_port = 22
+    try:
+        ssh_port = int(job_data.get("ssh_port") or 22)
+    except (TypeError, ValueError):
+        ssh_port = 22
 
-    result = JobReviveResponse(
+    rescue_job_data = dict(job_data)
+    rescue_job_data["instance_id"] = new_instance_id
+    rescue_job_data["ip"] = ip
+    rescue_job_data["ssh_user"] = ssh_user
+    rescue_job_data["ssh_private_key"] = ssh_private_key
+    rescue_job_data["ssh_port"] = ssh_port
+
+    ssh_conn: SSHConnection | None = None
+    ssh_start_time = time.time()
+    ssh_deadline = ssh_start_time + SSH_WAIT_TIMEOUT_SEC
+    while time.time() < ssh_deadline:
+        emit_rescue_progress(
+            {
+                "type": "waiting_ssh",
+                "message": "SSH接続待機中...",
+                "elapsed": int(time.time() - ssh_start_time),
+                "timeout": SSH_WAIT_TIMEOUT_SEC,
+            }
+        )
+        ssh_conn = _get_ssh_connection_for_job(rescue_job_data, timeout=20)
+        if ssh_conn is not None:
+            ssh_conn.disconnect()
+            break
+        time.sleep(10)
+
+    if ssh_conn is None:
+        raise HTTPException(status_code=504, detail="SSH接続タイムアウト (5分)")
+
+    emit_rescue_progress(
+        {
+            "type": "switching_job_target",
+            "message": "ジョブの接続先を rescue CPU instance に切り替え中...",
+        }
+    )
+
+    result = RescueCPUResponse(
         job_id=job_id,
         old_instance_id=instance_id,
         volume_id=volume_id,
@@ -5564,159 +5775,142 @@ async def _revive_job_with_progress(
         ip=ip,
         ssh_user=ssh_user,
         ssh_private_key=ssh_private_key,
+        ssh_port=ssh_port,
         location=location,
-        message="CPUインスタンスを起動しました。SSH接続できます。",
+        message="CPU rescue instance を起動しました。checkpoint 抽出に利用できます。",
     )
     job_data["instance_id"] = new_instance_id
     job_data["ip"] = ip
     job_data["ssh_user"] = ssh_user
     job_data["ssh_private_key"] = ssh_private_key
+    job_data["ssh_port"] = ssh_port
     await _save_job(job_data)
     return result.model_dump()
 
 
-@router.websocket("/ws/jobs/{job_id}/checkpoints/upload")
-async def websocket_upload_remote_checkpoint(websocket: WebSocket, job_id: str):
-    await websocket.accept()
-    access_token = websocket.query_params.get("access_token")
-    auth_header = websocket.headers.get("authorization")
-    if auth_header:
-        parts = auth_header.split()
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            access_token = parts[1]
-    if not access_token:
-        access_token = websocket.cookies.get(ACCESS_COOKIE_NAME)
-    refresh_token = websocket.cookies.get(REFRESH_COOKIE_NAME)
-    supabase_session = build_session_from_tokens(access_token, refresh_token)
-    if not supabase_session or is_session_expired(supabase_session):
-        refreshed_session = refresh_session_from_refresh_token(refresh_token)
-        if refreshed_session:
-            supabase_session = refreshed_session
-    if not supabase_session or not supabase_session.get("user_id"):
-        await websocket.send_json(
-            {
-                "type": "error",
-                "error": "認証情報がありません。ログインし直してください。",
-            }
-        )
-        await websocket.close()
-        return
+def _start_training_job_operation_thread(
+    *,
+    operation_id: str,
+    supabase_session: dict,
+    worker: Callable[[], dict],
+    result_message_key: str = "message",
+) -> None:
+    operations = get_training_job_operations_service()
 
-    try:
-        payload = await websocket.receive_json()
-    except Exception:
-        await websocket.send_json(
-            {
-                "type": "error",
-                "error": "リクエスト形式が不正です。",
-            }
-        )
-        await websocket.close()
-        return
-
-    try:
-        request = RemoteCheckpointUploadRequest(**payload)
-    except Exception as exc:
-        await websocket.send_json(
-            {
-                "type": "error",
-                "error": f"パラメータエラー: {exc}",
-            }
-        )
-        await websocket.close()
-        return
-
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[dict] = asyncio.Queue()
-
-    def emit(msg: dict) -> None:
-        loop.call_soon_threadsafe(queue.put_nowait, msg)
-
-    def worker() -> None:
+    def _runner() -> None:
         token = set_request_session(supabase_session)
         try:
-            result = asyncio.run(
-                _upload_selected_remote_checkpoint_with_progress(
-                    job_id,
-                    request.checkpoint_name,
-                    emit,
-                )
+            result = worker()
+            message = str(result.get(result_message_key) or "完了しました。").strip() or "完了しました。"
+            operations.complete(
+                operation_id=operation_id,
+                message=message,
+                result=result,
             )
-            emit({"type": "complete", "result": result})
         except HTTPException as exc:
-            emit({"type": "error", "error": str(exc.detail)})
+            operations.fail(
+                operation_id=operation_id,
+                message=str(exc.detail),
+                error=str(exc.detail),
+            )
         except Exception as exc:
-            emit({"type": "error", "error": str(exc)})
+            operations.fail(
+                operation_id=operation_id,
+                message=str(exc),
+                error=str(exc),
+            )
         finally:
             reset_request_session(token)
 
-    threading.Thread(target=worker, daemon=True).start()
-
-    try:
-        while True:
-            message = await queue.get()
-            await websocket.send_json(message)
-            if message.get("type") in ("complete", "error"):
-                break
-    except WebSocketDisconnect:
-        return
+    threading.Thread(target=_runner, daemon=True).start()
 
 
-@router.websocket("/ws/jobs/{job_id}/revive")
-async def websocket_revive_job(websocket: WebSocket, job_id: str):
-    await websocket.accept()
-    access_token = websocket.query_params.get("access_token")
-    auth_header = websocket.headers.get("authorization")
-    if auth_header:
-        parts = auth_header.split()
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            access_token = parts[1]
-    if not access_token:
-        access_token = websocket.cookies.get(ACCESS_COOKIE_NAME)
-    refresh_token = websocket.cookies.get(REFRESH_COOKIE_NAME)
-    supabase_session = build_session_from_tokens(access_token, refresh_token)
-    if not supabase_session or is_session_expired(supabase_session):
-        refreshed_session = refresh_session_from_refresh_token(refresh_token)
-        if refreshed_session:
-            supabase_session = refreshed_session
-    if not supabase_session or not supabase_session.get("user_id"):
-        await websocket.send_json(
-            {
-                "type": "error",
-                "error": "認証情報がありません。ログインし直してください。",
-            }
+@router.post(
+    "/jobs/{job_id}/operations/checkpoint-upload",
+    response_model=TrainingJobOperationAcceptedResponse,
+    status_code=202,
+)
+async def start_checkpoint_upload_operation(job_id: str, request: RemoteCheckpointUploadRequest):
+    job_data = await _load_job(job_id, include_deleted=True)
+    if not job_data:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    user_id = get_current_user_id()
+    session = get_supabase_session() or {}
+    operations = get_training_job_operations_service()
+    accepted = operations.create(
+        user_id=user_id,
+        job_id=job_id,
+        kind="checkpoint_upload",
+        message="チェックポイント登録を開始しました。",
+    )
+    if accepted.reused:
+        return accepted
+
+    def emit_progress(payload: dict) -> None:
+        operations.update_from_progress(operation_id=accepted.operation_id, progress=payload)
+
+    def worker() -> dict:
+        return asyncio.run(
+            _upload_selected_remote_checkpoint_with_progress(
+                job_id,
+                request.checkpoint_name,
+                emit_progress,
+            )
         )
-        await websocket.close()
-        return
 
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[dict] = asyncio.Queue()
+    _start_training_job_operation_thread(
+        operation_id=accepted.operation_id,
+        supabase_session=session,
+        worker=worker,
+    )
+    return accepted
 
-    def emit(msg: dict) -> None:
-        loop.call_soon_threadsafe(queue.put_nowait, msg)
 
-    def worker() -> None:
-        token = set_request_session(supabase_session)
-        try:
-            result = asyncio.run(_revive_job_with_progress(job_id, emit))
-            emit({"type": "complete", "result": result})
-        except HTTPException as exc:
-            emit({"type": "error", "error": str(exc.detail)})
-        except Exception as exc:
-            emit({"type": "error", "error": str(exc)})
-        finally:
-            reset_request_session(token)
+@router.post(
+    "/jobs/{job_id}/operations/rescue-cpu",
+    response_model=TrainingJobOperationAcceptedResponse,
+    status_code=202,
+)
+async def start_rescue_cpu_operation(job_id: str):
+    job_data = await _load_job(job_id, include_deleted=True)
+    if not job_data:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    threading.Thread(target=worker, daemon=True).start()
+    user_id = get_current_user_id()
+    session = get_supabase_session() or {}
+    operations = get_training_job_operations_service()
+    accepted = operations.create(
+        user_id=user_id,
+        job_id=job_id,
+        kind="rescue_cpu",
+        message="CPU rescue を開始しました。",
+    )
+    if accepted.reused:
+        return accepted
 
-    try:
-        while True:
-            message = await queue.get()
-            await websocket.send_json(message)
-            if message.get("type") in ("complete", "error"):
-                break
-    except WebSocketDisconnect:
-        return
+    def emit_progress(payload: dict) -> None:
+        operations.update_from_progress(operation_id=accepted.operation_id, progress=payload)
+
+    def worker() -> dict:
+        return asyncio.run(_rescue_cpu_job_with_progress(job_id, emit_progress))
+
+    _start_training_job_operation_thread(
+        operation_id=accepted.operation_id,
+        supabase_session=session,
+        worker=worker,
+    )
+    return accepted
+
+
+@router.get(
+    "/operations/{operation_id}",
+    response_model=TrainingJobOperationStatusResponse,
+)
+async def get_training_job_operation(operation_id: str):
+    user_id = get_current_user_id()
+    operations = get_training_job_operations_service()
+    return operations.get(user_id=user_id, operation_id=operation_id)
 
 
 @router.post("/jobs/{job_id}/stop", response_model=JobActionResponse)

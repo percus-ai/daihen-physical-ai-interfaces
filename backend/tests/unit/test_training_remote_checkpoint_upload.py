@@ -338,7 +338,169 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     assert upserted[-1]["model_training_steps"] == 1000
     assert call_order == ["upsert", "save"]
     assert any(msg.get("type") == "model_registered" for msg in progress)
+    assert any(msg.get("phase") == "registering_model" for msg in progress)
+    assert all("progress_percent" in msg for msg in progress)
     assert conn.disconnected is True
+
+
+def test_list_remote_job_checkpoints_returns_rescue_hint_when_ssh_unavailable(monkeypatch):
+    async def fake_load_job(_job_id: str, include_deleted: bool = False):
+        assert include_deleted is True
+        return {
+            **_job(),
+            "status": "terminated",
+            "training_config": {"cloud": {"provider": "verda"}},
+        }
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(
+        training,
+        "_refresh_job_ssh_target_if_needed",
+        lambda job_data: asyncio.sleep(0, result=job_data),
+    )
+    monkeypatch.setattr(
+        training,
+        "_list_remote_checkpoint_dirs",
+        lambda _job_data: (_ for _ in ()).throw(RuntimeError("SSH接続に失敗しました。インスタンス状態を確認してください。")),
+    )
+    monkeypatch.setattr(
+        training.asyncio,
+        "to_thread",
+        lambda func, *args, **kwargs: asyncio.sleep(0, result=func(*args, **kwargs)),
+    )
+
+    response = asyncio.run(training.list_remote_job_checkpoints("job-1"))
+
+    assert response.job_id == "job-1"
+    assert response.checkpoint_names == []
+    assert response.ssh_available is False
+    assert response.requires_rescue_cpu is True
+    assert "SSH接続に失敗" in response.message
+
+
+def test_get_job_includes_training_job_operations(monkeypatch):
+    operation = training.TrainingJobOperationStatusResponse(
+        operation_id="op-1",
+        job_id="job-1",
+        kind="checkpoint_upload",
+        state="running",
+        phase="uploading_checkpoint",
+        progress_percent=42.0,
+        message="uploading",
+    )
+
+    async def fake_load_job(_job_id: str):
+        return {
+            **_job(),
+            "instance_id": "",
+            "status": "completed",
+            "mode": "train",
+            "created_at": "2026-03-08T05:15:57.42918+00:00",
+            "updated_at": "2026-03-08T05:15:57.42918+00:00",
+        }
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(training, "_get_latest_metrics", lambda _job_id: asyncio.sleep(0, result=({}, {})))
+    monkeypatch.setattr(training, "_resolve_job_provision_operation", lambda _job_data: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(training, "get_current_user_id", lambda: "user-1")
+
+    class _Ops:
+        @staticmethod
+        def list_for_job(*, user_id: str, job_id: str):
+            assert user_id == "user-1"
+            assert job_id == "job-1"
+            return [operation]
+
+    monkeypatch.setattr(training, "get_training_job_operations_service", lambda: _Ops())
+
+    response = asyncio.run(training.get_job("job-1"))
+
+    assert len(response.operations) == 1
+    assert response.operations[0].operation_id == "op-1"
+    assert response.operations[0].kind == "checkpoint_upload"
+
+
+def test_start_checkpoint_upload_operation_accepts_and_starts_background_worker(monkeypatch):
+    started: list[dict] = []
+
+    async def fake_load_job(_job_id: str, include_deleted: bool = False):
+        assert include_deleted is True
+        return _job()
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(training, "get_current_user_id", lambda: "user-1")
+    monkeypatch.setattr(training, "get_supabase_session", lambda: {"user_id": "user-1"})
+
+    accepted = training.TrainingJobOperationAcceptedResponse(
+        accepted=True,
+        operation_id="op-upload-1",
+        job_id="job-1",
+        kind="checkpoint_upload",
+        state="queued",
+        message="accepted",
+        reused=False,
+    )
+
+    class _Ops:
+        @staticmethod
+        def create(**kwargs):
+            started.append({"create": kwargs})
+            return accepted
+
+    monkeypatch.setattr(training, "get_training_job_operations_service", lambda: _Ops())
+    monkeypatch.setattr(
+        training,
+        "_start_training_job_operation_thread",
+        lambda **kwargs: started.append({"thread": kwargs}),
+    )
+
+    response = asyncio.run(
+        training.start_checkpoint_upload_operation(
+            "job-1",
+            training.RemoteCheckpointUploadRequest(checkpoint_name="001000"),
+        )
+    )
+
+    assert response.operation_id == "op-upload-1"
+    assert started[0]["create"]["kind"] == "checkpoint_upload"
+    assert started[1]["thread"]["operation_id"] == "op-upload-1"
+
+
+def test_start_rescue_cpu_operation_reuses_active_operation(monkeypatch):
+    async def fake_load_job(_job_id: str, include_deleted: bool = False):
+        assert include_deleted is True
+        return _job()
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(training, "get_current_user_id", lambda: "user-1")
+    monkeypatch.setattr(training, "get_supabase_session", lambda: {"user_id": "user-1"})
+
+    accepted = training.TrainingJobOperationAcceptedResponse(
+        accepted=True,
+        operation_id="op-rescue-1",
+        job_id="job-1",
+        kind="rescue_cpu",
+        state="running",
+        message="already_running",
+        reused=True,
+    )
+
+    class _Ops:
+        @staticmethod
+        def create(**_kwargs):
+            return accepted
+
+    monkeypatch.setattr(training, "get_training_job_operations_service", lambda: _Ops())
+    monkeypatch.setattr(
+        training,
+        "_start_training_job_operation_thread",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("thread should not start for reused operation")),
+    )
+
+    response = asyncio.run(training.start_rescue_cpu_operation("job-1"))
+
+    assert response.operation_id == "op-rescue-1"
+    assert response.reused is True
 
 
 def test_upload_selected_remote_checkpoint_reports_db_failure(monkeypatch):
@@ -501,7 +663,7 @@ def test_build_ssh_private_key_candidates_discovers_keys_in_data_dir(monkeypatch
     assert key_path in candidates
 
 
-def test_refresh_job_ssh_target_if_needed_rebinds_to_running_revive(monkeypatch):
+def test_refresh_job_ssh_target_if_needed_rebinds_to_running_rescue_cpu(monkeypatch):
     saved_jobs: list[dict] = []
 
     class _Inst:
@@ -516,8 +678,8 @@ def test_refresh_job_ssh_target_if_needed_rebinds_to_running_revive(monkeypatch)
         @staticmethod
         def get():
             return [
-                _Inst("old-revive", "revive-d2f7cdb2", "running", "86.38.238.109", "2026-02-19T12:30:00Z"),
-                _Inst("new-revive", "revive-d2f7cdb2", "running", "86.38.238.110", "2026-02-19T12:33:52Z"),
+                _Inst("old-rescue", "rescue-cpu-d2f7cdb2", "running", "86.38.238.109", "2026-02-19T12:30:00Z"),
+                _Inst("new-rescue", "rescue-cpu-d2f7cdb2", "running", "86.38.238.110", "2026-02-19T12:33:52Z"),
             ]
 
     class _Client:
@@ -540,7 +702,7 @@ def test_refresh_job_ssh_target_if_needed_rebinds_to_running_revive(monkeypatch)
     }
 
     updated = asyncio.run(training._refresh_job_ssh_target_if_needed(dict(job)))
-    assert updated["instance_id"] == "new-revive"
+    assert updated["instance_id"] == "new-rescue"
     assert updated["ip"] == "86.38.238.110"
     assert updated["ssh_private_key"] == "/tmp/key"
     assert saved_jobs
@@ -765,17 +927,20 @@ def test_check_all_jobs_status_keeps_vast_running_when_remote_running(monkeypatc
     saved_jobs: list[dict] = []
     archived_jobs: list[str] = []
 
-    async def fake_list_jobs():
-        return [
-            {
-                "job_id": "job-vast-bulk-1",
-                "instance_id": "32405434",
-                "ip": "ssh8.vast.ai",
-                "ssh_port": 15434,
-                "status": "running",
-                "training_config": {"cloud": {"provider": "vast", "ssh_port": 15434}},
-            }
-        ]
+    async def fake_list_jobs(*_args, **_kwargs):
+        return (
+            [
+                {
+                    "job_id": "job-vast-bulk-1",
+                    "instance_id": "32405434",
+                    "ip": "ssh8.vast.ai",
+                    "ssh_port": 15434,
+                    "status": "running",
+                    "training_config": {"cloud": {"provider": "vast", "ssh_port": 15434}},
+                }
+            ],
+            1,
+        )
 
     async def fake_save_job(job_data: dict):
         saved_jobs.append(dict(job_data))
@@ -803,17 +968,20 @@ def test_check_all_jobs_status_keeps_vast_running_when_recent_metrics_exist(monk
     saved_jobs: list[dict] = []
     archived_jobs: list[str] = []
 
-    async def fake_list_jobs():
-        return [
-            {
-                "job_id": "job-vast-bulk-2",
-                "instance_id": "32405435",
-                "ip": "ssh8.vast.ai",
-                "ssh_port": 15435,
-                "status": "running",
-                "training_config": {"cloud": {"provider": "vast", "ssh_port": 15435}},
-            }
-        ]
+    async def fake_list_jobs(*_args, **_kwargs):
+        return (
+            [
+                {
+                    "job_id": "job-vast-bulk-2",
+                    "instance_id": "32405435",
+                    "ip": "ssh8.vast.ai",
+                    "ssh_port": 15435,
+                    "status": "running",
+                    "training_config": {"cloud": {"provider": "vast", "ssh_port": 15435}},
+                }
+            ],
+            1,
+        )
 
     async def fake_save_job(job_data: dict):
         saved_jobs.append(dict(job_data))
@@ -841,16 +1009,29 @@ def test_check_all_jobs_status_keeps_vast_running_when_recent_metrics_exist(monk
 def test_list_jobs_passes_owner_user_id_filter(monkeypatch):
     captured: dict = {}
 
-    async def fake_list_jobs(days: int = 365, owner_user_id: str | None = None):
+    async def fake_list_jobs(days: int = 365, owner_user_id: str | None = None, **kwargs):
         captured["days"] = days
         captured["owner_user_id"] = owner_user_id
-        return []
+        captured["kwargs"] = kwargs
+        return [], 0, [], [], []
 
     monkeypatch.setattr(training, "_list_jobs", fake_list_jobs)
 
     response = asyncio.run(training.list_jobs(days=30, owner_user_id="user-123"))
     assert response.total == 0
-    assert captured == {"days": 30, "owner_user_id": "user-123"}
+    assert captured["days"] == 30
+    assert captured["owner_user_id"] == "user-123"
+    assert set(captured["kwargs"]) == {
+        "search",
+        "status",
+        "policy_type",
+        "created_from",
+        "created_to",
+        "sort_by",
+        "sort_order",
+        "limit",
+        "offset",
+    }
 
 
 def test_parse_job_created_at_accepts_five_digit_fraction():
@@ -968,23 +1149,23 @@ def test_list_jobs_status_filter_uses_query_parameter(monkeypatch):
     ]
 
 
-def test_revive_rejects_non_verda_job(monkeypatch):
+def test_rescue_cpu_rejects_non_verda_job(monkeypatch):
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
         assert include_deleted is True
         return {
-            "job_id": "job-vast-revive-1",
+            "job_id": "job-vast-rescue-1",
             "instance_id": "32405434",
             "training_config": {"cloud": {"provider": "vast"}},
         }
 
     def fail_if_called():
-        assert False, "_get_verda_client should not be called for non-verda revive"
+        assert False, "_get_verda_client should not be called for non-verda rescue-cpu"
 
     monkeypatch.setattr(training, "_load_job", fake_load_job)
     monkeypatch.setattr(training, "_get_verda_client", fail_if_called)
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(training._revive_job_with_progress("job-vast-revive-1", lambda _msg: None))
+        asyncio.run(training._rescue_cpu_job_with_progress("job-vast-rescue-1", lambda _msg: None))
     assert exc.value.status_code == 400
     assert "cloud.provider=verda" in str(exc.value.detail)
 
@@ -1110,8 +1291,8 @@ def test_create_verda_instance_from_volume_retries_until_detached(monkeypatch):
         instance_type="cpu.small",
         ssh_key_id="ssh-1",
         location="FIN-02",
-        hostname="revive-job",
-        description="Revive job",
+        hostname="rescue-cpu-job",
+        description="Rescue CPU job",
         emit_progress=progress.append,
         retry_timeout_sec=30,
     )

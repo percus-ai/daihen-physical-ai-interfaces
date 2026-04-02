@@ -186,6 +186,11 @@ class TrainingProvisionOperationSubscription(_SubscriptionBase):
     params: StartupOperationParams
 
 
+class TrainingJobOperationSubscription(_SubscriptionBase):
+    kind: Literal["training.job.operation"]
+    params: StartupOperationParams
+
+
 class StorageModelSyncSubscription(_SubscriptionBase):
     kind: Literal["storage.model-sync"]
     params: StorageJobParams
@@ -231,6 +236,7 @@ TabSessionSubscription = Annotated[
     | RecordingUploadStatusSubscription
     | StartupOperationSubscription
     | TrainingProvisionOperationSubscription
+    | TrainingJobOperationSubscription
     | StorageModelSyncSubscription
     | StorageDatasetSyncSubscription
     | StorageDatasetMergeSubscription

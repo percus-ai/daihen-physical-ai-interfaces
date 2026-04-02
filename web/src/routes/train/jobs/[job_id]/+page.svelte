@@ -8,16 +8,16 @@
   import { AxisX, AxisY, GridY, Line, Plot } from 'svelteplot';
   import {
     api,
-    type RemoteCheckpointUploadProgressMessage,
     type RemoteCheckpointUploadResult,
+    type RescueCPUResult,
     type TabSessionSubscription,
     type TrainingJobCoreSubscription,
     type TrainingJobLogsSubscription,
     type TrainingJobMetricsSubscription,
+    type TrainingJobOperationStatusResponse,
+    type TrainingJobOperationSubscription,
     type TrainingJobProvisionSubscription,
-    type TrainingProvisionOperationStatusResponse,
-    type TrainingReviveProgressMessage,
-    type TrainingReviveResult
+    type TrainingProvisionOperationStatusResponse
   } from '$lib/api/client';
   import { formatDate } from '$lib/format';
   import { getGpuModelLabel } from '$lib/policies';
@@ -72,6 +72,7 @@
   type JobDetailResponse = {
     job?: JobInfo;
     provision_operation?: TrainingProvisionOperationStatusResponse | null;
+    operations?: TrainingJobOperationStatusResponse[];
     training_config?: TrainingConfig;
     summary?: Record<string, unknown> | null;
   };
@@ -126,26 +127,31 @@
   let streamError = $state('');
   let streamLines: string[] = $state([]);
   let logStreamActive = $state(false);
-  let reviveInProgress = $state(false);
-  let reviveStage = $state('');
-  let reviveMessage = $state('');
-  let reviveError = $state('');
-  let reviveElapsed: number | null = $state(null);
-  let reviveTimeout: number | null = $state(null);
-  let reviveEvents: string[] = $state([]);
-  let reviveResult: TrainingReviveResult | null = $state(null);
-  let reviveCopied = $state(false);
+  let rescueCpuInProgress = $state(false);
+  let rescueCpuPhase = $state('');
+  let rescueCpuMessage = $state('');
+  let rescueCpuError = $state('');
+  let rescueCpuProgressPercent = $state(0);
+  let rescueCpuElapsed: number | null = $state(null);
+  let rescueCpuTimeout: number | null = $state(null);
+  let rescueCpuResult: RescueCPUResult | null = $state(null);
+  let rescueCpuCopied = $state(false);
+  let rescueCpuOperationSnapshot: TrainingJobOperationStatusResponse | null = $state(null);
   let remoteCheckpointRoot = $state('');
   let remoteCheckpointNames: string[] = $state([]);
   let selectedRemoteCheckpoint = $state('');
   let remoteCheckpointLoading = $state(false);
   let remoteCheckpointError = $state('');
+  let remoteCheckpointMessage = $state('');
+  let remoteCheckpointSshAvailable = $state(true);
+  let remoteCheckpointRequiresRescueCpu = $state(false);
   let checkpointUploadInProgress = $state(false);
-  let checkpointUploadStage = $state('');
+  let checkpointUploadPhase = $state('');
+  let checkpointUploadProgressPercent = $state(0);
   let checkpointUploadMessage = $state('');
   let checkpointUploadError = $state('');
-  let checkpointUploadEvents: string[] = $state([]);
   let checkpointUploadResult: RemoteCheckpointUploadResult | null = $state(null);
+  let checkpointUploadOperationSnapshot: TrainingJobOperationStatusResponse | null = $state(null);
 
   type MetricPoint = { step?: number; loss?: number; ts?: string };
   let activeLogSnapshotKey = $state('');
@@ -155,6 +161,7 @@
   const provisionOperation = $derived($jobQuery.data?.provision_operation ?? null);
   const trainingConfig = $derived($jobQuery.data?.training_config ?? {});
   const summary = $derived($jobQuery.data?.summary ?? {});
+  const jobOperations = $derived($jobQuery.data?.operations ?? []);
   const metrics = $derived($metricsQuery.data ?? null);
   const metricsLoading = $derived(Boolean($metricsQuery.isFetching));
   const metricsError = $derived(
@@ -198,7 +205,7 @@
     isRunning ? 'ジョブを停止' : hasLiveInstance ? 'インスタンスを停止' : '停止不可'
   );
   const canDelete = $derived(['completed', 'failed', 'stopped', 'terminated'].includes(status));
-  const canRevive = $derived(
+  const canRescueCpu = $derived(
     provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
   );
   const provisionStepLabels: Record<string, string> = {
@@ -281,16 +288,22 @@
       ? `${logs}${logs ? '\n' : ''}${streamLines.join('\n')}`
       : logs
   );
-  const reviveSshCommand = $derived(
+  const rescueCpuSshCommand = $derived(
     (() => {
-      if (!reviveResult?.ip) return '';
-      const keyPath = reviveResult?.ssh_private_key ?? '~/.ssh/id_rsa';
-      const user = reviveResult?.ssh_user ?? 'root';
-      const port = Number(reviveResult?.ssh_port ?? 22);
+      if (!rescueCpuResult?.ip) return '';
+      const keyPath = rescueCpuResult?.ssh_private_key ?? '~/.ssh/id_rsa';
+      const user = rescueCpuResult?.ssh_user ?? 'root';
+      const port = Number(rescueCpuResult?.ssh_port ?? 22);
       const portOpt = port > 0 && port !== 22 ? ` -p ${port}` : '';
-      return `ssh -i ${keyPath}${portOpt} ${user}@${reviveResult.ip}`;
+      return `ssh -i ${keyPath}${portOpt} ${user}@${rescueCpuResult.ip}`;
     })()
   );
+
+  $effect(() => {
+    if (!jobId) return;
+    applyCheckpointUploadOperationSnapshot(getLatestOperationByKind(jobOperations, 'checkpoint_upload'));
+    applyRescueCpuOperationSnapshot(getLatestOperationByKind(jobOperations, 'rescue_cpu'));
+  });
 
   const setProvisionOperationSnapshot = (
     targetJobId: string,
@@ -313,6 +326,95 @@
   const setMetricsSnapshot = (targetJobId: string, snapshot: MetricsResponse) => {
     if (!targetJobId) return;
     queryClient.setQueryData<MetricsResponse>(['training', 'job', targetJobId, 'metrics'], snapshot);
+  };
+
+  const getLatestOperationByKind = (
+    operations: TrainingJobOperationStatusResponse[] | undefined,
+    kind: 'checkpoint_upload' | 'rescue_cpu'
+  ): TrainingJobOperationStatusResponse | null => {
+    return (operations ?? []).find((item) => item.kind === kind) ?? null;
+  };
+
+  const isOperationActive = (snapshot: TrainingJobOperationStatusResponse | null): boolean => {
+    if (!snapshot) return false;
+    return snapshot.state === 'queued' || snapshot.state === 'running';
+  };
+
+  const getDetailNumber = (snapshot: TrainingJobOperationStatusResponse | null, key: string): number | null => {
+    const value = snapshot?.detail?.[key];
+    return typeof value === 'number' ? value : null;
+  };
+
+  const asCheckpointUploadResult = (
+    snapshot: TrainingJobOperationStatusResponse | null
+  ): RemoteCheckpointUploadResult | null => {
+    if (!snapshot?.result || typeof snapshot.result !== 'object') return null;
+    return snapshot.result as RemoteCheckpointUploadResult;
+  };
+
+  const asRescueCpuResult = (
+    snapshot: TrainingJobOperationStatusResponse | null
+  ): RescueCPUResult | null => {
+    if (!snapshot?.result || typeof snapshot.result !== 'object') return null;
+    return snapshot.result as RescueCPUResult;
+  };
+
+  const applyCheckpointUploadOperationSnapshot = (
+    snapshot: TrainingJobOperationStatusResponse | null,
+    options: { fromRealtime?: boolean } = {}
+  ) => {
+    const previousState = options.fromRealtime
+      ? checkpointUploadOperationSnapshot?.state ?? null
+      : null;
+    checkpointUploadOperationSnapshot = snapshot;
+    checkpointUploadInProgress = isOperationActive(snapshot);
+    checkpointUploadPhase = snapshot?.phase ?? '';
+    checkpointUploadProgressPercent = Number(snapshot?.progress_percent ?? 0);
+    checkpointUploadMessage = snapshot?.message ?? '';
+    checkpointUploadError = snapshot?.error ?? '';
+    checkpointUploadResult = asCheckpointUploadResult(snapshot);
+
+    if (
+      options.fromRealtime &&
+      previousState &&
+      ['queued', 'running'].includes(previousState) &&
+      snapshot &&
+      ['completed', 'failed', 'cancelled'].includes(snapshot.state)
+    ) {
+      void refresh();
+      void fetchRemoteCheckpoints();
+    }
+
+  };
+
+  const applyRescueCpuOperationSnapshot = (
+    snapshot: TrainingJobOperationStatusResponse | null,
+    options: { fromRealtime?: boolean } = {}
+  ) => {
+    const previousState = options.fromRealtime
+      ? rescueCpuOperationSnapshot?.state ?? null
+      : null;
+    rescueCpuOperationSnapshot = snapshot;
+    rescueCpuInProgress = isOperationActive(snapshot);
+    rescueCpuPhase = snapshot?.phase ?? '';
+    rescueCpuMessage = snapshot?.message ?? '';
+    rescueCpuError = snapshot?.error ?? '';
+    rescueCpuProgressPercent = Number(snapshot?.progress_percent ?? 0);
+    rescueCpuElapsed = getDetailNumber(snapshot, 'elapsed');
+    rescueCpuTimeout = getDetailNumber(snapshot, 'timeout');
+    rescueCpuResult = asRescueCpuResult(snapshot);
+
+    if (
+      options.fromRealtime &&
+      previousState &&
+      ['queued', 'running'].includes(previousState) &&
+      snapshot &&
+      ['completed', 'failed', 'cancelled'].includes(snapshot.state)
+    ) {
+      void refresh();
+      void fetchRemoteCheckpoints();
+    }
+
   };
 
   const buildRealtimeSubscriptions = (
@@ -344,7 +446,29 @@
         tail_lines: nextLogLines
       }
     };
-    return [coreSubscription, provisionSubscription, metricsSubscription, logsSubscription];
+    const subscriptions: TabSessionSubscription[] = [
+      coreSubscription,
+      provisionSubscription,
+      metricsSubscription,
+      logsSubscription
+    ];
+    if (isOperationActive(checkpointUploadOperationSnapshot) && checkpointUploadOperationSnapshot?.operation_id) {
+      const checkpointOperationSubscription: TrainingJobOperationSubscription = {
+        subscription_id: `train.job.${targetJobId}.operation.${checkpointUploadOperationSnapshot.operation_id}`,
+        kind: 'training.job.operation',
+        params: { operation_id: checkpointUploadOperationSnapshot.operation_id }
+      };
+      subscriptions.push(checkpointOperationSubscription);
+    }
+    if (isOperationActive(rescueCpuOperationSnapshot) && rescueCpuOperationSnapshot?.operation_id) {
+      const rescueOperationSubscription: TrainingJobOperationSubscription = {
+        subscription_id: `train.job.${targetJobId}.operation.${rescueCpuOperationSnapshot.operation_id}`,
+        kind: 'training.job.operation',
+        params: { operation_id: rescueCpuOperationSnapshot.operation_id }
+      };
+      subscriptions.push(rescueOperationSubscription);
+    }
+    return subscriptions;
   };
 
   const appendLogLines = (lines: string[]) => {
@@ -405,6 +529,16 @@
           setMetricsSnapshot(targetJobId, event.payload as MetricsResponse);
         }
         return;
+      case 'training.job.operation':
+        if (event.op === 'snapshot') {
+          const snapshot = event.payload as TrainingJobOperationStatusResponse;
+          if (snapshot.kind === 'checkpoint_upload') {
+            applyCheckpointUploadOperationSnapshot(snapshot, { fromRealtime: true });
+          } else if (snapshot.kind === 'rescue_cpu') {
+            applyRescueCpuOperationSnapshot(snapshot, { fromRealtime: true });
+          }
+        }
+        return;
       case 'training.job.logs':
         if (event.op === 'append') {
           const payload = event.payload as { lines?: string[] };
@@ -459,44 +593,27 @@
     await goto('/train');
   };
 
-  const reviveJob = async () => {
-    if (!jobId || !canRevive || reviveInProgress) return;
-    if (!confirm('このジョブのインスタンスをCPUで蘇生しますか？')) return;
+  const rescueCpuJob = async () => {
+    if (!jobId || !canRescueCpu || rescueCpuInProgress) return;
+    if (!confirm('このジョブの checkpoint 抽出のために CPU rescue を開始しますか？')) return;
 
-    reviveInProgress = true;
-    reviveStage = '';
-    reviveMessage = '';
-    reviveError = '';
-    reviveElapsed = null;
-    reviveTimeout = null;
-    reviveEvents = [];
-    reviveResult = null;
-    reviveCopied = false;
+    rescueCpuInProgress = true;
+    rescueCpuPhase = '';
+    rescueCpuMessage = '';
+    rescueCpuError = '';
+    rescueCpuProgressPercent = 0;
+    rescueCpuElapsed = null;
+    rescueCpuTimeout = null;
+    rescueCpuResult = null;
+    rescueCpuCopied = false;
 
     try {
-      const result = await api.training.reviveJobWs(
-        jobId,
-        (payload: TrainingReviveProgressMessage) => {
-          if (payload.type) reviveStage = payload.type;
-          if (payload.message) reviveMessage = payload.message;
-          if (payload.error) reviveError = payload.error;
-          if (typeof payload.elapsed === 'number') reviveElapsed = payload.elapsed;
-          if (typeof payload.timeout === 'number') reviveTimeout = payload.timeout;
-
-          const eventLabel = payload.type ?? 'event';
-          const eventMessage = payload.error || payload.message || '';
-          const line = eventMessage ? `${eventLabel}: ${eventMessage}` : eventLabel;
-          reviveEvents = [...reviveEvents, line].slice(-30);
-        }
-      );
-      reviveResult = result;
-      reviveMessage = result.message;
+      const accepted = await api.training.startRescueCpuOperation(jobId);
+      const snapshot = await api.training.trainingJobOperation(accepted.operation_id);
+      applyRescueCpuOperationSnapshot(snapshot);
       await refresh();
-      await fetchRemoteCheckpoints();
     } catch (error) {
-      reviveError = error instanceof Error ? error.message : 'インスタンス蘇生に失敗しました。';
-    } finally {
-      reviveInProgress = false;
+      rescueCpuError = error instanceof Error ? error.message : 'CPU rescue に失敗しました。';
     }
   };
 
@@ -504,10 +621,14 @@
     if (!jobId) return;
     remoteCheckpointLoading = true;
     remoteCheckpointError = '';
+    remoteCheckpointMessage = '';
     try {
       const result = await api.training.remoteCheckpoints(jobId);
       remoteCheckpointRoot = result.checkpoint_root || '';
       remoteCheckpointNames = result.checkpoint_names ?? [];
+      remoteCheckpointSshAvailable = result.ssh_available;
+      remoteCheckpointRequiresRescueCpu = result.requires_rescue_cpu;
+      remoteCheckpointMessage = result.message || '';
       if (remoteCheckpointNames.length === 0) {
         selectedRemoteCheckpoint = '';
       } else if (!remoteCheckpointNames.includes(selectedRemoteCheckpoint)) {
@@ -516,45 +637,39 @@
     } catch (error) {
       remoteCheckpointError =
         error instanceof Error ? error.message : 'リモートcheckpoint一覧の取得に失敗しました。';
+      remoteCheckpointRoot = '';
       remoteCheckpointNames = [];
       selectedRemoteCheckpoint = '';
+      remoteCheckpointSshAvailable = false;
+      remoteCheckpointRequiresRescueCpu = false;
+      remoteCheckpointMessage = '';
     } finally {
       remoteCheckpointLoading = false;
     }
   };
 
   const uploadSelectedCheckpoint = async () => {
-    if (!jobId || !selectedRemoteCheckpoint || checkpointUploadInProgress) return;
+    if (!jobId || !selectedRemoteCheckpoint || checkpointUploadInProgress || rescueCpuInProgress) return;
     if (!confirm(`checkpoint ${selectedRemoteCheckpoint} をR2へ登録しますか？`)) return;
 
     checkpointUploadInProgress = true;
-    checkpointUploadStage = '';
+    checkpointUploadPhase = '';
+    checkpointUploadProgressPercent = 0;
     checkpointUploadMessage = '';
     checkpointUploadError = '';
-    checkpointUploadEvents = [];
     checkpointUploadResult = null;
 
     try {
-      const result = await api.training.uploadCheckpointWs(
+      const accepted = await api.training.startCheckpointUploadOperation(
         jobId,
-        selectedRemoteCheckpoint,
-        (payload: RemoteCheckpointUploadProgressMessage) => {
-          if (payload.type) checkpointUploadStage = payload.type;
-          if (payload.message) checkpointUploadMessage = payload.message;
-          if (payload.error) checkpointUploadError = payload.error;
-          const eventType = payload.type ?? 'event';
-          const eventMessage = payload.error || payload.message || '';
-          const line = eventMessage ? `${eventType}: ${eventMessage}` : eventType;
-          checkpointUploadEvents = [...checkpointUploadEvents, line].slice(-30);
-        }
+        selectedRemoteCheckpoint
       );
-      checkpointUploadResult = result;
-      checkpointUploadMessage = result.message;
+      const snapshot = await api.training.trainingJobOperation(accepted.operation_id);
+      applyCheckpointUploadOperationSnapshot(snapshot);
+      await refresh();
     } catch (error) {
       checkpointUploadError =
         error instanceof Error ? error.message : 'チェックポイントのR2登録に失敗しました。';
-    } finally {
-      checkpointUploadInProgress = false;
     }
   };
 
@@ -614,14 +729,14 @@
     }
   };
 
-  const copyReviveSshCommand = async () => {
-    if (!reviveSshCommand) return;
+  const copyRescueCpuSshCommand = async () => {
+    if (!rescueCpuSshCommand) return;
     try {
-      await navigator.clipboard.writeText(reviveSshCommand);
-      reviveCopied = true;
-      setTimeout(() => (reviveCopied = false), 1500);
+      await navigator.clipboard.writeText(rescueCpuSshCommand);
+      rescueCpuCopied = true;
+      setTimeout(() => (rescueCpuCopied = false), 1500);
     } catch {
-      reviveCopied = false;
+      rescueCpuCopied = false;
     }
   };
 
@@ -669,26 +784,31 @@
       logs = '';
       logsSource = '';
       logsError = '';
-      reviveInProgress = false;
-      reviveStage = '';
-      reviveMessage = '';
-      reviveError = '';
-      reviveElapsed = null;
-      reviveTimeout = null;
-      reviveEvents = [];
-      reviveResult = null;
-      reviveCopied = false;
+      rescueCpuInProgress = false;
+      rescueCpuPhase = '';
+      rescueCpuMessage = '';
+      rescueCpuError = '';
+      rescueCpuProgressPercent = 0;
+      rescueCpuElapsed = null;
+      rescueCpuTimeout = null;
+      rescueCpuResult = null;
+      rescueCpuCopied = false;
+      rescueCpuOperationSnapshot = null;
       remoteCheckpointRoot = '';
       remoteCheckpointNames = [];
       selectedRemoteCheckpoint = '';
       remoteCheckpointLoading = false;
       remoteCheckpointError = '';
+      remoteCheckpointMessage = '';
+      remoteCheckpointSshAvailable = true;
+      remoteCheckpointRequiresRescueCpu = false;
       checkpointUploadInProgress = false;
-      checkpointUploadStage = '';
+      checkpointUploadPhase = '';
+      checkpointUploadProgressPercent = 0;
       checkpointUploadMessage = '';
       checkpointUploadError = '';
-      checkpointUploadEvents = [];
       checkpointUploadResult = null;
+      checkpointUploadOperationSnapshot = null;
     }
   });
 
@@ -1010,14 +1130,14 @@
         <Button.Root class="btn-primary" type="button" onclick={stopJob} disabled={!canStop}>
           {stopActionLabel}
         </Button.Root>
-        {#if canRevive}
-          <Button.Root class="btn-ghost" type="button" onclick={reviveJob} disabled={reviveInProgress}>
-            {reviveInProgress ? 'インスタンス蘇生中...' : 'インスタンスを蘇生'}
+        {#if canRescueCpu}
+          <Button.Root class="btn-ghost" type="button" onclick={rescueCpuJob} disabled={rescueCpuInProgress}>
+            {rescueCpuInProgress ? 'CPU rescue 実行中...' : 'CPU rescue を開始'}
           </Button.Root>
         {/if}
       </div>
       <p class="mt-3 text-xs text-slate-500">
-        停止はジョブまたは稼働中インスタンス、蘇生はジョブステータスに応じて有効化されます。
+        停止はジョブまたは稼働中インスタンス、CPU rescue は終端ジョブの checkpoint 抽出用に有効化されます。
       </p>
       {#if isRunning}
         <div class="mt-3 flex items-center gap-2 text-xs text-slate-500">
@@ -1027,143 +1147,165 @@
       {/if}
     </section>
 
-    {#if canRevive || reviveInProgress || reviveResult || reviveError || reviveEvents.length}
-      <section class="card p-6">
-        <h2 class="text-xl font-semibold text-slate-900">インスタンス蘇生</h2>
-        <p class="mt-2 text-sm text-slate-600">
-          終了済みジョブに対して、OSストレージからCPUインスタンスを再作成します。
-        </p>
-        <div class="mt-4 nested-block-stack text-sm text-slate-600">
-          <div class="nested-block p-4">
-            <p class="label">救済チェックポイント登録</p>
-            <p class="mt-2 text-xs text-slate-500">
-              リモート上の checkpoint ディレクトリから保存対象を選択して R2 に登録します。
-            </p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <Button.Root class="btn-ghost" type="button" onclick={fetchRemoteCheckpoints} disabled={remoteCheckpointLoading || checkpointUploadInProgress}>
-                {remoteCheckpointLoading ? '候補取得中...' : '候補を取得'}
+    <section class="card p-6">
+      <h2 class="text-xl font-semibold text-slate-900">Checkpoint</h2>
+      <p class="mt-2 text-sm text-slate-600">
+        remote checkpoint を確認し、選択した step を R2 / DB に登録します。SSH 不可の終端ジョブでは CPU rescue を使います。
+      </p>
+      <div class="mt-4 nested-block-stack text-sm text-slate-600">
+        <div class="nested-block p-4">
+          <p class="label">checkpoint 候補</p>
+          <p class="mt-2 text-xs text-slate-500">
+            対象ジョブの remote checkpoint を取得して、保存する step を選択します。
+          </p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <Button.Root class="btn-ghost" type="button" onclick={fetchRemoteCheckpoints} disabled={remoteCheckpointLoading || checkpointUploadInProgress || rescueCpuInProgress}>
+              {remoteCheckpointLoading ? '候補取得中...' : '候補を取得'}
+            </Button.Root>
+            {#if remoteCheckpointRequiresRescueCpu}
+              <Button.Root class="btn-ghost" type="button" onclick={rescueCpuJob} disabled={!canRescueCpu || rescueCpuInProgress || checkpointUploadInProgress}>
+                {rescueCpuInProgress ? 'CPU rescue 実行中...' : 'CPU rescue を開始'}
               </Button.Root>
-            </div>
-            {#if remoteCheckpointRoot}
-              <p class="mt-3 text-xs text-slate-500 break-all">root: {remoteCheckpointRoot}</p>
-            {/if}
-            {#if remoteCheckpointError}
-              <p class="mt-3 text-sm text-rose-600">{remoteCheckpointError}</p>
-            {/if}
-            {#if remoteCheckpointNames.length}
-              <label class="mt-3 block text-sm font-semibold text-slate-700">
-                <span class="label">保存するcheckpoint</span>
-                <select class="input mt-2" bind:value={selectedRemoteCheckpoint} disabled={checkpointUploadInProgress}>
-                  {#each remoteCheckpointNames as checkpointName}
-                    <option value={checkpointName}>{checkpointName}</option>
-                  {/each}
-                </select>
-              </label>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <Button.Root class="btn-primary" type="button" onclick={uploadSelectedCheckpoint} disabled={!selectedRemoteCheckpoint || checkpointUploadInProgress}>
-                  {checkpointUploadInProgress ? 'R2登録中...' : '選択したcheckpointをR2登録'}
-                </Button.Root>
-              </div>
-            {:else if !remoteCheckpointLoading}
-              <p class="mt-3 text-xs text-slate-500">候補はまだ取得されていません。</p>
             {/if}
           </div>
-
-          {#if reviveStage}
-            <span class="chip">フェーズ: {reviveStage}</span>
+          {#if remoteCheckpointRoot}
+            <p class="mt-3 text-xs text-slate-500 break-all">root: {remoteCheckpointRoot}</p>
           {/if}
-          {#if reviveElapsed !== null}
-            <p class="text-xs text-slate-500">
-              経過: {reviveElapsed}s{#if reviveTimeout !== null} / {reviveTimeout}s{/if}
+          {#if remoteCheckpointMessage}
+            <p class="mt-3 text-sm text-slate-700">{remoteCheckpointMessage}</p>
+          {/if}
+          {#if remoteCheckpointError}
+            <p class="mt-3 text-sm text-rose-600">{remoteCheckpointError}</p>
+          {/if}
+          {#if !remoteCheckpointLoading && !remoteCheckpointSshAvailable && remoteCheckpointRequiresRescueCpu}
+            <p class="mt-3 text-xs text-slate-500">
+              live SSH では取得できないため、CPU rescue で接続先を確保してから同じカードで登録します。
             </p>
           {/if}
-          {#if reviveMessage}
-            <p class="text-sm text-slate-700">{reviveMessage}</p>
-          {/if}
-          {#if reviveError}
-            <p class="text-sm text-rose-600">{reviveError}</p>
-          {/if}
-          {#if checkpointUploadStage}
-            <span class="chip">登録フェーズ: {checkpointUploadStage}</span>
-          {/if}
-          {#if checkpointUploadMessage}
-            <p class="text-sm text-slate-700">{checkpointUploadMessage}</p>
-          {/if}
-          {#if checkpointUploadError}
-            <p class="text-sm text-rose-600">{checkpointUploadError}</p>
-          {/if}
-          {#if reviveEvents.length}
-            <div class="nested-block p-4">
-              <p class="label">進捗ログ</p>
-              <div class="mt-2 nested-block-pane max-h-72 overflow-auto p-2">
-                <pre class="min-w-0 whitespace-pre-wrap break-all text-xs text-slate-700">{reviveEvents.join('\n')}</pre>
-              </div>
+          {#if remoteCheckpointNames.length}
+            <label class="mt-3 block text-sm font-semibold text-slate-700">
+              <span class="label">保存する checkpoint</span>
+              <select class="input mt-2" bind:value={selectedRemoteCheckpoint} disabled={checkpointUploadInProgress || rescueCpuInProgress}>
+                {#each remoteCheckpointNames as checkpointName}
+                  <option value={checkpointName}>{checkpointName}</option>
+                {/each}
+              </select>
+            </label>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <Button.Root class="btn-primary" type="button" onclick={uploadSelectedCheckpoint} disabled={!selectedRemoteCheckpoint || checkpointUploadInProgress || rescueCpuInProgress}>
+                {checkpointUploadInProgress ? 'R2 / DB 登録中...' : '選択した checkpoint を登録'}
+              </Button.Root>
             </div>
-          {/if}
-          {#if checkpointUploadEvents.length}
-            <div class="nested-block p-4">
-              <p class="label">checkpoint登録ログ</p>
-              <div class="mt-2 nested-block-pane max-h-72 overflow-auto p-2">
-                <pre class="min-w-0 whitespace-pre-wrap break-all text-xs text-slate-700">{checkpointUploadEvents.join('\n')}</pre>
-              </div>
-            </div>
-          {/if}
-          {#if checkpointUploadResult}
-            <div class="nested-block p-4">
-              <p class="label">checkpoint登録結果</p>
-              <div class="mt-2 space-y-1 text-xs text-slate-600">
-                <p>checkpoint: <span class="font-semibold text-slate-800">{checkpointUploadResult.checkpoint_name}</span></p>
-                <p>step: <span class="font-semibold text-slate-800">{checkpointUploadResult.step}</span></p>
-                <p>R2 path: <span class="font-semibold text-slate-800 break-all">{checkpointUploadResult.r2_step_path}</span></p>
-                <p>model_id: <span class="font-semibold text-slate-800 break-all">{checkpointUploadResult.model_id}</span></p>
-                <p>
-                  DB登録:
-                  <span class="font-semibold text-slate-800">
-                    {checkpointUploadResult.db_registered ? '完了' : '未完了'}
-                  </span>
-                </p>
-              </div>
-            </div>
-          {/if}
-          {#if reviveResult}
-            <div class="nested-block p-4">
-              <p class="label">蘇生結果</p>
-              <div class="mt-2 space-y-1 text-xs text-slate-600">
-                <p>旧インスタンスID: <span class="font-semibold text-slate-800 break-all">{reviveResult.old_instance_id}</span></p>
-                <p>新インスタンスID: <span class="font-semibold text-slate-800 break-all">{reviveResult.instance_id}</span></p>
-                <p>ストレージID: <span class="font-semibold text-slate-800 break-all">{reviveResult.volume_id}</span></p>
-                <p>インスタンスタイプ: <span class="font-semibold text-slate-800">{reviveResult.instance_type}</span></p>
-                <p>ロケーション: <span class="font-semibold text-slate-800">{reviveResult.location}</span></p>
-                <p>
-                  SSH接続先:
-                  <span class="font-semibold text-slate-800">
-                    {#if reviveResult.ssh_port && reviveResult.ssh_port !== 22}
-                      {reviveResult.ip}:{reviveResult.ssh_port}
-                    {:else}
-                      {reviveResult.ip}
-                    {/if}
-                  </span>
-                </p>
-                <p>SSHユーザー: <span class="font-semibold text-slate-800">{reviveResult.ssh_user}</span></p>
-                <p>SSH鍵: <span class="font-semibold text-slate-800 break-all">{reviveResult.ssh_private_key}</span></p>
-              </div>
-              <div class="mt-3 nested-block-pane p-3 text-xs text-slate-600">
-                <p class="label">SSHコマンド</p>
-                <p class="mt-2 font-semibold text-slate-800 break-all">{reviveSshCommand || '-'}</p>
-              </div>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <Button.Root class="btn-ghost" type="button" onclick={copyReviveSshCommand} disabled={!reviveSshCommand}>
-                  SSHコマンドをコピー
-                </Button.Root>
-                {#if reviveCopied}
-                  <span class="chip">コピーしました</span>
-                {/if}
-              </div>
-            </div>
+          {:else if !remoteCheckpointLoading}
+            <p class="mt-3 text-xs text-slate-500">候補はまだ取得されていません。</p>
           {/if}
         </div>
-      </section>
-    {/if}
+
+        {#if rescueCpuInProgress || rescueCpuPhase || rescueCpuResult || rescueCpuError}
+          <div class="nested-block p-4">
+            <div class="flex items-center justify-between gap-3">
+              <p class="label">CPU rescue</p>
+              <span class="chip">{Math.round(rescueCpuProgressPercent)}%</span>
+            </div>
+            <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-200/80">
+              <div class="h-full bg-brand transition-all" style={`width: ${rescueCpuProgressPercent}%`}></div>
+            </div>
+            {#if rescueCpuPhase}
+              <p class="mt-3 text-xs text-slate-500">phase: {rescueCpuPhase}</p>
+            {/if}
+            {#if rescueCpuElapsed !== null}
+              <p class="mt-1 text-xs text-slate-500">
+                経過: {rescueCpuElapsed}s{#if rescueCpuTimeout !== null} / {rescueCpuTimeout}s{/if}
+              </p>
+            {/if}
+            {#if rescueCpuMessage}
+              <p class="mt-2 text-sm text-slate-700">{rescueCpuMessage}</p>
+            {/if}
+            {#if rescueCpuError}
+              <p class="mt-2 text-sm text-rose-600">{rescueCpuError}</p>
+            {/if}
+          </div>
+        {/if}
+
+        {#if checkpointUploadInProgress || checkpointUploadPhase || checkpointUploadResult || checkpointUploadError}
+          <div class="nested-block p-4">
+            <div class="flex items-center justify-between gap-3">
+              <p class="label">checkpoint upload</p>
+              <span class="chip">{Math.round(checkpointUploadProgressPercent)}%</span>
+            </div>
+            <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-200/80">
+              <div class="h-full bg-brand transition-all" style={`width: ${checkpointUploadProgressPercent}%`}></div>
+            </div>
+            {#if checkpointUploadPhase}
+              <p class="mt-3 text-xs text-slate-500">phase: {checkpointUploadPhase}</p>
+            {/if}
+            {#if checkpointUploadMessage}
+              <p class="mt-2 text-sm text-slate-700">{checkpointUploadMessage}</p>
+            {/if}
+            {#if checkpointUploadError}
+              <p class="mt-2 text-sm text-rose-600">{checkpointUploadError}</p>
+            {/if}
+          </div>
+        {/if}
+
+        {#if checkpointUploadResult}
+          <div class="nested-block p-4">
+            <p class="label">checkpoint 登録結果</p>
+            <div class="mt-2 space-y-1 text-xs text-slate-600">
+              <p>message: <span class="font-semibold text-slate-800">{checkpointUploadResult.message}</span></p>
+              <p>checkpoint: <span class="font-semibold text-slate-800">{checkpointUploadResult.checkpoint_name}</span></p>
+              <p>step: <span class="font-semibold text-slate-800">{checkpointUploadResult.step}</span></p>
+              <p>R2 path: <span class="font-semibold text-slate-800 break-all">{checkpointUploadResult.r2_step_path}</span></p>
+              <p>model_id: <span class="font-semibold text-slate-800 break-all">{checkpointUploadResult.model_id}</span></p>
+              <p>
+                DB登録:
+                <span class="font-semibold text-slate-800">
+                  {checkpointUploadResult.db_registered ? '完了' : '未完了'}
+                </span>
+              </p>
+            </div>
+          </div>
+        {/if}
+
+        {#if rescueCpuResult}
+          <div class="nested-block p-4">
+            <p class="label">CPU rescue 結果</p>
+            <div class="mt-2 space-y-1 text-xs text-slate-600">
+              <p>message: <span class="font-semibold text-slate-800">{rescueCpuResult.message}</span></p>
+              <p>旧インスタンスID: <span class="font-semibold text-slate-800 break-all">{rescueCpuResult.old_instance_id}</span></p>
+              <p>新インスタンスID: <span class="font-semibold text-slate-800 break-all">{rescueCpuResult.instance_id}</span></p>
+              <p>ストレージID: <span class="font-semibold text-slate-800 break-all">{rescueCpuResult.volume_id}</span></p>
+              <p>インスタンスタイプ: <span class="font-semibold text-slate-800">{rescueCpuResult.instance_type}</span></p>
+              <p>ロケーション: <span class="font-semibold text-slate-800">{rescueCpuResult.location}</span></p>
+              <p>
+                SSH接続先:
+                <span class="font-semibold text-slate-800">
+                  {#if rescueCpuResult.ssh_port && rescueCpuResult.ssh_port !== 22}
+                    {rescueCpuResult.ip}:{rescueCpuResult.ssh_port}
+                  {:else}
+                    {rescueCpuResult.ip}
+                  {/if}
+                </span>
+              </p>
+              <p>SSHユーザー: <span class="font-semibold text-slate-800">{rescueCpuResult.ssh_user}</span></p>
+              <p>SSH鍵: <span class="font-semibold text-slate-800 break-all">{rescueCpuResult.ssh_private_key}</span></p>
+            </div>
+            <div class="mt-3 nested-block-pane p-3 text-xs text-slate-600">
+              <p class="label">SSHコマンド</p>
+              <p class="mt-2 font-semibold text-slate-800 break-all">{rescueCpuSshCommand || '-'}</p>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <Button.Root class="btn-ghost" type="button" onclick={copyRescueCpuSshCommand} disabled={!rescueCpuSshCommand}>
+                SSHコマンドをコピー
+              </Button.Root>
+              {#if rescueCpuCopied}
+                <span class="chip">コピーしました</span>
+              {/if}
+            </div>
+          </div>
+        {/if}
+      </div>
+    </section>
 
     <section class="card p-6">
       <h2 class="text-xl font-semibold text-slate-900">ログ</h2>

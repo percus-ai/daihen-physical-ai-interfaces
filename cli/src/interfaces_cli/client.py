@@ -887,39 +887,66 @@ class PhiClient:
         response.raise_for_status()
         return response.json()
 
-    def revive_training_job(self, job_id: str) -> Dict[str, Any]:
-        """POST /api/training/jobs/{job_id}/revive - Revive job instance."""
-        response = self._client.post(f"/api/training/jobs/{job_id}/revive")
+    def rescue_cpu_training_job(self, job_id: str) -> Dict[str, Any]:
+        """POST /api/training/jobs/{job_id}/operations/rescue-cpu - Start rescue CPU operation."""
+        response = self._client.post(f"/api/training/jobs/{job_id}/operations/rescue-cpu")
         response.raise_for_status()
         return response.json()
 
-    def revive_training_job_ws(
+    def get_training_job_operation(self, operation_id: str) -> Dict[str, Any]:
+        """GET /api/training/operations/{operation_id} - Get training job operation status."""
+        response = self._client.get(f"/api/training/operations/{operation_id}")
+        response.raise_for_status()
+        return response.json()
+
+    def rescue_cpu_training_job_ws(
         self,
         job_id: str,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        """Revive job instance via WebSocket with progress updates."""
-        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/training/ws/jobs/{job_id}/revive"
-        result: Dict[str, Any] = {"type": "error", "error": "Unknown error"}
-
-        try:
-            ws = websocket.create_connection(ws_url, timeout=None, enable_multithread=True)
-            while True:
-                message = ws.recv()
-                msg_data = json.loads(message)
-                if progress_callback:
-                    progress_callback(msg_data)
-                if msg_data.get("type") in ("complete", "error"):
-                    result = msg_data
-                    break
-            ws.close()
-        except Exception as e:
+        """Start rescue CPU operation and poll status until terminal."""
+        accepted = self.rescue_cpu_training_job(job_id)
+        operation_id = str(accepted.get("operation_id") or "").strip()
+        if not operation_id:
+            result = {"type": "error", "error": "operation_id が取得できませんでした"}
             if progress_callback:
-                progress_callback({"type": "error", "error": str(e)})
-            result = {"type": "error", "error": str(e)}
+                progress_callback(result)
+            return result
 
-        return result
+        while True:
+            try:
+                snapshot = self.get_training_job_operation(operation_id)
+            except Exception as e:
+                result = {"type": "error", "error": str(e)}
+                if progress_callback:
+                    progress_callback(result)
+                return result
+
+            progress_payload = {
+                "type": (
+                    "complete"
+                    if snapshot.get("state") == "completed"
+                    else "error"
+                    if snapshot.get("state") == "failed"
+                    else "progress"
+                ),
+                "phase": snapshot.get("phase"),
+                "progress_percent": snapshot.get("progress_percent"),
+                "message": snapshot.get("message"),
+                "error": snapshot.get("error"),
+                "elapsed": (snapshot.get("detail") or {}).get("elapsed"),
+                "timeout": (snapshot.get("detail") or {}).get("timeout"),
+                "result": snapshot.get("result"),
+            }
+            if progress_callback:
+                progress_callback(progress_payload)
+
+            if snapshot.get("state") == "completed":
+                return {"type": "complete", "result": snapshot.get("result") or {}}
+            if snapshot.get("state") == "failed":
+                return {"type": "error", "error": snapshot.get("error") or snapshot.get("message") or "failed"}
+
+            time.sleep(0.5)
 
     def get_training_job_logs(self, job_id: str, log_type: str = "training") -> Dict[str, Any]:
         """GET /api/training/jobs/{job_id}/logs - Get logs."""

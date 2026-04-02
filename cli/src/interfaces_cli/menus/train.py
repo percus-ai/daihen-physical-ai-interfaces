@@ -2970,7 +2970,7 @@ class TrainingJobsMenu(BaseMenu):
 
             if status in ("completed", "failed", "stopped", "terminated"):
                 if job_info.get("instance_id"):
-                    action_choices.append(Choice(value="revive_instance", name="🧟 インスタンス蘇生 (CPU) + SSH"))
+                    action_choices.append(Choice(value="rescue_cpu_instance", name="🧟 rescue-cpu (CPU) + SSH"))
                 action_choices.append(Choice(value="delete", name="🗑 ジョブを削除"))
 
             action_choices.append(Choice(value="back", name="← 戻る"))
@@ -3001,8 +3001,8 @@ class TrainingJobsMenu(BaseMenu):
                 self._delete_job(job_id)
             elif action == "refresh":
                 return self._show_job_detail(job_id)
-            elif action == "revive_instance":
-                self._revive_job(job_id)
+            elif action == "rescue_cpu_instance":
+                self._rescue_cpu_job(job_id)
 
         except KeyboardInterrupt:
             print(f"\n{Colors.muted('中断されました')}")
@@ -3012,8 +3012,8 @@ class TrainingJobsMenu(BaseMenu):
 
         return MenuResult.CONTINUE
 
-    def _revive_job(self, job_id: str) -> None:
-        show_section_header("インスタンス蘇生")
+    def _rescue_cpu_job(self, job_id: str) -> None:
+        show_section_header("rescue-cpu")
         try:
             current = {
                 "stage": "",
@@ -3033,11 +3033,10 @@ class TrainingJobsMenu(BaseMenu):
                 if current["elapsed"] is not None:
                     timeout = current["timeout"] or 0
                     table.add_row("経過:", f"{current['elapsed']}s / {timeout}s")
-                return Panel(table, title="🧟 インスタンス蘇生", border_style="cyan")
+                return Panel(table, title="🧟 rescue-cpu", border_style="cyan")
 
             def on_message(message: Dict[str, Any]) -> None:
-                msg_type = message.get("type", "")
-                current["stage"] = msg_type
+                current["stage"] = message.get("phase", "") or message.get("type", "")
                 current["message"] = message.get("message", "") or message.get("error", "")
                 if "elapsed" in message:
                     current["elapsed"] = message.get("elapsed")
@@ -3050,13 +3049,13 @@ class TrainingJobsMenu(BaseMenu):
                     on_message(message)
                     live.update(make_panel())
 
-                ws_result = self.api.revive_training_job_ws(job_id, progress_callback=update_display)
+                ws_result = self.api.rescue_cpu_training_job_ws(job_id, progress_callback=update_display)
 
             if ws_result.get("type") != "complete":
-                raise Exception(ws_result.get("error", "蘇生に失敗しました"))
+                raise Exception(ws_result.get("error", "rescue-cpu に失敗しました"))
 
             result = ws_result.get("result", {})
-            print(f"{Colors.success('蘇生完了')}")
+            print(f"{Colors.success('rescue-cpu 完了')}")
             print(f"  旧インスタンスID: {result.get('old_instance_id')}")
             print(f"  ストレージID: {result.get('volume_id')}")
             print(f"  新インスタンスID: {result.get('instance_id')}")

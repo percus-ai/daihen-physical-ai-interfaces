@@ -28,6 +28,7 @@ from interfaces_backend.models.realtime import (
     TrainingJobCoreSubscription,
     TrainingJobLogsSubscription,
     TrainingJobMetricsSubscription,
+    TrainingJobOperationSubscription,
     TrainingJobProvisionSubscription,
 )
 
@@ -72,6 +73,8 @@ class TabRealtimeSourceRegistry:
         if isinstance(subscription, StartupOperationSubscription):
             return 0.5
         if isinstance(subscription, TrainingProvisionOperationSubscription):
+            return 0.5
+        if isinstance(subscription, TrainingJobOperationSubscription):
             return 0.5
         if isinstance(subscription, StorageModelSyncSubscription):
             return 0.5
@@ -181,6 +184,19 @@ class TabRealtimeSourceRegistry:
 
                 user_id = get_current_user_id()
                 snapshot = await get_training_provision_operations_service().get(
+                    user_id=user_id,
+                    operation_id=subscription.params.operation_id,
+                )
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, TrainingJobOperationSubscription):
+                from percus_ai.db import get_current_user_id
+                from interfaces_backend.services.training_job_operations import (
+                    get_training_job_operations_service,
+                )
+
+                user_id = get_current_user_id()
+                snapshot = get_training_job_operations_service().get(
                     user_id=user_id,
                     operation_id=subscription.params.operation_id,
                 )

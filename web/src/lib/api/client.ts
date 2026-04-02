@@ -181,6 +181,13 @@ export type TrainingProvisionOperationSubscription = RealtimeSubscriptionBase & 
   };
 };
 
+export type TrainingJobOperationSubscription = RealtimeSubscriptionBase & {
+  kind: 'training.job.operation';
+  params: {
+    operation_id: string;
+  };
+};
+
 export type StorageModelSyncSubscription = RealtimeSubscriptionBase & {
   kind: 'storage.model-sync';
   params: {
@@ -243,6 +250,7 @@ export type TabSessionSubscription =
   | RecordingUploadStatusSubscription
   | StartupOperationSubscription
   | TrainingProvisionOperationSubscription
+  | TrainingJobOperationSubscription
   | StorageModelSyncSubscription
   | StorageDatasetSyncSubscription
   | StorageDatasetMergeSubscription
@@ -743,7 +751,7 @@ export type StorageModelInfo = {
   updated_at?: string | null;
 };
 
-export type TrainingReviveResult = {
+export type RescueCPUResult = {
   job_id: string;
   old_instance_id: string;
   volume_id: string;
@@ -757,19 +765,24 @@ export type TrainingReviveResult = {
   message: string;
 };
 
-export type TrainingReviveProgressMessage = {
+export type RescueCPUProgressMessage = {
   type?: string;
+  phase?: string;
+  progress_percent?: number;
   message?: string;
   error?: string;
   elapsed?: number;
   timeout?: number;
-  result?: TrainingReviveResult;
+  result?: RescueCPUResult;
 };
 
 export type RemoteCheckpointListResponse = {
   job_id: string;
   checkpoint_names: string[];
   checkpoint_root: string;
+  ssh_available: boolean;
+  requires_rescue_cpu: boolean;
+  message: string;
 };
 
 export type RemoteCheckpointUploadResult = {
@@ -784,11 +797,14 @@ export type RemoteCheckpointUploadResult = {
 
 export type RemoteCheckpointUploadProgressMessage = {
   type?: string;
+  phase?: string;
+  progress_percent?: number;
   message?: string;
   error?: string;
   checkpoint_name?: string;
   step?: number;
   model_id?: string;
+  model_r2_path?: string;
   result?: RemoteCheckpointUploadResult;
 };
 
@@ -838,6 +854,36 @@ export type TrainingProvisionOperationStatusResponse = {
   provider?: 'verda' | 'vast';
   instance_id?: string | null;
   job_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
+export type TrainingJobOperationKind = 'checkpoint_upload' | 'rescue_cpu';
+export type TrainingJobOperationState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type TrainingJobOperationAcceptedResponse = {
+  accepted?: boolean;
+  operation_id: string;
+  job_id: string;
+  kind: TrainingJobOperationKind;
+  state?: TrainingJobOperationState;
+  message?: string;
+  reused?: boolean;
+};
+
+export type TrainingJobOperationStatusResponse = {
+  operation_id: string;
+  job_id: string;
+  kind: TrainingJobOperationKind;
+  state: TrainingJobOperationState;
+  phase?: string;
+  progress_percent?: number;
+  message?: string | null;
+  error?: string | null;
+  detail?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
   created_at?: string | null;
   updated_at?: string | null;
   started_at?: string | null;
@@ -1579,136 +1625,25 @@ export const api = {
     progress: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/progress`),
     remoteCheckpoints: (jobId: string) =>
       fetchApi<RemoteCheckpointListResponse>(`/api/training/jobs/${jobId}/checkpoints/remote`),
-    uploadCheckpointWs: (
-      jobId: string,
-      checkpointName: string,
-      progressCallback?: (message: RemoteCheckpointUploadProgressMessage) => void
-    ): Promise<RemoteCheckpointUploadResult> =>
-      new Promise((resolve, reject) => {
-        const ws = new WebSocket(
-          `${getBackendUrl().replace(/^http/, 'ws')}/api/training/ws/jobs/${encodeURIComponent(jobId)}/checkpoints/upload`
-        );
-        let settled = false;
-        let requestSent = false;
-
-        const fail = (message: string) => {
-          if (settled) return;
-          settled = true;
-          reject(new Error(message));
-        };
-
-        ws.onopen = () => {
-          try {
-            ws.send(JSON.stringify({ checkpoint_name: checkpointName }));
-            requestSent = true;
-          } catch {
-            ws.close();
-            fail('チェックポイントアップロード要求の送信に失敗しました。');
-          }
-        };
-
-        ws.onmessage = (event) => {
-          let payload: RemoteCheckpointUploadProgressMessage;
-          try {
-            payload = JSON.parse(event.data as string) as RemoteCheckpointUploadProgressMessage;
-          } catch {
-            ws.close();
-            fail('チェックポイントアップロード応答の解析に失敗しました。');
-            return;
-          }
-
-          if (progressCallback) {
-            progressCallback(payload);
-          }
-
-          if (payload.type === 'complete') {
-            const result = payload.result;
-            ws.close();
-            if (!result) {
-              fail('チェックポイントアップロード結果が取得できませんでした。');
-              return;
-            }
-            settled = true;
-            resolve(result);
-            return;
-          }
-
-          if (payload.type === 'error') {
-            ws.close();
-            fail(payload.error || payload.message || 'チェックポイントアップロードに失敗しました。');
-          }
-        };
-
-        ws.onerror = () => {
-          ws.close();
-          fail('チェックポイントアップロードWebSocket接続に失敗しました。');
-        };
-
-        ws.onclose = () => {
-          if (!settled && requestSent) {
-            fail('チェックポイントアップロードストリームが切断されました。');
-          }
-        };
-      }),
-    reviveJobWs: (
-      jobId: string,
-      progressCallback?: (message: TrainingReviveProgressMessage) => void
-    ): Promise<TrainingReviveResult> =>
-      new Promise((resolve, reject) => {
-        const ws = new WebSocket(
-          `${getBackendUrl().replace(/^http/, 'ws')}/api/training/ws/jobs/${encodeURIComponent(jobId)}/revive`
-        );
-        let settled = false;
-
-        const fail = (message: string) => {
-          if (settled) return;
-          settled = true;
-          reject(new Error(message));
-        };
-
-        ws.onmessage = (event) => {
-          let payload: TrainingReviveProgressMessage;
-          try {
-            payload = JSON.parse(event.data as string) as TrainingReviveProgressMessage;
-          } catch {
-            ws.close();
-            fail('インスタンス蘇生レスポンスの解析に失敗しました。');
-            return;
-          }
-
-          if (progressCallback) {
-            progressCallback(payload);
-          }
-
-          if (payload.type === 'complete') {
-            const result = payload.result;
-            ws.close();
-            if (!result) {
-              fail('インスタンス蘇生結果が取得できませんでした。');
-              return;
-            }
-            settled = true;
-            resolve(result);
-            return;
-          }
-
-          if (payload.type === 'error') {
-            ws.close();
-            fail(payload.error || payload.message || 'インスタンス蘇生に失敗しました。');
-          }
-        };
-
-        ws.onerror = () => {
-          ws.close();
-          fail('インスタンス蘇生WebSocket接続に失敗しました。');
-        };
-
-        ws.onclose = () => {
-          if (!settled) {
-            fail('インスタンス蘇生ストリームが切断されました。');
-          }
-        };
-      }),
+    startCheckpointUploadOperation: (jobId: string, checkpointName: string) =>
+      fetchApi<TrainingJobOperationAcceptedResponse>(
+        `/api/training/jobs/${jobId}/operations/checkpoint-upload`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ checkpoint_name: checkpointName })
+        }
+      ),
+    startRescueCpuOperation: (jobId: string) =>
+      fetchApi<TrainingJobOperationAcceptedResponse>(
+        `/api/training/jobs/${jobId}/operations/rescue-cpu`,
+        {
+          method: 'POST'
+        }
+      ),
+    trainingJobOperation: (operationId: string) =>
+      fetchApi<TrainingJobOperationStatusResponse>(
+        `/api/training/operations/${encodeURIComponent(operationId)}`
+      ),
     gpuAvailability: (provider: 'verda' | 'vast') =>
       fetchApi(`/api/training/gpu-availability?provider=${encodeURIComponent(provider)}`),
     instanceCandidates: (params: {
