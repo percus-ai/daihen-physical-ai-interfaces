@@ -5,6 +5,7 @@ import {
   loadFavoriteModelIds,
   loadRecentModelIds,
   recordRecentModelId,
+  recordRecentModelUsage,
   retainKnownModelIds,
   saveFavoriteModelIds,
   saveRecentModelIds,
@@ -63,9 +64,20 @@ describe('modelPickerStorage', () => {
     expect(retainKnownModelIds(['model-a', 'model-b', 'model-c'], ['model-c', 'model-a'])).toEqual(['model-a', 'model-c']);
   });
 
+  it('keeps saved ids when the available model list is empty', () => {
+    expect(retainKnownModelIds(['model-a', 'model-b'], [])).toEqual(['model-a', 'model-b']);
+  });
+
   it('loads and saves recent models', () => {
     saveRecentModelIds(['model-a', 'model-b']);
 
     expect(loadRecentModelIds()).toEqual(['model-a', 'model-b']);
+  });
+
+  it('records recent model usage directly into localStorage', () => {
+    saveRecentModelIds(['model-a', 'model-b']);
+
+    expect(recordRecentModelUsage('model-c')).toEqual(['model-c', 'model-a', 'model-b']);
+    expect(loadRecentModelIds()).toEqual(['model-c', 'model-a', 'model-b']);
   });
 });

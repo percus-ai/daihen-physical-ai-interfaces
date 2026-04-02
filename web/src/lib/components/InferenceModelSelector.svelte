@@ -8,7 +8,6 @@
   import {
     loadFavoriteModelIds,
     loadRecentModelIds,
-    recordRecentModelId,
     retainKnownModelIds,
     saveFavoriteModelIds,
     saveRecentModelIds,
@@ -328,11 +327,6 @@
     saveFavoriteModelIds(nextModelIds);
   };
 
-  const setRecentModelIds = (nextModelIds: string[]) => {
-    recentModelIds = nextModelIds;
-    saveRecentModelIds(nextModelIds);
-  };
-
   const handleCollectionTabChange = (value: string) => {
     activeCollectionTab = value as ModelCollectionTab;
   };
@@ -380,7 +374,6 @@
 
   const applySelection = () => {
     if (!pendingModelId) return;
-    setRecentModelIds(recordRecentModelId(recentModelIds, pendingModelId));
     onSelect(pendingModelId);
     modalOpen = false;
   };

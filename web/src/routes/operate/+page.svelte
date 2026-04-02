@@ -15,6 +15,7 @@
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
   import InferenceModelSelector from '$lib/components/InferenceModelSelector.svelte';
+  import { recordRecentModelUsage } from '$lib/inference/modelPickerStorage';
   import TaskCandidateCombobox from '$lib/components/TaskCandidateCombobox.svelte';
   import { formatBytes } from '$lib/format';
   import { START_PHASE_LABELS } from '$lib/operate/startupPhases';
@@ -131,6 +132,9 @@
   const handleStartupStatusUpdate = async (status: StartupOperationStatusResponse) => {
     startupStatus = status;
     if (status.state === 'completed' && status.target_session_id) {
+      if (browser && selectedModelId) {
+        recordRecentModelUsage(selectedModelId);
+      }
       disposeStartupContributor();
       startupOperationId = '';
       inferenceStartPending = false;

@@ -69,6 +69,12 @@ export const recordRecentModelId = (
   );
 };
 
+export const recordRecentModelUsage = (targetModelId: string, limit = RECENT_MODEL_LIMIT): string[] => {
+  const nextModelIds = recordRecentModelId(loadRecentModelIds(), targetModelId, limit);
+  saveRecentModelIds(nextModelIds);
+  return nextModelIds;
+};
+
 export const retainKnownModelIds = (modelIds: string[], availableModelIds: Iterable<string>): string[] => {
   const availableSet = new Set<string>();
   for (const item of availableModelIds) {
@@ -76,6 +82,9 @@ export const retainKnownModelIds = (modelIds: string[], availableModelIds: Itera
     if (modelId) {
       availableSet.add(modelId);
     }
+  }
+  if (availableSet.size === 0) {
+    return normalizeModelIdList(modelIds);
   }
   return normalizeModelIdList(modelIds).filter((modelId) => availableSet.has(modelId));
 };
