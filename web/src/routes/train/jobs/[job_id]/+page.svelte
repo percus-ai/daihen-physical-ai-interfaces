@@ -98,7 +98,11 @@
     toStore(() => ({
       queryKey: ['training', 'job', jobId, 'instance-status'],
       queryFn: () => api.training.instanceStatus(jobId) as Promise<InstanceStatusResponse>,
-      enabled: Boolean(jobId && $jobQuery.data?.job?.instance_id)
+      enabled: Boolean(
+        jobId &&
+          $jobQuery.data?.job?.instance_id &&
+          ['running', 'starting', 'deploying'].includes(String($jobQuery.data?.job?.status ?? ''))
+      )
     }))
   );
 
@@ -193,6 +197,9 @@
   );
 
   const isRunning = $derived(['running', 'starting', 'deploying'].includes(status));
+  const shouldQueryInstanceStatus = $derived(
+    Boolean(jobId && jobInfo?.instance_id && ['running', 'starting', 'deploying'].includes(status))
+  );
   const hasLiveInstance = $derived(
     Boolean(jobInfo?.instance_id) &&
       Boolean(instanceStatus) &&
@@ -208,6 +215,7 @@
   const canRescueCpu = $derived(
     provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
   );
+  const shouldSubscribeLogStream = $derived(isRunning);
   const provisionStepLabels: Record<string, string> = {
     queued: '開始待ち',
     validate: '設定検証',
@@ -437,21 +445,23 @@
       kind: 'training.job.metrics',
       params: { job_id: targetJobId, limit: 2000 }
     };
-    const logsSubscription: TrainingJobLogsSubscription = {
-      subscription_id: `train.job.${targetJobId}.logs`,
-      kind: 'training.job.logs',
-      params: {
-        job_id: targetJobId,
-        log_type: nextLogsType,
-        tail_lines: nextLogLines
-      }
-    };
     const subscriptions: TabSessionSubscription[] = [
       coreSubscription,
       provisionSubscription,
-      metricsSubscription,
-      logsSubscription
+      metricsSubscription
     ];
+    if (shouldSubscribeLogStream) {
+      const logsSubscription: TrainingJobLogsSubscription = {
+        subscription_id: `train.job.${targetJobId}.logs`,
+        kind: 'training.job.logs',
+        params: {
+          job_id: targetJobId,
+          log_type: nextLogsType,
+          tail_lines: nextLogLines
+        }
+      };
+      subscriptions.push(logsSubscription);
+    }
     if (isOperationActive(checkpointUploadOperationSnapshot) && checkpointUploadOperationSnapshot?.operation_id) {
       const checkpointOperationSubscription: TrainingJobOperationSubscription = {
         subscription_id: `train.job.${targetJobId}.operation.${checkpointUploadOperationSnapshot.operation_id}`,
@@ -570,7 +580,7 @@
       refetches.push(refetchJob());
     }
     const refetchInstanceStatus = $instanceStatusQuery?.refetch;
-    if (typeof refetchInstanceStatus === 'function') {
+    if (shouldQueryInstanceStatus && typeof refetchInstanceStatus === 'function') {
       refetches.push(refetchInstanceStatus());
     }
     if (refetches.length > 0) {
@@ -832,7 +842,7 @@
     activeLogSnapshotKey = registrationKey;
     loadedLogSnapshotKey = '';
 
-    streamStatus = 'connecting';
+    streamStatus = shouldSubscribeLogStream ? 'connecting' : 'idle';
     realtimeContributor = registerTabRealtimeContributor({
       subscriptions: buildRealtimeSubscriptions(currentJobId, currentLogsType, logLines),
       onEvent: (event) => handleRealtimeEvent(currentJobId, registrationKey, event)

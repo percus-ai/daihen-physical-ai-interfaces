@@ -2734,6 +2734,7 @@ def _build_remote_checkpoint_upload_script() -> str:
         import os
         import sys
         import time
+        import threading
         from pathlib import Path
 
         import boto3
@@ -2741,10 +2742,14 @@ def _build_remote_checkpoint_upload_script() -> str:
         from botocore.config import Config
 
 
+        _emit_lock = threading.Lock()
+
+
         def emit(event_type: str, message: str, **extra) -> None:
             payload = {"type": event_type, "message": message}
             payload.update(extra)
-            print(json.dumps(payload, ensure_ascii=False), flush=True)
+            with _emit_lock:
+                print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
         def format_size(size_bytes: int) -> str:
@@ -2810,50 +2815,70 @@ def _build_remote_checkpoint_upload_script() -> str:
             )
 
             transferred_bytes = 0
+            current_file: str | None = None
             last_emit_time = 0.0
             last_emit_bytes = 0
+            progress_lock = threading.Lock()
+            reporter_stop = threading.Event()
 
-            def maybe_emit_progress(current_file: str | None = None, *, force: bool = False) -> None:
+            def emit_progress(*, force: bool = False, override_file: str | None = None) -> None:
                 nonlocal last_emit_time, last_emit_bytes
-                now = time.time()
-                byte_delta = transferred_bytes - last_emit_bytes
-                if not force and byte_delta < 128 * 1024 * 1024 and (now - last_emit_time) < 1.0:
-                    return
+                with progress_lock:
+                    now = time.time()
+                    byte_delta = transferred_bytes - last_emit_bytes
+                    if not force and byte_delta < 128 * 1024 * 1024 and (now - last_emit_time) < 1.0:
+                        return
+                    active_file = override_file if override_file is not None else current_file
+                    detail = f"{format_size(transferred_bytes)} / {format_size(total_bytes)}"
+                    message = f"R2へ直接転送中... ({detail})"
+                    if active_file:
+                        message = f"{message} {active_file}"
+                    payload = {
+                        "transferred_bytes": transferred_bytes,
+                        "total_bytes": total_bytes,
+                    }
+                    last_emit_time = now
+                    last_emit_bytes = transferred_bytes
+                emit("uploading", message, **payload)
 
-                detail = f"{format_size(transferred_bytes)} / {format_size(total_bytes)}"
-                message = f"R2へ直接転送中... ({detail})"
-                if current_file:
-                    message = f"{message} {current_file}"
-                emit("uploading", message, transferred_bytes=transferred_bytes, total_bytes=total_bytes)
-                last_emit_time = now
-                last_emit_bytes = transferred_bytes
+            def progress_reporter() -> None:
+                while not reporter_stop.wait(1.0):
+                    emit_progress()
 
-            maybe_emit_progress(force=True)
+            reporter = threading.Thread(target=progress_reporter, daemon=True)
+            reporter.start()
+            emit_progress(force=True)
 
-            for index, file_path in enumerate(files, start=1):
-                relative_path = file_path.relative_to(checkpoint_dir).as_posix()
-                key = f"{step_prefix}/{relative_path}".lstrip("/")
-                file_size = file_path.stat().st_size
-                emit(
-                    "uploading_file",
-                    f"R2へ転送中 {index}/{len(files)}: {relative_path} ({format_size(file_size)})",
-                    path=relative_path,
-                    file_bytes=file_size,
-                )
+            try:
+                for index, file_path in enumerate(files, start=1):
+                    relative_path = file_path.relative_to(checkpoint_dir).as_posix()
+                    key = f"{step_prefix}/{relative_path}".lstrip("/")
+                    file_size = file_path.stat().st_size
+                    with progress_lock:
+                        current_file = relative_path
+                    emit(
+                        "uploading_file",
+                        f"R2へ転送中 {index}/{len(files)}: {relative_path} ({format_size(file_size)})",
+                        path=relative_path,
+                        file_bytes=file_size,
+                    )
 
-                def callback(bytes_amount: int) -> None:
-                    nonlocal transferred_bytes
-                    transferred_bytes += max(int(bytes_amount or 0), 0)
-                    maybe_emit_progress(relative_path)
+                    def callback(bytes_amount: int) -> None:
+                        nonlocal transferred_bytes
+                        with progress_lock:
+                            transferred_bytes += max(int(bytes_amount or 0), 0)
 
-                client.upload_file(
-                    str(file_path),
-                    bucket,
-                    key,
-                    Config=transfer_config,
-                    Callback=callback,
-                )
-                maybe_emit_progress(relative_path, force=True)
+                    client.upload_file(
+                        str(file_path),
+                        bucket,
+                        key,
+                        Config=transfer_config,
+                        Callback=callback,
+                    )
+                    emit_progress(force=True, override_file=relative_path)
+            finally:
+                reporter_stop.set()
+                reporter.join(timeout=2.0)
 
             emit(
                 "uploaded",

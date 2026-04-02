@@ -343,6 +343,16 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     assert conn.disconnected is True
 
 
+def test_build_remote_checkpoint_upload_script_uses_thread_safe_progress_reporter():
+    script = training._build_remote_checkpoint_upload_script()
+
+    assert "import threading" in script
+    assert "_emit_lock = threading.Lock()" in script
+    assert "def progress_reporter() -> None:" in script
+    assert "reporter = threading.Thread(target=progress_reporter, daemon=True)" in script
+    assert "with progress_lock:" in script
+
+
 def test_list_remote_job_checkpoints_returns_rescue_hint_when_ssh_unavailable(monkeypatch):
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
         assert include_deleted is True
