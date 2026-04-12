@@ -67,14 +67,14 @@
   let numWorkers = $state(4);
   let saveCheckpoint = $state(true);
 
-  let validationEnable = $state(true);
+  let validationEnable = $state(false);
   let validationTrainRatioPercent = $state(70);
   let validationSplitSeed = $state(42);
   let validationEvalFreq = $state(100);
   let validationMaxBatches = $state(0);
   let validationBatchSize = $state(0);
 
-  let earlyStoppingEnable = $state(true);
+  let earlyStoppingEnable = $state(false);
   let earlyStoppingPatience = $state(5);
   let earlyStoppingMinDelta = $state(0.002);
   let earlyStoppingMode = $state<'min' | 'max'>('min');
@@ -154,13 +154,13 @@
     logFreq = info.defaultLogFreq;
     numWorkers = info.defaultNumWorkers;
     saveCheckpoint = true;
-    validationEnable = true;
+    validationEnable = false;
     validationTrainRatioPercent = 70;
     validationSplitSeed = 42;
     validationEvalFreq = 100;
     validationMaxBatches = 0;
     validationBatchSize = 0;
-    earlyStoppingEnable = true;
+    earlyStoppingEnable = false;
     earlyStoppingPatience = 5;
     earlyStoppingMinDelta = 0.002;
     earlyStoppingMode = 'min';
