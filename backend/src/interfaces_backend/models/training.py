@@ -128,6 +128,15 @@ class JobDetailResponse(BaseModel):
     training_config: Optional[dict] = None
 
 
+class LastTrainingConfigResponse(BaseModel):
+    """Latest saved training config for the current user."""
+
+    job_id: Optional[str] = None
+    job_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+    training_config: Optional[dict] = None
+
+
 class JobLogsResponse(BaseModel):
     """Response for job logs endpoint."""
 

@@ -36,6 +36,7 @@
     gpuLabel: string;
     statusText: string;
   };
+  type SelectedCandidateStatus = 'checking' | 'available' | 'unavailable';
   type Props = {
     cloudProvider: Provider;
     gpuModel: string;
@@ -281,6 +282,62 @@
       : ($vastCandidatesQuery.isPending || $vastCandidatesQuery.isFetching)
   );
 
+  const hasSelectedTarget = $derived(
+    (cloudProvider === 'verda' && Boolean(String(selectedInstanceType || '').trim())) ||
+      (cloudProvider === 'vast' && selectedOfferId != null)
+  );
+
+  const selectedVerdaCandidatesQuery = createQuery<TrainingInstanceCandidatesResponse>(
+    toStore(() => ({
+      queryKey: [
+        'training',
+        'instance-candidates',
+        'selected',
+        'verda',
+        gpuModel,
+        gpuCount,
+        selectedMode,
+        storageSize,
+        selectedLocation
+      ],
+      queryFn: () =>
+        api.training.instanceCandidates({
+          provider: 'verda',
+          gpu_model: gpuModel || undefined,
+          gpu_count: gpuCount || undefined,
+          mode: selectedMode,
+          storage_size: storageSize || undefined
+        }),
+      enabled: hasSelectedTarget && cloudProvider === 'verda' && isVerdaProviderEnabled
+    }))
+  );
+
+  const selectedVastCandidatesQuery = createQuery<TrainingInstanceCandidatesResponse>(
+    toStore(() => ({
+      queryKey: [
+        'training',
+        'instance-candidates',
+        'selected',
+        'vast',
+        gpuModel,
+        gpuCount,
+        selectedMode,
+        storageSize,
+        vastMaxPrice
+      ],
+      queryFn: () =>
+        api.training.instanceCandidates({
+          provider: 'vast',
+          gpu_model: gpuModel || undefined,
+          gpu_count: gpuCount || undefined,
+          mode: selectedMode,
+          storage_size: storageSize || undefined,
+          max_price: vastMaxPrice
+        }),
+      enabled: hasSelectedTarget && cloudProvider === 'vast' && isVastProviderEnabled
+    }))
+  );
+
   const normalizeCandidate = (candidate: TrainingInstanceCandidate): Candidate => ({
     ...candidate,
     detail: candidate.detail || candidate.route || candidate.location || '',
@@ -295,9 +352,59 @@
     return (source ?? []).map(normalizeCandidate);
   });
 
+  const selectedLiveCandidates = $derived.by(() => {
+    const source =
+      cloudProvider === 'verda'
+        ? $selectedVerdaCandidatesQuery.data?.candidates
+        : $selectedVastCandidatesQuery.data?.candidates;
+    return (source ?? []).map(normalizeCandidate);
+  });
+
+  const selectedLiveLoading = $derived(
+    cloudProvider === 'verda'
+      ? ($selectedVerdaCandidatesQuery.isPending || $selectedVerdaCandidatesQuery.isFetching)
+      : ($selectedVastCandidatesQuery.isPending || $selectedVastCandidatesQuery.isFetching)
+  );
+
+  const matchedSelectedCandidate = $derived.by(() => {
+    if (!hasSelectedTarget) return null;
+    if (cloudProvider === 'verda') {
+      const instanceKey = String(selectedInstanceType || '').trim();
+      const routeKey = String(selectedLocation || '').trim() || 'auto';
+      return (
+        selectedLiveCandidates.find(
+          (candidate) =>
+            candidate.instance_type === instanceKey &&
+            candidate.mode === selectedMode &&
+            String(candidate.location || 'auto').trim() === routeKey
+        ) ?? null
+      );
+    }
+    return selectedLiveCandidates.find((candidate) => candidate.offer_id === selectedOfferId) ?? null;
+  });
+
+  const resolvedSelectedStatus = $derived<SelectedCandidateStatus>(
+    !hasSelectedTarget ? 'unavailable' : selectedLiveLoading ? 'checking' : matchedSelectedCandidate ? 'available' : 'unavailable'
+  );
+
   const resolvedSelectedCandidate = $derived.by(() => {
     const title = String(selectedCandidateTitle || '').trim();
     if (!title) return null;
+    if (matchedSelectedCandidate) {
+      return matchedSelectedCandidate;
+    }
+    const statusText =
+      resolvedSelectedStatus === 'checking'
+        ? '照会中'
+        : resolvedSelectedStatus === 'available'
+          ? '利用可能'
+          : '利用不可';
+    const priceLabel =
+      resolvedSelectedStatus === 'checking'
+        ? '...'
+        : resolvedSelectedStatus === 'available'
+          ? formatPrice(selectedCandidatePricePerHour)
+          : '価格不明';
     return {
       provider: cloudProvider,
       title,
@@ -305,10 +412,10 @@
       offer_id: cloudProvider === 'vast' ? selectedOfferId : null,
       detail: String(selectedCandidateDetail || '').trim(),
       route: String(selectedCandidateRoute || selectedLocation || 'auto').trim() || 'auto',
-      priceLabel: formatPrice(selectedCandidatePricePerHour),
+      priceLabel,
       gpuLabel: `${getGpuModelLabel(gpuModel)} x${gpuCount}`,
       gpu_count: gpuCount,
-      statusText: '利用可能',
+      statusText,
       price_per_hour: selectedCandidatePricePerHour
     };
   });
@@ -317,7 +424,15 @@
     draftCandidates.find((candidate) => candidate.candidate_id === pendingCandidateId) ?? null
   );
 
-  const statusTone = () => 'border-emerald-200/80 bg-emerald-50 text-emerald-700';
+  const statusTone = (status: SelectedCandidateStatus | string) => {
+    if (status === 'checking') {
+      return 'cloud-status-checking border-amber-200/90 bg-amber-50 text-amber-700';
+    }
+    if (status === 'unavailable') {
+      return 'border-rose-200/80 bg-rose-50 text-rose-700';
+    }
+    return 'border-emerald-200/80 bg-emerald-50 text-emerald-700';
+  };
 
   const openModal = () => {
     draftProvider = cloudProvider;
@@ -402,7 +517,7 @@
                 <p class="truncate text-[11px] leading-4 text-slate-500">{selectedResourceLines.line2}</p>
               {/if}
             </div>
-            <span class={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] ${statusTone()}`}>
+            <span class={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] ${statusTone(resolvedSelectedStatus)}`}>
               {resolvedSelectedCandidate.statusText}
             </span>
           </div>
@@ -506,7 +621,7 @@
                               <p class="truncate text-[11px] leading-4 text-slate-500">{resourceLines.line2}</p>
                             {/if}
                           </div>
-                          <span class={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] ${statusTone()}`}>
+                          <span class={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] ${statusTone('available')}`}>
                             {candidate.statusText}
                           </span>
                         </div>
@@ -816,6 +931,28 @@
       grid-template-columns: repeat(4, minmax(0, 1fr));
       column-gap: 1rem;
     }
+  }
+
+  @keyframes cloud-checking-pulse {
+    0% {
+      background-color: rgba(254, 243, 199, 1);
+      border-color: rgba(253, 230, 138, 0.95);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 0 0 0 rgba(245, 158, 11, 0.1);
+    }
+    50% {
+      background-color: rgba(255, 251, 235, 1);
+      border-color: rgba(252, 211, 77, 0.95);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 0 0 3px rgba(245, 158, 11, 0.08);
+    }
+    100% {
+      background-color: rgba(254, 243, 199, 1);
+      border-color: rgba(253, 230, 138, 0.95);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 0 0 0 rgba(245, 158, 11, 0.1);
+    }
+  }
+
+  .cloud-status-checking {
+    animation: cloud-checking-pulse 2.2s ease-in-out infinite;
   }
 
   @media (min-width: 1056px) {

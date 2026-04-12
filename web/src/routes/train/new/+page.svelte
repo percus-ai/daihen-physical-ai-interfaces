@@ -7,12 +7,13 @@
   import { goto } from '$app/navigation';
   import {
     api,
+    type LastTrainingConfigResponse,
     type TrainingProvisionOperationStatusResponse
   } from '$lib/api/client';
   import HelpLabel from '$lib/components/HelpLabel.svelte';
   import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
   import { formatBytes, formatDate } from '$lib/format';
-  import { GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
+  import { getGpuModelLabel, GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import type { TrainingProviderCapabilityResponse } from '$lib/types/training';
 
@@ -31,9 +32,67 @@
     total?: number;
   };
 
+  type RestorableTrainingConfig = {
+    job_name?: string;
+    dataset?: {
+      id?: string;
+      video_backend?: 'auto' | 'torchcodec' | 'pyav';
+      split?: {
+        train_ratio?: number;
+        seed?: number;
+      };
+    };
+    policy?: {
+      type?: string;
+      pretrained_path?: string;
+      initialization?: 'scratch' | 'pretrained';
+      dtype?: 'auto' | 'float32' | 'bfloat16' | 'float16';
+      use_amp?: boolean;
+      gradient_checkpointing?: boolean;
+      compile_model?: boolean;
+    };
+    training?: {
+      steps?: number;
+      batch_size?: number;
+      save_freq?: number;
+      log_freq?: number;
+      num_workers?: number;
+      save_checkpoint?: boolean;
+    };
+    validation?: {
+      enable?: boolean;
+      eval_freq?: number | null;
+      max_batches?: number | null;
+      batch_size?: number | null;
+    };
+    early_stopping?: {
+      enable?: boolean;
+      patience?: number;
+      min_delta?: number;
+      mode?: 'min' | 'max';
+    };
+    cloud?: {
+      provider?: 'verda' | 'vast';
+      gpu_model?: string;
+      gpus_per_instance?: number;
+      storage_size?: number;
+      location?: string;
+      selected_mode?: 'spot' | 'ondemand';
+      selected_instance_type?: string | null;
+      selected_offer_id?: number | null;
+      selected_price_per_hour?: number | null;
+      max_price?: number | null;
+    };
+  };
+
   const datasetsQuery = createQuery<DatasetListResponse>({
     queryKey: ['datasets', 'train'],
     queryFn: () => api.storage.datasets()
+  });
+
+  const lastConfigQuery = createQuery<LastTrainingConfigResponse>({
+    queryKey: ['training', 'last-config'],
+    queryFn: api.training.lastConfig
   });
 
   let cloudProvider = $state<'verda' | 'vast'>('verda');
@@ -111,6 +170,7 @@
   let provisionOperationId = $state('');
   let createOperationContributor: TabRealtimeContributorHandle | null = null;
   let lastCreateEventKey = '';
+  let lastConfigApplied = $state(false);
 
   let selectedDataset = $state('');
 
@@ -144,6 +204,120 @@
   } as const;
 
   const SCRATCH_PRETRAINED_ID = '__scratch__';
+
+  const toTriState = (value: boolean | null | undefined): 'auto' | 'true' | 'false' => {
+    if (typeof value !== 'boolean') return 'auto';
+    return value ? 'true' : 'false';
+  };
+
+  const clampGpuCount = (value: unknown) => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed)) return GPU_COUNTS[0] ?? 1;
+    return GPU_COUNTS.includes(parsed) ? parsed : (GPU_COUNTS[0] ?? 1);
+  };
+
+  const resolvePretrainedSelectionId = (policyId: string, policy: RestorableTrainingConfig['policy']) => {
+    const info = POLICY_TYPES.find((entry) => entry.id === policyId);
+    if (!info || info.skipPretrained) return '';
+    if (policy?.initialization === 'scratch' && info.supportsScratchInitialization) {
+      return SCRATCH_PRETRAINED_ID;
+    }
+    const pretrainedPath = String(policy?.pretrained_path ?? '').trim();
+    if (!pretrainedPath) {
+      return info.pretrainedModels?.[0]?.id ?? '';
+    }
+    return (
+      info.pretrainedModels?.find((model) => model.path === pretrainedPath)?.id ??
+      info.pretrainedModels?.[0]?.id ??
+      ''
+    );
+  };
+
+  const applyLastTrainingConfig = (config: RestorableTrainingConfig) => {
+    const restoredPolicyType = POLICY_TYPES.some((policy) => policy.id === config.policy?.type)
+      ? (config.policy?.type as string)
+      : (defaultPolicy?.id ?? '');
+    applyPolicyDefaults(restoredPolicyType);
+    policyType = restoredPolicyType;
+
+    selectedPretrainedId = resolvePretrainedSelectionId(restoredPolicyType, config.policy);
+    selectedDataset = String(config.dataset?.id ?? '').trim() || selectedDataset;
+    datasetVideoBackend = config.dataset?.video_backend ?? 'torchcodec';
+
+    const trainRatio = Number(config.dataset?.split?.train_ratio);
+    if (Number.isFinite(trainRatio) && trainRatio > 0) {
+      validationTrainRatioPercent = Math.min(100, Math.max(1, Math.round(trainRatio * 100)));
+    }
+    const splitSeed = Number(config.dataset?.split?.seed);
+    if (Number.isFinite(splitSeed) && splitSeed >= 0) {
+      validationSplitSeed = Math.floor(splitSeed);
+    }
+
+    if (typeof config.training?.steps === 'number') steps = config.training.steps;
+    if (typeof config.training?.batch_size === 'number') batchSize = config.training.batch_size;
+    if (typeof config.training?.save_freq === 'number') saveFreq = config.training.save_freq;
+    if (typeof config.training?.log_freq === 'number') logFreq = config.training.log_freq;
+    if (typeof config.training?.num_workers === 'number') numWorkers = config.training.num_workers;
+    if (typeof config.training?.save_checkpoint === 'boolean') saveCheckpoint = config.training.save_checkpoint;
+
+    validationEnable = Boolean(config.validation?.enable);
+    if (typeof config.validation?.eval_freq === 'number') validationEvalFreq = config.validation.eval_freq;
+    validationMaxBatches = typeof config.validation?.max_batches === 'number' ? config.validation.max_batches : 0;
+    validationBatchSize = typeof config.validation?.batch_size === 'number' ? config.validation.batch_size : 0;
+
+    earlyStoppingEnable = Boolean(config.early_stopping?.enable);
+    if (typeof config.early_stopping?.patience === 'number') earlyStoppingPatience = config.early_stopping.patience;
+    if (typeof config.early_stopping?.min_delta === 'number') earlyStoppingMinDelta = config.early_stopping.min_delta;
+    if (config.early_stopping?.mode === 'min' || config.early_stopping?.mode === 'max') {
+      earlyStoppingMode = config.early_stopping.mode;
+    }
+
+    if (config.policy?.dtype) policyDtype = config.policy.dtype;
+    policyUseAmp = toTriState(config.policy?.use_amp);
+    policyGradientCheckpointing = toTriState(config.policy?.gradient_checkpointing);
+    policyCompileModel = toTriState(config.policy?.compile_model);
+
+    const restoredProvider = config.cloud?.provider === 'vast' ? 'vast' : 'verda';
+    cloudProvider = restoredProvider;
+    gpuModel = String(config.cloud?.gpu_model ?? gpuModel).trim() || gpuModel;
+    gpuCount = clampGpuCount(config.cloud?.gpus_per_instance ?? gpuCount);
+    if (typeof config.cloud?.storage_size === 'number' && Number.isFinite(config.cloud.storage_size)) {
+      storageSize = config.cloud.storage_size;
+    }
+    selectedMode = config.cloud?.selected_mode === 'ondemand' ? 'ondemand' : 'spot';
+    selectedInstanceType = String(config.cloud?.selected_instance_type ?? '').trim() || null;
+    selectedOfferId =
+      typeof config.cloud?.selected_offer_id === 'number' ? config.cloud.selected_offer_id : null;
+    selectedLocation = String(config.cloud?.location ?? 'auto').trim() || 'auto';
+    vastMaxPrice =
+      typeof config.cloud?.max_price === 'number' && Number.isFinite(config.cloud.max_price)
+        ? config.cloud.max_price
+        : null;
+    selectedCandidatePricePerHour =
+      typeof config.cloud?.selected_price_per_hour === 'number' &&
+      Number.isFinite(config.cloud.selected_price_per_hour)
+        ? config.cloud.selected_price_per_hour
+        : null;
+
+    const hasSelectedTarget =
+      (restoredProvider === 'verda' && Boolean(selectedInstanceType)) ||
+      (restoredProvider === 'vast' && selectedOfferId != null);
+    if (hasSelectedTarget) {
+      selectedCandidateTitle = `${getGpuModelLabel(gpuModel)} x${gpuCount}`;
+      selectedCandidateDetail =
+        restoredProvider === 'verda'
+          ? [selectedInstanceType, selectedLocation].filter(Boolean).join(' / ')
+          : selectedOfferId != null
+            ? `offer_id ${selectedOfferId}`
+            : '';
+      selectedCandidateRoute = selectedLocation;
+    } else {
+      selectedCandidateTitle = '';
+      selectedCandidateDetail = '';
+      selectedCandidateRoute = '';
+      selectedCandidatePricePerHour = null;
+    }
+  };
 
   const applyPolicyDefaults = (policyId: string) => {
     const info = POLICY_TYPES.find((policy) => policy.id === policyId);
@@ -258,6 +432,15 @@
     if (!validationEnable && earlyStoppingEnable) {
       earlyStoppingEnable = false;
     }
+  });
+
+  $effect(() => {
+    if (lastConfigApplied) return;
+    if ($lastConfigQuery.isPending) return;
+    lastConfigApplied = true;
+    const restored = $lastConfigQuery.data?.training_config as RestorableTrainingConfig | null | undefined;
+    if (!restored) return;
+    applyLastTrainingConfig(restored);
   });
 
   const useAmpDisabled = $derived(policyDtype === 'bfloat16');

@@ -49,6 +49,7 @@ from interfaces_backend.models.training import (
     TrainingOwnerFilterOption,
     TrainingValueFilterOption,
     JobDetailResponse,
+    LastTrainingConfigResponse,
     JobLogsResponse,
     JobProgressResponse,
     JobActionResponse,
@@ -5257,6 +5258,71 @@ async def list_jobs(
         owner_options=owner_options,
         status_options=status_options,
         policy_options=policy_options,
+    )
+
+
+def _sanitize_training_config_for_restore(training_config: object) -> dict | None:
+    if not isinstance(training_config, dict):
+        return None
+
+    restored = {
+        "job_name": training_config.get("job_name"),
+        "dataset": training_config.get("dataset"),
+        "policy": training_config.get("policy"),
+        "training": training_config.get("training"),
+        "validation": training_config.get("validation"),
+        "early_stopping": training_config.get("early_stopping"),
+        "cloud": training_config.get("cloud"),
+    }
+
+    cloud_cfg = restored.get("cloud")
+    if isinstance(cloud_cfg, dict):
+        sanitized_cloud = dict(cloud_cfg)
+        sanitized_cloud.pop("ssh_port", None)
+        restored["cloud"] = sanitized_cloud
+
+    return {key: value for key, value in restored.items() if value is not None}
+
+
+@router.get("/jobs/last-config", response_model=LastTrainingConfigResponse)
+async def get_last_training_config():
+    """Return the current user's latest new-training config for form restoration."""
+    user_id = get_current_user_id()
+
+    async def _fetch_with(client: AsyncClient) -> dict | None:
+        response = (
+            await client.table(DB_TABLE)
+            .select("job_id,job_name,created_at,training_config")
+            .eq("owner_user_id", user_id)
+            .eq("mode", "train")
+            .is_("deleted_at", "null")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        records = response.data or []
+        return records[0] if records else None
+
+    client = await get_supabase_async_client()
+    try:
+        record = await _fetch_with(client)
+    except Exception as exc:
+        if not _is_jwt_expired_error(exc):
+            raise
+        service_client = await _get_service_db_client()
+        if service_client is None:
+            raise
+        logger.warning("JWT expired while loading last training config; retrying with service key")
+        record = await _fetch_with(service_client)
+
+    if not record:
+        return LastTrainingConfigResponse()
+
+    return LastTrainingConfigResponse(
+        job_id=record.get("job_id"),
+        job_name=record.get("job_name"),
+        created_at=_parse_job_created_at(record.get("created_at")) if record.get("created_at") else None,
+        training_config=_sanitize_training_config_for_restore(record.get("training_config")),
     )
 
 

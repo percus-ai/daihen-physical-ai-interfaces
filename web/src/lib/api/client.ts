@@ -814,6 +814,13 @@ export type TrainingProviderCapabilityResponse = {
   missing_vast_env?: string[];
 };
 
+export type LastTrainingConfigResponse = {
+  job_id?: string | null;
+  job_name?: string | null;
+  created_at?: string | null;
+  training_config?: Record<string, unknown> | null;
+};
+
 export type TrainingInstanceCandidate = {
   provider: 'verda' | 'vast';
   candidate_id: string;
@@ -1577,6 +1584,7 @@ export const api = {
   training: {
     providerCapabilities: () =>
       fetchApi<TrainingProviderCapabilityResponse>('/api/training/provider-capabilities'),
+    lastConfig: () => fetchApi<LastTrainingConfigResponse>('/api/training/jobs/last-config'),
     jobs: (query: TrainingJobListQuery = {}) =>
       fetchApi(
         `/api/training/jobs${buildQueryString({
