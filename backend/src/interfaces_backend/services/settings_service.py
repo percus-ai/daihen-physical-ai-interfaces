@@ -16,6 +16,7 @@ from interfaces_backend.models.settings import (
     HuggingFaceSecretStatusModel,
     SystemSettingsModel,
 )
+from percus_ai.environment import EnvironmentConfigLoader
 from percus_ai.storage import get_system_settings_path, get_user_secrets_path
 
 
@@ -35,6 +36,7 @@ class SystemSettingsService:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or get_system_settings_path()
         self._lock = threading.RLock()
+        self._config_loader = EnvironmentConfigLoader()
 
     def get_settings(self) -> SystemSettingsModel:
         with self._lock:
@@ -89,6 +91,7 @@ class SystemSettingsService:
             if features_repo_commit is not None:
                 features_repo["repo_commit"] = features_repo_commit or None
             if env_config_id is not None:
+                self._config_loader.load_env_config(env_config_id)
                 environment_build["env_config_id"] = env_config_id
             data["updated_at"] = _utcnow_iso()
             self._write(data)

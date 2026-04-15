@@ -45,7 +45,7 @@ def test_system_settings(client):
                 "torchvision_version": "v0.24.0",
             },
             "environment_build": {
-                "env_config_id": "thor-dev-01",
+                "env_config_id": "default",
             },
         },
     )
@@ -53,7 +53,7 @@ def test_system_settings(client):
     payload = resp.json()
     assert payload["bundled_torch"]["pytorch_version"] == "v2.9.0"
     assert payload["bundled_torch"]["torchvision_version"] == "v0.24.0"
-    assert payload["environment_build"]["env_config_id"] == "thor-dev-01"
+    assert payload["environment_build"]["env_config_id"] == "default"
 
 
 def test_system_gpu(client):
