@@ -487,6 +487,7 @@ async def get_system_settings():
 async def update_system_settings(request: SystemSettingsUpdateRequest):
     bundled = request.bundled_torch
     features_repo = request.features_repo
+    environment_build = request.environment_build
     return await asyncio.to_thread(
         get_system_settings_service().update_settings,
         pytorch_version=bundled.pytorch_version if bundled else None,
@@ -494,6 +495,7 @@ async def update_system_settings(request: SystemSettingsUpdateRequest):
         features_repo_url=features_repo.repo_url.strip() if features_repo else None,
         features_repo_ref=features_repo.repo_ref.strip() if features_repo else None,
         features_repo_commit=(features_repo.repo_commit or "").strip() if features_repo else None,
+        env_config_id=environment_build.env_config_id.strip() if environment_build else None,
     )
 
 

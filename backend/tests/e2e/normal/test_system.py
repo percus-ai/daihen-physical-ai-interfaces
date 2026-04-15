@@ -35,6 +35,7 @@ def test_system_settings(client):
     resp = client.get("/api/system/settings")
     assert resp.status_code == 200
     assert resp.json()["bundled_torch"]["pytorch_version"] == "v2.10.0"
+    assert resp.json()["environment_build"]["env_config_id"] == "default"
 
     resp = client.put(
         "/api/system/settings",
@@ -42,13 +43,17 @@ def test_system_settings(client):
             "bundled_torch": {
                 "pytorch_version": "v2.9.0",
                 "torchvision_version": "v0.24.0",
-            }
+            },
+            "environment_build": {
+                "env_config_id": "thor-dev-01",
+            },
         },
     )
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["bundled_torch"]["pytorch_version"] == "v2.9.0"
     assert payload["bundled_torch"]["torchvision_version"] == "v0.24.0"
+    assert payload["environment_build"]["env_config_id"] == "thor-dev-01"
 
 
 def test_system_gpu(client):

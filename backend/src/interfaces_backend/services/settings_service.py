@@ -11,6 +11,7 @@ from typing import Any
 
 from interfaces_backend.models.settings import (
     BundledTorchDefaultsModel,
+    EnvironmentBuildSettingsModel,
     FeaturesRepoSettingsModel,
     HuggingFaceSecretStatusModel,
     SystemSettingsModel,
@@ -39,6 +40,7 @@ class SystemSettingsService:
         with self._lock:
             data = self._read()
         bundled = data.get("bundled_torch") or {}
+        environment_build = data.get("environment_build") or {}
         return SystemSettingsModel(
             bundled_torch=BundledTorchDefaultsModel(
                 pytorch_version=str(bundled.get("pytorch_version") or "v2.10.0"),
@@ -55,6 +57,9 @@ class SystemSettingsService:
                 ),
                 repo_commit=str(((data.get("features_repo") or {}).get("repo_commit")) or "").strip() or None,
             ),
+            environment_build=EnvironmentBuildSettingsModel(
+                env_config_id=str(environment_build.get("env_config_id") or "default"),
+            ),
             updated_at=data.get("updated_at"),
         )
 
@@ -66,11 +71,13 @@ class SystemSettingsService:
         features_repo_url: str | None = None,
         features_repo_ref: str | None = None,
         features_repo_commit: str | None = None,
+        env_config_id: str | None = None,
     ) -> SystemSettingsModel:
         with self._lock:
             data = self._read()
             bundled = data.setdefault("bundled_torch", {})
             features_repo = data.setdefault("features_repo", {})
+            environment_build = data.setdefault("environment_build", {})
             if pytorch_version is not None:
                 bundled["pytorch_version"] = pytorch_version
             if torchvision_version is not None:
@@ -81,6 +88,8 @@ class SystemSettingsService:
                 features_repo["repo_ref"] = features_repo_ref
             if features_repo_commit is not None:
                 features_repo["repo_commit"] = features_repo_commit or None
+            if env_config_id is not None:
+                environment_build["env_config_id"] = env_config_id
             data["updated_at"] = _utcnow_iso()
             self._write(data)
         return self.get_settings()

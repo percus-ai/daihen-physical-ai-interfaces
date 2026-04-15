@@ -23,11 +23,18 @@ class FeaturesRepoSettingsModel(BaseModel):
     repo_commit: str | None = Field(None, description="Pinned features repository commit hash")
 
 
+class EnvironmentBuildSettingsModel(BaseModel):
+    """Selected environment build config for this machine."""
+
+    env_config_id: str = Field("default", description="Selected env config file id")
+
+
 class SystemSettingsModel(BaseModel):
     """Machine-scoped settings."""
 
     bundled_torch: BundledTorchDefaultsModel = Field(default_factory=BundledTorchDefaultsModel)
     features_repo: FeaturesRepoSettingsModel = Field(default_factory=FeaturesRepoSettingsModel)
+    environment_build: EnvironmentBuildSettingsModel = Field(default_factory=EnvironmentBuildSettingsModel)
     updated_at: str | None = Field(None, description="Last update timestamp")
 
 
@@ -36,6 +43,7 @@ class SystemSettingsUpdateRequest(BaseModel):
 
     bundled_torch: BundledTorchDefaultsModel | None = None
     features_repo: FeaturesRepoSettingsModel | None = None
+    environment_build: EnvironmentBuildSettingsModel | None = None
 
 
 class FeaturesRepoCommitSuggestionModel(BaseModel):

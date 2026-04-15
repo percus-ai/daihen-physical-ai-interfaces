@@ -13,6 +13,7 @@ def test_system_settings_service_round_trip(tmp_path):
     assert initial.features_repo.repo_url == "https://github.com/percus-ai/physical-ai-features.git"
     assert initial.features_repo.repo_ref == "main"
     assert initial.features_repo.repo_commit is None
+    assert initial.environment_build.env_config_id == "default"
 
     updated = service.update_settings(
         pytorch_version="v2.9.0",
@@ -20,6 +21,7 @@ def test_system_settings_service_round_trip(tmp_path):
         features_repo_url="https://github.com/example/repo.git",
         features_repo_ref="feature/test",
         features_repo_commit="abc1234",
+        env_config_id="thor-dev-01",
     )
 
     assert updated.bundled_torch.pytorch_version == "v2.9.0"
@@ -27,6 +29,7 @@ def test_system_settings_service_round_trip(tmp_path):
     assert updated.features_repo.repo_url == "https://github.com/example/repo.git"
     assert updated.features_repo.repo_ref == "feature/test"
     assert updated.features_repo.repo_commit == "abc1234"
+    assert updated.environment_build.env_config_id == "thor-dev-01"
     assert updated.updated_at
 
 
