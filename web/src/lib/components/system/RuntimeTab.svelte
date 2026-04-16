@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { BuildJobSummary, BuildSettingSummary } from '$lib/api/client';
+  import BuildManagementPanel from '$lib/components/builds/BuildManagementPanel.svelte';
   import BundledTorchTab from '$lib/components/system/BundledTorchTab.svelte';
   import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
   import type { RuntimeEnvSnapshot, RuntimeEnvStatusSnapshot } from '$lib/types/runtimeEnv';
@@ -14,10 +16,21 @@
     runtimeEnvActionError = '',
     bundledTorchActionPending = false,
     bundledTorchActionError = '',
+    buildLoading = false,
+    buildLoadError = '',
+    envBuildItems = [],
+    sharedBuildItems = [],
+    runningBuildJobs = [],
+    selectedBuildConfigId = '',
+    buildActionPending = {},
+    buildLogLinesByJobId = {},
     onRuntimeBuild,
     onRuntimeDelete,
     onBuild,
     onClean,
+    onBuildRun,
+    onBuildCancelByJobId,
+    onBuildDelete,
   }: {
     snapshot?: SystemStatusSnapshot | null;
     runtimeEnvSnapshot?: RuntimeEnvSnapshot | null;
@@ -27,6 +40,14 @@
     runtimeEnvActionError?: string;
     bundledTorchActionPending?: boolean;
     bundledTorchActionError?: string;
+    buildLoading?: boolean;
+    buildLoadError?: string;
+    envBuildItems?: BuildSettingSummary[];
+    sharedBuildItems?: BuildSettingSummary[];
+    runningBuildJobs?: BuildJobSummary[];
+    selectedBuildConfigId?: string;
+    buildActionPending?: Record<string, boolean>;
+    buildLogLinesByJobId?: Record<string, string[]>;
     onRuntimeBuild: (payload: { envName: string; force: boolean }) => void | Promise<void>;
     onRuntimeDelete: (envName: string) => void | Promise<void>;
     onBuild: (payload: {
@@ -35,6 +56,9 @@
       force: boolean;
     }) => void | Promise<void>;
     onClean: () => void | Promise<void>;
+    onBuildRun: (item: BuildSettingSummary) => Promise<void>;
+    onBuildCancelByJobId: (jobId: string, settingId?: string) => Promise<void>;
+    onBuildDelete: (item: BuildSettingSummary) => Promise<void>;
   } = $props();
 
   const runtimeGroups = $derived(snapshot?.runtime_groups ?? []);
@@ -303,4 +327,18 @@
   actionError={bundledTorchActionError}
   onBuild={onBuild}
   onClean={onClean}
+/>
+
+<BuildManagementPanel
+  envItems={envBuildItems}
+  sharedItems={sharedBuildItems}
+  runningJobs={runningBuildJobs}
+  selectedConfigId={selectedBuildConfigId}
+  loading={buildLoading}
+  loadError={buildLoadError}
+  actionPending={buildActionPending}
+  logLinesByJobId={buildLogLinesByJobId}
+  onRun={onBuildRun}
+  onCancelByJobId={onBuildCancelByJobId}
+  onDelete={onBuildDelete}
 />

@@ -6,6 +6,12 @@
   import { Tabs } from 'bits-ui';
 
   import { api, type TabSessionSubscription } from '$lib/api/client';
+  import type {
+    BuildJobSummary,
+    BuildLogEvent,
+    BuildSettingSummary,
+    BuildsStatusSnapshot,
+  } from '$lib/api/client';
   import ProfileTab from '$lib/components/system/ProfileTab.svelte';
   import RuntimeTab from '$lib/components/system/RuntimeTab.svelte';
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
@@ -55,6 +61,14 @@
   let bundledTorchActionError = $state('');
   let runtimeEnvActionPending = $state(false);
   let runtimeEnvActionError = $state('');
+  let buildLoading = $state(false);
+  let buildLoadError = $state('');
+  let envBuildItems = $state<BuildSettingSummary[]>([]);
+  let sharedBuildItems = $state<BuildSettingSummary[]>([]);
+  let runningBuildJobs = $state<BuildJobSummary[]>([]);
+  let selectedBuildConfigId = $state('');
+  let buildActionPending = $state<Record<string, boolean>>({});
+  let buildLogLinesByJobId = $state<Record<string, string[]>>({});
   let systemSettingsPending = $state(false);
   let systemSettingsError = $state('');
   let systemSettingsSuccess = $state('');
@@ -140,12 +154,16 @@
   };
 
   const loadInitialState = async () => {
-    const [bundledResult, runtimeEnvResult, operateResult, systemSettingsResult, userSettingsResult] = await Promise.allSettled([
+    buildLoading = true;
+    buildLoadError = '';
+    const [bundledResult, runtimeEnvResult, operateResult, systemSettingsResult, userSettingsResult, envBuildsResult, sharedBuildsResult] = await Promise.allSettled([
       api.system.bundledTorchStatus(),
       api.system.runtimeEnvStatus(),
       api.operate.status(),
       api.system.settings(),
-      api.user.settings()
+      api.user.settings(),
+      api.builds.envs(),
+      api.builds.shared()
     ]);
 
     if (bundledResult.status === 'fulfilled') {
@@ -179,6 +197,68 @@
       userSettingsError =
         userSettingsResult.reason instanceof Error ? userSettingsResult.reason.message : 'user settings の取得に失敗しました。';
     }
+
+    if (envBuildsResult.status === 'fulfilled' && sharedBuildsResult.status === 'fulfilled') {
+      selectedBuildConfigId = envBuildsResult.value.selected_config_id ?? '';
+      envBuildItems = envBuildsResult.value.items;
+      sharedBuildItems = sharedBuildsResult.value.items;
+      runningBuildJobs = [...envBuildsResult.value.items, ...sharedBuildsResult.value.items]
+        .filter((item) => item.state === 'building' && item.current_job_id)
+        .map((item) => ({
+          job_id: item.current_job_id ?? '',
+          build_id: item.latest_build_id ?? '',
+          kind: item.kind,
+          setting_id: item.setting_id,
+          state: 'running',
+          current_step_name: item.current_step_name ?? null,
+          current_step_index: item.current_step_index ?? 0,
+          total_steps: item.total_steps ?? 0,
+          progress_percent: item.progress_percent ?? 0,
+          created_at: item.latest_started_at ?? new Date().toISOString(),
+          updated_at: item.latest_started_at ?? new Date().toISOString()
+        }));
+    } else {
+      buildLoadError =
+        envBuildsResult.status === 'rejected'
+          ? envBuildsResult.reason instanceof Error
+            ? envBuildsResult.reason.message
+            : '構築状態の取得に失敗しました。'
+          : sharedBuildsResult.status === 'rejected'
+            ? sharedBuildsResult.reason instanceof Error
+              ? sharedBuildsResult.reason.message
+              : '構築状態の取得に失敗しました。'
+            : '';
+    }
+
+    buildLoading = false;
+  };
+
+  const applyBuildsSnapshot = (snapshot: BuildsStatusSnapshot) => {
+    selectedBuildConfigId = snapshot.envs.selected_config_id ?? '';
+    envBuildItems = snapshot.envs.items;
+    sharedBuildItems = snapshot.shared.items;
+    runningBuildJobs = snapshot.running_jobs;
+    const activeJobIds = new Set(snapshot.running_jobs.map((job) => job.job_id));
+    buildLogLinesByJobId = Object.fromEntries(
+      Object.entries(buildLogLinesByJobId).filter(([jobId]) => activeJobIds.has(jobId))
+    );
+  };
+
+  const appendBuildLogEvents = (events: BuildLogEvent[]) => {
+    const next = { ...buildLogLinesByJobId };
+    for (const event of events) {
+      const line = `${event.stream === 'stderr' ? '[stderr] ' : ''}${event.line.trim()}`.trim();
+      const current = next[event.job_id] ?? [];
+      next[event.job_id] = [...current, line].slice(-8);
+    }
+    buildLogLinesByJobId = next;
+  };
+
+  const setBuildActionPending = (key: string, value: boolean) => {
+    buildActionPending = {
+      ...buildActionPending,
+      [key]: value
+    };
   };
 
   const triggerBuild = async (payload: {
@@ -241,6 +321,51 @@
         error instanceof Error ? error.message : 'runtime env delete の開始に失敗しました。';
     } finally {
       runtimeEnvActionPending = false;
+    }
+  };
+
+  const triggerBuildRun = async (item: BuildSettingSummary) => {
+    setBuildActionPending(item.setting_id, true);
+    try {
+      if (item.kind === 'env' && item.config_id && item.env_name) {
+        await api.builds.runEnv(item.config_id, item.env_name);
+      } else if (item.kind === 'shared' && item.package && item.variant) {
+        await api.builds.runShared(item.package, item.variant);
+      }
+    } catch (error) {
+      buildLoadError = error instanceof Error ? error.message : '構築の開始に失敗しました。';
+    } finally {
+      setBuildActionPending(item.setting_id, false);
+    }
+  };
+
+  const triggerBuildCancelByJobId = async (jobId: string, settingId?: string) => {
+    setBuildActionPending(settingId ?? jobId, true);
+    try {
+      await api.builds.cancelJob(jobId);
+    } catch (error) {
+      buildLoadError = error instanceof Error ? error.message : '中止に失敗しました。';
+    } finally {
+      setBuildActionPending(settingId ?? jobId, false);
+    }
+  };
+
+  const triggerBuildDelete = async (item: BuildSettingSummary) => {
+    const buildId = item.current_build_id ?? item.latest_build_id;
+    if (!buildId) {
+      return;
+    }
+    setBuildActionPending(item.setting_id, true);
+    try {
+      if (item.kind === 'env' && item.config_id && item.env_name) {
+        await api.builds.deleteEnvArtifact(item.config_id, item.env_name, buildId);
+      } else if (item.kind === 'shared' && item.package && item.variant) {
+        await api.builds.deleteSharedArtifact(item.package, item.variant, buildId);
+      }
+    } catch (error) {
+      buildLoadError = error instanceof Error ? error.message : '削除に失敗しました。';
+    } finally {
+      setBuildActionPending(item.setting_id, false);
     }
   };
 
@@ -368,13 +493,19 @@
     if (tab === 'runtime') {
       return [
         { subscription_id: 'system.page.bundled-torch', kind: 'system.bundled-torch', params: {} },
-        { subscription_id: 'system.page.runtime-envs', kind: 'system.runtime-envs', params: {} }
+        { subscription_id: 'system.page.runtime-envs', kind: 'system.runtime-envs', params: {} },
+        { subscription_id: 'system.page.builds-status', kind: 'builds.status', params: {} },
+        { subscription_id: 'system.page.builds-logs', kind: 'builds.logs', params: {} }
       ];
     }
     return [];
   };
 
   const handleRealtimeEvent = (event: TabRealtimeEvent) => {
+    if (event.source?.kind === 'builds.logs' && event.op === 'append') {
+      appendBuildLogEvents(((event.payload as { events?: BuildLogEvent[] }).events ?? []) as BuildLogEvent[]);
+      return;
+    }
     if (event.op !== 'snapshot') return;
     switch (event.source?.kind) {
       case 'system.status':
@@ -390,6 +521,9 @@
         return;
       case 'system.runtime-envs':
         runtimeEnvSnapshot = event.payload as RuntimeEnvSnapshot;
+        return;
+      case 'builds.status':
+        applyBuildsSnapshot(event.payload as BuildsStatusSnapshot);
         return;
     }
   };
@@ -491,10 +625,21 @@
           runtimeEnvActionError={runtimeEnvActionError}
           bundledTorchActionPending={bundledTorchActionPending}
           bundledTorchActionError={bundledTorchActionError}
+          buildLoading={buildLoading}
+          buildLoadError={buildLoadError}
+          envBuildItems={envBuildItems}
+          sharedBuildItems={sharedBuildItems}
+          runningBuildJobs={runningBuildJobs}
+          selectedBuildConfigId={selectedBuildConfigId}
+          buildActionPending={buildActionPending}
+          buildLogLinesByJobId={buildLogLinesByJobId}
           onRuntimeBuild={triggerRuntimeBuild}
           onRuntimeDelete={triggerRuntimeDelete}
           onBuild={triggerBuild}
           onClean={triggerClean}
+          onBuildRun={triggerBuildRun}
+          onBuildCancelByJobId={triggerBuildCancelByJobId}
+          onBuildDelete={triggerBuildDelete}
         />
       {/if}
     </Tabs.Content>
