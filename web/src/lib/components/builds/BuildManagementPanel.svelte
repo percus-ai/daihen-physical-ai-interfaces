@@ -1,5 +1,7 @@
 <script lang="ts">
   import toast from 'svelte-french-toast';
+  import FunnelSimple from 'phosphor-svelte/lib/FunnelSimple';
+  import { DropdownMenu } from 'bits-ui';
 
   import {
     api,
@@ -13,6 +15,7 @@
   import BuildSettingsSection from '$lib/components/builds/BuildSettingsSection.svelte';
 
   type Props = {
+    currentSm?: string;
     envItems?: BuildSettingSummary[];
     sharedItems?: BuildSettingSummary[];
     runningJobs?: BuildJobSummary[];
@@ -26,6 +29,7 @@
   };
 
   let {
+    currentSm = '',
     envItems = [],
     sharedItems = [],
     runningJobs = [],
@@ -37,6 +41,30 @@
     onCancelByJobId,
     onDelete
   }: Props = $props();
+
+  let hiddenSettingIds = $state<string[]>([]);
+
+  const allItems = $derived([...envItems, ...sharedItems]);
+  const allSettingIds = $derived(allItems.map((item) => item.setting_id));
+  const visibleSettingCount = $derived(allItems.length - hiddenSettingIds.length);
+
+  $effect(() => {
+    const validIds = new Set(allSettingIds);
+    hiddenSettingIds = hiddenSettingIds.filter((settingId) => validIds.has(settingId));
+  });
+
+  const envVisibleItems = $derived(envItems.filter((item) => !hiddenSettingIds.includes(item.setting_id)));
+  const sharedVisibleItems = $derived(sharedItems.filter((item) => !hiddenSettingIds.includes(item.setting_id)));
+
+  const isVisible = (settingId: string) => !hiddenSettingIds.includes(settingId);
+  const toggleVisible = (settingId: string, nextVisible: boolean) => {
+    hiddenSettingIds = nextVisible
+      ? hiddenSettingIds.filter((value) => value !== settingId)
+      : [...hiddenSettingIds, settingId];
+  };
+  const showAll = () => {
+    hiddenSettingIds = [];
+  };
 
   let errorReportDialogOpen = $state(false);
   let latestErrorReport = $state<BuildErrorReportResponse | null>(null);
@@ -128,10 +156,85 @@
   </section>
 {/if}
 
+{#if allItems.length > 0}
+  <div class="flex items-center justify-end gap-3">
+    {#if currentSm}
+      <span class="chip">現在のSM: {currentSm}</span>
+    {/if}
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger class="btn-ghost inline-flex items-center gap-2">
+        <FunnelSimple size={16} />
+        フィルタ
+        <span class="text-xs text-slate-500">{visibleSettingCount}/{allItems.length}</span>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          class="z-50 w-[min(92vw,24rem)] rounded-2xl border border-slate-200 bg-white p-3 shadow-xl outline-none"
+          sideOffset={8}
+          align="end"
+        >
+          <div class="flex items-center justify-between gap-3 border-b border-slate-200 pb-2">
+            <div>
+              <p class="text-sm font-semibold text-slate-900">表示フィルタ</p>
+              <p class="mt-1 text-xs text-slate-500">表示したい設定だけを選びます。</p>
+            </div>
+            <button class="text-xs font-semibold text-brand transition hover:text-brand-ink" type="button" onclick={showAll}>
+              全件表示
+            </button>
+          </div>
+
+          <div class="mt-3 space-y-4">
+            <section>
+              <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">環境構築</h4>
+              <div class="mt-2 space-y-2">
+                {#each envItems as item (item.setting_id)}
+                  <label class="flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition hover:bg-slate-50">
+                    <input
+                      class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                      type="checkbox"
+                      checked={isVisible(item.setting_id)}
+                      onchange={(event) => toggleVisible(item.setting_id, event.currentTarget.checked)}
+                    />
+                    <div class="min-w-0 flex-1">
+                      <p class="truncate text-sm font-medium text-slate-900">{item.display_name}</p>
+                      <p class="truncate text-xs text-slate-500">{item.description ?? item.env_name ?? item.setting_id}</p>
+                    </div>
+                  </label>
+                {/each}
+              </div>
+            </section>
+
+            <section>
+              <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">共有パッケージ</h4>
+              <div class="mt-2 space-y-2">
+                {#each sharedItems as item (item.setting_id)}
+                  <label class="flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition hover:bg-slate-50">
+                    <input
+                      class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                      type="checkbox"
+                      checked={isVisible(item.setting_id)}
+                      onchange={(event) => toggleVisible(item.setting_id, event.currentTarget.checked)}
+                    />
+                    <div class="min-w-0 flex-1">
+                      <p class="truncate text-sm font-medium text-slate-900">{item.package ?? item.display_name}</p>
+                      <p class="truncate text-xs text-slate-500">{item.description ?? item.variant ?? item.setting_id}</p>
+                    </div>
+                  </label>
+                {/each}
+              </div>
+            </section>
+          </div>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  </div>
+{/if}
+
 <BuildSettingsSection
   title="環境構築"
   description="PC 設定から選ばれる環境定義と、その最新のビルド結果を一覧します。"
-  items={envItems}
+  items={envVisibleItems}
+  currentSm={currentSm}
   {actionPending}
   onRun={onRun}
   onCancel={handleCancel}
@@ -142,7 +245,8 @@
 <BuildSettingsSection
   title="共有パッケージ"
   description="共有パッケージ定義ごとの variant を一覧し、個別にビルド結果を一覧します。"
-  items={sharedItems}
+  items={sharedVisibleItems}
+  currentSm={currentSm}
   {actionPending}
   onRun={onRun}
   onCancel={handleCancel}

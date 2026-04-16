@@ -24,6 +24,9 @@ class BuildSettingSummaryModel(BaseModel):
     setting_id: str
     display_name: str
     description: str | None = None
+    supported_sms: list[str] = Field(default_factory=list)
+    current_sm: str | None = None
+    sm_supported: bool | None = None
     state: BuildSettingState
     selected: bool = False
     config_origin: Literal["default", "data"] | None = None
@@ -46,10 +49,12 @@ class BuildSettingSummaryModel(BaseModel):
 
 class EnvBuildSettingsListResponse(BaseModel):
     selected_config_id: str | None = None
+    current_sm: str | None = None
     items: list[BuildSettingSummaryModel] = Field(default_factory=list)
 
 
 class SharedBuildSettingsListResponse(BaseModel):
+    current_sm: str | None = None
     items: list[BuildSettingSummaryModel] = Field(default_factory=list)
 
 
@@ -98,6 +103,7 @@ class BuildErrorReportResponse(BaseModel):
 
 
 class BuildsStatusSnapshotModel(BaseModel):
+    current_sm: str | None = None
     running_jobs: list[BuildJobSummaryModel] = Field(default_factory=list)
     envs: EnvBuildSettingsListResponse
     shared: SharedBuildSettingsListResponse

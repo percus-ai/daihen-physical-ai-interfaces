@@ -328,6 +328,9 @@ export type BuildSettingSummary = {
   setting_id: string;
   display_name: string;
   description?: string | null;
+  supported_sms?: string[];
+  current_sm?: string | null;
+  sm_supported?: boolean | null;
   state: BuildSettingState;
   selected?: boolean;
   config_origin?: 'default' | 'data' | null;
@@ -350,10 +353,12 @@ export type BuildSettingSummary = {
 
 export type EnvBuildSettingsListResponse = {
   selected_config_id?: string | null;
+  current_sm?: string | null;
   items: BuildSettingSummary[];
 };
 
 export type SharedBuildSettingsListResponse = {
+  current_sm?: string | null;
   items: BuildSettingSummary[];
 };
 
@@ -402,6 +407,7 @@ export type BuildErrorReportResponse = {
 };
 
 export type BuildsStatusSnapshot = {
+  current_sm?: string | null;
   running_jobs: BuildJobSummary[];
   envs: EnvBuildSettingsListResponse;
   shared: SharedBuildSettingsListResponse;

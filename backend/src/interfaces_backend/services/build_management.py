@@ -19,7 +19,12 @@ from interfaces_backend.models.build_management import (
 from interfaces_backend.models.settings import SystemSettingsModel
 from percus_ai.environment.build import BuildStore
 from percus_ai.environment.build.build_metadata import BuildStepLogModel, EnvBuildMetadataModel, SharedBuildMetadataModel
-from percus_ai.environment.config import EnvironmentConfigLoader
+from percus_ai.environment.config import (
+    EnvironmentConfigLoader,
+    detect_current_sm,
+    matches_supported_sms,
+    normalize_supported_sms,
+)
 
 
 class SystemSettingsReader(Protocol):
@@ -38,10 +43,12 @@ class BuildManagementService:
         build_store: BuildStore | None = None,
         settings_service: SystemSettingsReader | None = None,
         build_jobs_service: BuildJobsReader | None = None,
+        current_sm_resolver=None,
         build_error_reports_service=None,
     ) -> None:
         self._config_loader = config_loader or EnvironmentConfigLoader()
         self._build_store = build_store or BuildStore()
+        self._current_sm_resolver = current_sm_resolver or detect_current_sm
         if settings_service is None:
             from interfaces_backend.services.settings_service import get_system_settings_service
 
@@ -63,6 +70,7 @@ class BuildManagementService:
 
     def list_env_settings(self) -> EnvBuildSettingsListResponse:
         selected_config_id = self._settings_service.get_settings().environment_build.env_config_id
+        current_sm = self._current_sm_resolver()
         active_jobs = {item.setting_id: item for item in self._build_jobs_service.list_active_jobs()}
         items: list[BuildSettingSummaryModel] = []
         for ref in self._config_loader.list_env_configs():
@@ -75,34 +83,42 @@ class BuildManagementService:
                         config_display_name=config.display_name,
                         env_display_name=env_definition.display_name,
                         env_description=env_definition.description,
+                        supported_sms=env_definition.supported_sms,
+                        current_sm=current_sm,
                         env_name=env_name,
                         selected_config_id=selected_config_id,
                         active_job=active_jobs.get(f"{config.id}:{env_name}"),
                     )
                 )
-        return EnvBuildSettingsListResponse(selected_config_id=selected_config_id, items=items)
+        return EnvBuildSettingsListResponse(selected_config_id=selected_config_id, current_sm=current_sm, items=items)
 
     def list_shared_settings(self) -> SharedBuildSettingsListResponse:
+        current_sm = self._current_sm_resolver()
         active_jobs = {item.setting_id: item for item in self._build_jobs_service.list_active_jobs()}
         items: list[BuildSettingSummaryModel] = []
         for ref in self._config_loader.list_shared_package_definitions():
             definition = self._config_loader.load_shared_package_definition(ref.config_id)
-            for variant in sorted(definition.variants):
+            for variant, variant_definition in sorted(definition.variants.items()):
                 items.append(
                     self._build_shared_summary(
                         package=definition.package,
                         variant=variant,
+                        supported_sms=variant_definition.supported_sms,
+                        current_sm=current_sm,
                         config_origin=ref.origin,
                         active_job=active_jobs.get(f"{definition.package}:{variant}"),
                     )
                 )
-        return SharedBuildSettingsListResponse(items=items)
+        return SharedBuildSettingsListResponse(current_sm=current_sm, items=items)
 
     def snapshot(self) -> BuildsStatusSnapshotModel:
+        envs = self.list_env_settings()
+        shared = self.list_shared_settings()
         return BuildsStatusSnapshotModel(
+            current_sm=envs.current_sm or shared.current_sm,
             running_jobs=self._build_jobs_service.list_active_jobs(),
-            envs=self.list_env_settings(),
-            shared=self.list_shared_settings(),
+            envs=envs,
+            shared=shared,
         )
 
     def delete_env_artifact(self, *, config_id: str, env_name: str, build_id: str) -> None:
@@ -168,6 +184,8 @@ class BuildManagementService:
         config_display_name: str | None,
         env_display_name: str | None,
         env_description: str | None,
+        supported_sms: list[str],
+        current_sm: str | None,
         env_name: str,
         selected_config_id: str | None,
         active_job: BuildJobSummaryModel | None,
@@ -186,6 +204,9 @@ class BuildManagementService:
             setting_id=f"{config_id}:{env_name}",
             display_name=env_display_name or config_display_name or env_name,
             description=env_description,
+            supported_sms=normalize_supported_sms(supported_sms),
+            current_sm=current_sm,
+            sm_supported=matches_supported_sms(current_sm, supported_sms),
             state=state,
             selected=config_id == selected_config_id,
             config_origin=config_origin,
@@ -205,6 +226,8 @@ class BuildManagementService:
         *,
         package: str,
         variant: str,
+        supported_sms: list[str],
+        current_sm: str | None,
         config_origin: str,
         active_job: BuildJobSummaryModel | None,
     ) -> BuildSettingSummaryModel:
@@ -221,6 +244,9 @@ class BuildManagementService:
             setting_id=f"{package}:{variant}",
             display_name=package,
             description=variant,
+            supported_sms=normalize_supported_sms(supported_sms),
+            current_sm=current_sm,
+            sm_supported=matches_supported_sms(current_sm, supported_sms),
             state=state,
             config_origin=config_origin,
             package=package,

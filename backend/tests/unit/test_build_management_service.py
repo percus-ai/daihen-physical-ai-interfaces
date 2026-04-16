@@ -106,6 +106,7 @@ variants: {}
         build_store=store,
         settings_service=_FakeSettingsService("config-a"),
         build_jobs_service=_FakeBuildJobsService(),
+        current_sm_resolver=lambda: "sm_120",
     )
 
     response = service.list_env_settings()
@@ -115,6 +116,9 @@ variants: {}
     assert items["config-a"].state == "success"
     assert items["config-a"].display_name == "GR00T A"
     assert items["config-a"].description == "config a description"
+    assert items["config-a"].current_sm == "sm_120"
+    assert items["config-a"].supported_sms == ["*"]
+    assert items["config-a"].sm_supported is True
     assert items["config-a"].current_build_id == "2026-04-16T00-00-00Z_a"
     assert items["config-a"].selected is True
     assert items["config-b"].state == "failed"
@@ -180,12 +184,16 @@ variants:
         build_store=store,
         settings_service=_FakeSettingsService("default"),
         build_jobs_service=_FakeBuildJobsService(),
+        current_sm_resolver=lambda: "sm_120",
     )
 
     response = service.list_shared_settings()
 
     items = {item.variant: item for item in response.items}
+    assert response.current_sm == "sm_120"
     assert items["a"].state == "success"
+    assert items["a"].supported_sms == ["*"]
+    assert items["a"].sm_supported is True
     assert items["b"].state == "failed"
     assert items["b"].latest_error_summary == "build failed (exit=7)"
 
@@ -237,6 +245,7 @@ variants: {}
                 )
             ]
         ),
+        current_sm_resolver=lambda: "sm_120",
     )
 
     response = service.list_env_settings()
@@ -248,6 +257,54 @@ variants: {}
     assert item.current_job_id == "job-1"
     assert item.current_step_name == "runtime-common"
     assert item.progress_percent == 33.0
+
+
+def test_list_env_settings_marks_sm_compatibility(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        """
+id: default
+display_name: Default
+envs:
+  groot:
+    display_name: GR00T
+    description: Blackwell config
+    python: "3.12"
+    supported_sms:
+      - sm_120
+    installs: []
+    checks: []
+  act:
+    display_name: ACT
+    description: Broad config
+    python: "3.10"
+    supported_sms:
+      - "sm_80..sm_90"
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        "package: pytorch\nvariants: {}\n",
+    )
+    service = BuildManagementService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=BuildStore(layout=BuildLayout(data_dir=data_dir)),
+        settings_service=_FakeSettingsService("default"),
+        build_jobs_service=_FakeBuildJobsService(),
+        current_sm_resolver=lambda: "sm_120",
+    )
+
+    response = service.list_env_settings()
+    items = {item.env_name: item for item in response.items}
+
+    assert response.current_sm == "sm_120"
+    assert items["groot"].sm_supported is True
+    assert items["act"].sm_supported is False
 
 
 def test_delete_env_artifact_unlinks_current_when_current_build_matches(tmp_path: Path):

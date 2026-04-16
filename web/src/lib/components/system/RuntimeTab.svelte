@@ -5,6 +5,7 @@
   let {
     buildLoading = false,
     buildLoadError = '',
+    buildCurrentSm = '',
     envBuildItems = [],
     sharedBuildItems = [],
     runningBuildJobs = [],
@@ -16,6 +17,7 @@
   }: {
     buildLoading?: boolean;
     buildLoadError?: string;
+    buildCurrentSm?: string;
     envBuildItems?: BuildSettingSummary[];
     sharedBuildItems?: BuildSettingSummary[];
     runningBuildJobs?: BuildJobSummary[];
@@ -33,6 +35,7 @@
   runningJobs={runningBuildJobs}
   loading={buildLoading}
   loadError={buildLoadError}
+  currentSm={buildCurrentSm}
   actionPending={buildActionPending}
   logLinesByJobId={buildLogLinesByJobId}
   onRun={onBuildRun}

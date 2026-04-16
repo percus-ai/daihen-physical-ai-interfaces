@@ -57,6 +57,7 @@
   let userSettings = $state<UserSettings | null>(null);
   let buildLoading = $state(false);
   let buildLoadError = $state('');
+  let buildCurrentSm = $state('');
   let envBuildItems = $state<BuildSettingSummary[]>([]);
   let sharedBuildItems = $state<BuildSettingSummary[]>([]);
   let runningBuildJobs = $state<BuildJobSummary[]>([]);
@@ -183,6 +184,7 @@
 
     if (envBuildsResult.status === 'fulfilled' && sharedBuildsResult.status === 'fulfilled') {
       selectedBuildConfigId = envBuildsResult.value.selected_config_id ?? '';
+      buildCurrentSm = envBuildsResult.value.current_sm ?? sharedBuildsResult.value.current_sm ?? '';
       envBuildItems = envBuildsResult.value.items;
       sharedBuildItems = sharedBuildsResult.value.items;
       runningBuildJobs = [...envBuildsResult.value.items, ...sharedBuildsResult.value.items]
@@ -217,6 +219,7 @@
   };
 
   const applyBuildsSnapshot = (snapshot: BuildsStatusSnapshot) => {
+    buildCurrentSm = snapshot.current_sm ?? snapshot.envs.current_sm ?? snapshot.shared.current_sm ?? '';
     selectedBuildConfigId = snapshot.envs.selected_config_id ?? '';
     envBuildItems = snapshot.envs.items;
     sharedBuildItems = snapshot.shared.items;
@@ -535,6 +538,7 @@
         <RuntimeTab
           buildLoading={buildLoading}
           buildLoadError={buildLoadError}
+          buildCurrentSm={buildCurrentSm}
           envBuildItems={envBuildItems}
           sharedBuildItems={sharedBuildItems}
           runningBuildJobs={runningBuildJobs}

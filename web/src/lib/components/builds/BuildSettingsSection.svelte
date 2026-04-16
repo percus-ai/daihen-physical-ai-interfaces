@@ -7,6 +7,7 @@
   type Props = {
     title: string;
     description: string;
+    currentSm?: string;
     items: BuildSettingSummary[];
     actionPending?: Record<string, boolean>;
     onRun?: (item: BuildSettingSummary) => Promise<void>;
@@ -18,6 +19,7 @@
   let {
     title,
     description,
+    currentSm = '',
     items,
     actionPending = {},
     onRun,
@@ -98,6 +100,19 @@
     return 'まだ構築されていません。';
   };
 
+  const smBadgeClass = (item: BuildSettingSummary) => {
+    if (item.sm_supported === true) return 'border-sky-200 bg-sky-50 text-sky-700';
+    if (item.sm_supported === false) return 'border-slate-200 bg-slate-100 text-slate-500';
+    return 'border-slate-200 bg-slate-100 text-slate-500';
+  };
+
+  const smBadgeText = (item: BuildSettingSummary) => {
+    if (!currentSm) return '';
+    if (item.sm_supported === true) return `${currentSm} 対応`;
+    if (item.sm_supported === false) return `${currentSm} 非対応`;
+    return `${currentSm} 未判定`;
+  };
+
   const handleSecondary = async (item: BuildSettingSummary) => {
     if (item.state === 'failed' && item.actions.create_error_report) {
       await handleCreateErrorReport(item);
@@ -135,6 +150,11 @@
               <span class={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${stateClass(item.state)}`}>
                 {stateLabel(item.state)}
               </span>
+              {#if currentSm}
+                <span class={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${smBadgeClass(item)}`}>
+                  {smBadgeText(item)}
+                </span>
+              {/if}
             </div>
 
             <p class="mt-1 truncate text-xs text-slate-500">{subtitleText(item)}</p>
