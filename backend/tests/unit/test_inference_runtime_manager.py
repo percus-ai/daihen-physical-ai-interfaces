@@ -8,19 +8,23 @@ import pytest
 os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
 
 import interfaces_backend.services.inference_runtime as inference_runtime
-from interfaces_backend.models.inference import (
-    InferenceDeviceCompatibilityResponse,
-    InferenceDeviceInfo,
-)
+from interfaces_backend.services.inference_runtime_targets import ResolvedInferenceRuntimeTarget
 from interfaces_backend.services.inference_runtime import InferenceRuntimeManager
 
 
-class _FakeEnvironmentManager:
-    def __init__(self, _root_dir):
-        pass
-
-    def get_env_for_policy(self, policy_type: str) -> str:
-        return f".venv-{policy_type}"
+class _FakeRuntimeTargetsService:
+    def resolve_target(self, *, policy_type: str | None, target_id: str | None):
+        assert policy_type == "act"
+        assert target_id == "cpu"
+        return ResolvedInferenceRuntimeTarget(
+            target_id="cpu",
+            kind="cpu",
+            device="cpu",
+            python_executable="/usr/bin/python3",
+            config_id="default",
+            env_name="act",
+            build_id="build-1",
+        )
 
 
 class _FakeProc:
@@ -49,9 +53,6 @@ def test_start_times_out_only_on_worker_control_socket(monkeypatch, tmp_path):
     models_dir = tmp_path / "models"
     repo_root.mkdir()
     models_dir.mkdir()
-    run_in_env = repo_root / "features" / "percus_ai" / "environment"
-    run_in_env.mkdir(parents=True)
-    (run_in_env / "run_in_env.sh").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
 
     model_dir = models_dir / "model-1"
     model_dir.mkdir()
@@ -71,7 +72,6 @@ def test_start_times_out_only_on_worker_control_socket(monkeypatch, tmp_path):
 
     monkeypatch.setattr(inference_runtime, "get_project_root", lambda: repo_root)
     monkeypatch.setattr(inference_runtime, "get_models_dir", lambda: models_dir)
-    monkeypatch.setattr(inference_runtime, "EnvironmentManager", _FakeEnvironmentManager)
     monkeypatch.setattr(inference_runtime.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(inference_runtime, "_STARTUP_TIMEOUT_S", 0.0)
     monkeypatch.setattr(manager, "_connect_ctrl_socket_locked", lambda: None)
@@ -81,22 +81,14 @@ def test_start_times_out_only_on_worker_control_socket(monkeypatch, tmp_path):
         "_send_ctrl_command",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("not ready")),
     )
-    monkeypatch.setattr(
-        manager,
-        "get_device_compatibility",
-        lambda: InferenceDeviceCompatibilityResponse(
-            devices=[InferenceDeviceInfo(device="cpu", available=True)],
-            recommended="cpu",
-        ),
-    )
+    monkeypatch.setattr(manager, "_runtime_targets_service", _FakeRuntimeTargetsService())
 
     with pytest.raises(RuntimeError) as exc_info:
         manager.start(
             model_id="model-1",
-            device="cpu",
+            runtime_target_id="cpu",
             task="pick",
         )
 
     assert str(exc_info.value) == "Timed out waiting for worker control socket"
     assert manager.get_status().runner_status.last_error == "Timed out waiting for worker control socket"
-    assert popen_env["PERCUS_AI_SKIP_ENV_ENSURE"] == "1"

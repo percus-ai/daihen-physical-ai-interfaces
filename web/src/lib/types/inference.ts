@@ -41,16 +41,27 @@ export type InferenceModelsResponse = {
   batch_size_options?: InferenceNumericOption[];
 };
 
-export type InferenceDeviceInfo = {
-  device?: string;
+export type InferenceRuntimeTarget = {
+  id: string;
+  kind: 'cpu' | 'cuda' | string;
+  label: string;
+  display_name?: string | null;
+  description?: string | null;
+  device: string;
   available?: boolean;
-  memory_total_mb?: number | null;
-  memory_free_mb?: number | null;
+  config_id?: string | null;
+  env_name?: string | null;
+  build_id?: string | null;
+  supported_sms?: string[];
+  current_sm?: string | null;
+  sm_supported?: boolean | null;
 };
 
-export type InferenceDeviceCompatibilityResponse = {
-  devices?: InferenceDeviceInfo[];
-  recommended?: string;
+export type InferenceRuntimeTargetsResponse = {
+  policy_type?: string | null;
+  current_sm?: string | null;
+  targets?: InferenceRuntimeTarget[];
+  recommended_target_id?: string;
 };
 
 export type RunnerStatus = {

@@ -387,6 +387,7 @@ class InferenceSessionManager(BaseSessionManager):
                 await asyncio.to_thread(
                     self._runtime.prepare_environment,
                     policy_type=compatibility.policy_type,
+                    runtime_target_id=kwargs.get("runtime_target_id"),
                     progress_callback=progress_callback,
                 )
             except RuntimeError as exc:
@@ -402,7 +403,7 @@ class InferenceSessionManager(BaseSessionManager):
             try:
                 worker_session_id = self._runtime.start(
                     model_id=kwargs["model_id"],
-                    device=kwargs.get("device"),
+                    runtime_target_id=kwargs.get("runtime_target_id"),
                     task=kwargs.get("task"),
                     policy_options=kwargs.get("policy_options"),
                     joint_names=joint_names,
@@ -424,6 +425,7 @@ class InferenceSessionManager(BaseSessionManager):
 
             state.extras["worker_session_id"] = worker_session_id
             state.extras["model_id"] = kwargs["model_id"]
+            state.extras["runtime_target_id"] = kwargs.get("runtime_target_id")
             state.extras["bridge_stream_config"] = bridge_stream_config
             state.extras["task"] = str(kwargs.get("task") or "").strip()
             state.extras["num_episodes"] = max(int(kwargs.get("num_episodes") or 20), 1)

@@ -427,7 +427,7 @@ export type BuildLogEvent = {
 
 export type InferenceRunnerStartPayload = {
   model_id: string;
-  device?: string;
+  runtime_target_id?: string;
   profile?: string;
   task?: string;
   num_episodes?: number;
@@ -1872,7 +1872,10 @@ export const api = {
   },
   inference: {
     models: () => fetchApi('/api/inference/models'),
-    deviceCompatibility: () => fetchApi('/api/inference/device-compatibility'),
+    runtimeTargets: (policyType?: string) =>
+      fetchApi<import('$lib/types/inference').InferenceRuntimeTargetsResponse>(
+        `/api/inference/runtime-targets${policyType ? `?policy_type=${encodeURIComponent(policyType)}` : ''}`
+      ),
     runnerStatus: () => fetchApi('/api/inference/runner/status'),
     runnerStart: (payload: InferenceRunnerStartPayload) =>
       fetchApi<StartupOperationAcceptedResponse>('/api/inference/runner/start', {

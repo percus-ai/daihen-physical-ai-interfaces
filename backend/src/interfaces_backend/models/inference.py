@@ -55,16 +55,27 @@ class InferenceNumericOption(BaseModel):
     total_count: int = Field(0, description="Matching model count")
 
 
-class InferenceDeviceInfo(BaseModel):
+class InferenceRuntimeTargetInfo(BaseModel):
+    id: str
+    kind: str = Field(..., description="cpu | cuda")
+    label: str
+    display_name: str | None = None
+    description: str | None = None
     device: str
     available: bool = True
-    memory_total_mb: Optional[float] = None
-    memory_free_mb: Optional[float] = None
+    config_id: str | None = None
+    env_name: str | None = None
+    build_id: str | None = None
+    supported_sms: list[str] = Field(default_factory=list)
+    current_sm: str | None = None
+    sm_supported: bool | None = None
 
 
-class InferenceDeviceCompatibilityResponse(BaseModel):
-    devices: list[InferenceDeviceInfo] = Field(default_factory=list)
-    recommended: str = Field("cpu", description="Recommended device")
+class InferenceRuntimeTargetsResponse(BaseModel):
+    policy_type: str | None = None
+    current_sm: str | None = None
+    targets: list[InferenceRuntimeTargetInfo] = Field(default_factory=list)
+    recommended_target_id: str = Field("cpu")
 
 
 class InferenceRunnerStatus(BaseModel):
@@ -131,7 +142,7 @@ class InferencePolicyOptions(BaseModel):
 
 class InferenceRunnerStartRequest(BaseModel):
     model_id: str
-    device: Optional[str] = None
+    runtime_target_id: Optional[str] = None
     profile: Optional[str] = None
     task: Optional[str] = None
     num_episodes: Optional[int] = Field(None, ge=1)

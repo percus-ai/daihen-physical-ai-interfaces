@@ -10,6 +10,8 @@ from interfaces_backend.models.inference import (
     GpuHostStatus,
     InferenceModelInfo,
     InferenceModelSyncStatus,
+    InferenceRuntimeTargetInfo,
+    InferenceRuntimeTargetsResponse,
     InferenceRunnerStatus,
     InferenceRunnerStatusResponse,
     InferenceRunnerStartRequest,
@@ -493,6 +495,51 @@ def test_get_inference_runner_status_includes_model_sync(monkeypatch):
     assert response.model_sync.progress_percent == 42.5
 
 
+def test_get_runtime_targets_returns_service_snapshot(monkeypatch):
+    class _FakeRuntimeTargetsService:
+        def list_targets(self, *, policy_type: str | None):
+            assert policy_type == "groot"
+            return InferenceRuntimeTargetsResponse(
+                policy_type="groot",
+                current_sm="sm_120",
+                recommended_target_id="cuda:default:groot:build-1",
+                targets=[
+                    InferenceRuntimeTargetInfo(
+                        id="cpu",
+                        kind="cpu",
+                        label="CPU",
+                        description="ホスト CPU で実行",
+                        device="cpu",
+                    ),
+                    InferenceRuntimeTargetInfo(
+                        id="cuda:default:groot:build-1",
+                        kind="cuda",
+                        label="CUDA #1",
+                        description="GR00T N1.5 / Blackwell 向け GR00T N1.5 実行環境",
+                        device="cuda:0",
+                        config_id="default",
+                        env_name="groot",
+                        build_id="build-1",
+                        supported_sms=["sm_120"],
+                        current_sm="sm_120",
+                        sm_supported=True,
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(
+        inference_api,
+        "get_inference_runtime_targets_service",
+        lambda: _FakeRuntimeTargetsService(),
+    )
+
+    response = asyncio.run(inference_api.get_runtime_targets(policy_type="groot"))
+
+    assert response.current_sm == "sm_120"
+    assert response.recommended_target_id == "cuda:default:groot:build-1"
+    assert response.targets[1].label == "CUDA #1"
+
+
 def test_start_inference_runner_returns_operation_id(monkeypatch):
     accepted = StartupOperationAcceptedResponse(operation_id="op-infer", message="accepted")
 
@@ -512,7 +559,13 @@ def test_start_inference_runner_returns_operation_id(monkeypatch):
 
     response = asyncio.run(
         inference_api.start_inference_runner(
-            InferenceRunnerStartRequest(model_id="model-a", device="cpu", profile="lab-alpha", task="pick", num_episodes=12)
+            InferenceRunnerStartRequest(
+                model_id="model-a",
+                runtime_target_id="cuda:default:groot:build-1",
+                profile="lab-alpha",
+                task="pick",
+                num_episodes=12,
+            )
         )
     )
     assert response.operation_id == "op-infer"
@@ -544,7 +597,7 @@ def test_run_inference_start_operation_passes_policy_options(monkeypatch):
         inference_api._run_inference_start_operation(
             "op-1",
             model_id="model-a",
-            device="cpu",
+            runtime_target_id="cuda:default:groot:build-1",
             profile="lab-alpha",
             task="pick",
             num_episodes=12,
@@ -553,6 +606,7 @@ def test_run_inference_start_operation_passes_policy_options(monkeypatch):
     )
 
     assert created_kwargs["model_id"] == "model-a"
+    assert created_kwargs["runtime_target_id"] == "cuda:default:groot:build-1"
     assert created_kwargs["profile"] == "lab-alpha"
     assert created_kwargs["num_episodes"] == 12
     assert created_kwargs["policy_options"] == {"pi0": {"denoising_steps": 12}}

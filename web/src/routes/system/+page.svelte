@@ -4,6 +4,8 @@
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { Tabs } from 'bits-ui';
+  import { DropdownMenu } from 'bits-ui';
+  import FunnelSimple from 'phosphor-svelte/lib/FunnelSimple';
 
   import { api, type TabSessionSubscription } from '$lib/api/client';
   import type {
@@ -64,6 +66,8 @@
   let selectedBuildConfigId = $state('');
   let buildActionPending = $state<Record<string, boolean>>({});
   let buildLogLinesByJobId = $state<Record<string, string[]>>({});
+  let runtimeHiddenBuildSettingIds = $state<string[]>([]);
+  let runtimeShowUnsupported = $state(false);
   let systemSettingsPending = $state(false);
   let systemSettingsError = $state('');
   let systemSettingsSuccess = $state('');
@@ -228,6 +232,65 @@
     buildLogLinesByJobId = Object.fromEntries(
       Object.entries(buildLogLinesByJobId).filter(([jobId]) => activeJobIds.has(jobId))
     );
+  };
+
+  const allRuntimeBuildItems = $derived([...envBuildItems, ...sharedBuildItems]);
+  const allRuntimeBuildSettingIds = $derived(allRuntimeBuildItems.map((item) => item.setting_id));
+  const isRuntimeSettingSmVisible = (item: BuildSettingSummary) => runtimeShowUnsupported || item.sm_supported !== false;
+  const runtimeSmVisibleSettingIds = $derived(
+    allRuntimeBuildItems.filter((item) => isRuntimeSettingSmVisible(item)).map((item) => item.setting_id)
+  );
+  const runtimeVisibleBuildItems = $derived(
+    allRuntimeBuildItems.filter(
+      (item) => isRuntimeSettingSmVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
+    )
+  );
+  const runtimeVisibleSettingCount = $derived(runtimeVisibleBuildItems.length);
+  const runtimeAllVisible = $derived(
+    runtimeSmVisibleSettingIds.every((settingId) => !runtimeHiddenBuildSettingIds.includes(settingId))
+  );
+  const filteredEnvBuildItems = $derived(
+    envBuildItems.filter(
+      (item) => isRuntimeSettingSmVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
+    )
+  );
+  const filteredSharedBuildItems = $derived(
+    sharedBuildItems.filter(
+      (item) => isRuntimeSettingSmVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
+    )
+  );
+
+  $effect(() => {
+    const validIds = new Set(allRuntimeBuildSettingIds);
+    const nextHiddenSettingIds = runtimeHiddenBuildSettingIds.filter((settingId) => validIds.has(settingId));
+    if (
+      nextHiddenSettingIds.length === runtimeHiddenBuildSettingIds.length &&
+      nextHiddenSettingIds.every((settingId, index) => settingId === runtimeHiddenBuildSettingIds[index])
+    ) {
+      return;
+    }
+    runtimeHiddenBuildSettingIds = nextHiddenSettingIds;
+  });
+
+  const isRuntimeSettingVisible = (settingId: string) => !runtimeHiddenBuildSettingIds.includes(settingId);
+  const toggleRuntimeSettingVisible = (settingId: string, nextVisible: boolean) => {
+    runtimeHiddenBuildSettingIds = nextVisible
+      ? runtimeHiddenBuildSettingIds.filter((value) => value !== settingId)
+      : [...runtimeHiddenBuildSettingIds, settingId];
+  };
+  const toggleAllRuntimeSettings = () => {
+    if (runtimeAllVisible) {
+      const smVisibleIds = new Set(runtimeSmVisibleSettingIds);
+      const nextHiddenSettingIds = new Set(runtimeHiddenBuildSettingIds);
+      for (const settingId of smVisibleIds) {
+        nextHiddenSettingIds.add(settingId);
+      }
+      runtimeHiddenBuildSettingIds = [...nextHiddenSettingIds];
+      return;
+    }
+
+    const smVisibleIds = new Set(runtimeSmVisibleSettingIds);
+    runtimeHiddenBuildSettingIds = runtimeHiddenBuildSettingIds.filter((settingId) => !smVisibleIds.has(settingId));
   };
 
   const appendBuildLogEvents = (events: BuildLogEvent[]) => {
@@ -519,6 +582,95 @@
           Settings
         </Tabs.Trigger>
       </Tabs.List>
+
+      {#if activeTab === 'runtime' && allRuntimeBuildItems.length > 0}
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          {#if buildCurrentSm}
+            <span class="chip">現在のSM: {buildCurrentSm}</span>
+          {/if}
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger class="btn-ghost inline-flex items-center gap-2">
+              <FunnelSimple size={16} />
+              フィルタ
+              <span class="text-xs text-slate-500">{runtimeVisibleSettingCount}/{allRuntimeBuildItems.length}</span>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content
+                class="z-50 w-[min(92vw,24rem)] rounded-2xl border border-slate-200 bg-white p-3 shadow-xl outline-none"
+                sideOffset={8}
+                align="end"
+              >
+                <div class="flex items-center justify-between gap-3 border-b border-slate-200 pb-2">
+                  <div>
+                    <p class="text-sm font-semibold text-slate-900">表示フィルタ</p>
+                    <p class="mt-1 text-xs text-slate-500">表示したい設定だけを選びます。</p>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button
+                      class="text-xs font-semibold text-brand transition hover:text-brand-ink"
+                      type="button"
+                      onclick={() => {
+                        runtimeShowUnsupported = !runtimeShowUnsupported;
+                      }}
+                    >
+                      {runtimeShowUnsupported ? '対応のみ表示' : '非対応も表示'}
+                    </button>
+                    <button
+                      class="text-xs font-semibold text-brand transition hover:text-brand-ink"
+                      type="button"
+                      onclick={toggleAllRuntimeSettings}
+                    >
+                      {runtimeAllVisible ? '全件非表示' : '全件表示'}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="mt-3 space-y-4">
+                  <section>
+                    <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">環境構築</h4>
+                    <div class="mt-2 space-y-2">
+                      {#each envBuildItems.filter((item) => isRuntimeSettingSmVisible(item)) as item (item.setting_id)}
+                        <label class="flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition hover:bg-slate-50">
+                          <input
+                            class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                            type="checkbox"
+                            checked={isRuntimeSettingVisible(item.setting_id)}
+                            onchange={(event) => toggleRuntimeSettingVisible(item.setting_id, event.currentTarget.checked)}
+                          />
+                          <div class="min-w-0 flex-1">
+                            <p class="truncate text-sm font-medium text-slate-900">{item.display_name}</p>
+                            <p class="truncate text-xs text-slate-500">{item.description ?? item.env_name ?? item.setting_id}</p>
+                          </div>
+                        </label>
+                      {/each}
+                    </div>
+                  </section>
+
+                  <section>
+                    <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">共有パッケージ</h4>
+                    <div class="mt-2 space-y-2">
+                      {#each sharedBuildItems.filter((item) => isRuntimeSettingSmVisible(item)) as item (item.setting_id)}
+                        <label class="flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition hover:bg-slate-50">
+                          <input
+                            class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                            type="checkbox"
+                            checked={isRuntimeSettingVisible(item.setting_id)}
+                            onchange={(event) => toggleRuntimeSettingVisible(item.setting_id, event.currentTarget.checked)}
+                          />
+                          <div class="min-w-0 flex-1">
+                            <p class="truncate text-sm font-medium text-slate-900">{item.package ?? item.display_name}</p>
+                            <p class="truncate text-xs text-slate-500">{item.description ?? item.variant ?? item.setting_id}</p>
+                          </div>
+                        </label>
+                      {/each}
+                    </div>
+                  </section>
+                </div>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        </div>
+      {/if}
     </div>
 
     <Tabs.Content value="status" class="mt-6 space-y-6">
@@ -539,8 +691,8 @@
           buildLoading={buildLoading}
           buildLoadError={buildLoadError}
           buildCurrentSm={buildCurrentSm}
-          envBuildItems={envBuildItems}
-          sharedBuildItems={sharedBuildItems}
+          envBuildItems={filteredEnvBuildItems}
+          sharedBuildItems={filteredSharedBuildItems}
           runningBuildJobs={runningBuildJobs}
           buildActionPending={buildActionPending}
           buildLogLinesByJobId={buildLogLinesByJobId}

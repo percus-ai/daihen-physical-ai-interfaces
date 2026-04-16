@@ -9,13 +9,13 @@ from collections.abc import Sequence
 from fastapi import APIRouter, HTTPException
 
 from interfaces_backend.models.inference import (
-    InferenceDeviceCompatibilityResponse,
     InferenceNumericOption,
     InferenceRecordingDecisionRequest,
     InferenceRecordingDecisionResponse,
     InferenceModelInfo,
     InferenceModelsResponse,
     InferenceOwnerOption,
+    InferenceRuntimeTargetsResponse,
     InferenceValueOption,
     InferenceRunnerStartRequest,
     InferenceRunnerControlResponse,
@@ -29,6 +29,7 @@ from interfaces_backend.models.inference import (
 )
 from interfaces_backend.models.startup import StartupOperationAcceptedResponse
 from interfaces_backend.services.inference_runtime import get_inference_runtime_manager
+from interfaces_backend.services.inference_runtime_targets import get_inference_runtime_targets_service
 from interfaces_backend.services.inference_session import get_inference_session_manager
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.startup_operations import get_startup_operations_service
@@ -383,9 +384,9 @@ async def list_models():
     )
 
 
-@router.get("/device-compatibility", response_model=InferenceDeviceCompatibilityResponse)
-async def get_device_compatibility():
-    return get_inference_runtime_manager().get_device_compatibility()
+@router.get("/runtime-targets", response_model=InferenceRuntimeTargetsResponse)
+async def get_runtime_targets(policy_type: str | None = None):
+    return get_inference_runtime_targets_service().list_targets(policy_type=policy_type)
 
 
 @router.get("/runner/status", response_model=InferenceRunnerStatusResponse)
@@ -413,7 +414,7 @@ async def _run_inference_start_operation(
     operation_id: str,
     *,
     model_id: str,
-    device: str | None,
+    runtime_target_id: str | None,
     profile: str | None,
     task: str | None,
     num_episodes: int | None,
@@ -425,7 +426,7 @@ async def _run_inference_start_operation(
     try:
         state = await manager.create(
             model_id=model_id,
-            device=device,
+            runtime_target_id=runtime_target_id,
             profile=profile,
             task=task,
             num_episodes=num_episodes,
@@ -467,7 +468,7 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
         _run_inference_start_operation(
             operation.operation_id,
             model_id=request.model_id,
-            device=request.device,
+            runtime_target_id=request.runtime_target_id,
             profile=request.profile,
             task=request.task,
             num_episodes=request.num_episodes,
@@ -487,7 +488,7 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
         message="Inference start operation accepted.",
         details={
             "model_id": request.model_id,
-            "device": request.device,
+            "runtime_target_id": request.runtime_target_id,
             "profile": request.profile,
             "num_episodes": request.num_episodes,
         },

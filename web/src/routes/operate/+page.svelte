@@ -3,6 +3,7 @@
   import { Button } from 'bits-ui';
   import { createQuery } from '@tanstack/svelte-query';
   import { goto } from '$app/navigation';
+  import { toStore } from 'svelte/store';
   import {
     api,
     type TabSessionSubscription,
@@ -21,8 +22,8 @@
   import { formatBytes } from '$lib/format';
   import { START_PHASE_LABELS } from '$lib/operate/startupPhases';
   import type {
-    InferenceDeviceCompatibilityResponse,
     InferenceModelsResponse,
+    InferenceRuntimeTargetsResponse,
     InferenceRunnerStatusResponse,
     OperateStatusResponse,
     RunnerStatus
@@ -42,11 +43,6 @@
     queryFn: api.inference.models
   });
 
-  const inferenceDeviceQuery = createQuery<InferenceDeviceCompatibilityResponse>({
-    queryKey: ['inference', 'device-compatibility'],
-    queryFn: api.inference.deviceCompatibility
-  });
-
   const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
     queryKey: ['inference', 'runner', 'status'],
     queryFn: api.inference.runnerStatus
@@ -57,11 +53,6 @@
     queryFn: api.operate.status
   });
 
-  const formatDeviceMemory = (memoryMb?: number | null) =>
-    typeof memoryMb === 'number' && Number.isFinite(memoryMb) && memoryMb > 0
-      ? formatBytes(memoryMb * 1024 * 1024)
-      : '-';
-
   const refetchQuery = async (snapshot?: { refetch?: () => Promise<unknown> }) => {
     if (snapshot && typeof snapshot.refetch === 'function') {
       await snapshot.refetch();
@@ -69,7 +60,7 @@
   };
 
   let selectedModelId = $state('');
-  let selectedDevice = $state('');
+  let selectedRuntimeTargetId = $state('');
   let selectedTaskCandidate = $state('');
   let taskInput = $state('');
   let taskInputMode = $state<'auto' | 'manual'>('auto');
@@ -87,6 +78,20 @@
   let startupContributor: TabRealtimeContributorHandle | null = null;
   let startupOperationId = $state('');
 
+  const inferenceModels = $derived(sortInferenceModelsByRecency($inferenceModelsQuery.data?.models ?? []));
+  const selectedModel = $derived(
+    inferenceModels.find((item) => resolveInferenceModelId(item) === selectedModelId)
+  );
+  const selectedPolicyType = $derived((selectedModel?.policy_type ?? '').toLowerCase());
+
+  const inferenceRuntimeTargetsQuery = createQuery<InferenceRuntimeTargetsResponse>(
+    toStore(() => ({
+      queryKey: ['inference', 'runtime-targets', selectedPolicyType || 'none'],
+      enabled: Boolean(selectedPolicyType),
+      queryFn: () => api.inference.runtimeTargets(selectedPolicyType || undefined)
+    }))
+  );
+
   const operateRealtimeSubscriptions: TabSessionSubscription[] = [
     { subscription_id: 'operate.page.status', kind: 'operate.status', params: {} },
     { subscription_id: 'operate.page.system-status', kind: 'system.status', params: {} }
@@ -103,27 +108,17 @@
   });
 
   $effect(() => {
-    const devices = ($inferenceDeviceQuery.data?.devices ?? []).filter((device) => Boolean(device.device));
-    const availableDevices = devices.filter((device) => device.available);
-    const recommendedAvailable = availableDevices.find((device) => device.device === $inferenceDeviceQuery.data?.recommended);
-    const recommendedNonCpu = recommendedAvailable?.device && recommendedAvailable.device !== 'cpu' ? recommendedAvailable : null;
-    const firstNonCpu = availableDevices.find((device) => device.device !== 'cpu');
-    const preferredDevice =
-      recommendedNonCpu?.device ??
-      firstNonCpu?.device ??
-      recommendedAvailable?.device ??
-      availableDevices[0]?.device ??
-      devices[0]?.device ??
-      'cpu';
-    const selectedAvailable = availableDevices.some((device) => device.device === selectedDevice);
-    const shouldPromoteFromCpu =
-      selectedDevice === 'cpu' &&
-      Boolean(firstNonCpu?.device) &&
-      firstNonCpu?.device !== selectedDevice;
-
-    if (selectedAvailable && !shouldPromoteFromCpu) return;
-    selectedDevice =
-      preferredDevice;
+    const targets = ($inferenceRuntimeTargetsQuery.data?.targets ?? []).filter((target) => Boolean(target.id));
+    if (!targets.length) {
+      selectedRuntimeTargetId = '';
+      return;
+    }
+    const recommendedTargetId = $inferenceRuntimeTargetsQuery.data?.recommended_target_id ?? 'cpu';
+    const selectedAvailable = targets.some((target) => target.id === selectedRuntimeTargetId);
+    if (selectedAvailable) {
+      return;
+    }
+    selectedRuntimeTargetId = recommendedTargetId;
   });
 
   const disposeStartupContributor = () => {
@@ -155,6 +150,12 @@
   const handleInferenceStart = async () => {
     if (!selectedModelId) {
       inferenceStartError = '推論モデルを選択してください。';
+      return;
+    }
+    const runtimeTargetId =
+      selectedRuntimeTargetId || $inferenceRuntimeTargetsQuery.data?.recommended_target_id || '';
+    if (!runtimeTargetId) {
+      inferenceStartError = '実行先候補を選択してください。';
       return;
     }
     startupStatus = null;
@@ -195,7 +196,7 @@
     try {
       const result = (await api.inference.runnerStart({
         model_id: selectedModelId,
-        device: selectedDevice || $inferenceDeviceQuery.data?.recommended,
+        runtime_target_id: runtimeTargetId,
         task: taskInput.trim() || undefined,
         num_episodes: numEpisodes,
         policy_options: policyOptions
@@ -247,14 +248,14 @@
   };
 
   const runnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus);
-  const inferenceModels = $derived(sortInferenceModelsByRecency($inferenceModelsQuery.data?.models ?? []));
-  const deviceOptions = $derived(($inferenceDeviceQuery.data?.devices ?? []).filter((device) => Boolean(device.device)));
-  const recommendedDevice = $derived($inferenceDeviceQuery.data?.recommended ?? 'cpu');
-  const selectedModel = $derived(
-    inferenceModels.find((item) => resolveInferenceModelId(item) === selectedModelId)
+  const runtimeTargets = $derived(($inferenceRuntimeTargetsQuery.data?.targets ?? []).filter((target) => Boolean(target.id)));
+  const recommendedRuntimeTargetId = $derived($inferenceRuntimeTargetsQuery.data?.recommended_target_id ?? 'cpu');
+  const recommendedRuntimeTarget = $derived(
+    runtimeTargets.find((target) => target.id === recommendedRuntimeTargetId) ?? null
   );
-  const selectedDeviceInfo = $derived(deviceOptions.find((device) => device.device === selectedDevice) ?? null);
-  const selectedPolicyType = $derived((selectedModel?.policy_type ?? '').toLowerCase());
+  const selectedRuntimeTarget = $derived(
+    runtimeTargets.find((target) => target.id === selectedRuntimeTargetId) ?? null
+  );
   const taskCandidates = $derived(selectedModel?.task_candidates ?? []);
   const supportsDenoisingSteps = $derived(PI0_POLICY_TYPES.has(selectedPolicyType));
   const runnerActive = $derived(Boolean(runnerStatus.active));
@@ -273,6 +274,15 @@
   const startupSubtextClass = $derived(startupState === 'failed' ? 'text-rose-900/80' : 'text-emerald-900/80');
   const startupTrackClass = $derived(startupState === 'failed' ? 'bg-rose-100' : 'bg-emerald-100');
   const startupBarClass = $derived(startupState === 'failed' ? 'bg-rose-500' : 'bg-emerald-500');
+  const describeRuntimeTargetMeta = (target: { kind?: string; display_name?: string | null; current_sm?: string | null }) => {
+    if ((target.kind ?? '').toLowerCase() === 'cpu') {
+      return `CPU / ${target.display_name?.trim() || 'host'}`;
+    }
+    const parts = [target.display_name?.trim(), target.current_sm?.trim()].filter(
+      (value): value is string => Boolean(value)
+    );
+    return parts.join(' / ') || 'CUDA';
+  };
 
   $effect(() => {
     const modelId = selectedModelId;
@@ -455,9 +465,12 @@
       </div>
       <div class="flex flex-wrap gap-2">
         <span class="chip">{runnerActive ? '稼働中' : '待機中'}</span>
-        <span class="chip">device: {selectedDeviceInfo?.device ?? selectedDevice ?? recommendedDevice}</span>
+        <span class="chip">target: {selectedRuntimeTarget?.label ?? recommendedRuntimeTarget?.label ?? 'CPU'}</span>
         {#if selectedModel}
           <span class="chip">{selectedModel.policy_type ?? 'unknown'}</span>
+        {/if}
+        {#if $inferenceRuntimeTargetsQuery.data?.current_sm}
+          <span class="chip">SM: {$inferenceRuntimeTargetsQuery.data.current_sm}</span>
         {/if}
       </div>
     </div>
@@ -470,47 +483,53 @@
           <p class="label">実行設定</p>
           <h3 class="mt-2 text-xl font-semibold text-slate-950">ランタイム</h3>
         </div>
-        <span class="chip bg-white">{selectedDeviceInfo?.device ?? selectedDevice ?? recommendedDevice}</span>
+        <span class="chip bg-white">{selectedRuntimeTarget?.label ?? recommendedRuntimeTarget?.label ?? 'CPU'}</span>
       </div>
 
       <div class="mt-5 space-y-5">
         <div>
           <div class="flex items-center justify-between gap-2">
-            <span class="label">デバイス</span>
-            <span class="text-xs text-slate-500">推奨: {recommendedDevice}</span>
+            <span class="label">実行先</span>
+            <span class="text-xs text-slate-500">推奨: {recommendedRuntimeTarget?.label ?? 'CPU'}</span>
           </div>
-          <div class="mt-3 grid gap-2 sm:grid-cols-2">
-            {#each deviceOptions as device}
+          <div class="mt-3 flex gap-3 overflow-x-auto pb-1">
+            {#each runtimeTargets as target}
               <button
                 type="button"
-                class={`rounded-2xl border px-4 py-3 text-left transition ${
-                  selectedDevice === device.device
+                class={`w-[240px] shrink-0 rounded-2xl border px-4 py-3 text-left transition ${
+                  selectedRuntimeTargetId === target.id
                     ? 'border-sky-300 bg-sky-50/40 shadow-[0_0_0_3px_rgba(14,165,233,0.08)]'
-                    : device.available
+                    : target.available
                       ? 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
                       : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
                 }`}
-                onclick={() => device.available && (selectedDevice = device.device ?? 'cpu')}
-                disabled={!device.available}
-                aria-pressed={selectedDevice === device.device}
+                onclick={() => target.available && (selectedRuntimeTargetId = target.id)}
+                disabled={!target.available}
+                aria-pressed={selectedRuntimeTargetId === target.id}
               >
                 <div class="flex items-start justify-between gap-3">
                   <div>
-                    <p class="text-sm font-semibold text-slate-900">{device.device}</p>
-                    <p class="mt-1 text-xs text-slate-500">{device.available ? '利用可能' : '利用不可'}</p>
+                    <p class="text-sm font-semibold text-slate-900">{target.label}</p>
+                    <p class="mt-1 text-xs text-slate-500">{target.available ? '利用可能' : '利用不可'}</p>
                   </div>
-                  {#if device.device === recommendedDevice}
+                  {#if target.id === recommendedRuntimeTargetId}
                     <span class="chip bg-emerald-50 text-emerald-700">推奨</span>
                   {/if}
                 </div>
-                <p class="mt-3 text-xs text-slate-500">
-                  free {formatDeviceMemory(device.memory_free_mb)} / total {formatDeviceMemory(device.memory_total_mb)}
+                <p class="mt-3 text-xs font-medium leading-5 text-slate-700">
+                  {describeRuntimeTargetMeta(target)}
+                </p>
+                <p
+                  class="mt-1 truncate text-xs leading-5 text-slate-500"
+                  title={target.description ?? 'ランタイム候補の詳細はありません。'}
+                >
+                  {target.description ?? 'ランタイム候補の詳細はありません。'}
                 </p>
               </button>
             {/each}
-            {#if deviceOptions.length === 0}
-              <div class="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-sm text-slate-500 sm:col-span-2">
-                デバイス情報を取得できないため、`cpu` を利用します。
+            {#if runtimeTargets.length === 0}
+              <div class="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-sm text-slate-500">
+                このモデルに対応する実行先候補を取得できませんでした。
               </div>
             {/if}
           </div>
@@ -584,7 +603,13 @@
             class="btn-primary w-full"
             type="button"
             onclick={handleInferenceStart}
-            disabled={inferenceStartPending || startupActive || !selectedModelId || runnerActive}
+            disabled={
+              inferenceStartPending ||
+              startupActive ||
+              !selectedModelId ||
+              !runtimeTargets.length ||
+              runnerActive
+            }
             aria-busy={inferenceStartPending}
           >
             {startupActive ? '準備中...' : '推論を開始'}

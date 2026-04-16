@@ -17,14 +17,15 @@ import zmq
 
 from interfaces_backend.models.inference import (
     GpuHostStatus,
-    InferenceDeviceCompatibilityResponse,
-    InferenceDeviceInfo,
     InferenceModelInfo,
     InferenceRunnerStatus,
     InferenceRunnerStatusResponse,
 )
-from interfaces_backend.utils.torch_info import get_torch_info
-from percus_ai.environment.env_manager import EnvironmentManager
+from interfaces_backend.services.inference_runtime_targets import (
+    InferenceRuntimeTargetsService,
+    ResolvedInferenceRuntimeTarget,
+    get_inference_runtime_targets_service,
+)
 from percus_ai.observability import ArmId, CommOverheadReporter, EventStatus, PointId, resolve_ids
 from percus_ai.storage.paths import get_models_dir, get_project_root
 
@@ -77,9 +78,14 @@ def _read_policy_type(config_path: Path) -> Optional[str]:
 class InferenceRuntimeManager:
     """Controls lifecycle of a single inference worker process."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_targets_service: InferenceRuntimeTargetsService | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self._ctx = zmq.Context.instance()
+        self._runtime_targets_service = runtime_targets_service or get_inference_runtime_targets_service()
 
         self._worker_proc: Optional[subprocess.Popen] = None
         self._worker_log: Optional[Any] = None
@@ -149,28 +155,6 @@ class InferenceRuntimeManager:
                 )
             )
         return models
-
-    def get_device_compatibility(self) -> InferenceDeviceCompatibilityResponse:
-        info = get_torch_info(use_cache=False)
-        devices = [InferenceDeviceInfo(device="cpu", available=True)]
-        recommended = "cpu"
-
-        if info.get("cuda_available"):
-            devices.insert(
-                0,
-                InferenceDeviceInfo(
-                    device="cuda:0",
-                    available=True,
-                    memory_total_mb=info.get("cuda_memory_total"),
-                    memory_free_mb=info.get("cuda_memory_free"),
-                ),
-            )
-            recommended = "cuda:0"
-        elif info.get("mps_available"):
-            devices.insert(0, InferenceDeviceInfo(device="mps", available=True))
-            recommended = "mps"
-
-        return InferenceDeviceCompatibilityResponse(devices=devices, recommended=recommended)
 
     def get_status(self) -> InferenceRunnerStatusResponse:
         self._refresh_state_from_worker()
@@ -296,61 +280,45 @@ class InferenceRuntimeManager:
         self,
         *,
         policy_type: str,
+        runtime_target_id: str | None = None,
         progress_callback: Optional[Callable[[str, float, str, Optional[dict[str, Any]]], None]] = None,
-    ) -> str:
+    ) -> ResolvedInferenceRuntimeTarget:
         normalized_policy_type = str(policy_type or "").strip().lower()
         if not normalized_policy_type:
             raise RuntimeError("Environment preparation failed: policy type is missing")
-
-        env_manager = EnvironmentManager(get_project_root())
-        env_name = env_manager.get_env_for_policy(normalized_policy_type)
-        last_error: Optional[str] = None
-
-        def _on_env_event(event: dict[str, object]) -> None:
-            nonlocal last_error
-            if not isinstance(event, dict):
-                return
-            event_type = str(event.get("type") or "").strip().lower()
-            step = str(event.get("step") or "").strip() or "prepare"
-            message = str(event.get("message") or "").strip() or "推論実行環境を準備しています..."
-            error = str(event.get("error") or "").strip()
-            try:
-                raw_percent = float(event.get("percent") or 0.0)
-            except (TypeError, ValueError):
-                raw_percent = 0.0
-            mapped_percent = 84.0 + (max(0.0, min(raw_percent, 100.0)) * 0.08)
-            detail = {"env_name": env_name, "step": step}
-            if error:
-                detail["error"] = error
-            if progress_callback is not None:
-                progress_callback("prepare_env", mapped_percent, message, detail)
-            if event_type == "error":
-                last_error = error or message
 
         if progress_callback is not None:
             progress_callback(
                 "prepare_env",
                 84.0,
                 "推論実行環境を準備しています...",
-                {"env_name": env_name},
+                {
+                    "policy_type": normalized_policy_type,
+                    "runtime_target_id": runtime_target_id,
+                },
             )
 
-        prepared = env_manager.ensure_env(
-            env_name,
-            silent=True,
-            callback=_on_env_event,
-        )
-        if not prepared:
-            detail = last_error or f"failed to ensure environment '{env_name}'"
-            raise RuntimeError(f"Environment preparation failed: {detail}")
+        try:
+            resolved_target = self._runtime_targets_service.resolve_target(
+                policy_type=normalized_policy_type,
+                target_id=runtime_target_id,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(f"Environment preparation failed: {exc}") from exc
+
         if progress_callback is not None:
             progress_callback(
                 "prepare_env",
                 92.0,
                 "推論実行環境の準備が完了しました。",
-                {"env_name": env_name},
+                {
+                    "config_id": resolved_target.config_id,
+                    "env_name": resolved_target.env_name,
+                    "build_id": resolved_target.build_id,
+                    "runtime_target_id": resolved_target.target_id,
+                },
             )
-        return env_name
+        return resolved_target
 
     def ensure_startable(self) -> None:
         self._refresh_state_from_worker()
@@ -364,7 +332,7 @@ class InferenceRuntimeManager:
     def start(
         self,
         model_id: str,
-        device: Optional[str],
+        runtime_target_id: Optional[str],
         task: Optional[str],
         policy_options: Optional[dict[str, Any]] = None,
         joint_names: Optional[list[str]] = None,
@@ -422,19 +390,13 @@ class InferenceRuntimeManager:
             if policy_type_normalized not in {"pi0", "pi05"}:
                 raise RuntimeError("denoising_steps is only supported for pi0/pi05")
 
-        compatibility = self.get_device_compatibility()
-        selected_device = (device or compatibility.recommended or "cpu").strip()
-        available = {item.device for item in compatibility.devices if item.available}
-        if selected_device not in available:
-            raise RuntimeError(f"Device '{selected_device}' is not available")
-
         repo_root = get_project_root()
-        run_in_env = repo_root / "features" / "percus_ai" / "environment" / "run_in_env.sh"
-        if not run_in_env.exists():
-            raise RuntimeError(f"run_in_env.sh not found: {run_in_env}")
-
-        env_manager = EnvironmentManager(repo_root)
-        env_name = env_manager.get_env_for_policy(policy_type)
+        resolved_target = self._runtime_targets_service.resolve_target(
+            policy_type=policy_type_normalized,
+            target_id=runtime_target_id,
+        )
+        selected_device = resolved_target.device
+        env_name = resolved_target.env_name
 
         session_id = uuid.uuid4().hex
         ipc_dir = _IPC_BASE_DIR / session_id
@@ -443,9 +405,7 @@ class InferenceRuntimeManager:
         event_endpoint = f"ipc://{ipc_dir / 'evt.sock'}"
 
         worker_cmd = [
-            str(run_in_env),
-            env_name,
-            "python",
+            resolved_target.python_executable,
             "-m",
             "percus_ai.inference.worker_main",
             "--session-id",
@@ -475,7 +435,6 @@ class InferenceRuntimeManager:
         event_log_path.touch(exist_ok=True)
         worker_log = open(log_path, "a", encoding="utf-8")
         worker_env = os.environ.copy()
-        worker_env["PERCUS_AI_SKIP_ENV_ENSURE"] = "1"
         worker_proc = subprocess.Popen(
             worker_cmd,
             cwd=repo_root,

@@ -44,9 +44,9 @@ class _FakeRuntime:
         if self.startable_error is not None:
             raise self.startable_error
 
-    def prepare_environment(self, *, policy_type: str, progress_callback=None) -> str:
+    def prepare_environment(self, *, policy_type: str, runtime_target_id: str | None = None, progress_callback=None) -> str:
         self.call_order.append("prepare_environment")
-        self.prepare_calls.append(policy_type)
+        self.prepare_calls.append(f"{policy_type}:{runtime_target_id or ''}")
         if progress_callback is not None:
             progress_callback(
                 "prepare_env",
@@ -426,7 +426,7 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
         manager.create(
             session_id="session-1",
             model_id="model-1",
-            device="cpu",
+            runtime_target_id="cpu",
             task="pick-and-place",
             progress_callback=progress_callback,
         )
@@ -435,8 +435,9 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
     assert dataset.ensured_models == ["model-1"]
     assert runtime.ensure_startable_calls == 1
     assert runtime.call_order == ["prepare_environment", "start"]
-    assert runtime.prepare_calls == ["pi05"]
+    assert runtime.prepare_calls == ["pi05:cpu"]
     assert runtime.start_calls[0]["model_id"] == "model-1"
+    assert runtime.start_calls[0]["runtime_target_id"] == "cpu"
     assert progress_events.index("prepare_env") < progress_events.index("launch_worker")
     assert runtime.pause_calls == [("worker-1", True)]
     assert state.extras["worker_session_id"] == "worker-1"
@@ -511,7 +512,7 @@ def test_create_blocks_worker_start_on_model_profile_mismatch(monkeypatch, tmp_p
             manager.create(
                 session_id="session-1",
                 model_id="model-1",
-                device="cpu",
+                runtime_target_id="cpu",
                 task="pick-and-place",
             )
         )
@@ -581,7 +582,7 @@ def test_create_rejects_when_worker_already_running_before_sync(monkeypatch) -> 
             manager.create(
                 session_id="session-1",
                 model_id="model-1",
-                device="cpu",
+                runtime_target_id="cpu",
                 task="pick-and-place",
             )
         )
