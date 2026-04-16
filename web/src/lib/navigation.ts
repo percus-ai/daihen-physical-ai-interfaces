@@ -42,6 +42,13 @@ export const navItems = [
     description: 'データセット・モデル・アーカイブ'
   },
   {
+    id: 'builds',
+    label: '構築管理',
+    href: '/builds',
+    icon: '🏗️',
+    description: '環境構築と共有パッケージの管理'
+  },
+  {
     id: 'system',
     label: 'システム',
     href: '/system',

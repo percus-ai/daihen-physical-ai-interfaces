@@ -160,6 +160,16 @@ export type SystemBundledTorchSubscription = RealtimeSubscriptionBase & {
   params?: Record<string, never>;
 };
 
+export type BuildsStatusSubscription = RealtimeSubscriptionBase & {
+  kind: 'builds.status';
+  params?: Record<string, never>;
+};
+
+export type BuildsLogsSubscription = RealtimeSubscriptionBase & {
+  kind: 'builds.logs';
+  params?: Record<string, never>;
+};
+
 export type RecordingUploadStatusSubscription = RealtimeSubscriptionBase & {
   kind: 'recording.upload-status';
   params: {
@@ -247,6 +257,8 @@ export type TabSessionSubscription =
   | OperateStatusSubscription
   | SystemRuntimeEnvsSubscription
   | SystemBundledTorchSubscription
+  | BuildsStatusSubscription
+  | BuildsLogsSubscription
   | RecordingUploadStatusSubscription
   | StartupOperationSubscription
   | TrainingProvisionOperationSubscription
@@ -298,6 +310,103 @@ export type StartupOperationStatusResponse = {
     current_file?: string | null;
   };
   updated_at?: string | null;
+};
+
+export type BuildSettingState = 'unbuilt' | 'building' | 'success' | 'failed';
+export type BuildSettingKind = 'env' | 'shared';
+export type BuildJobState = 'queued' | 'running' | 'completed' | 'failed';
+
+export type BuildSettingActions = {
+  run: boolean;
+  cancel: boolean;
+  delete: boolean;
+  create_error_report: boolean;
+};
+
+export type BuildSettingSummary = {
+  kind: BuildSettingKind;
+  setting_id: string;
+  display_name: string;
+  state: BuildSettingState;
+  selected?: boolean;
+  config_origin?: 'default' | 'data' | null;
+  config_id?: string | null;
+  env_name?: string | null;
+  package?: string | null;
+  variant?: string | null;
+  latest_build_id?: string | null;
+  current_build_id?: string | null;
+  current_job_id?: string | null;
+  current_step_name?: string | null;
+  current_step_index?: number | null;
+  total_steps?: number | null;
+  progress_percent?: number | null;
+  latest_started_at?: string | null;
+  latest_finished_at?: string | null;
+  latest_error_summary?: string | null;
+  actions: BuildSettingActions;
+};
+
+export type EnvBuildSettingsListResponse = {
+  selected_config_id?: string | null;
+  items: BuildSettingSummary[];
+};
+
+export type SharedBuildSettingsListResponse = {
+  items: BuildSettingSummary[];
+};
+
+export type BuildJobSummary = {
+  job_id: string;
+  build_id: string;
+  kind: BuildSettingKind;
+  setting_id: string;
+  state: BuildJobState;
+  current_step_name?: string | null;
+  current_step_index?: number | null;
+  total_steps?: number | null;
+  progress_percent?: number | null;
+  message?: string | null;
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
+export type BuildRunAcceptedResponse = {
+  accepted: boolean;
+  job: BuildJobSummary;
+};
+
+export type BuildJobCancelResponse = {
+  accepted: boolean;
+  job: BuildJobSummary;
+};
+
+export type BuildArtifactDeleteResponse = {
+  deleted: boolean;
+  kind: BuildSettingKind;
+  setting_id: string;
+  build_id: string;
+};
+
+export type BuildsStatusSnapshot = {
+  running_jobs: BuildJobSummary[];
+  envs: EnvBuildSettingsListResponse;
+  shared: SharedBuildSettingsListResponse;
+};
+
+export type BuildLogEvent = {
+  seq: number;
+  job_id: string;
+  build_id: string;
+  kind: BuildSettingKind;
+  setting_id: string;
+  step: string;
+  stream: 'stdout' | 'stderr' | string;
+  line: string;
+  emitted_at: string;
 };
 
 export type InferenceRunnerStartPayload = {
@@ -1095,6 +1204,39 @@ export const api = {
     profiles: () => fetchApi('/api/analytics/profiles'),
     training: () => fetchApi('/api/analytics/training'),
     storage: () => fetchApi('/api/analytics/storage')
+  },
+  builds: {
+    envs: () => fetchApi<EnvBuildSettingsListResponse>('/api/builds/envs'),
+    shared: () => fetchApi<SharedBuildSettingsListResponse>('/api/builds/shared'),
+    runEnv: (configId: string, envName: string) =>
+      fetchApi<BuildRunAcceptedResponse>(`/api/builds/envs/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/run`, {
+        method: 'POST'
+      }),
+    runShared: (packageName: string, variant: string) =>
+      fetchApi<BuildRunAcceptedResponse>(
+        `/api/builds/shared/${encodeURIComponent(packageName)}/${encodeURIComponent(variant)}/run`,
+        {
+          method: 'POST'
+        }
+      ),
+    cancelJob: (jobId: string) =>
+      fetchApi<BuildJobCancelResponse>(`/api/builds/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST'
+      }),
+    deleteEnvArtifact: (configId: string, envName: string, buildId: string) =>
+      fetchApi<BuildArtifactDeleteResponse>(
+        `/api/builds/envs/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/artifacts/${encodeURIComponent(buildId)}`,
+        {
+          method: 'DELETE'
+        }
+      ),
+    deleteSharedArtifact: (packageName: string, variant: string, buildId: string) =>
+      fetchApi<BuildArtifactDeleteResponse>(
+        `/api/builds/shared/${encodeURIComponent(packageName)}/${encodeURIComponent(variant)}/artifacts/${encodeURIComponent(buildId)}`,
+        {
+          method: 'DELETE'
+        }
+      )
   },
   system: {
     health: () => fetchApi('/api/system/health'),
