@@ -24,7 +24,6 @@
     type SystemTab
   } from '$lib/system/systemTabRouting';
   import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
-  import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
   import type { FeaturesRepoSuggestions, SystemSettings, UserSettings } from '$lib/types/settings';
   import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
 
@@ -52,15 +51,10 @@
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let networkStatus = $state<OperateNetworkStatus | null>(null);
   let bundledTorchSnapshot = $state<BundledTorchBuildSnapshot | null>(null);
-  let runtimeEnvSnapshot = $state<RuntimeEnvSnapshot | null>(null);
   let systemSettings = $state<SystemSettings | null>(null);
   let featuresRepoSuggestions = $state<FeaturesRepoSuggestions | null>(null);
   let featuresRepoSuggestionsPending = $state(false);
   let userSettings = $state<UserSettings | null>(null);
-  let bundledTorchActionPending = $state(false);
-  let bundledTorchActionError = $state('');
-  let runtimeEnvActionPending = $state(false);
-  let runtimeEnvActionError = $state('');
   let buildLoading = $state(false);
   let buildLoadError = $state('');
   let envBuildItems = $state<BuildSettingSummary[]>([]);
@@ -156,9 +150,8 @@
   const loadInitialState = async () => {
     buildLoading = true;
     buildLoadError = '';
-    const [bundledResult, runtimeEnvResult, operateResult, systemSettingsResult, userSettingsResult, envBuildsResult, sharedBuildsResult] = await Promise.allSettled([
+    const [bundledResult, operateResult, systemSettingsResult, userSettingsResult, envBuildsResult, sharedBuildsResult] = await Promise.allSettled([
       api.system.bundledTorchStatus(),
-      api.system.runtimeEnvStatus(),
       api.operate.status(),
       api.system.settings(),
       api.user.settings(),
@@ -168,16 +161,6 @@
 
     if (bundledResult.status === 'fulfilled') {
       bundledTorchSnapshot = bundledResult.value;
-    } else {
-      bundledTorchActionError =
-        bundledResult.reason instanceof Error ? bundledResult.reason.message : 'bundled-torch状態の取得に失敗しました。';
-    }
-
-    if (runtimeEnvResult.status === 'fulfilled') {
-      runtimeEnvSnapshot = runtimeEnvResult.value;
-    } else {
-      runtimeEnvActionError =
-        runtimeEnvResult.reason instanceof Error ? runtimeEnvResult.reason.message : 'runtime env 状態の取得に失敗しました。';
     }
 
     if (operateResult.status === 'fulfilled') {
@@ -259,69 +242,6 @@
       ...buildActionPending,
       [key]: value
     };
-  };
-
-  const triggerBuild = async (payload: {
-    pytorchVersion: string;
-    torchvisionVersion: string;
-    force: boolean;
-  }) => {
-    bundledTorchActionPending = true;
-    bundledTorchActionError = '';
-    try {
-      bundledTorchSnapshot = await api.system.buildBundledTorch({
-        pytorch_version: payload.pytorchVersion.trim() || null,
-        torchvision_version: payload.torchvisionVersion.trim() || null,
-        force: payload.force
-      });
-    } catch (error) {
-      bundledTorchActionError =
-        error instanceof Error ? error.message : 'bundled-torch build の開始に失敗しました。';
-    } finally {
-      bundledTorchActionPending = false;
-    }
-  };
-
-  const triggerClean = async () => {
-    bundledTorchActionPending = true;
-    bundledTorchActionError = '';
-    try {
-      bundledTorchSnapshot = await api.system.cleanBundledTorch();
-    } catch (error) {
-      bundledTorchActionError =
-        error instanceof Error ? error.message : 'bundled-torch clean の開始に失敗しました。';
-    } finally {
-      bundledTorchActionPending = false;
-    }
-  };
-
-  const triggerRuntimeBuild = async (payload: { envName: string; force: boolean }) => {
-    runtimeEnvActionPending = true;
-    runtimeEnvActionError = '';
-    try {
-      runtimeEnvSnapshot = await api.system.buildRuntimeEnv({
-        env_name: payload.envName,
-        force: payload.force
-      });
-    } catch (error) {
-      runtimeEnvActionError =
-        error instanceof Error ? error.message : 'runtime env build の開始に失敗しました。';
-    } finally {
-      runtimeEnvActionPending = false;
-    }
-  };
-
-  const triggerRuntimeDelete = async (envName: string) => {
-    runtimeEnvActionPending = true;
-    runtimeEnvActionError = '';
-    try {
-      runtimeEnvSnapshot = await api.system.deleteRuntimeEnv({ env_name: envName });
-    } catch (error) {
-      runtimeEnvActionError =
-        error instanceof Error ? error.message : 'runtime env delete の開始に失敗しました。';
-    } finally {
-      runtimeEnvActionPending = false;
-    }
   };
 
   const triggerBuildRun = async (item: BuildSettingSummary) => {
@@ -493,7 +413,6 @@
     if (tab === 'runtime') {
       return [
         { subscription_id: 'system.page.bundled-torch', kind: 'system.bundled-torch', params: {} },
-        { subscription_id: 'system.page.runtime-envs', kind: 'system.runtime-envs', params: {} },
         { subscription_id: 'system.page.builds-status', kind: 'builds.status', params: {} },
         { subscription_id: 'system.page.builds-logs', kind: 'builds.logs', params: {} }
       ];
@@ -518,9 +437,6 @@
       }
       case 'system.bundled-torch':
         bundledTorchSnapshot = event.payload as BundledTorchBuildSnapshot;
-        return;
-      case 'system.runtime-envs':
-        runtimeEnvSnapshot = event.payload as RuntimeEnvSnapshot;
         return;
       case 'builds.status':
         applyBuildsSnapshot(event.payload as BuildsStatusSnapshot);
@@ -617,14 +533,6 @@
     <Tabs.Content value="runtime" class="mt-6 space-y-6">
       {#if activeTab === 'runtime'}
         <RuntimeTab
-          snapshot={systemStatusSnapshot}
-          runtimeEnvSnapshot={runtimeEnvSnapshot}
-          bundledTorchSnapshot={bundledTorchSnapshot}
-          systemSettings={systemSettings}
-          runtimeEnvActionPending={runtimeEnvActionPending}
-          runtimeEnvActionError={runtimeEnvActionError}
-          bundledTorchActionPending={bundledTorchActionPending}
-          bundledTorchActionError={bundledTorchActionError}
           buildLoading={buildLoading}
           buildLoadError={buildLoadError}
           envBuildItems={envBuildItems}
@@ -633,10 +541,6 @@
           selectedBuildConfigId={selectedBuildConfigId}
           buildActionPending={buildActionPending}
           buildLogLinesByJobId={buildLogLinesByJobId}
-          onRuntimeBuild={triggerRuntimeBuild}
-          onRuntimeDelete={triggerRuntimeDelete}
-          onBuild={triggerBuild}
-          onClean={triggerClean}
           onBuildRun={triggerBuildRun}
           onBuildCancelByJobId={triggerBuildCancelByJobId}
           onBuildDelete={triggerBuildDelete}
