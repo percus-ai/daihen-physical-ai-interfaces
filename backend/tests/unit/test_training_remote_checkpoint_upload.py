@@ -18,6 +18,7 @@ def _load_training_api_module():
     providers_pkg = types.ModuleType("percus_ai.training.providers")
     providers_vast_module = types.ModuleType("percus_ai.training.providers.vast")
     providers_verda_module = types.ModuleType("percus_ai.training.providers.verda")
+    features_repo_module = types.ModuleType("percus_ai.training.features_repo")
     ssh_pkg = types.ModuleType("percus_ai.training.ssh")
     ssh_client_module = types.ModuleType("percus_ai.training.ssh.client")
     ssh_executor_module = types.ModuleType("percus_ai.training.ssh.executor")
@@ -38,17 +39,29 @@ def _load_training_api_module():
         def terminate_instance(self, *_args, **_kwargs):
             return None
 
+    class _StubFeaturesRepoConfig:
+        def __init__(self, repo_url: str = "", repo_ref: str = "", repo_commit: str | None = None):
+            self.repo_url = repo_url
+            self.repo_ref = repo_ref
+            self.repo_commit = repo_commit
+
     ssh_client_module.SSHConnection = _StubSSHConnection
     ssh_executor_module.RemoteExecutor = _StubRemoteExecutor
     ssh_executor_module.run_remote_command = _stub_run_remote_command
     providers_vast_module.destroy_instance = _stub_destroy_instance
     providers_verda_module.VerdaProvider = _StubVerdaProvider
+    features_repo_module.resolve_features_repo_config = lambda: _StubFeaturesRepoConfig(
+        repo_url="https://github.com/percus-ai/physical-ai-features.git",
+        repo_ref="main",
+        repo_commit=None,
+    )
 
     for name, module in (
         ("percus_ai.training", training_pkg),
         ("percus_ai.training.providers", providers_pkg),
         ("percus_ai.training.providers.vast", providers_vast_module),
         ("percus_ai.training.providers.verda", providers_verda_module),
+        ("percus_ai.training.features_repo", features_repo_module),
         ("percus_ai.training.ssh", ssh_pkg),
         ("percus_ai.training.ssh.client", ssh_client_module),
         ("percus_ai.training.ssh.executor", ssh_executor_module),
@@ -1787,3 +1800,39 @@ def test_ensure_model_artifact_in_r2_from_checkpoint_copies_from_checkpoint():
     assert len(mgr.sync.s3.client.calls) == 2
     assert mgr.sync.s3.client.calls[0][2] == "v2/models/job-1/config.json"
     assert mgr.sync.s3.client.calls[1][2] == "v2/models/job-1/model.safetensors"
+
+
+def test_generate_env_file_reads_features_repo_from_system_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("PHYSICAL_AI_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("PERCUS_AI_REPO_URL", raising=False)
+    monkeypatch.delenv("PERCUS_AI_REPO_REF", raising=False)
+    monkeypatch.delenv("PERCUS_AI_REPO_COMMIT", raising=False)
+    monkeypatch.setattr(
+        training,
+        "resolve_features_repo_config",
+        lambda: type(
+            "_Config",
+            (),
+            {
+                "repo_url": "https://github.com/example/features.git",
+                "repo_ref": "sync/daihen-physical-ai/abc1234",
+                "repo_commit": "deadbeef",
+            },
+        )(),
+    )
+
+    content = training._generate_env_file(
+        job_id="job-1",
+        instance_id="inst-1",
+        policy_type="pi0",
+        supabase_access_token=None,
+        supabase_refresh_token=None,
+        supabase_user_id=None,
+    )
+
+    assert "PERCUS_AI_REPO_URL=https://github.com/example/features.git" in content
+    assert "PERCUS_AI_REPO_REF=sync/daihen-physical-ai/abc1234" in content
+    assert "PERCUS_AI_REPO_COMMIT=deadbeef" in content

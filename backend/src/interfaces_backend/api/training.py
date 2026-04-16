@@ -115,6 +115,7 @@ from percus_ai.db import (
 )
 from percus_ai.training.ssh.client import SSHConnection
 from percus_ai.training.ssh.executor import RemoteExecutor, run_remote_command
+from percus_ai.training.features_repo import resolve_features_repo_config
 from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
 from interfaces_backend.services.training_provision_operations import (
     cleanup_provision_instance,
@@ -808,15 +809,16 @@ def _generate_env_file(
     # Use remote user's home to avoid path mismatch across SSH users
     lines.append("PHYSICAL_AI_DATA_DIR=$HOME/.physical-ai")
 
-    repo_url = os.environ.get(
-        "PERCUS_AI_REPO_URL",
-        "https://github.com/percus-ai/physical-ai-features.git",
-    )
+    features_repo = resolve_features_repo_config()
+    repo_url = str(features_repo.repo_url or "").strip()
     if repo_url:
         lines.append(f"PERCUS_AI_REPO_URL={repo_url}")
-    repo_ref = os.environ.get("PERCUS_AI_REPO_REF")
+    repo_ref = str(features_repo.repo_ref or "").strip()
     if repo_ref:
         lines.append(f"PERCUS_AI_REPO_REF={repo_ref}")
+    repo_commit = str(features_repo.repo_commit or "").strip()
+    if repo_commit:
+        lines.append(f"PERCUS_AI_REPO_COMMIT={repo_commit}")
 
     if policy_type:
         lines.append(f"PERCUS_AI_POLICY_TYPE={policy_type}")
