@@ -18,6 +18,15 @@
     onCancel
   }: Props = $props();
 
+  let displayedPercent = $state(0);
+  let displayedJobId = $state('');
+
+  $effect(() => {
+    if (displayedJobId === job.job_id) return;
+    displayedJobId = job.job_id;
+    displayedPercent = Number(job.progress_percent ?? 0);
+  });
+
   const kindLabel = $derived(job.kind === 'env' ? '環境構築' : '共有パッケージ');
   const badgeClass = $derived(
     job.kind === 'env'
@@ -25,7 +34,7 @@
       : 'border-violet-200 bg-violet-50 text-violet-700'
   );
 
-  const progressLabel = $derived(`${Number(job.progress_percent ?? 0).toFixed(1)}%`);
+  const progressLabel = $derived(`${displayedPercent.toFixed(1)}%`);
   const currentStep = $derived(job.current_step_name?.trim() || '準備中');
   const displayedLogs = $derived(logLines.slice(-6));
 
@@ -62,6 +71,7 @@
       currentStepIndex={job.current_step_index ?? 0}
       totalSteps={job.total_steps ?? 0}
       running={true}
+      bind:displayPercent={displayedPercent}
     />
   </div>
 

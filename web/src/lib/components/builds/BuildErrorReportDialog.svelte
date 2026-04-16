@@ -50,7 +50,7 @@
         {/if}
       </AlertDialog.Description>
 
-      <div class="mt-4 nested-block-pane p-4">
+      <div class="mt-4">
         {#if pending}
           <p class="text-sm text-slate-500">レポートを作成しています...</p>
         {:else if errorMessage}
@@ -58,11 +58,34 @@
         {:else}
           <p class="label">レポートID</p>
           <div class="mt-2 flex items-center gap-2">
-            <code class="min-w-0 flex-1 overflow-x-auto rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-slate-100">
+            <code class="min-w-0 flex-1 overflow-x-auto text-sm font-semibold text-slate-900">
               {reportId}
             </code>
-            <Button.Root class="btn-primary shrink-0" type="button" onclick={handleCopy}>
-              {copied ? 'コピー済み' : 'コピー'}
+            <Button.Root class="btn-ghost inline-flex h-10 w-10 shrink-0 items-center justify-center p-0" type="button" onclick={handleCopy} aria-label="レポートIDをコピー">
+              {#if copied}
+                <svg viewBox="0 0 16 16" class="h-4 w-4" aria-hidden="true">
+                  <path
+                    d="M3.5 8.5 6.5 11.5 12.5 4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.5"
+                  />
+                </svg>
+              {:else}
+                <svg viewBox="0 0 16 16" class="h-4 w-4" aria-hidden="true">
+                  <rect x="5" y="3" width="8" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+                  <path
+                    d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V4A1.5 1.5 0 0 1 3 2.5h5A1.5 1.5 0 0 1 9.5 4v.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.5"
+                  />
+                </svg>
+              {/if}
             </Button.Root>
           </div>
         {/if}

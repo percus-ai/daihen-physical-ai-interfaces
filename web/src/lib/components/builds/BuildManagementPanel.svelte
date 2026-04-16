@@ -98,7 +98,7 @@
       <div class="chip">{runningJobs.length} 件 実行中</div>
     </div>
 
-    <div class="grid gap-4 xl:grid-cols-2">
+    <div class="space-y-4">
       {#each runningJobs as job}
         <BuildRunningCard
           {job}

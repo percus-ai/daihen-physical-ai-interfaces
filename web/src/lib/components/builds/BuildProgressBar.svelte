@@ -4,16 +4,16 @@
     currentStepIndex?: number | null;
     totalSteps?: number | null;
     running?: boolean;
+    displayPercent?: number;
   };
 
   let {
     currentPercent = 0,
     currentStepIndex = 0,
     totalSteps = 0,
-    running = false
+    running = false,
+    displayPercent = $bindable(0)
   }: Props = $props();
-
-  let displayedPercent = $state(0);
 
   const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
 
@@ -31,15 +31,15 @@
 
   $effect(() => {
     if (!running) {
-      displayedPercent = currentValue;
+      displayPercent = currentValue;
       return;
     }
 
-    displayedPercent = Math.max(displayedPercent, currentValue);
+    displayPercent = Math.max(displayPercent, currentValue);
     const timer = window.setInterval(() => {
-      if (displayedPercent >= animatedCap) return;
-      const remaining = animatedCap - displayedPercent;
-      displayedPercent = clampPercent(displayedPercent + Math.max(0.2, remaining * 0.06));
+      if (displayPercent >= animatedCap) return;
+      const remaining = animatedCap - displayPercent;
+      displayPercent = clampPercent(displayPercent + Math.max(0.2, remaining * 0.06));
     }, 160);
 
     return () => {
@@ -51,6 +51,6 @@
 <div class="h-2 w-full overflow-hidden rounded-full bg-slate-200">
   <div
     class={`h-full rounded-full transition-[width] duration-300 ${running ? 'bg-brand' : 'bg-emerald-500'}`}
-    style={`width:${displayedPercent}%`}
+    style={`width:${displayPercent}%`}
   ></div>
 </div>

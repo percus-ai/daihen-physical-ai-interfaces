@@ -62,14 +62,20 @@
 
   const primaryLabel = (item: BuildSettingSummary) => {
     if (item.state === 'building') return '中止';
-    if (item.state === 'success') return '再構築';
-    if (item.state === 'failed') return '再構築';
+    if (item.state === 'success') return '削除';
+    if (item.state === 'failed') return '削除';
     return '構築';
+  };
+
+  const primaryClass = (item: BuildSettingSummary) => {
+    if (item.state === 'success' || item.state === 'failed') {
+      return 'btn-ghost border-rose-200/70 text-rose-600 hover:border-rose-300/80 hover:text-rose-700';
+    }
+    return 'btn-primary';
   };
 
   const secondaryLabel = (item: BuildSettingSummary) => {
     if (item.state === 'failed') return '報告';
-    if (item.actions.delete) return '削除';
     return '';
   };
 
@@ -95,11 +101,19 @@
   const handleSecondary = async (item: BuildSettingSummary) => {
     if (item.state === 'failed' && item.actions.create_error_report) {
       await handleCreateErrorReport(item);
+    }
+  };
+
+  const handlePrimary = async (item: BuildSettingSummary) => {
+    if (item.state === 'building') {
+      await handleCancel(item);
       return;
     }
-    if (item.actions.delete) {
+    if (item.state === 'success' || item.state === 'failed') {
       await handleDelete(item);
+      return;
     }
+    await handleRun(item);
   };
 </script>
 
@@ -114,8 +128,8 @@
   <div class="mt-4 space-y-3">
     {#each items as item}
       <article class={`rounded-2xl border px-4 py-4 ${item.state === 'failed' ? 'border-rose-200 bg-rose-50/40' : 'border-slate-200 bg-white'}`}>
-        <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div class="min-w-0 flex-1">
+        <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_10rem] xl:items-stretch">
+          <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2">
               <h3 class="text-base font-semibold text-slate-900">{titleText(item)}</h3>
               <span class={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${stateClass(item.state)}`}>
@@ -125,42 +139,37 @@
 
             <p class="mt-1 text-xs text-slate-500">{subtitleText(item)}</p>
 
-            <div class="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_12rem] xl:items-center">
-              <div class="min-w-0 space-y-2">
-                <p class={`text-sm ${item.state === 'failed' ? 'font-medium text-rose-700' : 'text-slate-600'}`}>
-                  {detailText(item)}
-                </p>
-                {#if item.state === 'building'}
-                  <BuildProgressBar
-                    currentPercent={item.progress_percent ?? 0}
-                    currentStepIndex={item.current_step_index ?? 0}
-                    totalSteps={item.total_steps ?? 0}
-                    running={true}
-                  />
-                {/if}
-              </div>
-
-              <div class="flex flex-wrap items-center gap-2 xl:justify-end">
-                {#if item.state === 'building'}
-                  <Button.Root class="btn-primary min-w-20" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleCancel(item)}>
-                    {actionPending[item.setting_id] ? '中止中...' : primaryLabel(item)}
-                  </Button.Root>
-                {:else}
-                  <Button.Root class="btn-primary min-w-20" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleRun(item)}>
-                    {actionPending[item.setting_id] ? '処理中...' : primaryLabel(item)}
-                  </Button.Root>
-                  {#if secondaryLabel(item)}
-                    <Button.Root class="btn-ghost min-w-20" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleSecondary(item)}>
-                      {actionPending[item.setting_id]
-                        ? item.state === 'failed'
-                          ? '発行中...'
-                          : '削除中...'
-                        : secondaryLabel(item)}
-                    </Button.Root>
-                  {/if}
-                {/if}
-              </div>
+            <div class="mt-3 min-w-0 space-y-2">
+              <p class={`text-sm ${item.state === 'failed' ? 'font-medium text-rose-700' : 'text-slate-600'}`}>
+                {detailText(item)}
+              </p>
+              {#if item.state === 'building'}
+                <BuildProgressBar
+                  currentPercent={item.progress_percent ?? 0}
+                  currentStepIndex={item.current_step_index ?? 0}
+                  totalSteps={item.total_steps ?? 0}
+                  running={true}
+                />
+              {/if}
             </div>
+          </div>
+
+          <div class="flex min-w-24 flex-col items-stretch xl:justify-self-end">
+            {#if secondaryLabel(item)}
+              <Button.Root class="btn-ghost w-full" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleSecondary(item)}>
+                {actionPending[item.setting_id] ? '発行中...' : secondaryLabel(item)}
+              </Button.Root>
+            {/if}
+
+            <Button.Root class={`${primaryClass(item)} mt-auto w-full`} type="button" disabled={actionPending[item.setting_id]} onclick={() => handlePrimary(item)}>
+              {actionPending[item.setting_id]
+                ? item.state === 'building'
+                  ? '中止中...'
+                  : item.state === 'success'
+                    ? '削除中...'
+                    : '処理中...'
+                : primaryLabel(item)}
+            </Button.Root>
           </div>
         </div>
       </article>
