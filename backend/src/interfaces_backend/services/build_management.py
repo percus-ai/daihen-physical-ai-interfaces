@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from interfaces_backend.models.build_management import (
+    BuildJobSummaryModel,
     BuildSettingActionsModel,
     BuildSettingState,
     BuildSettingSummaryModel,
@@ -21,6 +22,10 @@ class SystemSettingsReader(Protocol):
     def get_settings(self) -> SystemSettingsModel: ...
 
 
+class BuildJobsReader(Protocol):
+    def list_active_jobs(self) -> list[BuildJobSummaryModel]: ...
+
+
 class BuildManagementService:
     def __init__(
         self,
@@ -28,6 +33,7 @@ class BuildManagementService:
         config_loader: EnvironmentConfigLoader | None = None,
         build_store: BuildStore | None = None,
         settings_service: SystemSettingsReader | None = None,
+        build_jobs_service: BuildJobsReader | None = None,
     ) -> None:
         self._config_loader = config_loader or EnvironmentConfigLoader()
         self._build_store = build_store or BuildStore()
@@ -37,9 +43,16 @@ class BuildManagementService:
             self._settings_service = get_system_settings_service()
         else:
             self._settings_service = settings_service
+        if build_jobs_service is None:
+            from interfaces_backend.services.build_jobs import get_build_jobs_service
+
+            self._build_jobs_service = get_build_jobs_service()
+        else:
+            self._build_jobs_service = build_jobs_service
 
     def list_env_settings(self) -> EnvBuildSettingsListResponse:
         selected_config_id = self._settings_service.get_settings().environment_build.env_config_id
+        active_jobs = {item.setting_id: item for item in self._build_jobs_service.list_active_jobs()}
         items: list[BuildSettingSummaryModel] = []
         for ref in self._config_loader.list_env_configs():
             config = self._config_loader.load_env_config(ref.config_id)
@@ -51,11 +64,13 @@ class BuildManagementService:
                         config_display_name=config.display_name,
                         env_name=env_name,
                         selected_config_id=selected_config_id,
+                        active_job=active_jobs.get(f"{config.id}:{env_name}"),
                     )
                 )
         return EnvBuildSettingsListResponse(selected_config_id=selected_config_id, items=items)
 
     def list_shared_settings(self) -> SharedBuildSettingsListResponse:
+        active_jobs = {item.setting_id: item for item in self._build_jobs_service.list_active_jobs()}
         items: list[BuildSettingSummaryModel] = []
         for ref in self._config_loader.list_shared_package_definitions():
             definition = self._config_loader.load_shared_package_definition(ref.config_id)
@@ -65,6 +80,7 @@ class BuildManagementService:
                         package=definition.package,
                         variant=variant,
                         config_origin=ref.origin,
+                        active_job=active_jobs.get(f"{definition.package}:{variant}"),
                     )
                 )
         return SharedBuildSettingsListResponse(items=items)
@@ -77,6 +93,7 @@ class BuildManagementService:
         config_display_name: str | None,
         env_name: str,
         selected_config_id: str | None,
+        active_job: BuildJobSummaryModel | None,
     ) -> BuildSettingSummaryModel:
         matching_metadata = [
             item
@@ -87,7 +104,7 @@ class BuildManagementService:
         current = self._load_current_env_metadata(env_name=env_name, config_id=config_id)
         state = _state_from_metadata(latest)
         has_artifact = bool(matching_metadata)
-        return BuildSettingSummaryModel(
+        summary = BuildSettingSummaryModel(
             kind="env",
             setting_id=f"{config_id}:{env_name}",
             display_name=config_display_name or config_id,
@@ -103,6 +120,7 @@ class BuildManagementService:
             latest_error_summary=_error_summary(latest) if latest else None,
             actions=_actions_for_state(state=state, has_artifact=has_artifact),
         )
+        return _with_active_job(summary, active_job)
 
     def _build_shared_summary(
         self,
@@ -110,6 +128,7 @@ class BuildManagementService:
         package: str,
         variant: str,
         config_origin: str,
+        active_job: BuildJobSummaryModel | None,
     ) -> BuildSettingSummaryModel:
         matching_metadata = [
             item
@@ -119,7 +138,7 @@ class BuildManagementService:
         latest = matching_metadata[-1] if matching_metadata else None
         state = _state_from_metadata(latest)
         has_artifact = bool(matching_metadata)
-        return BuildSettingSummaryModel(
+        summary = BuildSettingSummaryModel(
             kind="shared",
             setting_id=f"{package}:{variant}",
             display_name=f"{package}:{variant}",
@@ -133,6 +152,7 @@ class BuildManagementService:
             latest_error_summary=_error_summary(latest) if latest else None,
             actions=_actions_for_state(state=state, has_artifact=has_artifact),
         )
+        return _with_active_job(summary, active_job)
 
     def _load_current_env_metadata(self, *, env_name: str, config_id: str) -> EnvBuildMetadataModel | None:
         current_build_id = self._build_store.read_env_current_build_id(env_name)
@@ -180,6 +200,31 @@ def _actions_for_state(*, has_artifact: bool, state: BuildSettingState) -> Build
         cancel=state == "building",
         delete=has_artifact,
         create_error_report=state == "failed",
+    )
+
+
+def _with_active_job(
+    summary: BuildSettingSummaryModel,
+    active_job: BuildJobSummaryModel | None,
+) -> BuildSettingSummaryModel:
+    if active_job is None:
+        return summary
+    return summary.model_copy(
+        update={
+            "state": "building",
+            "latest_build_id": active_job.build_id,
+            "current_job_id": active_job.job_id,
+            "current_step_name": active_job.current_step_name,
+            "current_step_index": active_job.current_step_index,
+            "total_steps": active_job.total_steps,
+            "progress_percent": active_job.progress_percent,
+            "actions": BuildSettingActionsModel(
+                run=False,
+                cancel=False,
+                delete=False,
+                create_error_report=False,
+            ),
+        }
     )
 
 

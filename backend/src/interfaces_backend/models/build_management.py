@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 BuildSettingState = Literal["unbuilt", "building", "success", "failed"]
 BuildSettingKind = Literal["env", "shared"]
+BuildJobState = Literal["queued", "running", "completed", "failed"]
 
 
 class BuildSettingActionsModel(BaseModel):
@@ -31,6 +32,11 @@ class BuildSettingSummaryModel(BaseModel):
     variant: str | None = None
     latest_build_id: str | None = None
     current_build_id: str | None = None
+    current_job_id: str | None = None
+    current_step_name: str | None = None
+    current_step_index: int | None = None
+    total_steps: int | None = None
+    progress_percent: float | None = None
     latest_started_at: str | None = None
     latest_finished_at: str | None = None
     latest_error_summary: str | None = None
@@ -44,3 +50,26 @@ class EnvBuildSettingsListResponse(BaseModel):
 
 class SharedBuildSettingsListResponse(BaseModel):
     items: list[BuildSettingSummaryModel] = Field(default_factory=list)
+
+
+class BuildJobSummaryModel(BaseModel):
+    job_id: str
+    build_id: str
+    kind: BuildSettingKind
+    setting_id: str
+    state: BuildJobState
+    current_step_name: str | None = None
+    current_step_index: int = 0
+    total_steps: int = 0
+    progress_percent: float = 0.0
+    message: str | None = None
+    error: str | None = None
+    created_at: str
+    updated_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+class BuildRunAcceptedResponse(BaseModel):
+    accepted: bool = True
+    job: BuildJobSummaryModel

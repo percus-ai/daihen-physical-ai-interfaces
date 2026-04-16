@@ -4,6 +4,7 @@ from interfaces_backend.models.settings import (
     EnvironmentBuildSettingsModel,
     SystemSettingsModel,
 )
+from interfaces_backend.models.build_management import BuildJobSummaryModel
 from interfaces_backend.services.build_management import BuildManagementService
 from percus_ai.environment.build import BuildStore
 from percus_ai.environment.build.build_layout import BuildLayout
@@ -23,6 +24,14 @@ class _FakeSettingsService:
         return SystemSettingsModel(
             environment_build=EnvironmentBuildSettingsModel(env_config_id=self._env_config_id),
         )
+
+
+class _FakeBuildJobsService:
+    def __init__(self, jobs=None) -> None:
+        self._jobs = list(jobs or [])
+
+    def list_active_jobs(self):
+        return list(self._jobs)
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -90,6 +99,7 @@ variants: {}
         config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
         build_store=store,
         settings_service=_FakeSettingsService("config-a"),
+        build_jobs_service=_FakeBuildJobsService(),
     )
 
     response = service.list_env_settings()
@@ -161,6 +171,7 @@ variants:
         config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
         build_store=store,
         settings_service=_FakeSettingsService("default"),
+        build_jobs_service=_FakeBuildJobsService(),
     )
 
     response = service.list_shared_settings()
@@ -169,3 +180,58 @@ variants:
     assert items["a"].state == "success"
     assert items["b"].state == "failed"
     assert items["b"].latest_error_summary == "build failed (exit=7)"
+
+
+def test_list_env_settings_overlays_active_job(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        """
+id: default
+display_name: Default
+envs:
+  pi0:
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants: {}
+""".strip()
+        + "\n",
+    )
+    service = BuildManagementService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=BuildStore(layout=BuildLayout(data_dir=data_dir)),
+        settings_service=_FakeSettingsService("default"),
+        build_jobs_service=_FakeBuildJobsService(
+            [
+                BuildJobSummaryModel(
+                    job_id="job-1",
+                    build_id="build-1",
+                    kind="env",
+                    setting_id="default:pi0",
+                    state="running",
+                    current_step_name="runtime-common",
+                    current_step_index=1,
+                    total_steps=3,
+                    progress_percent=33.0,
+                    created_at="2026-04-16T00:00:00Z",
+                    updated_at="2026-04-16T00:00:01Z",
+                )
+            ]
+        ),
+    )
+
+    response = service.list_env_settings()
+
+    item = response.items[0]
+    assert item.state == "building"
+    assert item.current_job_id == "job-1"
+    assert item.current_step_name == "runtime-common"
+    assert item.progress_percent == 33.0

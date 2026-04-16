@@ -7,10 +7,12 @@ import asyncio
 from fastapi import APIRouter
 
 from interfaces_backend.models.build_management import (
+    BuildRunAcceptedResponse,
     EnvBuildSettingsListResponse,
     SharedBuildSettingsListResponse,
 )
 from interfaces_backend.services.build_management import get_build_management_service
+from interfaces_backend.services.build_jobs import get_build_jobs_service
 
 router = APIRouter(prefix="/api/builds", tags=["builds"])
 
@@ -23,3 +25,13 @@ async def list_env_build_settings() -> EnvBuildSettingsListResponse:
 @router.get("/shared", response_model=SharedBuildSettingsListResponse)
 async def list_shared_build_settings() -> SharedBuildSettingsListResponse:
     return await asyncio.to_thread(get_build_management_service().list_shared_settings)
+
+
+@router.post("/envs/{config_id}/{env_name}/run", response_model=BuildRunAcceptedResponse)
+async def run_env_build(config_id: str, env_name: str) -> BuildRunAcceptedResponse:
+    return get_build_jobs_service().start_env_build(config_id=config_id, env_name=env_name)
+
+
+@router.post("/shared/{package}/{variant}/run", response_model=BuildRunAcceptedResponse)
+async def run_shared_build(package: str, variant: str) -> BuildRunAcceptedResponse:
+    return get_build_jobs_service().start_shared_build(package=package, variant=variant)
