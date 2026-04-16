@@ -3,8 +3,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
-  import { Tabs } from 'bits-ui';
-  import { DropdownMenu } from 'bits-ui';
+  import { Dialog, Tabs } from 'bits-ui';
   import FunnelSimple from 'phosphor-svelte/lib/FunnelSimple';
 
   import { api, type TabSessionSubscription } from '$lib/api/client';
@@ -49,6 +48,36 @@
     network?: OperateNetworkStatus;
   };
 
+  const RUNTIME_BUILD_FILTER_STORAGE_KEY = 'runtime-build-filter:v1';
+
+  type RuntimeBuildFilterStorage = {
+    showUnsupported?: boolean;
+    hiddenSettingIds?: string[];
+  };
+
+  const loadRuntimeBuildFilterStorage = (): RuntimeBuildFilterStorage | null => {
+    if (!browser || typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(RUNTIME_BUILD_FILTER_STORAGE_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as RuntimeBuildFilterStorage;
+      return {
+        showUnsupported: Boolean(parsed.showUnsupported),
+        hiddenSettingIds: Array.isArray(parsed.hiddenSettingIds)
+          ? parsed.hiddenSettingIds.filter((value): value is string => typeof value === 'string')
+          : []
+      };
+    } catch {
+      localStorage.removeItem(RUNTIME_BUILD_FILTER_STORAGE_KEY);
+      return null;
+    }
+  };
+
+  const saveRuntimeBuildFilterStorage = (value: RuntimeBuildFilterStorage) => {
+    if (!browser || typeof localStorage === 'undefined') return;
+    localStorage.setItem(RUNTIME_BUILD_FILTER_STORAGE_KEY, JSON.stringify(value));
+  };
+
   let activeTab = $state<SystemTab>(normalizeSystemTab(page.url.searchParams.get('tab')));
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let networkStatus = $state<OperateNetworkStatus | null>(null);
@@ -68,6 +97,9 @@
   let buildLogLinesByJobId = $state<Record<string, string[]>>({});
   let runtimeHiddenBuildSettingIds = $state<string[]>([]);
   let runtimeShowUnsupported = $state(false);
+  let runtimeFilterOpen = $state(false);
+  let runtimeFilterPrefsReady = $state(false);
+  let runtimeBuildItemsReady = $state(false);
   let systemSettingsPending = $state(false);
   let systemSettingsError = $state('');
   let systemSettingsSuccess = $state('');
@@ -220,6 +252,7 @@
     }
 
     buildLoading = false;
+    runtimeBuildItemsReady = true;
   };
 
   const applyBuildsSnapshot = (snapshot: BuildsStatusSnapshot) => {
@@ -228,6 +261,7 @@
     envBuildItems = snapshot.envs.items;
     sharedBuildItems = snapshot.shared.items;
     runningBuildJobs = snapshot.running_jobs;
+    runtimeBuildItemsReady = true;
     const activeJobIds = new Set(snapshot.running_jobs.map((job) => job.job_id));
     buildLogLinesByJobId = Object.fromEntries(
       Object.entries(buildLogLinesByJobId).filter(([jobId]) => activeJobIds.has(jobId))
@@ -259,8 +293,17 @@
       (item) => isRuntimeSettingSmVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
     )
   );
+  const runtimeEnvFilterItems = $derived(
+    envBuildItems.filter((item) => item.usage !== 'training' && isRuntimeSettingSmVisible(item))
+  );
+  const trainingEnvFilterItems = $derived(
+    envBuildItems.filter((item) => item.usage === 'training' && isRuntimeSettingSmVisible(item))
+  );
 
   $effect(() => {
+    if (!runtimeBuildItemsReady) {
+      return;
+    }
     const validIds = new Set(allRuntimeBuildSettingIds);
     const nextHiddenSettingIds = runtimeHiddenBuildSettingIds.filter((settingId) => validIds.has(settingId));
     if (
@@ -270,6 +313,16 @@
       return;
     }
     runtimeHiddenBuildSettingIds = nextHiddenSettingIds;
+  });
+
+  $effect(() => {
+    if (!browser || !runtimeFilterPrefsReady) {
+      return;
+    }
+    saveRuntimeBuildFilterStorage({
+      showUnsupported: runtimeShowUnsupported,
+      hiddenSettingIds: runtimeHiddenBuildSettingIds
+    });
   });
 
   const isRuntimeSettingVisible = (settingId: string) => !runtimeHiddenBuildSettingIds.includes(settingId);
@@ -513,6 +566,12 @@
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
 
   onMount(() => {
+    const persistedRuntimeFilter = loadRuntimeBuildFilterStorage();
+    if (persistedRuntimeFilter) {
+      runtimeShowUnsupported = Boolean(persistedRuntimeFilter.showUnsupported);
+      runtimeHiddenBuildSettingIds = persistedRuntimeFilter.hiddenSettingIds ?? [];
+    }
+    runtimeFilterPrefsReady = true;
     void loadInitialState();
 
     return () => {
@@ -588,87 +647,17 @@
           {#if buildCurrentSm}
             <span class="chip">現在のSM: {buildCurrentSm}</span>
           {/if}
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger class="btn-ghost inline-flex items-center gap-2">
+          <button
+            class="btn-ghost inline-flex items-center gap-2"
+            type="button"
+            onclick={() => {
+              runtimeFilterOpen = true;
+            }}
+          >
               <FunnelSimple size={16} />
               フィルタ
               <span class="text-xs text-slate-500">{runtimeVisibleSettingCount}/{allRuntimeBuildItems.length}</span>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                class="z-50 w-[min(92vw,24rem)] rounded-2xl border border-slate-200 bg-white p-3 shadow-xl outline-none"
-                sideOffset={8}
-                align="end"
-              >
-                <div class="flex items-center justify-between gap-3 border-b border-slate-200 pb-2">
-                  <div>
-                    <p class="text-sm font-semibold text-slate-900">表示フィルタ</p>
-                    <p class="mt-1 text-xs text-slate-500">表示したい設定だけを選びます。</p>
-                  </div>
-                  <div class="flex items-center gap-3">
-                    <button
-                      class="text-xs font-semibold text-brand transition hover:text-brand-ink"
-                      type="button"
-                      onclick={() => {
-                        runtimeShowUnsupported = !runtimeShowUnsupported;
-                      }}
-                    >
-                      {runtimeShowUnsupported ? '対応のみ表示' : '非対応も表示'}
-                    </button>
-                    <button
-                      class="text-xs font-semibold text-brand transition hover:text-brand-ink"
-                      type="button"
-                      onclick={toggleAllRuntimeSettings}
-                    >
-                      {runtimeAllVisible ? '全件非表示' : '全件表示'}
-                    </button>
-                  </div>
-                </div>
-
-                <div class="mt-3 space-y-4">
-                  <section>
-                    <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">環境構築</h4>
-                    <div class="mt-2 space-y-2">
-                      {#each envBuildItems.filter((item) => isRuntimeSettingSmVisible(item)) as item (item.setting_id)}
-                        <label class="flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition hover:bg-slate-50">
-                          <input
-                            class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
-                            type="checkbox"
-                            checked={isRuntimeSettingVisible(item.setting_id)}
-                            onchange={(event) => toggleRuntimeSettingVisible(item.setting_id, event.currentTarget.checked)}
-                          />
-                          <div class="min-w-0 flex-1">
-                            <p class="truncate text-sm font-medium text-slate-900">{item.display_name}</p>
-                            <p class="truncate text-xs text-slate-500">{item.description ?? item.env_name ?? item.setting_id}</p>
-                          </div>
-                        </label>
-                      {/each}
-                    </div>
-                  </section>
-
-                  <section>
-                    <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">共有パッケージ</h4>
-                    <div class="mt-2 space-y-2">
-                      {#each sharedBuildItems.filter((item) => isRuntimeSettingSmVisible(item)) as item (item.setting_id)}
-                        <label class="flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition hover:bg-slate-50">
-                          <input
-                            class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
-                            type="checkbox"
-                            checked={isRuntimeSettingVisible(item.setting_id)}
-                            onchange={(event) => toggleRuntimeSettingVisible(item.setting_id, event.currentTarget.checked)}
-                          />
-                          <div class="min-w-0 flex-1">
-                            <p class="truncate text-sm font-medium text-slate-900">{item.package ?? item.display_name}</p>
-                            <p class="truncate text-xs text-slate-500">{item.description ?? item.variant ?? item.setting_id}</p>
-                          </div>
-                        </label>
-                      {/each}
-                    </div>
-                  </section>
-                </div>
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
+          </button>
         </div>
       {/if}
     </div>
@@ -724,3 +713,188 @@
     </Tabs.Content>
   </Tabs.Root>
 </section>
+
+<Dialog.Root bind:open={runtimeFilterOpen}>
+  <Dialog.Portal>
+    <Dialog.Overlay class="fixed inset-0 z-40 bg-slate-900/30 backdrop-blur-[1px]" />
+    <Dialog.Content
+      class="fixed inset-y-0 right-0 z-50 flex w-[min(92vw,30rem)] flex-col border-l border-slate-200 bg-white shadow-2xl outline-none"
+    >
+      <div class="border-b border-slate-200 px-5 py-4">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <Dialog.Title class="text-base font-semibold text-slate-900">表示フィルタ</Dialog.Title>
+            <Dialog.Description class="mt-1 text-sm text-slate-600">
+              Runtime に表示する設定を絞り込みます。
+            </Dialog.Description>
+          </div>
+          <button
+            class="inline-flex h-10 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+            type="button"
+            onclick={() => {
+              runtimeFilterOpen = false;
+            }}
+          >
+            閉じる
+          </button>
+        </div>
+      </div>
+
+      <div class="border-b border-slate-200 px-5 py-4">
+        <label class="flex items-center justify-between gap-4 rounded-2xl border border-slate-200/80 bg-slate-50/70 px-4 py-3">
+          <div class="min-w-0">
+            <p class="text-sm font-semibold text-slate-900">SM対応のみ</p>
+          </div>
+          <button
+            class={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition ${
+              runtimeShowUnsupported ? 'bg-slate-300' : 'bg-brand'
+            }`}
+            type="button"
+            role="switch"
+            aria-checked={!runtimeShowUnsupported}
+            aria-label="SM対応のみを切り替え"
+            onclick={() => {
+              runtimeShowUnsupported = !runtimeShowUnsupported;
+            }}
+          >
+            <span
+              class={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition ${
+                runtimeShowUnsupported ? 'translate-x-1' : 'translate-x-6'
+              }`}
+            ></span>
+          </button>
+        </label>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+        <div class="space-y-6">
+          <section>
+            <div class="flex items-center justify-between gap-3">
+              <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">実行環境</h4>
+              <div class="flex items-center gap-3">
+                <button class="text-xs font-semibold text-brand transition hover:text-brand-ink" type="button" onclick={() => {
+                  for (const item of runtimeEnvFilterItems) {
+                    if (!isRuntimeSettingVisible(item.setting_id)) {
+                      toggleRuntimeSettingVisible(item.setting_id, true);
+                    }
+                  }
+                }}>
+                  すべて選択
+                </button>
+                <button class="text-xs font-semibold text-slate-500 transition hover:text-slate-700" type="button" onclick={() => {
+                  for (const item of runtimeEnvFilterItems) {
+                    if (isRuntimeSettingVisible(item.setting_id)) {
+                      toggleRuntimeSettingVisible(item.setting_id, false);
+                    }
+                  }
+                }}>
+                  すべて解除
+                </button>
+              </div>
+            </div>
+            <div class="mt-3 space-y-2">
+              {#each runtimeEnvFilterItems as item (item.setting_id)}
+                <label class="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200/80 px-3 py-3 transition hover:border-slate-300 hover:bg-slate-50">
+                  <input
+                    class="mt-1 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                    type="checkbox"
+                    checked={isRuntimeSettingVisible(item.setting_id)}
+                    onchange={(event) => toggleRuntimeSettingVisible(item.setting_id, event.currentTarget.checked)}
+                  />
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate text-sm font-medium text-slate-900">{item.display_name}</p>
+                    <p class="mt-1 truncate text-xs leading-5 text-slate-500">{item.description ?? item.env_name ?? item.setting_id}</p>
+                  </div>
+                </label>
+              {/each}
+            </div>
+          </section>
+
+          <section>
+            <div class="flex items-center justify-between gap-3">
+              <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">学習環境</h4>
+              <div class="flex items-center gap-3">
+                <button class="text-xs font-semibold text-brand transition hover:text-brand-ink" type="button" onclick={() => {
+                  for (const item of trainingEnvFilterItems) {
+                    if (!isRuntimeSettingVisible(item.setting_id)) {
+                      toggleRuntimeSettingVisible(item.setting_id, true);
+                    }
+                  }
+                }}>
+                  すべて選択
+                </button>
+                <button class="text-xs font-semibold text-slate-500 transition hover:text-slate-700" type="button" onclick={() => {
+                  for (const item of trainingEnvFilterItems) {
+                    if (isRuntimeSettingVisible(item.setting_id)) {
+                      toggleRuntimeSettingVisible(item.setting_id, false);
+                    }
+                  }
+                }}>
+                  すべて解除
+                </button>
+              </div>
+            </div>
+            <div class="mt-3 space-y-2">
+              {#each trainingEnvFilterItems as item (item.setting_id)}
+                <label class="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200/80 px-3 py-3 transition hover:border-slate-300 hover:bg-slate-50">
+                  <input
+                    class="mt-1 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                    type="checkbox"
+                    checked={isRuntimeSettingVisible(item.setting_id)}
+                    onchange={(event) => toggleRuntimeSettingVisible(item.setting_id, event.currentTarget.checked)}
+                  />
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate text-sm font-medium text-slate-900">{item.display_name}</p>
+                    <p class="mt-1 truncate text-xs leading-5 text-slate-500">{item.description ?? item.env_name ?? item.setting_id}</p>
+                  </div>
+                </label>
+              {/each}
+            </div>
+          </section>
+
+          <section>
+            <div class="flex items-center justify-between gap-3">
+              <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">共有パッケージ</h4>
+              <div class="flex items-center gap-3">
+                <button class="text-xs font-semibold text-brand transition hover:text-brand-ink" type="button" onclick={() => {
+                  for (const item of sharedBuildItems.filter((entry) => isRuntimeSettingSmVisible(entry))) {
+                    if (!isRuntimeSettingVisible(item.setting_id)) {
+                      toggleRuntimeSettingVisible(item.setting_id, true);
+                    }
+                  }
+                }}>
+                  すべて選択
+                </button>
+                <button class="text-xs font-semibold text-slate-500 transition hover:text-slate-700" type="button" onclick={() => {
+                  for (const item of sharedBuildItems.filter((entry) => isRuntimeSettingSmVisible(entry))) {
+                    if (isRuntimeSettingVisible(item.setting_id)) {
+                      toggleRuntimeSettingVisible(item.setting_id, false);
+                    }
+                  }
+                }}>
+                  すべて解除
+                </button>
+              </div>
+            </div>
+            <div class="mt-3 space-y-2">
+              {#each sharedBuildItems.filter((item) => isRuntimeSettingSmVisible(item)) as item (item.setting_id)}
+                <label class="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200/80 px-3 py-3 transition hover:border-slate-300 hover:bg-slate-50">
+                  <input
+                    class="mt-1 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                    type="checkbox"
+                    checked={isRuntimeSettingVisible(item.setting_id)}
+                    onchange={(event) => toggleRuntimeSettingVisible(item.setting_id, event.currentTarget.checked)}
+                  />
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate text-sm font-medium text-slate-900">{item.package ?? item.display_name}</p>
+                    <p class="mt-1 truncate text-xs leading-5 text-slate-500">{item.description ?? item.variant ?? item.setting_id}</p>
+                  </div>
+                </label>
+              {/each}
+            </div>
+          </section>
+        </div>
+      </div>
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>
