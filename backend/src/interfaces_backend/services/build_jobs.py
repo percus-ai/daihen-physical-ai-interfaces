@@ -54,6 +54,7 @@ class _BuildJobRecord:
     finished_at: datetime | None = None
     env_name: str | None = None
     config_id: str | None = None
+    config_group: str | None = None
     package: str | None = None
     variant: str | None = None
 
@@ -125,7 +126,8 @@ class BuildJobsService:
         return next_cursor, events
 
     def start_env_build(self, *, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
-        config = self._config_loader.load_env_config(config_id)
+        ref = self._config_loader.find_env_config_ref(config_id)
+        config = self._config_loader.load_env_config(config_id, config_group=ref.group)
         if env_name not in config.envs:
             raise HTTPException(status_code=404, detail=f"Environment definition not found: {config_id}:{env_name}")
         setting_id = f"{config_id}:{env_name}"
@@ -138,6 +140,7 @@ class BuildJobsService:
                 setting_id=setting_id,
                 env_name=env_name,
                 config_id=config_id,
+                config_group=ref.group,
                 total_steps=self._count_env_steps_from_definition(config.envs[env_name]),
                 current_step_name="queued",
                 message="環境構築ジョブを受け付けました。",
@@ -228,6 +231,7 @@ class BuildJobsService:
                 self._environment_build_operation.execute,
                 config_id=record.config_id,
                 env_name=record.env_name,
+                config_group=record.config_group,
                 build_id=record.build_id,
                 cancel_event=cancel_event,
                 output_callback=self._build_output_callback(job_id),

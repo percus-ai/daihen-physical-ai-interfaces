@@ -14,16 +14,20 @@ def _write_text(path: Path, content: str) -> None:
 
 
 class _FakeEnvironmentBuildOperation:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str | None, str | None]] = []
+
     def execute(
         self,
         *,
         config_id: str,
         env_name: str,
+        config_group: str | None = None,
         build_id: str | None = None,
         cancel_event=None,
         output_callback=None,
     ):
-        del config_id, env_name, build_id
+        self.calls.append((config_id, env_name, config_group, build_id))
         if output_callback is not None:
             output_callback("create_env_venv", "stderr", "creating venv\n")
         for index in range(50):
@@ -193,6 +197,48 @@ variants:
         assert job_events[0]["line"] == "line-50\n"
         assert job_events[-1]["line"] == "line-149\n"
 
+        await service.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_build_jobs_service_passes_train_config_group(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/train/sm_120.yaml",
+        """
+id: sm_120
+envs:
+  pi0_train:
+    usage: training
+    python: "3.10"
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants: {}
+""".strip()
+        + "\n",
+    )
+
+    async def _run():
+        operation = _FakeEnvironmentBuildOperation()
+        service = BuildJobsService(
+            config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+            build_store=BuildStore(layout=BuildLayout(data_dir=data_dir)),
+            environment_build_operation=operation,
+            shared_build_operation=_FakeSharedBuildOperation(),
+        )
+        accepted = service.start_env_build(config_id="sm_120", env_name="pi0_train")
+        terminal_state = await _wait_for_terminal_state(service, accepted.job.job_id)
+        assert terminal_state == "completed"
+        assert operation.calls[0][:3] == ("sm_120", "pi0_train", "train")
         await service.shutdown()
 
     asyncio.run(_run())
