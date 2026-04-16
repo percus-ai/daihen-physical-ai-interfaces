@@ -147,6 +147,11 @@ def test_tab_session_subscription_schema_accepts_system_operate_recording_source
             "params": {},
         },
         {
+            "subscription_id": "builds.status",
+            "kind": "builds.status",
+            "params": {},
+        },
+        {
             "subscription_id": "profiles.vlabor",
             "kind": "profiles.vlabor",
             "params": {},
@@ -185,9 +190,51 @@ def test_tab_session_subscription_schema_accepts_system_operate_recording_source
 
     state = TabSessionStateRequest.model_validate(payload)
 
-    assert len(state.subscriptions) == 11
+    assert len(state.subscriptions) == 12
     assert state.subscriptions[0].kind == "system.status"
     assert state.subscriptions[-1].kind == "storage.dataset-merge"
+
+
+def test_tab_realtime_source_registry_supports_builds_status(monkeypatch):
+    import interfaces_backend.services.build_management as build_management
+
+    class _FakeBuildManagementService:
+        def snapshot(self):
+            from interfaces_backend.models.build_management import (
+                BuildsStatusSnapshotModel,
+                EnvBuildSettingsListResponse,
+                SharedBuildSettingsListResponse,
+            )
+
+            return BuildsStatusSnapshotModel(
+                running_jobs=[],
+                envs=EnvBuildSettingsListResponse(selected_config_id="default", items=[]),
+                shared=SharedBuildSettingsListResponse(items=[]),
+            )
+
+    monkeypatch.setattr(build_management, "get_build_management_service", lambda: _FakeBuildManagementService())
+
+    registry = TabRealtimeSourceRegistry()
+    state = TabSessionStateRequest.model_validate(
+        {
+            **_make_state_payload(),
+            "subscriptions": [
+                {
+                    "subscription_id": "builds.status",
+                    "kind": "builds.status",
+                    "params": {},
+                }
+            ],
+        }
+    )
+
+    result = asyncio.run(registry.poll(state.subscriptions[0]))
+
+    assert result.payload == {
+        "running_jobs": [],
+        "envs": {"selected_config_id": "default", "items": []},
+        "shared": {"items": []},
+    }
 
 
 def test_tab_session_registry_put_get_delete_flow():

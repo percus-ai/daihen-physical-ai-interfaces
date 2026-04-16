@@ -171,6 +171,11 @@ class SystemBundledTorchSubscription(_SubscriptionBase):
     params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
 
 
+class BuildsStatusSubscription(_SubscriptionBase):
+    kind: Literal["builds.status"]
+    params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
+
+
 class RecordingUploadStatusSubscription(_SubscriptionBase):
     kind: Literal["recording.upload-status"]
     params: RecordingUploadStatusParams
@@ -233,6 +238,7 @@ TabSessionSubscription = Annotated[
     | OperateStatusSubscription
     | SystemRuntimeEnvsSubscription
     | SystemBundledTorchSubscription
+    | BuildsStatusSubscription
     | RecordingUploadStatusSubscription
     | StartupOperationSubscription
     | TrainingProvisionOperationSubscription

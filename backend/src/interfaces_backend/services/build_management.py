@@ -6,6 +6,7 @@ from typing import Protocol
 
 from interfaces_backend.models.build_management import (
     BuildJobSummaryModel,
+    BuildsStatusSnapshotModel,
     BuildSettingActionsModel,
     BuildSettingState,
     BuildSettingSummaryModel,
@@ -84,6 +85,13 @@ class BuildManagementService:
                     )
                 )
         return SharedBuildSettingsListResponse(items=items)
+
+    def snapshot(self) -> BuildsStatusSnapshotModel:
+        return BuildsStatusSnapshotModel(
+            running_jobs=self._build_jobs_service.list_active_jobs(),
+            envs=self.list_env_settings(),
+            shared=self.list_shared_settings(),
+        )
 
     def _build_env_summary(
         self,

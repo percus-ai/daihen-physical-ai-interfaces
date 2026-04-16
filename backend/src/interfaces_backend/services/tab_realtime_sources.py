@@ -16,6 +16,7 @@ from interfaces_backend.models.realtime import (
     ProfilesVlaborSubscription,
     OperateStatusSubscription,
     RecordingUploadStatusSubscription,
+    BuildsStatusSubscription,
     StorageDatasetMergeSubscription,
     StorageDatasetSyncSubscription,
     StorageModelSyncSubscription,
@@ -68,6 +69,8 @@ class TabRealtimeSourceRegistry:
             return 2.0
         if isinstance(subscription, SystemBundledTorchSubscription):
             return 2.0
+        if isinstance(subscription, BuildsStatusSubscription):
+            return 0.5
         if isinstance(subscription, RecordingUploadStatusSubscription):
             return 1.0
         if isinstance(subscription, StartupOperationSubscription):
@@ -154,6 +157,12 @@ class TabRealtimeSourceRegistry:
                 service = get_bundled_torch_build_service()
                 await service.refresh_snapshot()
                 snapshot = service.get_snapshot()
+                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, BuildsStatusSubscription):
+                from interfaces_backend.services.build_management import get_build_management_service
+
+                snapshot = get_build_management_service().snapshot()
                 return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
 
             if isinstance(subscription, RecordingUploadStatusSubscription):

@@ -73,3 +73,9 @@ class BuildJobSummaryModel(BaseModel):
 class BuildRunAcceptedResponse(BaseModel):
     accepted: bool = True
     job: BuildJobSummaryModel
+
+
+class BuildsStatusSnapshotModel(BaseModel):
+    running_jobs: list[BuildJobSummaryModel] = Field(default_factory=list)
+    envs: EnvBuildSettingsListResponse
+    shared: SharedBuildSettingsListResponse
