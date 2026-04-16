@@ -78,6 +78,7 @@ from fastapi import Request
 from interfaces_backend.api import (
     analytics_router,
     auth_router,
+    builds_router,
     calibration_router,
     config_router,
     experiments_router,
@@ -270,6 +271,7 @@ async def attach_supabase_session(request, call_next):
 # Include API routers
 app.include_router(analytics_router)
 app.include_router(auth_router)
+app.include_router(builds_router)
 app.include_router(calibration_router)
 app.include_router(config_router)
 app.include_router(experiments_router)
