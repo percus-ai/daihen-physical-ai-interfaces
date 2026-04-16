@@ -219,27 +219,15 @@
 
 <section class="card-strong p-8">
   <p class="section-title">Builds</p>
-  <div class="mt-3 grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.8fr)]">
+  <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1 class="text-3xl font-semibold text-slate-900">構築管理</h1>
-      <p class="mt-3 max-w-3xl text-sm leading-7 text-slate-600">
-        作成済み設定を起点に、環境構築と共有パッケージ構築の状態をまとめて管理します。進行中の build は上段で追跡し、
-        下段では設定ごとに再構築・削除・レポート作成を行えます。
+      <p class="mt-2 text-sm text-slate-600">
+        作成済み設定を起点に、環境構築と共有パッケージ構築の状態をまとめて管理します。
       </p>
-    </div>
-
-    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-      <div class="nested-block-pane border-sky-200/80 bg-[linear-gradient(145deg,rgba(239,246,255,0.96),rgba(255,255,255,0.98))] p-4">
-        <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-500">選択中設定</p>
-        <p class="mt-2 text-lg font-semibold text-slate-900">{selectedConfigId || '未選択'}</p>
-        <p class="mt-1 text-sm text-slate-600">system settings で選ばれている env 設定を基準に表示します。</p>
-      </div>
-      <div class="nested-block-pane border-violet-200/80 bg-[linear-gradient(145deg,rgba(245,243,255,0.96),rgba(255,255,255,0.98))] p-4">
-        <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">画面の見方</p>
-        <p class="mt-2 text-sm leading-6 text-slate-600">
-          上段は追跡、下段は管理です。構築中は進捗とログを追い、失敗時はその場でレポートIDを作成できます。
-        </p>
-      </div>
+      {#if selectedConfigId}
+        <p class="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">選択中設定: {selectedConfigId}</p>
+      {/if}
     </div>
   </div>
 </section>
@@ -259,11 +247,8 @@
     <div class="nested-block-header">
       <div>
         <p class="section-title">構築中</p>
-        <p class="mt-2 text-sm leading-6 text-slate-600">
-          実行中の build を追跡します。進捗バーは step 間を補間して表示し、直近ログから今どこで時間が掛かっているかを見やすくしています。
-        </p>
+        <p class="mt-2 text-sm text-slate-600">実行中の build を追跡します。進捗バーは step 間を補間して表示します。</p>
       </div>
-      <div class="chip">{runningJobs.length} 件 実行中</div>
     </div>
 
     <div class="grid gap-4 xl:grid-cols-2">
