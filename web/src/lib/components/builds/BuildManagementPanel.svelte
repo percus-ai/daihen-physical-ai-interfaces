@@ -16,7 +16,6 @@
     envItems?: BuildSettingSummary[];
     sharedItems?: BuildSettingSummary[];
     runningJobs?: BuildJobSummary[];
-    selectedConfigId?: string;
     loading?: boolean;
     loadError?: string;
     actionPending?: Record<string, boolean>;
@@ -30,7 +29,6 @@
     envItems = [],
     sharedItems = [],
     runningJobs = [],
-    selectedConfigId = '',
     loading = false,
     loadError = '',
     actionPending = {},
@@ -77,33 +75,6 @@
     toast.success('レポートIDをコピーしました。');
   };
 </script>
-
-<section class="card-strong p-8">
-  <p class="section-title">Builds</p>
-  <div class="mt-3 grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.8fr)]">
-    <div>
-      <h2 class="text-3xl font-semibold text-slate-900">構築管理</h2>
-      <p class="mt-3 max-w-3xl text-sm leading-7 text-slate-600">
-        作成済み設定を起点に、環境構築と共有パッケージ構築の状態をまとめて管理します。進行中の build は上段で追跡し、
-        下段では設定ごとに再構築・削除・レポート作成を行えます。
-      </p>
-    </div>
-
-    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-      <div class="nested-block-pane border-sky-200/80 bg-[linear-gradient(145deg,rgba(239,246,255,0.96),rgba(255,255,255,0.98))] p-4">
-        <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-500">選択中設定</p>
-        <p class="mt-2 text-lg font-semibold text-slate-900">{selectedConfigId || '未選択'}</p>
-        <p class="mt-1 text-sm text-slate-600">system settings で選ばれている env 設定を基準に表示します。</p>
-      </div>
-      <div class="nested-block-pane border-violet-200/80 bg-[linear-gradient(145deg,rgba(245,243,255,0.96),rgba(255,255,255,0.98))] p-4">
-        <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">画面の見方</p>
-        <p class="mt-2 text-sm leading-6 text-slate-600">
-          上段は追跡、下段は管理です。構築中は進捗とログを追い、失敗時はその場でレポートIDを作成できます。
-        </p>
-      </div>
-    </div>
-  </div>
-</section>
 
 {#if loadError}
   <section class="card p-6">

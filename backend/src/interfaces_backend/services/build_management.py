@@ -67,12 +67,14 @@ class BuildManagementService:
         items: list[BuildSettingSummaryModel] = []
         for ref in self._config_loader.list_env_configs():
             config = self._config_loader.load_env_config(ref.config_id)
-            for env_name in sorted(config.envs):
+            for env_name, env_definition in sorted(config.envs.items()):
                 items.append(
                     self._build_env_summary(
                         config_id=config.id,
                         config_origin=ref.origin,
                         config_display_name=config.display_name,
+                        env_display_name=env_definition.display_name,
+                        env_description=env_definition.description,
                         env_name=env_name,
                         selected_config_id=selected_config_id,
                         active_job=active_jobs.get(f"{config.id}:{env_name}"),
@@ -164,6 +166,8 @@ class BuildManagementService:
         config_id: str,
         config_origin: str,
         config_display_name: str | None,
+        env_display_name: str | None,
+        env_description: str | None,
         env_name: str,
         selected_config_id: str | None,
         active_job: BuildJobSummaryModel | None,
@@ -180,7 +184,8 @@ class BuildManagementService:
         summary = BuildSettingSummaryModel(
             kind="env",
             setting_id=f"{config_id}:{env_name}",
-            display_name=config_display_name or config_id,
+            display_name=env_display_name or config_display_name or env_name,
+            description=env_description,
             state=state,
             selected=config_id == selected_config_id,
             config_origin=config_origin,
@@ -214,7 +219,8 @@ class BuildManagementService:
         summary = BuildSettingSummaryModel(
             kind="shared",
             setting_id=f"{package}:{variant}",
-            display_name=f"{package}:{variant}",
+            display_name=package,
+            description=variant,
             state=state,
             config_origin=config_origin,
             package=package,

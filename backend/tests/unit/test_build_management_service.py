@@ -49,6 +49,9 @@ id: config-a
 display_name: Config A
 envs:
   groot:
+    display_name: GR00T A
+    description: config a description
+    python: "3.12"
     installs: []
     checks: []
 """.strip()
@@ -61,6 +64,9 @@ id: config-b
 display_name: Config B
 envs:
   groot:
+    display_name: GR00T B
+    description: config b description
+    python: "3.12"
     installs: []
     checks: []
 """.strip()
@@ -107,6 +113,8 @@ variants: {}
     assert response.selected_config_id == "config-a"
     items = {item.config_id: item for item in response.items}
     assert items["config-a"].state == "success"
+    assert items["config-a"].display_name == "GR00T A"
+    assert items["config-a"].description == "config a description"
     assert items["config-a"].current_build_id == "2026-04-16T00-00-00Z_a"
     assert items["config-a"].selected is True
     assert items["config-b"].state == "failed"
@@ -192,6 +200,9 @@ id: default
 display_name: Default
 envs:
   pi0:
+    display_name: Pi0
+    description: Pi0 runtime
+    python: "3.10"
     installs: []
     checks: []
 """.strip()
@@ -231,6 +242,8 @@ variants: {}
     response = service.list_env_settings()
 
     item = response.items[0]
+    assert item.display_name == "Pi0"
+    assert item.description == "Pi0 runtime"
     assert item.state == "building"
     assert item.current_job_id == "job-1"
     assert item.current_step_name == "runtime-common"
@@ -247,6 +260,7 @@ id: default
 display_name: Default
 envs:
   pi0:
+    python: "3.10"
     installs: []
     checks: []
 """.strip()

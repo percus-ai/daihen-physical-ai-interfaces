@@ -8,7 +8,6 @@
     envBuildItems = [],
     sharedBuildItems = [],
     runningBuildJobs = [],
-    selectedBuildConfigId = '',
     buildActionPending = {},
     buildLogLinesByJobId = {},
     onBuildRun,
@@ -20,7 +19,6 @@
     envBuildItems?: BuildSettingSummary[];
     sharedBuildItems?: BuildSettingSummary[];
     runningBuildJobs?: BuildJobSummary[];
-    selectedBuildConfigId?: string;
     buildActionPending?: Record<string, boolean>;
     buildLogLinesByJobId?: Record<string, string[]>;
     onBuildRun: (item: BuildSettingSummary) => Promise<void>;
@@ -33,7 +31,6 @@
   envItems={envBuildItems}
   sharedItems={sharedBuildItems}
   runningJobs={runningBuildJobs}
-  selectedConfigId={selectedBuildConfigId}
   loading={buildLoading}
   loadError={buildLoadError}
   actionPending={buildActionPending}

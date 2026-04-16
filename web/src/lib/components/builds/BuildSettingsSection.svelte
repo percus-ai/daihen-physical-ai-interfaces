@@ -59,96 +59,111 @@
     if (!onCreateErrorReport || actionPending[item.setting_id]) return;
     await onCreateErrorReport(item);
   };
+
+  const primaryLabel = (item: BuildSettingSummary) => {
+    if (item.state === 'building') return '中止';
+    if (item.state === 'success') return '再構築';
+    if (item.state === 'failed') return '再構築';
+    return '構築';
+  };
+
+  const secondaryLabel = (item: BuildSettingSummary) => {
+    if (item.state === 'failed') return '報告';
+    if (item.actions.delete) return '削除';
+    return '';
+  };
+
+  const titleText = (item: BuildSettingSummary) => {
+    if (item.kind === 'shared') return item.package ?? item.display_name;
+    return item.display_name;
+  };
+
+  const subtitleText = (item: BuildSettingSummary) => {
+    if (item.kind === 'shared') {
+      return item.description ?? item.variant ?? item.setting_id;
+    }
+    return item.description ?? item.env_name ?? item.setting_id;
+  };
+
+  const detailText = (item: BuildSettingSummary) => {
+    if (item.state === 'building') return item.current_step_name ?? '構築中';
+    if (item.state === 'failed') return item.latest_error_summary ?? '構築に失敗しました。';
+    if (item.latest_build_id) return `最新 build: ${item.latest_build_id}`;
+    return 'まだ構築されていません。';
+  };
+
+  const handleSecondary = async (item: BuildSettingSummary) => {
+    if (item.state === 'failed' && item.actions.create_error_report) {
+      await handleCreateErrorReport(item);
+      return;
+    }
+    if (item.actions.delete) {
+      await handleDelete(item);
+    }
+  };
 </script>
 
 <section class="card p-6">
   <div class="nested-block-header">
     <div>
       <p class="section-title">{title}</p>
-      <p class="mt-2 text-sm text-slate-600">{description}</p>
+      <p class="mt-1 text-sm text-slate-600">{description}</p>
     </div>
   </div>
 
-  <div class="overflow-x-auto">
-    <table class="min-w-full border-separate border-spacing-y-3">
-      <thead>
-        <tr class="text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-          <th class="px-3">設定</th>
-          <th class="px-3">状態</th>
-          <th class="px-3">詳細</th>
-          <th class="px-3">操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each items as item}
-          <tr class="nested-block-pane align-top">
-            <td class="px-3 py-4">
-              <div class="space-y-1">
-                <div class="flex flex-wrap items-center gap-2">
-                  <p class="font-semibold text-slate-900">{item.display_name}</p>
-                  {#if item.selected}
-                    <span class="rounded-full border border-brand/30 bg-brand/10 px-2 py-0.5 text-[11px] font-semibold text-brand-ink">
-                      選択中
-                    </span>
-                  {/if}
-                </div>
-                <p class="text-xs text-slate-500">{item.setting_id}</p>
-              </div>
-            </td>
-
-            <td class="px-3 py-4">
-              <div class={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${stateClass(item.state)}`}>
+  <div class="mt-4 space-y-3">
+    {#each items as item}
+      <article class={`rounded-2xl border px-4 py-4 ${item.state === 'failed' ? 'border-rose-200 bg-rose-50/40' : 'border-slate-200 bg-white'}`}>
+        <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="text-base font-semibold text-slate-900">{titleText(item)}</h3>
+              <span class={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${stateClass(item.state)}`}>
                 {stateLabel(item.state)}
-              </div>
-            </td>
+              </span>
+            </div>
 
-            <td class="px-3 py-4">
-              <div class="space-y-2 text-sm text-slate-600">
+            <p class="mt-1 text-xs text-slate-500">{subtitleText(item)}</p>
+
+            <div class="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_12rem] xl:items-center">
+              <div class="min-w-0 space-y-2">
+                <p class={`text-sm ${item.state === 'failed' ? 'font-medium text-rose-700' : 'text-slate-600'}`}>
+                  {detailText(item)}
+                </p>
                 {#if item.state === 'building'}
-                  <p>{item.current_step_name ?? '構築中'}</p>
                   <BuildProgressBar
                     currentPercent={item.progress_percent ?? 0}
                     currentStepIndex={item.current_step_index ?? 0}
                     totalSteps={item.total_steps ?? 0}
                     running={true}
                   />
-                {:else if item.state === 'failed'}
-                  <p>{item.latest_error_summary ?? '構築に失敗しました。'}</p>
-                {:else if item.latest_build_id}
-                  <p>最新 build: {item.latest_build_id}</p>
-                {:else}
-                  <p>まだ構築されていません。</p>
                 {/if}
               </div>
-            </td>
 
-            <td class="px-3 py-4">
-              <div class="flex flex-wrap gap-2">
+              <div class="flex flex-wrap items-center gap-2 xl:justify-end">
                 {#if item.state === 'building'}
-                  <Button.Root class="btn-ghost" type="button" disabled={true}>構築中</Button.Root>
-                  <Button.Root class="btn-primary" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleCancel(item)}>
-                    {actionPending[item.setting_id] ? '中止中...' : '中止'}
+                  <Button.Root class="btn-primary min-w-20" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleCancel(item)}>
+                    {actionPending[item.setting_id] ? '中止中...' : primaryLabel(item)}
                   </Button.Root>
                 {:else}
-                  <Button.Root class="btn-primary" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleRun(item)}>
-                    {item.state === 'success' ? '再構築' : '構築'}
+                  <Button.Root class="btn-primary min-w-20" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleRun(item)}>
+                    {actionPending[item.setting_id] ? '処理中...' : primaryLabel(item)}
                   </Button.Root>
-                  {#if item.actions.create_error_report}
-                    <Button.Root class="btn-ghost" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleCreateErrorReport(item)}>
-                      {actionPending[item.setting_id] ? '作成中...' : 'レポート作成'}
-                    </Button.Root>
-                  {/if}
-                  {#if item.actions.delete}
-                    <Button.Root class="btn-ghost" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleDelete(item)}>
-                      {actionPending[item.setting_id] ? '削除中...' : '削除'}
+                  {#if secondaryLabel(item)}
+                    <Button.Root class="btn-ghost min-w-20" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleSecondary(item)}>
+                      {actionPending[item.setting_id]
+                        ? item.state === 'failed'
+                          ? '発行中...'
+                          : '削除中...'
+                        : secondaryLabel(item)}
                     </Button.Root>
                   {/if}
                 {/if}
               </div>
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+            </div>
+          </div>
+        </div>
+      </article>
+    {/each}
   </div>
 </section>

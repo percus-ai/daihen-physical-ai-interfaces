@@ -17,7 +17,8 @@ class _FakeBuildManagementService:
                 BuildSettingSummaryModel(
                     kind="env",
                     setting_id="default:pi0",
-                    display_name="Default",
+                    display_name="Pi0",
+                    description="Pi0 runtime",
                     state="unbuilt",
                     config_id="default",
                     env_name="pi0",
@@ -32,7 +33,8 @@ class _FakeBuildManagementService:
                 BuildSettingSummaryModel(
                     kind="shared",
                     setting_id="pytorch:thor",
-                    display_name="pytorch:thor",
+                    display_name="pytorch",
+                    description="thor",
                     state="success",
                     package="pytorch",
                     variant="thor",

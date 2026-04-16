@@ -23,6 +23,7 @@ class BuildSettingSummaryModel(BaseModel):
     kind: BuildSettingKind
     setting_id: str
     display_name: str
+    description: str | None = None
     state: BuildSettingState
     selected: bool = False
     config_origin: Literal["default", "data"] | None = None

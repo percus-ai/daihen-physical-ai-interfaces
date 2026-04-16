@@ -327,6 +327,7 @@ export type BuildSettingSummary = {
   kind: BuildSettingKind;
   setting_id: string;
   display_name: string;
+  description?: string | null;
   state: BuildSettingState;
   selected?: boolean;
   config_origin?: 'default' | 'data' | null;

@@ -538,7 +538,6 @@
           envBuildItems={envBuildItems}
           sharedBuildItems={sharedBuildItems}
           runningBuildJobs={runningBuildJobs}
-          selectedBuildConfigId={selectedBuildConfigId}
           buildActionPending={buildActionPending}
           buildLogLinesByJobId={buildLogLinesByJobId}
           onBuildRun={triggerBuildRun}
