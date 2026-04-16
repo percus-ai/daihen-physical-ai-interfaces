@@ -24,6 +24,7 @@ class BuildSettingSummaryModel(BaseModel):
     setting_id: str
     display_name: str
     description: str | None = None
+    usage: Literal["runtime", "training"] | None = None
     supported_sms: list[str] = Field(default_factory=list)
     current_sm: str | None = None
     sm_supported: bool | None = None

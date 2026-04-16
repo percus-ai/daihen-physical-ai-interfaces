@@ -236,9 +236,10 @@ def test_tab_realtime_source_registry_supports_builds_status(monkeypatch):
     result = asyncio.run(registry.poll(state.subscriptions[0]))
 
     assert result.payload == {
+        "current_sm": None,
         "running_jobs": [],
-        "envs": {"selected_config_id": "default", "items": []},
-        "shared": {"items": []},
+        "envs": {"selected_config_id": "default", "current_sm": None, "items": []},
+        "shared": {"current_sm": None, "items": []},
     }
 
 

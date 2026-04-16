@@ -58,6 +58,8 @@
       ])
     )
   );
+  const runtimeEnvItems = $derived(envItems.filter((item) => (item.usage ?? 'runtime') === 'runtime'));
+  const trainingEnvItems = $derived(envItems.filter((item) => item.usage === 'training'));
 
   const handleCancel = async (item: BuildSettingSummary) => {
     if (!item.current_job_id || !onCancelByJobId) return;
@@ -130,17 +132,33 @@
   </section>
 {/if}
 
-<BuildSettingsSection
-  title="環境構築"
-  description="PC 設定から選ばれる環境定義と、その最新のビルド結果を一覧します。"
-  items={envItems}
-  currentSm={currentSm}
-  {actionPending}
-  onRun={onRun}
-  onCancel={handleCancel}
-  onDelete={onDelete}
-  onCreateErrorReport={handleCreateErrorReport}
-/>
+{#if runtimeEnvItems.length > 0}
+  <BuildSettingsSection
+    title="実行環境"
+    description="推論や実行に使う環境定義と、その最新のビルド結果を一覧します。"
+    items={runtimeEnvItems}
+    currentSm={currentSm}
+    {actionPending}
+    onRun={onRun}
+    onCancel={handleCancel}
+    onDelete={onDelete}
+    onCreateErrorReport={handleCreateErrorReport}
+  />
+{/if}
+
+{#if trainingEnvItems.length > 0}
+  <BuildSettingsSection
+    title="学習環境"
+    description="学習ジョブに使う環境定義と、その最新のビルド結果を一覧します。"
+    items={trainingEnvItems}
+    currentSm={currentSm}
+    {actionPending}
+    onRun={onRun}
+    onCancel={handleCancel}
+    onDelete={onDelete}
+    onCreateErrorReport={handleCreateErrorReport}
+  />
+{/if}
 
 <BuildSettingsSection
   title="共有パッケージ"

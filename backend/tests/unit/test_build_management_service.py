@@ -257,6 +257,68 @@ variants: {}
     assert item.current_job_id == "job-1"
     assert item.current_step_name == "runtime-common"
     assert item.progress_percent == 33.0
+    assert item.usage == "runtime"
+
+
+def test_list_env_settings_includes_train_group(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        """
+id: default
+display_name: Default
+envs:
+  pi0:
+    display_name: Pi0
+    description: runtime env
+    usage: runtime
+    python: "3.10"
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/train/sm_120.yaml",
+        """
+id: sm_120
+display_name: SM 120
+envs:
+  pi0_train:
+    display_name: Pi0 Train
+    description: training env
+    usage: training
+    python: "3.10"
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants: {}
+""".strip()
+        + "\n",
+    )
+
+    service = BuildManagementService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=BuildStore(layout=BuildLayout(data_dir=data_dir)),
+        settings_service=_FakeSettingsService("default"),
+        build_jobs_service=_FakeBuildJobsService(),
+        current_sm_resolver=lambda: "sm_120",
+    )
+
+    response = service.list_env_settings()
+
+    items = {item.setting_id: item for item in response.items}
+    assert items["default:pi0"].usage == "runtime"
+    assert items["default:pi0"].selected is True
+    assert items["sm_120:pi0_train"].usage == "training"
+    assert items["sm_120:pi0_train"].selected is False
 
 
 def test_list_env_settings_marks_sm_compatibility(tmp_path: Path):

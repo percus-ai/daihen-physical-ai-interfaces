@@ -156,8 +156,10 @@ class InferenceRuntimeTargetsService:
     def _iter_env_candidates(self, *, policy_type: str | None):
         current_sm = self._current_sm_resolver()
         for ref in self._config_loader.list_env_configs():
-            config = self._config_loader.load_env_config(ref.config_id)
+            config = self._config_loader.load_env_config(ref.config_id, config_group=ref.group)
             for env_name, env_definition in sorted(config.envs.items()):
+                if env_definition.usage != "runtime":
+                    continue
                 supported_policy_types = [entry.strip().lower() for entry in env_definition.policy_types if entry.strip()]
                 if supported_policy_types and policy_type and policy_type not in supported_policy_types:
                     continue

@@ -74,15 +74,17 @@ class BuildManagementService:
         active_jobs = {item.setting_id: item for item in self._build_jobs_service.list_active_jobs()}
         items: list[BuildSettingSummaryModel] = []
         for ref in self._config_loader.list_env_configs():
-            config = self._config_loader.load_env_config(ref.config_id)
+            config = self._config_loader.load_env_config(ref.config_id, config_group=ref.group)
             for env_name, env_definition in sorted(config.envs.items()):
                 items.append(
                     self._build_env_summary(
                         config_id=config.id,
+                        config_group=ref.group,
                         config_origin=ref.origin,
                         config_display_name=config.display_name,
                         env_display_name=env_definition.display_name,
                         env_description=env_definition.description,
+                        usage=env_definition.usage,
                         supported_sms=env_definition.supported_sms,
                         current_sm=current_sm,
                         env_name=env_name,
@@ -127,7 +129,8 @@ class BuildManagementService:
             metadata = self._build_store.load_env_metadata(env_name, build_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Env build artifact not found: {env_name}:{build_id}") from exc
-        if metadata.config_id != config_id:
+        config_group = self._resolve_env_config_group(config_id=config_id)
+        if metadata.config_id != config_id or metadata.config_group != config_group:
             raise HTTPException(
                 status_code=404,
                 detail=f"Env build artifact not found for config: {config_id}:{env_name}:{build_id}",
@@ -180,10 +183,12 @@ class BuildManagementService:
         self,
         *,
         config_id: str,
+        config_group: str,
         config_origin: str,
         config_display_name: str | None,
         env_display_name: str | None,
         env_description: str | None,
+        usage: str,
         supported_sms: list[str],
         current_sm: str | None,
         env_name: str,
@@ -193,10 +198,10 @@ class BuildManagementService:
         matching_metadata = [
             item
             for item in self._build_store.list_env_metadata(env_name)
-            if item.config_id == config_id
+            if item.config_id == config_id and item.config_group == config_group
         ]
         latest = matching_metadata[-1] if matching_metadata else None
-        current = self._load_current_env_metadata(env_name=env_name, config_id=config_id)
+        current = self._load_current_env_metadata(env_name=env_name, config_id=config_id, config_group=config_group)
         state = _state_from_metadata(latest)
         has_artifact = bool(matching_metadata)
         summary = BuildSettingSummaryModel(
@@ -204,11 +209,12 @@ class BuildManagementService:
             setting_id=f"{config_id}:{env_name}",
             display_name=env_display_name or config_display_name or env_name,
             description=env_description,
+            usage=usage,  # type: ignore[arg-type]
             supported_sms=normalize_supported_sms(supported_sms),
             current_sm=current_sm,
             sm_supported=matches_supported_sms(current_sm, supported_sms),
             state=state,
-            selected=config_id == selected_config_id,
+            selected=usage == "runtime" and config_group == "envs" and config_id == selected_config_id,
             config_origin=config_origin,
             config_id=config_id,
             env_name=env_name,
@@ -259,7 +265,7 @@ class BuildManagementService:
         )
         return _with_active_job(summary, active_job)
 
-    def _load_current_env_metadata(self, *, env_name: str, config_id: str) -> EnvBuildMetadataModel | None:
+    def _load_current_env_metadata(self, *, env_name: str, config_id: str, config_group: str) -> EnvBuildMetadataModel | None:
         current_build_id = self._build_store.read_env_current_build_id(env_name)
         if not current_build_id:
             return None
@@ -267,19 +273,29 @@ class BuildManagementService:
             metadata = self._build_store.load_env_metadata(env_name, current_build_id)
         except FileNotFoundError:
             return None
-        return metadata if metadata.config_id == config_id else None
+        return metadata if metadata.config_id == config_id and metadata.config_group == config_group else None
 
     def _load_env_metadata_for_config(self, *, config_id: str, env_name: str, build_id: str) -> EnvBuildMetadataModel:
         try:
             metadata = self._build_store.load_env_metadata(env_name, build_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Env build artifact not found: {env_name}:{build_id}") from exc
-        if metadata.config_id != config_id:
+        config_group = self._resolve_env_config_group(config_id=config_id)
+        if metadata.config_id != config_id or metadata.config_group != config_group:
             raise HTTPException(
                 status_code=404,
                 detail=f"Env build artifact not found for config: {config_id}:{env_name}:{build_id}",
             )
         return metadata
+
+    def _resolve_env_config_group(self, *, config_id: str) -> str:
+        refs = [ref for ref in self._config_loader.list_env_configs() if ref.config_id == config_id]
+        if len(refs) == 1:
+            return refs[0].group
+        if not refs:
+            raise HTTPException(status_code=404, detail=f"Environment config not found: {config_id}")
+        groups = ", ".join(sorted({ref.group for ref in refs}))
+        raise HTTPException(status_code=409, detail=f"Environment config is ambiguous across groups ({groups}): {config_id}")
 
     def _load_shared_metadata_for_variant(self, *, package: str, variant: str, build_id: str) -> SharedBuildMetadataModel:
         try:

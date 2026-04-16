@@ -328,6 +328,7 @@ export type BuildSettingSummary = {
   setting_id: string;
   display_name: string;
   description?: string | null;
+  usage?: 'runtime' | 'training' | null;
   supported_sms?: string[];
   current_sm?: string | null;
   sm_supported?: boolean | null;
