@@ -228,7 +228,7 @@ def _with_active_job(
             "progress_percent": active_job.progress_percent,
             "actions": BuildSettingActionsModel(
                 run=False,
-                cancel=False,
+                cancel=True,
                 delete=False,
                 create_error_report=False,
             ),

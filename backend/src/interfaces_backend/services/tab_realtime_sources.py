@@ -17,6 +17,7 @@ from interfaces_backend.models.realtime import (
     OperateStatusSubscription,
     RecordingUploadStatusSubscription,
     BuildsStatusSubscription,
+    BuildsLogsSubscription,
     StorageDatasetMergeSubscription,
     StorageDatasetSyncSubscription,
     StorageModelSyncSubscription,
@@ -71,6 +72,8 @@ class TabRealtimeSourceRegistry:
             return 2.0
         if isinstance(subscription, BuildsStatusSubscription):
             return 0.5
+        if isinstance(subscription, BuildsLogsSubscription):
+            return 0.2
         if isinstance(subscription, RecordingUploadStatusSubscription):
             return 1.0
         if isinstance(subscription, StartupOperationSubscription):
@@ -164,6 +167,20 @@ class TabRealtimeSourceRegistry:
 
                 snapshot = get_build_management_service().snapshot()
                 return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
+
+            if isinstance(subscription, BuildsLogsSubscription):
+                from interfaces_backend.services.build_jobs import get_build_jobs_service
+
+                after_seq = int(state) if isinstance(state, int) else None
+                cursor, events = get_build_jobs_service().poll_log_events(after_seq=after_seq)
+                if not events:
+                    return RealtimeSourcePollResult(next_state=cursor)
+                return RealtimeSourcePollResult(
+                    op="append",
+                    payload={"events": events},
+                    cursor=str(cursor) if cursor is not None else None,
+                    next_state=cursor,
+                )
 
             if isinstance(subscription, RecordingUploadStatusSubscription):
                 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle

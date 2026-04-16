@@ -70,6 +70,23 @@ class _FakeBuildJobsService:
             )
         )
 
+    def cancel(self, *, job_id: str):
+        from interfaces_backend.models.build_management import BuildJobCancelResponse
+
+        return BuildJobCancelResponse(
+            accepted=True,
+            job=BuildJobSummaryModel(
+                job_id=job_id,
+                build_id="build-env-1",
+                kind="env",
+                setting_id="default:pi0",
+                state="running",
+                created_at="2026-04-16T00:00:00Z",
+                updated_at="2026-04-16T00:00:01Z",
+                message="構築の中止を要求しました。",
+            ),
+        )
+
 
 def test_list_env_build_settings(client, monkeypatch):
     monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
@@ -115,3 +132,14 @@ def test_run_shared_build(client, monkeypatch):
     payload = response.json()
     assert payload["job"]["job_id"] == "job-shared-1"
     assert payload["job"]["setting_id"] == "pytorch:thor"
+
+
+def test_cancel_build_job(client, monkeypatch):
+    monkeypatch.setattr(builds_api, "get_build_jobs_service", lambda: _FakeBuildJobsService())
+
+    response = client.post("/api/builds/jobs/job-env-1/cancel")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["accepted"] is True
+    assert payload["job"]["job_id"] == "job-env-1"

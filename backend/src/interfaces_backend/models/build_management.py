@@ -75,6 +75,11 @@ class BuildRunAcceptedResponse(BaseModel):
     job: BuildJobSummaryModel
 
 
+class BuildJobCancelResponse(BaseModel):
+    accepted: bool
+    job: BuildJobSummaryModel
+
+
 class BuildsStatusSnapshotModel(BaseModel):
     running_jobs: list[BuildJobSummaryModel] = Field(default_factory=list)
     envs: EnvBuildSettingsListResponse

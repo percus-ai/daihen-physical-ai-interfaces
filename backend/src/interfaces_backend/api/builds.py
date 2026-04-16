@@ -7,6 +7,7 @@ import asyncio
 from fastapi import APIRouter
 
 from interfaces_backend.models.build_management import (
+    BuildJobCancelResponse,
     BuildRunAcceptedResponse,
     EnvBuildSettingsListResponse,
     SharedBuildSettingsListResponse,
@@ -35,3 +36,8 @@ async def run_env_build(config_id: str, env_name: str) -> BuildRunAcceptedRespon
 @router.post("/shared/{package}/{variant}/run", response_model=BuildRunAcceptedResponse)
 async def run_shared_build(package: str, variant: str) -> BuildRunAcceptedResponse:
     return get_build_jobs_service().start_shared_build(package=package, variant=variant)
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=BuildJobCancelResponse)
+async def cancel_build_job(job_id: str) -> BuildJobCancelResponse:
+    return get_build_jobs_service().cancel(job_id=job_id)

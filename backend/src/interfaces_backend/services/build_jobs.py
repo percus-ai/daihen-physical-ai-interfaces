@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from interfaces_backend.models.build_management import (
+    BuildJobCancelResponse,
     BuildJobSummaryModel,
     BuildRunAcceptedResponse,
 )
@@ -25,6 +27,8 @@ from percus_ai.environment.operations import (
 )
 
 _ACTIVE_STATES = {"queued", "running"}
+_TERMINAL_STATES = {"completed", "failed"}
+_LOG_BUFFER_MAX_EVENTS = 2000
 
 
 def _utcnow() -> datetime:
@@ -89,12 +93,32 @@ class BuildJobsService:
         self._lock = threading.RLock()
         self._jobs: dict[str, _BuildJobRecord] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._log_events: deque[dict[str, Any]] = deque(maxlen=_LOG_BUFFER_MAX_EVENTS)
+        self._next_log_seq = 0
 
     def list_active_jobs(self) -> list[BuildJobSummaryModel]:
         with self._lock:
             items = [record.to_response() for record in self._jobs.values() if record.state in _ACTIVE_STATES]
         items.sort(key=lambda item: item.updated_at, reverse=True)
         return items
+
+    def get_job(self, *, job_id: str) -> BuildJobSummaryModel:
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail=f"Build job not found: {job_id}")
+            return record.to_response()
+
+    def poll_log_events(self, *, after_seq: int | None = None) -> tuple[int | None, list[dict[str, Any]]]:
+        with self._lock:
+            events = [
+                dict(item)
+                for item in self._log_events
+                if after_seq is None or int(item["seq"]) > after_seq
+            ]
+        next_cursor = int(events[-1]["seq"]) if events else after_seq
+        return next_cursor, events
 
     def start_env_build(self, *, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
         config = self._config_loader.load_env_config(config_id)
@@ -115,6 +139,7 @@ class BuildJobsService:
                 message="環境構築ジョブを受け付けました。",
             )
             self._jobs[record.job_id] = record
+            self._cancel_events[record.job_id] = threading.Event()
             loop = asyncio.get_running_loop()
             self._tasks[record.job_id] = loop.create_task(self._run_env_job(record.job_id), name=f"build-env-{setting_id}")
             response = record.to_response()
@@ -139,6 +164,7 @@ class BuildJobsService:
                 message="共有パッケージ構築ジョブを受け付けました。",
             )
             self._jobs[record.job_id] = record
+            self._cancel_events[record.job_id] = threading.Event()
             loop = asyncio.get_running_loop()
             self._tasks[record.job_id] = loop.create_task(
                 self._run_shared_job(record.job_id),
@@ -147,11 +173,29 @@ class BuildJobsService:
             response = record.to_response()
         return BuildRunAcceptedResponse(job=response)
 
+    def cancel(self, *, job_id: str) -> BuildJobCancelResponse:
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail=f"Build job not found: {job_id}")
+            cancel_event = self._cancel_events.get(job_id)
+            if record.state in _TERMINAL_STATES:
+                return BuildJobCancelResponse(accepted=False, job=record.to_response())
+            if cancel_event is not None:
+                cancel_event.set()
+            record.message = "構築の中止を要求しました。"
+            record.updated_at = _utcnow()
+            return BuildJobCancelResponse(accepted=True, job=record.to_response())
+
     async def shutdown(self) -> None:
         tasks: list[asyncio.Task[None]]
         with self._lock:
             tasks = list(self._tasks.values())
             self._tasks.clear()
+            cancel_events = list(self._cancel_events.values())
+            self._cancel_events.clear()
+        for event in cancel_events:
+            event.set()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -172,20 +216,27 @@ class BuildJobsService:
             name=f"build-env-monitor-{job_id}",
         )
         try:
+            cancel_event = self._cancel_events.get(job_id)
             await asyncio.to_thread(
                 self._environment_build_operation.execute,
                 config_id=record.config_id,
                 env_name=record.env_name,
                 build_id=record.build_id,
+                cancel_event=cancel_event,
+                output_callback=self._build_output_callback(job_id),
             )
             self._mark_completed(job_id, message="環境構築が完了しました。")
         except Exception as exc:  # noqa: BLE001
-            self._mark_failed(job_id, error=str(exc), message="環境構築に失敗しました。")
+            if self._is_cancel_requested(job_id):
+                self._mark_failed(job_id, error="cancelled", message="環境構築を中止しました。")
+            else:
+                self._mark_failed(job_id, error=str(exc), message="環境構築に失敗しました。")
         finally:
             monitor.cancel()
             await asyncio.gather(monitor, return_exceptions=True)
             with self._lock:
                 self._tasks.pop(job_id, None)
+                self._cancel_events.pop(job_id, None)
 
     async def _run_shared_job(self, job_id: str) -> None:
         record = self._get_record(job_id)
@@ -197,20 +248,27 @@ class BuildJobsService:
             name=f"build-shared-monitor-{job_id}",
         )
         try:
+            cancel_event = self._cancel_events.get(job_id)
             await asyncio.to_thread(
                 self._shared_build_operation.execute,
                 package=record.package,
                 variant=record.variant,
                 build_id=record.build_id,
+                cancel_event=cancel_event,
+                output_callback=self._build_output_callback(job_id),
             )
             self._mark_completed(job_id, message="共有パッケージ構築が完了しました。")
         except Exception as exc:  # noqa: BLE001
-            self._mark_failed(job_id, error=str(exc), message="共有パッケージ構築に失敗しました。")
+            if self._is_cancel_requested(job_id):
+                self._mark_failed(job_id, error="cancelled", message="共有パッケージ構築を中止しました。")
+            else:
+                self._mark_failed(job_id, error=str(exc), message="共有パッケージ構築に失敗しました。")
         finally:
             monitor.cancel()
             await asyncio.gather(monitor, return_exceptions=True)
             with self._lock:
                 self._tasks.pop(job_id, None)
+                self._cancel_events.pop(job_id, None)
 
     async def _monitor_env_metadata(self, *, job_id: str, env_name: str, build_id: str) -> None:
         while True:
@@ -272,6 +330,34 @@ class BuildJobsService:
             record.error = error
             record.finished_at = _utcnow()
             record.updated_at = record.finished_at
+
+    def _build_output_callback(self, job_id: str):
+        def _callback(step: str, stream: str, line: str) -> None:
+            with self._lock:
+                record = self._jobs.get(job_id)
+                if record is None:
+                    return
+                self._next_log_seq += 1
+                self._log_events.append(
+                    {
+                        "seq": self._next_log_seq,
+                        "job_id": record.job_id,
+                        "build_id": record.build_id,
+                        "kind": record.kind,
+                        "setting_id": record.setting_id,
+                        "step": step,
+                        "stream": stream,
+                        "line": line,
+                        "emitted_at": _utcnow().isoformat(),
+                    }
+                )
+
+        return _callback
+
+    def _is_cancel_requested(self, job_id: str) -> bool:
+        with self._lock:
+            cancel_event = self._cancel_events.get(job_id)
+            return bool(cancel_event and cancel_event.is_set())
 
     def _get_record(self, job_id: str) -> _BuildJobRecord | None:
         with self._lock:

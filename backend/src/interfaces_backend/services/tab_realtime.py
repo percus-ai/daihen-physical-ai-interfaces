@@ -381,6 +381,8 @@ class _TabSession:
                 if result.close_state:
                     source_registry.cleanup(subscription, current_runtime.source_state)
                     current_runtime.source_state = None
+                if result.payload is None and result.error is None:
+                    continue
                 if result.error is not None:
                     error_payload = {"message": result.error}
                     encoded_error = json.dumps(error_payload, ensure_ascii=False, sort_keys=True)

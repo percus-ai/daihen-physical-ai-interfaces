@@ -152,6 +152,11 @@ def test_tab_session_subscription_schema_accepts_system_operate_recording_source
             "params": {},
         },
         {
+            "subscription_id": "builds.logs",
+            "kind": "builds.logs",
+            "params": {},
+        },
+        {
             "subscription_id": "profiles.vlabor",
             "kind": "profiles.vlabor",
             "params": {},
@@ -190,7 +195,7 @@ def test_tab_session_subscription_schema_accepts_system_operate_recording_source
 
     state = TabSessionStateRequest.model_validate(payload)
 
-    assert len(state.subscriptions) == 12
+    assert len(state.subscriptions) == 13
     assert state.subscriptions[0].kind == "system.status"
     assert state.subscriptions[-1].kind == "storage.dataset-merge"
 
@@ -235,6 +240,64 @@ def test_tab_realtime_source_registry_supports_builds_status(monkeypatch):
         "envs": {"selected_config_id": "default", "items": []},
         "shared": {"items": []},
     }
+
+
+def test_tab_realtime_source_registry_supports_builds_logs(monkeypatch):
+    import interfaces_backend.services.build_jobs as build_jobs
+
+    class _FakeBuildJobsService:
+        def poll_log_events(self, *, after_seq=None):
+            if after_seq == 2:
+                return 2, []
+            return 2, [
+                {
+                    "seq": 1,
+                    "job_id": "job-1",
+                    "build_id": "build-1",
+                    "kind": "env",
+                    "setting_id": "default:pi0",
+                    "step": "runtime-common",
+                    "stream": "stderr",
+                    "line": "hello\n",
+                    "emitted_at": "2026-04-16T00:00:00Z",
+                },
+                {
+                    "seq": 2,
+                    "job_id": "job-1",
+                    "build_id": "build-1",
+                    "kind": "env",
+                    "setting_id": "default:pi0",
+                    "step": "runtime-common",
+                    "stream": "stderr",
+                    "line": "world\n",
+                    "emitted_at": "2026-04-16T00:00:01Z",
+                },
+            ]
+
+    monkeypatch.setattr(build_jobs, "get_build_jobs_service", lambda: _FakeBuildJobsService())
+
+    registry = TabRealtimeSourceRegistry()
+    state = TabSessionStateRequest.model_validate(
+        {
+            **_make_state_payload(),
+            "subscriptions": [
+                {
+                    "subscription_id": "builds.logs",
+                    "kind": "builds.logs",
+                    "params": {},
+                }
+            ],
+        }
+    )
+
+    result = asyncio.run(registry.poll(state.subscriptions[0], state=None))
+    assert result.op == "append"
+    assert result.cursor == "2"
+    assert result.payload["events"][0]["line"] == "hello\n"
+
+    idle = asyncio.run(registry.poll(state.subscriptions[0], state=2))
+    assert idle.payload is None
+    assert idle.next_state == 2
 
 
 def test_tab_session_registry_put_get_delete_flow():
