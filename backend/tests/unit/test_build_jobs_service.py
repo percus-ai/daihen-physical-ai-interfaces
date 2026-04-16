@@ -52,6 +52,24 @@ class _FakeSharedBuildOperation:
         return None
 
 
+class _VerboseSharedBuildOperation:
+    def execute(
+        self,
+        *,
+        package: str,
+        variant: str,
+        build_id: str | None = None,
+        cancel_event=None,
+        output_callback=None,
+    ):
+        del package, variant, build_id, cancel_event
+        if output_callback is None:
+            return None
+        for index in range(150):
+            output_callback("build_shared", "stdout", f"line-{index}\n")
+        return None
+
+
 async def _wait_for_terminal_state(service: BuildJobsService, job_id: str) -> str:
     for _ in range(100):
         state = service.get_job(job_id=job_id).state
@@ -70,6 +88,7 @@ def test_build_jobs_service_cancel_and_log_buffer(tmp_path: Path):
 id: default
 envs:
   pi0:
+    python: "3.10"
     installs:
       - id: runtime-common
         source:
@@ -112,6 +131,67 @@ variants: {}
         final_job = service.get_job(job_id=job_id)
         assert final_job.error == "cancelled"
         assert final_job.message == "環境構築を中止しました。"
+
+        await service.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_build_jobs_service_keeps_latest_100_log_lines_per_job(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        """
+id: default
+envs:
+  pi0:
+    python: "3.10"
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants:
+  default:
+    python: "3.10"
+    runtime_packages: {}
+    build:
+      source:
+        type: index
+      commands:
+        - id: build_pytorch
+          command:
+            - python3
+            - -c
+            - print("noop")
+    checks: []
+""".strip()
+        + "\n",
+    )
+
+    async def _run():
+        service = BuildJobsService(
+            config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+            build_store=BuildStore(layout=BuildLayout(data_dir=data_dir)),
+            environment_build_operation=_FakeEnvironmentBuildOperation(),
+            shared_build_operation=_VerboseSharedBuildOperation(),
+        )
+        accepted = service.start_shared_build(package="pytorch", variant="default")
+        job_id = accepted.job.job_id
+
+        terminal_state = await _wait_for_terminal_state(service, job_id)
+        assert terminal_state == "completed"
+
+        _, events = service.poll_log_events()
+        job_events = [item for item in events if item["job_id"] == job_id]
+        assert len(job_events) == 100
+        assert job_events[0]["line"] == "line-50\n"
+        assert job_events[-1]["line"] == "line-149\n"
 
         await service.shutdown()
 

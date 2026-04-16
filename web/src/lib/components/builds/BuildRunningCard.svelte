@@ -52,7 +52,7 @@
 
   const progressLabel = $derived(`${displayedPercent.toFixed(1)}%`);
   const currentStep = $derived(job.current_step_name?.trim() || '準備中');
-  const displayedLogs = $derived(logLines.slice(-6));
+  const displayedLogs = $derived(logLines);
 
   const handleCancel = async () => {
     if (!onCancel || cancelling) return;

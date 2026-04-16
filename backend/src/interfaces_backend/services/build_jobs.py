@@ -28,7 +28,7 @@ from percus_ai.environment.operations import (
 
 _ACTIVE_STATES = {"queued", "running"}
 _TERMINAL_STATES = {"completed", "failed"}
-_LOG_BUFFER_MAX_EVENTS = 2000
+_LOG_BUFFER_MAX_LINES_PER_JOB = 100
 
 
 def _utcnow() -> datetime:
@@ -94,7 +94,7 @@ class BuildJobsService:
         self._jobs: dict[str, _BuildJobRecord] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel_events: dict[str, threading.Event] = {}
-        self._log_events: deque[dict[str, Any]] = deque(maxlen=_LOG_BUFFER_MAX_EVENTS)
+        self._log_events_by_job: dict[str, deque[dict[str, Any]]] = {}
         self._next_log_seq = 0
 
     def list_active_jobs(self) -> list[BuildJobSummaryModel]:
@@ -112,11 +112,15 @@ class BuildJobsService:
 
     def poll_log_events(self, *, after_seq: int | None = None) -> tuple[int | None, list[dict[str, Any]]]:
         with self._lock:
-            events = [
-                dict(item)
-                for item in self._log_events
-                if after_seq is None or int(item["seq"]) > after_seq
-            ]
+            events = sorted(
+                (
+                    dict(item)
+                    for buffer in self._log_events_by_job.values()
+                    for item in buffer
+                    if after_seq is None or int(item["seq"]) > after_seq
+                ),
+                key=lambda item: int(item["seq"]),
+            )
         next_cursor = int(events[-1]["seq"]) if events else after_seq
         return next_cursor, events
 
@@ -140,6 +144,7 @@ class BuildJobsService:
             )
             self._jobs[record.job_id] = record
             self._cancel_events[record.job_id] = threading.Event()
+            self._log_events_by_job[record.job_id] = deque(maxlen=_LOG_BUFFER_MAX_LINES_PER_JOB)
             loop = asyncio.get_running_loop()
             self._tasks[record.job_id] = loop.create_task(self._run_env_job(record.job_id), name=f"build-env-{setting_id}")
             response = record.to_response()
@@ -165,6 +170,7 @@ class BuildJobsService:
             )
             self._jobs[record.job_id] = record
             self._cancel_events[record.job_id] = threading.Event()
+            self._log_events_by_job[record.job_id] = deque(maxlen=_LOG_BUFFER_MAX_LINES_PER_JOB)
             loop = asyncio.get_running_loop()
             self._tasks[record.job_id] = loop.create_task(
                 self._run_shared_job(record.job_id),
@@ -194,6 +200,7 @@ class BuildJobsService:
             self._tasks.clear()
             cancel_events = list(self._cancel_events.values())
             self._cancel_events.clear()
+            self._log_events_by_job.clear()
         for event in cancel_events:
             event.set()
         for task in tasks:
@@ -338,7 +345,11 @@ class BuildJobsService:
                 if record is None:
                     return
                 self._next_log_seq += 1
-                self._log_events.append(
+                buffer = self._log_events_by_job.setdefault(
+                    record.job_id,
+                    deque(maxlen=_LOG_BUFFER_MAX_LINES_PER_JOB),
+                )
+                buffer.append(
                     {
                         "seq": self._next_log_seq,
                         "job_id": record.job_id,
@@ -402,7 +413,11 @@ class BuildJobsService:
             count += 1
         elif build_source == "git":
             count += 2
-        if build_source != "index" or variant.build.packages:
+        if variant.build.commands:
+            count += len(variant.build.preflight_checks)
+            count += len(variant.build.commands)
+            count += len(variant.build.post_install_checks)
+        elif build_source != "index" or variant.build.packages:
             count += len(variant.build.preflight_checks)
             count += 1
             count += len(variant.build.post_install_checks)

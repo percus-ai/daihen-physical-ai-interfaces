@@ -232,7 +232,7 @@
     for (const event of events) {
       const line = `${event.stream === 'stderr' ? '[stderr] ' : ''}${event.line.trim()}`.trim();
       const current = next[event.job_id] ?? [];
-      next[event.job_id] = [...current, line].slice(-8);
+      next[event.job_id] = [...current, line].slice(-100);
     }
     buildLogLinesByJobId = next;
   };
