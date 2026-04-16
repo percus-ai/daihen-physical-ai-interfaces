@@ -391,6 +391,15 @@ export type BuildArtifactDeleteResponse = {
   build_id: string;
 };
 
+export type BuildErrorReportResponse = {
+  report_id: string;
+  kind: BuildSettingKind;
+  setting_id: string;
+  build_id: string;
+  object_path: string;
+  uploaded_at: string;
+};
+
 export type BuildsStatusSnapshot = {
   running_jobs: BuildJobSummary[];
   envs: EnvBuildSettingsListResponse;
@@ -1235,6 +1244,20 @@ export const api = {
         `/api/builds/shared/${encodeURIComponent(packageName)}/${encodeURIComponent(variant)}/artifacts/${encodeURIComponent(buildId)}`,
         {
           method: 'DELETE'
+        }
+      ),
+    createEnvErrorReport: (configId: string, envName: string, buildId: string) =>
+      fetchApi<BuildErrorReportResponse>(
+        `/api/builds/envs/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/artifacts/${encodeURIComponent(buildId)}/error-report`,
+        {
+          method: 'POST'
+        }
+      ),
+    createSharedErrorReport: (packageName: string, variant: string, buildId: string) =>
+      fetchApi<BuildErrorReportResponse>(
+        `/api/builds/shared/${encodeURIComponent(packageName)}/${encodeURIComponent(variant)}/artifacts/${encodeURIComponent(buildId)}/error-report`,
+        {
+          method: 'POST'
         }
       )
   },

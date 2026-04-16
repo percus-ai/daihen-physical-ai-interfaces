@@ -12,6 +12,7 @@
     onRun?: (item: BuildSettingSummary) => Promise<void>;
     onCancel?: (item: BuildSettingSummary) => Promise<void>;
     onDelete?: (item: BuildSettingSummary) => Promise<void>;
+    onCreateErrorReport?: (item: BuildSettingSummary) => Promise<void>;
   };
 
   let {
@@ -21,7 +22,8 @@
     actionPending = {},
     onRun,
     onCancel,
-    onDelete
+    onDelete,
+    onCreateErrorReport
   }: Props = $props();
 
   const stateLabel = (state: BuildSettingSummary['state']) => {
@@ -51,6 +53,11 @@
   const handleDelete = async (item: BuildSettingSummary) => {
     if (!onDelete || actionPending[item.setting_id]) return;
     await onDelete(item);
+  };
+
+  const handleCreateErrorReport = async (item: BuildSettingSummary) => {
+    if (!onCreateErrorReport || actionPending[item.setting_id]) return;
+    await onCreateErrorReport(item);
   };
 </script>
 
@@ -126,6 +133,11 @@
                   <Button.Root class="btn-primary" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleRun(item)}>
                     {item.state === 'success' ? '再構築' : '構築'}
                   </Button.Root>
+                  {#if item.actions.create_error_report}
+                    <Button.Root class="btn-ghost" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleCreateErrorReport(item)}>
+                      {actionPending[item.setting_id] ? '作成中...' : 'レポート作成'}
+                    </Button.Root>
+                  {/if}
                   {#if item.actions.delete}
                     <Button.Root class="btn-ghost" type="button" disabled={actionPending[item.setting_id]} onclick={() => handleDelete(item)}>
                       {actionPending[item.setting_id] ? '削除中...' : '削除'}

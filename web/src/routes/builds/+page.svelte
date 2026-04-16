@@ -5,12 +5,14 @@
 
   import {
     api,
+    type BuildErrorReportResponse,
     type BuildJobSummary,
     type BuildLogEvent,
     type BuildSettingSummary,
     type BuildsStatusSnapshot,
     type TabSessionSubscription
   } from '$lib/api/client';
+  import BuildErrorReportDialog from '$lib/components/builds/BuildErrorReportDialog.svelte';
   import BuildRunningCard from '$lib/components/builds/BuildRunningCard.svelte';
   import BuildSettingsSection from '$lib/components/builds/BuildSettingsSection.svelte';
   import {
@@ -27,6 +29,9 @@
   let loadError = $state('');
   let actionPending = $state<Record<string, boolean>>({});
   let logLinesByJobId = $state<Record<string, string[]>>({});
+  let errorReportDialogOpen = $state(false);
+  let latestErrorReport = $state<BuildErrorReportResponse | null>(null);
+  let errorReportMessage = $state('');
   let realtimeContributor: TabRealtimeContributorHandle | null = null;
 
   const loadSnapshot = async () => {
@@ -165,6 +170,37 @@
     }
   };
 
+  const handleCreateErrorReport = async (item: BuildSettingSummary) => {
+    const buildId = item.latest_build_id;
+    if (!buildId) return;
+    setPending(item.setting_id, true);
+    errorReportMessage = '';
+    latestErrorReport = null;
+    try {
+      let response: BuildErrorReportResponse;
+      if (item.kind === 'env' && item.config_id && item.env_name) {
+        response = await api.builds.createEnvErrorReport(item.config_id, item.env_name, buildId);
+      } else if (item.kind === 'shared' && item.package && item.variant) {
+        response = await api.builds.createSharedErrorReport(item.package, item.variant, buildId);
+      } else {
+        throw new Error('レポート対象を特定できません。');
+      }
+      latestErrorReport = response;
+      errorReportDialogOpen = true;
+      toast.success('エラーレポートを作成しました。');
+    } catch (error) {
+      errorReportMessage = error instanceof Error ? error.message : 'レポート作成に失敗しました。';
+      toast.error(errorReportMessage);
+    } finally {
+      setPending(item.setting_id, false);
+    }
+  };
+
+  const handleCopyReportId = async (reportId: string) => {
+    await navigator.clipboard.writeText(reportId);
+    toast.success('レポートIDをコピーしました。');
+  };
+
   $effect(() => {
     if (!browser) return;
     ensureRealtime();
@@ -236,6 +272,7 @@
   onRun={handleRun}
   onCancel={handleCancel}
   onDelete={handleDelete}
+  onCreateErrorReport={handleCreateErrorReport}
 />
 
 <BuildSettingsSection
@@ -246,4 +283,13 @@
   onRun={handleRun}
   onCancel={handleCancel}
   onDelete={handleDelete}
+  onCreateErrorReport={handleCreateErrorReport}
+/>
+
+<BuildErrorReportDialog
+  bind:open={errorReportDialogOpen}
+  reportId={latestErrorReport?.report_id ?? ''}
+  settingId={latestErrorReport?.setting_id ?? ''}
+  errorMessage={errorReportMessage}
+  onCopy={handleCopyReportId}
 />
