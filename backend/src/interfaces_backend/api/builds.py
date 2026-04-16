@@ -7,6 +7,7 @@ import asyncio
 from fastapi import APIRouter
 
 from interfaces_backend.models.build_management import (
+    BuildArtifactDeleteResponse,
     BuildJobCancelResponse,
     BuildRunAcceptedResponse,
     EnvBuildSettingsListResponse,
@@ -41,3 +42,33 @@ async def run_shared_build(package: str, variant: str) -> BuildRunAcceptedRespon
 @router.post("/jobs/{job_id}/cancel", response_model=BuildJobCancelResponse)
 async def cancel_build_job(job_id: str) -> BuildJobCancelResponse:
     return get_build_jobs_service().cancel(job_id=job_id)
+
+
+@router.delete("/envs/{config_id}/{env_name}/artifacts/{build_id}", response_model=BuildArtifactDeleteResponse)
+async def delete_env_build_artifact(config_id: str, env_name: str, build_id: str) -> BuildArtifactDeleteResponse:
+    await asyncio.to_thread(
+        get_build_management_service().delete_env_artifact,
+        config_id=config_id,
+        env_name=env_name,
+        build_id=build_id,
+    )
+    return BuildArtifactDeleteResponse(
+        kind="env",
+        setting_id=f"{config_id}:{env_name}",
+        build_id=build_id,
+    )
+
+
+@router.delete("/shared/{package}/{variant}/artifacts/{build_id}", response_model=BuildArtifactDeleteResponse)
+async def delete_shared_build_artifact(package: str, variant: str, build_id: str) -> BuildArtifactDeleteResponse:
+    await asyncio.to_thread(
+        get_build_management_service().delete_shared_artifact,
+        package=package,
+        variant=variant,
+        build_id=build_id,
+    )
+    return BuildArtifactDeleteResponse(
+        kind="shared",
+        setting_id=f"{package}:{variant}",
+        build_id=build_id,
+    )

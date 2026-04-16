@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fastapi import HTTPException
+
 from typing import Protocol
 
 from interfaces_backend.models.build_management import (
@@ -93,6 +95,35 @@ class BuildManagementService:
             shared=self.list_shared_settings(),
         )
 
+    def delete_env_artifact(self, *, config_id: str, env_name: str, build_id: str) -> None:
+        self._ensure_no_active_setting_job(setting_id=f"{config_id}:{env_name}")
+        try:
+            metadata = self._build_store.load_env_metadata(env_name, build_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Env build artifact not found: {env_name}:{build_id}") from exc
+        if metadata.config_id != config_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Env build artifact not found for config: {config_id}:{env_name}:{build_id}",
+            )
+        self._build_store.delete_env_build(env_name, build_id)
+
+    def delete_shared_artifact(self, *, package: str, variant: str, build_id: str) -> None:
+        self._ensure_no_active_setting_job(setting_id=f"{package}:{variant}")
+        try:
+            metadata = self._build_store.load_shared_metadata(package, build_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Shared build artifact not found: {package}:{build_id}",
+            ) from exc
+        if metadata.variant != variant:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Shared build artifact not found for variant: {package}:{variant}:{build_id}",
+            )
+        self._build_store.delete_shared_build(package, build_id)
+
     def _build_env_summary(
         self,
         *,
@@ -171,6 +202,11 @@ class BuildManagementService:
         except FileNotFoundError:
             return None
         return metadata if metadata.config_id == config_id else None
+
+    def _ensure_no_active_setting_job(self, *, setting_id: str) -> None:
+        active_setting_ids = {item.setting_id for item in self._build_jobs_service.list_active_jobs()}
+        if setting_id in active_setting_ids:
+            raise HTTPException(status_code=409, detail=f"Build is currently active: {setting_id}")
 
 
 def _started_at(steps: list[BuildStepLogModel]) -> str | None:

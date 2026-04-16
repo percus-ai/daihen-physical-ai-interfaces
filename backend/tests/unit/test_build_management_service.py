@@ -235,3 +235,116 @@ variants: {}
     assert item.current_job_id == "job-1"
     assert item.current_step_name == "runtime-common"
     assert item.progress_percent == 33.0
+
+
+def test_delete_env_artifact_unlinks_current_when_current_build_matches(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        """
+id: default
+display_name: Default
+envs:
+  pi0:
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants: {}
+""".strip()
+        + "\n",
+    )
+    store = BuildStore(layout=BuildLayout(data_dir=data_dir))
+    store.save_env_metadata(
+        EnvBuildMetadataModel(
+            build_id="build-1",
+            env_name="pi0",
+            config_id="default",
+            success=True,
+            steps=[BuildStepLogModel(step="done")],
+        )
+    )
+    store.switch_env_current("pi0", "build-1")
+    service = BuildManagementService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=store,
+        settings_service=_FakeSettingsService("default"),
+        build_jobs_service=_FakeBuildJobsService(),
+    )
+
+    service.delete_env_artifact(config_id="default", env_name="pi0", build_id="build-1")
+
+    assert store.read_env_current_build_id("pi0") is None
+    assert store.list_env_metadata("pi0") == []
+
+
+def test_delete_shared_artifact_filters_by_variant(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        """
+id: default
+envs: {}
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants:
+  thor:
+    build:
+      source:
+        type: index
+      outputs:
+        python_paths:
+          - output/site-packages
+  other:
+    build:
+      source:
+        type: index
+      outputs:
+        python_paths:
+          - output/site-packages
+""".strip()
+        + "\n",
+    )
+    store = BuildStore(layout=BuildLayout(data_dir=data_dir))
+    store.save_shared_metadata(
+        SharedBuildMetadataModel(
+            build_id="build-1",
+            package="pytorch",
+            variant="thor",
+            success=True,
+            steps=[BuildStepLogModel(step="done")],
+        )
+    )
+    store.save_shared_metadata(
+        SharedBuildMetadataModel(
+            build_id="build-2",
+            package="pytorch",
+            variant="other",
+            success=True,
+            steps=[BuildStepLogModel(step="done")],
+        )
+    )
+    service = BuildManagementService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=store,
+        settings_service=_FakeSettingsService("default"),
+        build_jobs_service=_FakeBuildJobsService(),
+    )
+
+    service.delete_shared_artifact(package="pytorch", variant="thor", build_id="build-1")
+
+    remaining = store.list_shared_metadata("pytorch")
+    assert len(remaining) == 1
+    assert remaining[0].build_id == "build-2"

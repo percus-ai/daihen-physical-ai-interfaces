@@ -80,6 +80,13 @@ class BuildJobCancelResponse(BaseModel):
     job: BuildJobSummaryModel
 
 
+class BuildArtifactDeleteResponse(BaseModel):
+    deleted: bool = True
+    kind: BuildSettingKind
+    setting_id: str
+    build_id: str
+
+
 class BuildsStatusSnapshotModel(BaseModel):
     running_jobs: list[BuildJobSummaryModel] = Field(default_factory=list)
     envs: EnvBuildSettingsListResponse

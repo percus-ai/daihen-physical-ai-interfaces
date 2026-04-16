@@ -42,6 +42,16 @@ class _FakeBuildManagementService:
             ]
         )
 
+    def delete_env_artifact(self, *, config_id: str, env_name: str, build_id: str) -> None:
+        assert config_id == "default"
+        assert env_name == "pi0"
+        assert build_id == "build-env-1"
+
+    def delete_shared_artifact(self, *, package: str, variant: str, build_id: str) -> None:
+        assert package == "pytorch"
+        assert variant == "thor"
+        assert build_id == "build-1"
+
 
 class _FakeBuildJobsService:
     def start_env_build(self, *, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
@@ -143,3 +153,27 @@ def test_cancel_build_job(client, monkeypatch):
     payload = response.json()
     assert payload["accepted"] is True
     assert payload["job"]["job_id"] == "job-env-1"
+
+
+def test_delete_env_build_artifact(client, monkeypatch):
+    monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
+
+    response = client.delete("/api/builds/envs/default/pi0/artifacts/build-env-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["deleted"] is True
+    assert payload["kind"] == "env"
+    assert payload["setting_id"] == "default:pi0"
+
+
+def test_delete_shared_build_artifact(client, monkeypatch):
+    monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
+
+    response = client.delete("/api/builds/shared/pytorch/thor/artifacts/build-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["deleted"] is True
+    assert payload["kind"] == "shared"
+    assert payload["setting_id"] == "pytorch:thor"
