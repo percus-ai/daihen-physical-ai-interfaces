@@ -15,6 +15,8 @@
     displayPercent = $bindable(0)
   }: Props = $props();
 
+  let initialized = $state(false);
+
   const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
 
   const currentValue = $derived(clampPercent(Number(currentPercent ?? 0)));
@@ -32,6 +34,13 @@
   $effect(() => {
     if (!running) {
       displayPercent = currentValue;
+      initialized = true;
+      return;
+    }
+
+    if (!initialized) {
+      displayPercent = animatedCap;
+      initialized = true;
       return;
     }
 

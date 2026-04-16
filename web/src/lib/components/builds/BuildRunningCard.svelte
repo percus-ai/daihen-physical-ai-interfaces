@@ -6,6 +6,8 @@
 
   type Props = {
     job: BuildJobSummary;
+    title?: string;
+    description?: string;
     logLines?: string[];
     cancelling?: boolean;
     onCancel?: (jobId: string) => Promise<void>;
@@ -13,10 +15,24 @@
 
   let {
     job,
+    title = '',
+    description = '',
     logLines = [],
     cancelling = false,
     onCancel
   }: Props = $props();
+
+  const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
+  const initialDisplayPercentFor = (currentJob: BuildJobSummary) => {
+    const currentValue = clampPercent(Number(currentJob.progress_percent ?? 0));
+    const totalSteps = Math.max(0, Number(currentJob.total_steps ?? 0));
+    const currentStepIndex = Math.max(0, Number(currentJob.current_step_index ?? 0));
+    if (totalSteps <= 0) return currentValue;
+    const stepWidth = 100 / totalSteps;
+    const nextBoundary = Math.min(99, (currentStepIndex + 1) * stepWidth);
+    const cap = nextBoundary - stepWidth * 0.15;
+    return clampPercent(Math.max(currentValue, cap));
+  };
 
   let displayedPercent = $state(0);
   let displayedJobId = $state('');
@@ -24,7 +40,7 @@
   $effect(() => {
     if (displayedJobId === job.job_id) return;
     displayedJobId = job.job_id;
-    displayedPercent = Number(job.progress_percent ?? 0);
+    displayedPercent = initialDisplayPercentFor(job);
   });
 
   const kindLabel = $derived(job.kind === 'env' ? '環境構築' : '共有パッケージ');
@@ -44,15 +60,15 @@
   };
 </script>
 
-<article class="nested-block-pane flex flex-col gap-4 p-4">
-  <div class="flex items-start justify-between gap-3">
-    <div class="space-y-2">
+<article class="nested-block-pane flex min-w-0 flex-col gap-4 overflow-hidden p-4">
+  <div class="flex min-w-0 items-start justify-between gap-3">
+    <div class="min-w-0 space-y-2">
       <div class={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${badgeClass}`}>
         {kindLabel}
       </div>
-      <div>
-        <h3 class="text-lg font-semibold text-slate-900">{job.setting_id}</h3>
-        <p class="mt-1 text-sm text-slate-600">{job.message ?? '構築を進めています。'}</p>
+      <div class="min-w-0">
+        <h3 class="truncate text-lg font-semibold text-slate-900">{title || job.setting_id}</h3>
+        <p class="mt-1 truncate text-sm text-slate-600">{description || job.message || '構築を進めています。'}</p>
       </div>
     </div>
 
@@ -63,8 +79,8 @@
 
   <div class="space-y-2">
     <div class="flex items-center justify-between text-xs font-semibold text-slate-500">
-      <span>{currentStep}</span>
-      <span>{progressLabel}</span>
+      <span class="min-w-0 truncate pr-3">{currentStep}</span>
+      <span class="shrink-0">{progressLabel}</span>
     </div>
     <BuildProgressBar
       currentPercent={job.progress_percent ?? 0}
@@ -75,20 +91,22 @@
     />
   </div>
 
-  <div class="nested-block bg-slate-950 px-3 py-2 text-xs text-slate-100">
+  <div class="min-w-0 rounded-2xl border border-slate-200/70 bg-slate-950 p-4 text-slate-100">
     <div class="mb-2 flex items-center justify-between text-[11px] uppercase tracking-[0.18em] text-slate-400">
       <span>直近ログ</span>
-      <span>{currentStep}</span>
+      <span class="min-w-0 truncate pl-3">{currentStep}</span>
     </div>
 
-    {#if displayedLogs.length === 0}
-      <p class="truncate text-slate-400">ログ待機中...</p>
-    {:else}
-      <div class="space-y-1 font-mono">
+    <div class="mt-4 max-h-40 min-w-0 overflow-x-auto overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs leading-6">
+      {#if displayedLogs.length === 0}
+        <p class="text-slate-400">ログ待機中...</p>
+      {:else}
         {#each displayedLogs as line}
-          <p class="truncate">{line}</p>
+          <div class="min-w-0 border-b border-slate-900/80 py-1 last:border-b-0">
+            <span class="break-all text-slate-100">{line}</span>
+          </div>
         {/each}
-      </div>
-    {/if}
+      {/if}
+    </div>
   </div>
 </article>

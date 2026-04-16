@@ -42,6 +42,21 @@
   let latestErrorReport = $state<BuildErrorReportResponse | null>(null);
   let errorReportMessage = $state('');
 
+  const settingInfoById = $derived(
+    new Map(
+      [...envItems, ...sharedItems].map((item) => [
+        item.setting_id,
+        {
+          title: item.kind === 'shared' ? (item.package ?? item.display_name) : item.display_name,
+          description:
+            item.kind === 'shared'
+              ? (item.description ?? item.variant ?? item.setting_id)
+              : (item.description ?? item.env_name ?? item.setting_id)
+        }
+      ])
+    )
+  );
+
   const handleCancel = async (item: BuildSettingSummary) => {
     if (!item.current_job_id || !onCancelByJobId) return;
     await onCancelByJobId(item.current_job_id, item.setting_id);
@@ -92,16 +107,18 @@
       <div>
         <p class="section-title">構築中</p>
         <p class="mt-2 text-sm leading-6 text-slate-600">
-          実行中の build を追跡します。進捗バーは step 間を補間して表示し、直近ログから今どこで時間が掛かっているかを見やすくしています。
+          実行中の ビルドジョブ を追跡します。
         </p>
       </div>
-      <div class="chip">{runningJobs.length} 件 実行中</div>
+      <div class="chip whitespace-nowrap">{runningJobs.length} 件 実行中</div>
     </div>
 
     <div class="space-y-4">
       {#each runningJobs as job}
         <BuildRunningCard
           {job}
+          title={settingInfoById.get(job.setting_id)?.title ?? ''}
+          description={settingInfoById.get(job.setting_id)?.description ?? ''}
           logLines={logLinesByJobId[job.job_id] ?? []}
           cancelling={Boolean(actionPending[job.setting_id] ?? actionPending[job.job_id])}
           onCancel={(jobId) => onCancelByJobId?.(jobId, job.setting_id)}
@@ -113,7 +130,7 @@
 
 <BuildSettingsSection
   title="環境構築"
-  description="PC 設定から選ばれる環境定義と、その最新 build 状態を一覧します。"
+  description="PC 設定から選ばれる環境定義と、その最新のビルド結果を一覧します。"
   items={envItems}
   {actionPending}
   onRun={onRun}
@@ -124,7 +141,7 @@
 
 <BuildSettingsSection
   title="共有パッケージ"
-  description="shared package 定義ごとの variant を一覧し、個別に構築と削除を行います。"
+  description="共有パッケージ定義ごとの variant を一覧し、個別にビルド結果を一覧します。"
   items={sharedItems}
   {actionPending}
   onRun={onRun}

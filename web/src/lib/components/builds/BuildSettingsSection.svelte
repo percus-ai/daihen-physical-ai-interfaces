@@ -127,7 +127,7 @@
 
   <div class="mt-4 space-y-3">
     {#each items as item}
-      <article class={`rounded-2xl border px-4 py-4 ${item.state === 'failed' ? 'border-rose-200 bg-rose-50/40' : 'border-slate-200 bg-white'}`}>
+      <article class={`overflow-hidden rounded-2xl border px-4 py-4 ${item.state === 'failed' ? 'border-rose-200 bg-rose-50/40' : 'border-slate-200 bg-white'}`}>
         <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_10rem] xl:items-stretch">
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2">
@@ -137,10 +137,10 @@
               </span>
             </div>
 
-            <p class="mt-1 text-xs text-slate-500">{subtitleText(item)}</p>
+            <p class="mt-1 truncate text-xs text-slate-500">{subtitleText(item)}</p>
 
             <div class="mt-3 min-w-0 space-y-2">
-              <p class={`text-sm ${item.state === 'failed' ? 'font-medium text-rose-700' : 'text-slate-600'}`}>
+              <p class={`min-w-0 truncate text-sm ${item.state === 'failed' ? 'font-medium text-rose-700' : 'text-slate-600'}`}>
                 {detailText(item)}
               </p>
               {#if item.state === 'building'}
