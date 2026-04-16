@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from interfaces_backend.models.build_management import (
     BuildArtifactDeleteResponse,
+    BuildErrorReportResponse,
     BuildJobCancelResponse,
     BuildRunAcceptedResponse,
     EnvBuildSettingsListResponse,
@@ -70,5 +71,25 @@ async def delete_shared_build_artifact(package: str, variant: str, build_id: str
     return BuildArtifactDeleteResponse(
         kind="shared",
         setting_id=f"{package}:{variant}",
+        build_id=build_id,
+    )
+
+
+@router.post("/envs/{config_id}/{env_name}/artifacts/{build_id}/error-report", response_model=BuildErrorReportResponse)
+async def create_env_build_error_report(config_id: str, env_name: str, build_id: str) -> BuildErrorReportResponse:
+    return await asyncio.to_thread(
+        get_build_management_service().create_env_error_report,
+        config_id=config_id,
+        env_name=env_name,
+        build_id=build_id,
+    )
+
+
+@router.post("/shared/{package}/{variant}/artifacts/{build_id}/error-report", response_model=BuildErrorReportResponse)
+async def create_shared_build_error_report(package: str, variant: str, build_id: str) -> BuildErrorReportResponse:
+    return await asyncio.to_thread(
+        get_build_management_service().create_shared_error_report,
+        package=package,
+        variant=variant,
         build_id=build_id,
     )

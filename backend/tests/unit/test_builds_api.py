@@ -52,6 +52,36 @@ class _FakeBuildManagementService:
         assert variant == "thor"
         assert build_id == "build-1"
 
+    def create_env_error_report(self, *, config_id: str, env_name: str, build_id: str):
+        from interfaces_backend.models.build_management import BuildErrorReportResponse
+
+        assert config_id == "default"
+        assert env_name == "pi0"
+        assert build_id == "build-env-1"
+        return BuildErrorReportResponse(
+            report_id="report-env-1",
+            kind="env",
+            setting_id="default:pi0",
+            build_id=build_id,
+            object_path="s3://daihen/v2/build-reports/env/default-pi0/report-env-1.zip",
+            uploaded_at="2026-04-16T00:00:00Z",
+        )
+
+    def create_shared_error_report(self, *, package: str, variant: str, build_id: str):
+        from interfaces_backend.models.build_management import BuildErrorReportResponse
+
+        assert package == "pytorch"
+        assert variant == "thor"
+        assert build_id == "build-1"
+        return BuildErrorReportResponse(
+            report_id="report-shared-1",
+            kind="shared",
+            setting_id="pytorch:thor",
+            build_id=build_id,
+            object_path="s3://daihen/v2/build-reports/shared/pytorch-thor/report-shared-1.zip",
+            uploaded_at="2026-04-16T00:00:00Z",
+        )
+
 
 class _FakeBuildJobsService:
     def start_env_build(self, *, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
@@ -177,3 +207,25 @@ def test_delete_shared_build_artifact(client, monkeypatch):
     assert payload["deleted"] is True
     assert payload["kind"] == "shared"
     assert payload["setting_id"] == "pytorch:thor"
+
+
+def test_create_env_build_error_report(client, monkeypatch):
+    monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
+
+    response = client.post("/api/builds/envs/default/pi0/artifacts/build-env-1/error-report")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["report_id"] == "report-env-1"
+    assert payload["kind"] == "env"
+
+
+def test_create_shared_build_error_report(client, monkeypatch):
+    monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
+
+    response = client.post("/api/builds/shared/pytorch/thor/artifacts/build-1/error-report")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["report_id"] == "report-shared-1"
+    assert payload["kind"] == "shared"

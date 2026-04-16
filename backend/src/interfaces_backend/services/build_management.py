@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from typing import Protocol
 
 from interfaces_backend.models.build_management import (
+    BuildErrorReportResponse,
     BuildJobSummaryModel,
     BuildsStatusSnapshotModel,
     BuildSettingActionsModel,
@@ -37,6 +38,7 @@ class BuildManagementService:
         build_store: BuildStore | None = None,
         settings_service: SystemSettingsReader | None = None,
         build_jobs_service: BuildJobsReader | None = None,
+        build_error_reports_service=None,
     ) -> None:
         self._config_loader = config_loader or EnvironmentConfigLoader()
         self._build_store = build_store or BuildStore()
@@ -52,6 +54,12 @@ class BuildManagementService:
             self._build_jobs_service = get_build_jobs_service()
         else:
             self._build_jobs_service = build_jobs_service
+        if build_error_reports_service is None:
+            from interfaces_backend.services.build_error_reports import get_build_error_reports_service
+
+            self._build_error_reports_service = get_build_error_reports_service()
+        else:
+            self._build_error_reports_service = build_error_reports_service
 
     def list_env_settings(self) -> EnvBuildSettingsListResponse:
         selected_config_id = self._settings_service.get_settings().environment_build.env_config_id
@@ -123,6 +131,32 @@ class BuildManagementService:
                 detail=f"Shared build artifact not found for variant: {package}:{variant}:{build_id}",
             )
         self._build_store.delete_shared_build(package, build_id)
+
+    def create_env_error_report(self, *, config_id: str, env_name: str, build_id: str) -> BuildErrorReportResponse:
+        metadata = self._load_env_metadata_for_config(config_id=config_id, env_name=env_name, build_id=build_id)
+        if metadata.success:
+            raise HTTPException(status_code=409, detail="Build succeeded; error report is only available for failed builds")
+        artifact_dir = self._build_store.env_metadata_path(env_name, build_id).parent
+        return self._build_error_reports_service.create_report(
+            kind="env",
+            setting_id=f"{config_id}:{env_name}",
+            build_id=build_id,
+            artifact_dir=artifact_dir,
+            metadata=metadata.model_dump(mode="json"),
+        )
+
+    def create_shared_error_report(self, *, package: str, variant: str, build_id: str) -> BuildErrorReportResponse:
+        metadata = self._load_shared_metadata_for_variant(package=package, variant=variant, build_id=build_id)
+        if metadata.success:
+            raise HTTPException(status_code=409, detail="Build succeeded; error report is only available for failed builds")
+        artifact_dir = self._build_store.shared_metadata_path(package, build_id).parent
+        return self._build_error_reports_service.create_report(
+            kind="shared",
+            setting_id=f"{package}:{variant}",
+            build_id=build_id,
+            artifact_dir=artifact_dir,
+            metadata=metadata.model_dump(mode="json"),
+        )
 
     def _build_env_summary(
         self,
@@ -202,6 +236,33 @@ class BuildManagementService:
         except FileNotFoundError:
             return None
         return metadata if metadata.config_id == config_id else None
+
+    def _load_env_metadata_for_config(self, *, config_id: str, env_name: str, build_id: str) -> EnvBuildMetadataModel:
+        try:
+            metadata = self._build_store.load_env_metadata(env_name, build_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Env build artifact not found: {env_name}:{build_id}") from exc
+        if metadata.config_id != config_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Env build artifact not found for config: {config_id}:{env_name}:{build_id}",
+            )
+        return metadata
+
+    def _load_shared_metadata_for_variant(self, *, package: str, variant: str, build_id: str) -> SharedBuildMetadataModel:
+        try:
+            metadata = self._build_store.load_shared_metadata(package, build_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Shared build artifact not found: {package}:{build_id}",
+            ) from exc
+        if metadata.variant != variant:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Shared build artifact not found for variant: {package}:{variant}:{build_id}",
+            )
+        return metadata
 
     def _ensure_no_active_setting_job(self, *, setting_id: str) -> None:
         active_setting_ids = {item.setting_id for item in self._build_jobs_service.list_active_jobs()}

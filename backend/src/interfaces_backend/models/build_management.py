@@ -87,6 +87,15 @@ class BuildArtifactDeleteResponse(BaseModel):
     build_id: str
 
 
+class BuildErrorReportResponse(BaseModel):
+    report_id: str
+    kind: BuildSettingKind
+    setting_id: str
+    build_id: str
+    object_path: str
+    uploaded_at: str
+
+
 class BuildsStatusSnapshotModel(BaseModel):
     running_jobs: list[BuildJobSummaryModel] = Field(default_factory=list)
     envs: EnvBuildSettingsListResponse
