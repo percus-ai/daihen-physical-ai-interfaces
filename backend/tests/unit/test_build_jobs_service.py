@@ -87,7 +87,7 @@ def test_build_jobs_service_cancel_and_log_buffer(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 envs:
@@ -157,7 +157,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants:
@@ -206,7 +206,7 @@ def test_build_jobs_service_passes_train_config_group(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/train/sm_120.yaml",
+        data_dir / "environment/configs/train/sm_120.yaml",
         """
 id: sm_120
 envs:
@@ -219,7 +219,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}

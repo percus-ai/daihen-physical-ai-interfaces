@@ -371,11 +371,11 @@ envs:
     )
 
     response = service.list_env_settings()
-    items = {item.env_name: item for item in response.items}
+    items = {item.setting_id: item for item in response.items}
 
     assert response.current_sm == "sm_120"
-    assert items["groot"].sm_supported is True
-    assert items["act"].sm_supported is False
+    assert items["default:groot"].sm_supported is True
+    assert items["default:act"].sm_supported is False
 
 
 def test_delete_env_artifact_unlinks_current_when_current_build_matches(tmp_path: Path):

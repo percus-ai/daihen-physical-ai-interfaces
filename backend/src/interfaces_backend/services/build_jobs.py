@@ -126,10 +126,22 @@ class BuildJobsService:
         return next_cursor, events
 
     def start_env_build(self, *, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
-        ref = self._config_loader.find_env_config_ref(config_id)
-        config = self._config_loader.load_env_config(config_id, config_group=ref.group)
-        if env_name not in config.envs:
+        normalized_config_id = config_id.removesuffix(".yaml").removesuffix(".yml")
+        matching_refs = [ref for ref in self._config_loader.list_env_configs() if ref.config_id == normalized_config_id]
+        candidates: list[tuple[Any, Any]] = []
+        for ref in matching_refs:
+            config = self._config_loader.load_env_config(normalized_config_id, config_group=ref.group)
+            if env_name in config.envs:
+                candidates.append((ref, config))
+        if not candidates:
             raise HTTPException(status_code=404, detail=f"Environment definition not found: {config_id}:{env_name}")
+        if len(candidates) > 1:
+            groups = ", ".join(sorted({ref.group for ref, _ in candidates}))
+            raise HTTPException(
+                status_code=409,
+                detail=f"Environment definition is ambiguous across groups ({groups}): {config_id}:{env_name}",
+            )
+        ref, config = candidates[0]
         setting_id = f"{config_id}:{env_name}"
         with self._lock:
             self._ensure_no_active_job_locked(setting_id)
