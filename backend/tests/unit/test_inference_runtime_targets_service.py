@@ -88,6 +88,84 @@ variants: {}
     assert response.targets[1].description == "Blackwell 向け GR00T N1.5 実行環境"
 
 
+def test_list_targets_includes_multiple_cuda_candidates_for_same_policy(tmp_path: Path) -> None:
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        data_dir / "environment/configs/envs/default.yaml",
+        """
+id: default
+display_name: Default
+envs:
+  pi0:
+    display_name: Pi0
+    description: OpenPI 系の推論・実行環境
+    python: "3.10"
+    policy_types: [pi0, pi05, openpi]
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        data_dir / "environment/configs/envs/sm_120.yaml",
+        """
+id: sm_120
+display_name: SM 120
+envs:
+  pi0:
+    display_name: Pi0 Blackwell
+    description: OpenPI 系の推論・実行環境
+    python: "3.12"
+    policy_types: [pi0, pi05, openpi]
+    supported_sms: [sm_120]
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants: {}
+""".strip()
+        + "\n",
+    )
+    layout = BuildLayout(data_dir=data_dir)
+    store = BuildStore(layout=layout)
+    for config_id, build_id in [("default", "build-pi0-default"), ("sm_120", "build-pi0-sm120")]:
+        store.save_env_metadata(
+            EnvBuildMetadataModel(
+                build_id=build_id,
+                env_name="pi0",
+                config_id=config_id,
+                success=True,
+                steps=[
+                    BuildStepLogModel(
+                        step="lerobot",
+                        started_at="2026-04-16T00:00:00Z",
+                        finished_at="2026-04-16T00:01:00Z",
+                    )
+                ],
+            )
+        )
+
+    service = InferenceRuntimeTargetsService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=store,
+        current_platform_resolver=lambda: None,
+        current_sm_resolver=lambda: "sm_120",
+        backend_python="/usr/bin/python3",
+    )
+
+    response = service.list_targets(policy_type="pi05")
+
+    assert [item.label for item in response.targets] == ["CPU", "CUDA #1", "CUDA #2"]
+    assert response.targets[1].display_name == "Pi0"
+    assert response.targets[2].display_name == "Pi0 Blackwell"
+
+
 def test_list_targets_returns_cpu_only_when_no_matching_build_exists(tmp_path: Path) -> None:
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"

@@ -74,6 +74,33 @@ def test_extract_camera_specs_resolves_lerobot_camera_fields() -> None:
     ]
 
 
+def test_extract_camera_specs_normalizes_legacy_arm_camera_source() -> None:
+    snapshot = {
+        "profile": {
+            "lerobot": {
+                "cameras": [
+                    {
+                        "name": "arm_camera",
+                        "source": "arm_camera",
+                        "topic": "/arm_camera/image_raw/compressed",
+                        "enabled": True,
+                    }
+                ]
+            },
+        }
+    }
+
+    assert extract_camera_specs(snapshot) == [
+        {
+            "name": "arm_camera_1",
+            "source": "arm_camera_1",
+            "topic": "/arm_camera/image_raw/compressed",
+            "enabled": True,
+            "package": "lerobot",
+        }
+    ]
+
+
 def test_extract_recorder_arm_streams_resolves_from_snapshot() -> None:
     snapshot = {
         "profile": {

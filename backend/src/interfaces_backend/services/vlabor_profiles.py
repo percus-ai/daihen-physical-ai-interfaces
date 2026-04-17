@@ -302,6 +302,13 @@ def _as_bool(value: object) -> bool:
     return bool(value)
 
 
+def _normalize_camera_source_name(value: object) -> str:
+    text = str(value or "").strip()
+    if text == "arm_camera":
+        return "arm_camera_1"
+    return text
+
+
 def _append_unique(items: list[str], value: object) -> None:
     text = str(value or "").strip()
     if text and text not in items:
@@ -373,8 +380,8 @@ def extract_status_camera_specs(snapshot: dict[str, Any]) -> list[dict[str, Any]
             for camera in cameras:
                 if not isinstance(camera, dict):
                     continue
-                source_name = _render_setting(
-                    camera.get("source") or camera.get("name") or "", settings
+                source_name = _normalize_camera_source_name(
+                    _render_setting(camera.get("source") or camera.get("name") or "", settings)
                 )
                 topic = _render_setting(camera.get("topic") or "", settings)
                 add_camera(
@@ -560,11 +567,13 @@ def extract_camera_specs(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     for camera in cameras:
         if not isinstance(camera, dict):
             continue
-        name = str(
+        name = _normalize_camera_source_name(
             _render_setting(camera.get("name") or camera.get("source") or "", settings)
-        ).strip()
+        )
         topic = str(_render_setting(camera.get("topic") or "", settings)).strip()
-        source = str(_render_setting(camera.get("source") or name or "", settings)).strip() or name
+        source = (
+            _normalize_camera_source_name(_render_setting(camera.get("source") or name or "", settings)) or name
+        )
         enabled = _as_bool(_render_setting(camera.get("enabled", True), settings))
         if not name or not topic:
             continue
