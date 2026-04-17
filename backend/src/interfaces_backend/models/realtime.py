@@ -161,16 +161,6 @@ class OperateStatusSubscription(_SubscriptionBase):
     params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
 
 
-class SystemRuntimeEnvsSubscription(_SubscriptionBase):
-    kind: Literal["system.runtime-envs"]
-    params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
-
-
-class SystemBundledTorchSubscription(_SubscriptionBase):
-    kind: Literal["system.bundled-torch"]
-    params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
-
-
 class BuildsStatusSubscription(_SubscriptionBase):
     kind: Literal["builds.status"]
     params: EmptyRealtimeParams = Field(default_factory=EmptyRealtimeParams)
@@ -241,8 +231,6 @@ TabSessionSubscription = Annotated[
     | ProfilesVlaborSubscription
     | SystemStatusSubscription
     | OperateStatusSubscription
-    | SystemRuntimeEnvsSubscription
-    | SystemBundledTorchSubscription
     | BuildsStatusSubscription
     | BuildsLogsSubscription
     | RecordingUploadStatusSubscription

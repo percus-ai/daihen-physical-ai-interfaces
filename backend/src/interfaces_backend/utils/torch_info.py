@@ -1,8 +1,6 @@
-"""Torch info utilities using subprocess to avoid numpy conflicts."""
+"""Torch info utilities using subprocess."""
 
-import os
 import sys
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from percus_ai.environment.torch_runtime_probe import run_torch_runtime_probe
@@ -41,25 +39,10 @@ def get_torch_info(use_cache: bool = True) -> Dict[str, Any]:
         "error": None,
     }
 
-    # Build PYTHONPATH with bundled-torch if it exists.
-    # Note: bundled-torch extensions are Python-minor-version specific.
-    bundled_torch = Path.home() / ".cache" / "daihen-physical-ai" / "bundled-torch"
-    env = os.environ.copy()
-    if (bundled_torch / "pytorch").is_dir():
-        pytorch_path = str(bundled_torch / "pytorch")
-        torchvision_path = str(bundled_torch / "torchvision")
-        env["PYTHONPATH"] = f"{pytorch_path}:{torchvision_path}:{env.get('PYTHONPATH', '')}"
-
-    # Prefer the bundled-torch build venv when present. The backend may run under a
-    # different Python (e.g. system Python 3.12), which cannot import cp310
-    # extensions built for bundled-torch.
-    probe_python = bundled_torch / ".venv" / "bin" / "python"
-    python_exe = str(probe_python) if probe_python.exists() else sys.executable
-
     try:
         ok, payload = run_torch_runtime_probe(
-            python_path=python_exe,
-            env=env,
+            python_path=sys.executable,
+            env=None,
             cwd=Path.cwd(),
             timeout=15,
         )

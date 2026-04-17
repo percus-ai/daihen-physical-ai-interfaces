@@ -13,31 +13,6 @@ export type OverallStatus = {
   active_alerts?: StatusAlert[];
 };
 
-export type RuntimeTorchStatus = {
-  version?: string | null;
-  cuda_version?: string | null;
-  source?: string;
-  gpu_capability?: string | null;
-  cuda_compatible?: boolean | null;
-};
-
-export type RuntimeDetails = {
-  torchvision_version?: string | null;
-  torchaudio_version?: string | null;
-  packages_hash?: string | null;
-  bundled_torch_present?: boolean;
-  error?: string | null;
-};
-
-export type RuntimeGroupStatus = {
-  runtime_key: string;
-  level: HealthLevel;
-  policies?: string[];
-  env_name: string;
-  torch?: RuntimeTorchStatus;
-  details?: RuntimeDetails;
-};
-
 export type RecorderDependencies = {
   cameras_ready?: boolean | null;
   robot_ready?: boolean | null;
@@ -67,7 +42,6 @@ export type InferenceStatusSnapshot = {
   model_id?: string | null;
   device?: string | null;
   env_name?: string | null;
-  runtime_key?: string | null;
   worker_alive?: boolean;
   queue_length?: number | null;
   last_error?: string | null;
@@ -121,7 +95,6 @@ export type GpuSnapshot = {
 export type SystemStatusSnapshot = {
   generated_at: string;
   overall?: OverallStatus;
-  runtime_groups?: RuntimeGroupStatus[];
   services?: ServicesStatus;
   gpu?: GpuSnapshot;
 };

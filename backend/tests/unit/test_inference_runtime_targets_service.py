@@ -315,7 +315,7 @@ variants: {}
         service.resolve_target(policy_type="act", target_id="cuda:missing")
 
 
-def test_list_targets_filters_platform_specific_runtime_envs(tmp_path: Path) -> None:
+def test_list_targets_filters_platform_specific_runtime_targets(tmp_path: Path) -> None:
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(

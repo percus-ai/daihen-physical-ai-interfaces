@@ -23,31 +23,6 @@ class OverallStatus(BaseModel):
     active_alerts: list[StatusAlert] = Field(default_factory=list)
 
 
-class RuntimeTorchStatus(BaseModel):
-    version: str | None = None
-    cuda_version: str | None = None
-    source: str = "unknown"
-    gpu_capability: str | None = None
-    cuda_compatible: bool | None = None
-
-
-class RuntimeDetails(BaseModel):
-    torchvision_version: str | None = None
-    torchaudio_version: str | None = None
-    packages_hash: str | None = None
-    bundled_torch_present: bool = False
-    error: str | None = None
-
-
-class RuntimeGroupStatus(BaseModel):
-    runtime_key: str
-    level: HealthLevel = "unknown"
-    policies: list[str] = Field(default_factory=list)
-    env_name: str
-    torch: RuntimeTorchStatus = Field(default_factory=RuntimeTorchStatus)
-    details: RuntimeDetails = Field(default_factory=RuntimeDetails)
-
-
 class RecorderDependencies(BaseModel):
     cameras_ready: bool | None = None
     robot_ready: bool | None = None
@@ -77,7 +52,6 @@ class InferenceStatusSnapshot(BaseModel):
     model_id: str | None = None
     device: str | None = None
     env_name: str | None = None
-    runtime_key: str | None = None
     worker_alive: bool = False
     queue_length: int | None = None
     last_error: str | None = None
@@ -131,6 +105,5 @@ class GpuSnapshot(BaseModel):
 class StatusSnapshot(BaseModel):
     generated_at: str
     overall: OverallStatus = Field(default_factory=OverallStatus)
-    runtime_groups: list[RuntimeGroupStatus] = Field(default_factory=list)
     services: ServicesStatus = Field(default_factory=ServicesStatus)
     gpu: GpuSnapshot = Field(default_factory=GpuSnapshot)

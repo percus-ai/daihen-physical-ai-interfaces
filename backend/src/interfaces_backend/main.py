@@ -97,10 +97,8 @@ from interfaces_backend.api import (
     user_router,
     webui_blueprints_router,
 )
-from interfaces_backend.services.bundled_torch_build_service import get_bundled_torch_build_service
 from interfaces_backend.services.build_jobs import get_build_jobs_service
 from interfaces_backend.services.lerobot_runtime import start_lerobot_on_backend_startup
-from interfaces_backend.services.runtime_env_service import get_runtime_env_service
 from interfaces_backend.services.system_status_monitor import get_system_status_monitor
 from interfaces_backend.services.training_provision_recovery import (
     get_training_provision_recovery_service,
@@ -141,17 +139,13 @@ async def start_vlabor_container() -> None:
     start_vlabor_on_backend_startup(profile=profile_name, logger=startup_logger)
     start_lerobot_on_backend_startup(logger=startup_logger)
     get_system_status_monitor().ensure_started()
-    await get_bundled_torch_build_service().refresh_snapshot()
-    await get_runtime_env_service().refresh_snapshot()
     get_training_provision_recovery_service().ensure_started()
 
 
 @app.on_event("shutdown")
 async def stop_background_monitors() -> None:
     await get_system_status_monitor().shutdown()
-    await get_bundled_torch_build_service().shutdown()
     await get_build_jobs_service().shutdown()
-    await get_runtime_env_service().shutdown()
     await get_training_provision_recovery_service().shutdown()
     get_tab_realtime_registry().shutdown()
 

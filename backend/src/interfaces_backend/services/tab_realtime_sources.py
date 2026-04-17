@@ -22,8 +22,6 @@ from interfaces_backend.models.realtime import (
     StorageDatasetSyncSubscription,
     StorageModelSyncSubscription,
     StartupOperationSubscription,
-    SystemBundledTorchSubscription,
-    SystemRuntimeEnvsSubscription,
     SystemStatusSubscription,
     TabSessionSubscription,
     TrainingProvisionOperationSubscription,
@@ -65,10 +63,6 @@ class TabRealtimeSourceRegistry:
         if isinstance(subscription, SystemStatusSubscription):
             return 2.0
         if isinstance(subscription, OperateStatusSubscription):
-            return 2.0
-        if isinstance(subscription, SystemRuntimeEnvsSubscription):
-            return 2.0
-        if isinstance(subscription, SystemBundledTorchSubscription):
             return 2.0
         if isinstance(subscription, BuildsStatusSubscription):
             return 0.5
@@ -141,26 +135,6 @@ class TabRealtimeSourceRegistry:
                         "operate_status": operate_status.model_dump(mode="json"),
                     }
                 )
-
-            if isinstance(subscription, SystemRuntimeEnvsSubscription):
-                from interfaces_backend.services.runtime_env_service import (
-                    get_runtime_env_service,
-                )
-
-                service = get_runtime_env_service()
-                await service.refresh_snapshot()
-                snapshot = service.get_snapshot()
-                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
-
-            if isinstance(subscription, SystemBundledTorchSubscription):
-                from interfaces_backend.services.bundled_torch_build_service import (
-                    get_bundled_torch_build_service,
-                )
-
-                service = get_bundled_torch_build_service()
-                await service.refresh_snapshot()
-                snapshot = service.get_snapshot()
-                return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
 
             if isinstance(subscription, BuildsStatusSubscription):
                 from interfaces_backend.services.build_management import get_build_management_service

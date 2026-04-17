@@ -1,7 +1,5 @@
 import { getBackendUrl } from '$lib/config';
 import { cacheAuthenticatedGate, invalidateAuthGate } from '$lib/auth/gate';
-import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
-import type { RuntimeEnvSnapshot } from '$lib/types/runtimeEnv';
 import type { SystemSettings, UserSettings } from '$lib/types/settings';
 import type { FeaturesRepoSuggestions } from '$lib/types/settings';
 
@@ -150,16 +148,6 @@ export type OperateStatusSubscription = RealtimeSubscriptionBase & {
   params?: Record<string, never>;
 };
 
-export type SystemRuntimeEnvsSubscription = RealtimeSubscriptionBase & {
-  kind: 'system.runtime-envs';
-  params?: Record<string, never>;
-};
-
-export type SystemBundledTorchSubscription = RealtimeSubscriptionBase & {
-  kind: 'system.bundled-torch';
-  params?: Record<string, never>;
-};
-
 export type BuildsStatusSubscription = RealtimeSubscriptionBase & {
   kind: 'builds.status';
   params?: Record<string, never>;
@@ -255,8 +243,6 @@ export type TabSessionSubscription =
   | ProfilesVlaborSubscription
   | SystemStatusSubscription
   | OperateStatusSubscription
-  | SystemRuntimeEnvsSubscription
-  | SystemBundledTorchSubscription
   | BuildsStatusSubscription
   | BuildsLogsSubscription
   | RecordingUploadStatusSubscription
@@ -1281,34 +1267,8 @@ export const api = {
     logs: () => fetchApi('/api/system/logs'),
     info: () => fetchApi('/api/system/info'),
     gpu: () => fetchApi('/api/system/gpu'),
-    bundledTorchStatus: () => fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/status'),
-    buildBundledTorch: (payload: {
-      pytorch_version?: string | null;
-      torchvision_version?: string | null;
-      force?: boolean;
-    }) =>
-      fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/build', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      }),
-    cleanBundledTorch: () =>
-      fetchApi<BundledTorchBuildSnapshot>('/api/system/bundled-torch/clean', {
-        method: 'POST'
-      }),
-    runtimeEnvStatus: () => fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/status'),
-    buildRuntimeEnv: (payload: { env_name: string; force?: boolean }) =>
-      fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/build', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      }),
-    deleteRuntimeEnv: (payload: { env_name: string }) =>
-      fetchApi<RuntimeEnvSnapshot>('/api/system/runtime-envs/delete', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      }),
     settings: () => fetchApi<SystemSettings>('/api/system/settings'),
     updateSettings: (payload: {
-      bundled_torch?: { pytorch_version: string; torchvision_version: string };
       features_repo?: { repo_url: string; repo_ref: string; repo_commit?: string | null };
     }) =>
       fetchApi<SystemSettings>('/api/system/settings', {

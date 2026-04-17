@@ -35,8 +35,6 @@
     systemSuccess?: string;
     userSuccess?: string;
     onSaveSystemSettings: (payload: {
-      pytorchVersion: string;
-      torchvisionVersion: string;
       repoUrl: string;
       repoRef: string;
       repoCommit?: string;
@@ -56,8 +54,6 @@
     }) => void | Promise<void>;
   } = $props();
 
-  let systemTorchVersion = $state('');
-  let systemTorchvisionVersion = $state('');
   let systemFeaturesRepoUrl = $state('');
   let systemFeaturesRepoRef = $state('');
   let systemFeaturesRepoCommit = $state('');
@@ -75,8 +71,6 @@
   $effect(() => {
     const nextKey = JSON.stringify({
       updated_at: systemSettings?.updated_at ?? null,
-      pytorch_version: systemSettings?.bundled_torch?.pytorch_version ?? '',
-      torchvision_version: systemSettings?.bundled_torch?.torchvision_version ?? '',
       repo_url: systemSettings?.features_repo?.repo_url ?? '',
       repo_ref: systemSettings?.features_repo?.repo_ref ?? '',
       repo_commit: systemSettings?.features_repo?.repo_commit ?? ''
@@ -85,8 +79,6 @@
       return;
     }
 
-    systemTorchVersion = systemSettings.bundled_torch?.pytorch_version ?? '';
-    systemTorchvisionVersion = systemSettings.bundled_torch?.torchvision_version ?? '';
     systemFeaturesRepoUrl = systemSettings.features_repo?.repo_url ?? '';
     systemFeaturesRepoRef = systemSettings.features_repo?.repo_ref ?? '';
     selectedBranchValue = systemSettings.features_repo?.repo_ref ?? '';
@@ -178,8 +170,8 @@
     )
   );
   const systemConfigured = $derived(
-    Boolean(systemSettings?.bundled_torch?.pytorch_version?.trim()) &&
-      Boolean(systemSettings?.bundled_torch?.torchvision_version?.trim())
+    Boolean(systemSettings?.features_repo?.repo_url?.trim()) &&
+      Boolean(systemSettings?.features_repo?.repo_ref?.trim())
   );
   const systemVisual = $derived(
     visualStatus(
@@ -358,11 +350,9 @@
     </div>
 
     <div class="mt-5 nested-block p-4">
-      <p class="label">Bundled Torch defaults</p>
+      <p class="label">Features Repo</p>
       <div class="mt-3 space-y-2 text-sm text-slate-600">
-        <p>pytorch: {systemSettings?.bundled_torch?.pytorch_version ?? '-'}</p>
-        <p>torchvision: {systemSettings?.bundled_torch?.torchvision_version ?? '-'}</p>
-        <p>features repo: {systemSettings?.features_repo?.repo_url ?? '-'}</p>
+        <p>repo: {systemSettings?.features_repo?.repo_url ?? '-'}</p>
         <p>branch: {systemSettings?.features_repo?.repo_ref ?? '-'}</p>
         <p>commit: {systemSettings?.features_repo?.repo_commit ?? '-'}</p>
         <p>updated: {systemSettings?.updated_at ?? '-'}</p>
@@ -377,22 +367,6 @@
     {/if}
 
     <div class="mt-4 grid gap-3">
-      <label class="text-sm text-slate-600">
-        <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Default PyTorch version</span>
-        <input
-          bind:value={systemTorchVersion}
-          class={`w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none ${systemVisual.input}`}
-          disabled={systemPending}
-        />
-      </label>
-      <label class="text-sm text-slate-600">
-        <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Default torchvision version</span>
-        <input
-          bind:value={systemTorchvisionVersion}
-          class={`w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none ${systemVisual.input}`}
-          disabled={systemPending}
-        />
-      </label>
       <label class="text-sm text-slate-600">
         <span class="mb-1 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Features repo URL</span>
         <input
@@ -575,13 +549,11 @@
           class="btn-primary"
           type="button"
           onclick={() => onSaveSystemSettings({
-            pytorchVersion: systemTorchVersion,
-            torchvisionVersion: systemTorchvisionVersion,
             repoUrl: systemFeaturesRepoUrl,
             repoRef: systemFeaturesRepoRef,
             repoCommit: systemFeaturesRepoCommit
           })}
-          disabled={systemPending || !systemTorchVersion.trim() || !systemTorchvisionVersion.trim() || !systemFeaturesRepoUrl.trim() || !systemFeaturesRepoRef.trim()}
+          disabled={systemPending || !systemFeaturesRepoUrl.trim() || !systemFeaturesRepoRef.trim()}
         >
           保存
         </button>

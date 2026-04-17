@@ -34,15 +34,16 @@ def test_system_info(client):
 def test_system_settings(client):
     resp = client.get("/api/system/settings")
     assert resp.status_code == 200
-    assert resp.json()["bundled_torch"]["pytorch_version"] == "v2.10.0"
+    assert resp.json()["features_repo"]["repo_ref"] == "main"
     assert resp.json()["environment_build"]["env_config_id"] == "default"
 
     resp = client.put(
         "/api/system/settings",
         json={
-            "bundled_torch": {
-                "pytorch_version": "v2.9.0",
-                "torchvision_version": "v0.24.0",
+            "features_repo": {
+                "repo_url": "https://github.com/example/repo.git",
+                "repo_ref": "feature/test",
+                "repo_commit": "abc1234",
             },
             "environment_build": {
                 "env_config_id": "default",
@@ -51,8 +52,9 @@ def test_system_settings(client):
     )
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload["bundled_torch"]["pytorch_version"] == "v2.9.0"
-    assert payload["bundled_torch"]["torchvision_version"] == "v0.24.0"
+    assert payload["features_repo"]["repo_url"] == "https://github.com/example/repo.git"
+    assert payload["features_repo"]["repo_ref"] == "feature/test"
+    assert payload["features_repo"]["repo_commit"] == "abc1234"
     assert payload["environment_build"]["env_config_id"] == "default"
 
 

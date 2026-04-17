@@ -137,16 +137,6 @@ def test_tab_session_subscription_schema_accepts_system_operate_recording_source
             "params": {},
         },
         {
-            "subscription_id": "system.runtime-envs",
-            "kind": "system.runtime-envs",
-            "params": {},
-        },
-        {
-            "subscription_id": "system.bundled-torch",
-            "kind": "system.bundled-torch",
-            "params": {},
-        },
-        {
             "subscription_id": "builds.status",
             "kind": "builds.status",
             "params": {},
@@ -195,7 +185,7 @@ def test_tab_session_subscription_schema_accepts_system_operate_recording_source
 
     state = TabSessionStateRequest.model_validate(payload)
 
-    assert len(state.subscriptions) == 13
+    assert len(state.subscriptions) == 11
     assert state.subscriptions[0].kind == "system.status"
     assert state.subscriptions[-1].kind == "storage.dataset-merge"
 
@@ -237,9 +227,15 @@ def test_tab_realtime_source_registry_supports_builds_status(monkeypatch):
 
     assert result.payload == {
         "current_sm": None,
+        "current_platform": None,
         "running_jobs": [],
-        "envs": {"selected_config_id": "default", "current_sm": None, "items": []},
-        "shared": {"current_sm": None, "items": []},
+        "envs": {
+            "selected_config_id": "default",
+            "current_sm": None,
+            "current_platform": None,
+            "items": [],
+        },
+        "shared": {"current_sm": None, "current_platform": None, "items": []},
     }
 
 
@@ -576,20 +572,6 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
         def get_snapshot(self):
             return _Snapshot({"overall": {"level": "healthy"}})
 
-    class _RuntimeEnvService:
-        async def refresh_snapshot(self):
-            return None
-
-        def get_snapshot(self):
-            return _Snapshot({"envs": [], "updated_at": "2026-03-08T00:00:00Z"})
-
-    class _BundledTorchService:
-        async def refresh_snapshot(self):
-            return None
-
-        def get_snapshot(self):
-            return _Snapshot({"state": "idle", "updated_at": "2026-03-08T00:00:00Z"})
-
     class _DatasetLifecycle:
         def get_dataset_upload_status(self, session_id):
             return {
@@ -661,14 +643,6 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
         lambda: _Monitor(),
     )
     monkeypatch.setattr(
-        "interfaces_backend.services.runtime_env_service.get_runtime_env_service",
-        lambda: _RuntimeEnvService(),
-    )
-    monkeypatch.setattr(
-        "interfaces_backend.services.bundled_torch_build_service.get_bundled_torch_build_service",
-        lambda: _BundledTorchService(),
-    )
-    monkeypatch.setattr(
         "interfaces_backend.services.dataset_lifecycle.get_dataset_lifecycle",
         lambda: _DatasetLifecycle(),
     )
@@ -708,8 +682,6 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
                 {"subscription_id": "profiles.vlabor", "kind": "profiles.vlabor", "params": {}},
                 {"subscription_id": "system.status", "kind": "system.status", "params": {}},
                 {"subscription_id": "operate.status", "kind": "operate.status", "params": {}},
-                {"subscription_id": "system.runtime-envs", "kind": "system.runtime-envs", "params": {}},
-                {"subscription_id": "system.bundled-torch", "kind": "system.bundled-torch", "params": {}},
                 {
                     "subscription_id": "recording.upload-status",
                     "kind": "recording.upload-status",
@@ -753,8 +725,6 @@ def test_tab_realtime_source_registry_supports_system_operate_and_recording_sour
         assert payloads["profiles.vlabor"]["status"] == "running"
         assert payloads["system.status"]["overall"]["level"] == "healthy"
         assert payloads["operate.status"]["inference_runner_status"]["runner_status"]["active"] is True
-        assert payloads["system.runtime-envs"]["envs"] == []
-        assert payloads["system.bundled-torch"]["state"] == "idle"
         assert payloads["recording.upload-status"]["dataset_id"] == "dataset-1"
         assert payloads["startup.operation"]["operation_id"] == "op-1"
         assert payloads["startup.operation"]["state"] == "running"

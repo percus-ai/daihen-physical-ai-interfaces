@@ -5,13 +5,6 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
-class BundledTorchDefaultsModel(BaseModel):
-    """Bundled torch default versions."""
-
-    pytorch_version: str = Field("v2.10.0", description="Default PyTorch version")
-    torchvision_version: str = Field("v0.25.0", description="Default torchvision version")
-
-
 class FeaturesRepoSettingsModel(BaseModel):
     """Features repository checkout settings."""
 
@@ -32,7 +25,6 @@ class EnvironmentBuildSettingsModel(BaseModel):
 class SystemSettingsModel(BaseModel):
     """Machine-scoped settings."""
 
-    bundled_torch: BundledTorchDefaultsModel = Field(default_factory=BundledTorchDefaultsModel)
     features_repo: FeaturesRepoSettingsModel = Field(default_factory=FeaturesRepoSettingsModel)
     environment_build: EnvironmentBuildSettingsModel = Field(default_factory=EnvironmentBuildSettingsModel)
     updated_at: str | None = Field(None, description="Last update timestamp")
@@ -41,7 +33,6 @@ class SystemSettingsModel(BaseModel):
 class SystemSettingsUpdateRequest(BaseModel):
     """Machine-scoped settings update request."""
 
-    bundled_torch: BundledTorchDefaultsModel | None = None
     features_repo: FeaturesRepoSettingsModel | None = None
     environment_build: EnvironmentBuildSettingsModel | None = None
 

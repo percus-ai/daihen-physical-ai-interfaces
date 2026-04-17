@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import socket
 import subprocess
 import threading
@@ -23,9 +22,6 @@ from interfaces_backend.models.status_monitor import (
     OverallStatus,
     RecorderStatusSnapshot,
     Ros2StatusSnapshot,
-    RuntimeDetails,
-    RuntimeGroupStatus,
-    RuntimeTorchStatus,
     ServicesStatus,
     StatusAlert,
     StatusSnapshot,
@@ -47,12 +43,7 @@ from interfaces_backend.utils.docker_compose import (
     get_vlabor_env_file,
 )
 from interfaces_backend.utils.docker_services import get_docker_service_summary
-from percus_ai.environment.env_manager import EnvironmentManager
-from percus_ai.environment.platform import Platform
-from percus_ai.environment.torch_runtime_probe import run_torch_runtime_probe
 
-_RUNTIME_TTL_S = 600.0
-_RUNTIME_CHECK_INTERVAL_S = 5.0
 _GPU_INTERVAL_S = 2.0
 _RECORDER_INTERVAL_S = 1.0
 _INFERENCE_INTERVAL_S = 1.0
@@ -88,20 +79,16 @@ def _find_repo_root() -> Path:
 class SystemStatusMonitor:
     def __init__(self, root_dir: Path | None = None) -> None:
         self._root_dir = (root_dir or _find_repo_root()).resolve()
-        self._env_manager = EnvironmentManager(self._root_dir)
         self._recorder = get_recorder_bridge()
         self._lock = threading.RLock()
         self._started = False
         self._tasks: list[asyncio.Task[None]] = []
-        self._runtime_groups: list[RuntimeGroupStatus] = []
         self._services = ServicesStatus()
         self._gpu = GpuSnapshot()
         self._ros2_contract_state = _Ros2ContractState()
         self._ros2_all_topics: list[str] = []
         self._snapshot = self._build_snapshot_locked()
         self._last_published_payload = ""
-        self._runtime_probe_fingerprint: str | None = None
-        self._runtime_probe_at = 0.0
 
     def ensure_started(self) -> None:
         with self._lock:
@@ -109,7 +96,6 @@ class SystemStatusMonitor:
                 return
             self._started = True
         self._tasks = [
-            asyncio.create_task(self._runtime_loop(), name="system-status-runtime"),
             asyncio.create_task(self._gpu_loop(), name="system-status-gpu"),
             asyncio.create_task(self._recorder_loop(), name="system-status-recorder"),
             asyncio.create_task(self._inference_loop(), name="system-status-inference"),
@@ -146,40 +132,6 @@ class SystemStatusMonitor:
                 return
             self._last_published_payload = encoded
         return None
-
-    async def _runtime_loop(self) -> None:
-        while True:
-            try:
-                fingerprint = self._build_runtime_fingerprint()
-                now = time.monotonic()
-                should_probe = (
-                    fingerprint != self._runtime_probe_fingerprint
-                    or (now - self._runtime_probe_at) >= _RUNTIME_TTL_S
-                )
-                if should_probe:
-                    groups = await asyncio.to_thread(self._probe_runtime_groups)
-                    with self._lock:
-                        self._runtime_groups = groups
-                        self._runtime_probe_fingerprint = fingerprint
-                        self._runtime_probe_at = now
-                        self._refresh_snapshot_locked()
-                    await self.publish_snapshot()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                with self._lock:
-                    self._runtime_groups = [
-                        RuntimeGroupStatus(
-                            runtime_key="runtime-probe-error",
-                            level="error",
-                            env_name="runtime",
-                            policies=[],
-                            details=RuntimeDetails(error=str(exc)),
-                        )
-                    ]
-                    self._refresh_snapshot_locked()
-                await self.publish_snapshot()
-            await asyncio.sleep(_RUNTIME_CHECK_INTERVAL_S)
 
     async def _gpu_loop(self) -> None:
         while True:
@@ -467,29 +419,6 @@ class SystemStatusMonitor:
                 await self.publish_snapshot()
             await asyncio.sleep(_ROS2_INTERVAL_S)
 
-    def _build_runtime_fingerprint(self) -> str:
-        platform = Platform.detect()
-        parts: list[str] = []
-        bundled_root = Path.home() / ".cache" / "daihen-physical-ai" / "bundled-torch"
-        for env_name in sorted(self._collect_runtime_envs()):
-            venv_path = self._env_manager._get_venv_path(env_name)
-            hash_path = venv_path / ".packages_hash"
-            if hash_path.exists():
-                parts.append(f"{env_name}:{hash_path.read_text().strip()}")
-            else:
-                parts.append(f"{env_name}:missing")
-            parts.append(
-                self._env_manager._torch_index_policy_fingerprint(env_name, platform)
-            )
-        for version_file in [
-            bundled_root / "pytorch" / "version.txt",
-            bundled_root / "torchvision" / "version.txt",
-        ]:
-            parts.append(f"{version_file}:{version_file.read_text().strip() if version_file.exists() else 'missing'}")
-        for key in sorted(k for k in os.environ if k.startswith("PERCUS_AI_TORCH_INDEX_")):
-            parts.append(f"{key}={os.environ.get(key, '')}")
-        return "|".join(parts)
-
     def _probe_gpu(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "available": False,
@@ -543,11 +472,6 @@ class SystemStatusMonitor:
         except Exception:
             pass
 
-        if payload["gpus"]:
-            for item in self._runtime_groups:
-                if item.torch.cuda_version:
-                    payload["cuda_version"] = item.torch.cuda_version
-                    break
         return payload
 
     def _probe_inference(self) -> dict[str, dict[str, object]]:
@@ -850,172 +774,20 @@ print(json.dumps({"nodes": nodes, "topics": topics, "all_topics": topic_names}))
         except ValueError:
             return None
 
-    def _collect_runtime_envs(self) -> dict[str, list[str]]:
-        env_to_policies: dict[str, list[str]] = {}
-        environments = self._env_manager.policy_map.get("environments", {})
-        for env_config in environments.values():
-            env_name = str(env_config.get("venv") or "").strip()
-            policies = [str(item).strip() for item in env_config.get("policies", []) if str(item).strip()]
-            if not env_name or not policies:
-                continue
-            current = env_to_policies.setdefault(env_name, [])
-            for policy in policies:
-                if policy not in current:
-                    current.append(policy)
-        return env_to_policies
-
-    def _probe_runtime_groups(self) -> list[RuntimeGroupStatus]:
-        env_to_policies = self._collect_runtime_envs()
-        platform = Platform.detect()
-        return [
-            self._probe_runtime_env(env_name=env_name, policies=policies, platform=platform)
-            for env_name, policies in sorted(env_to_policies.items())
-        ]
-
-    def _probe_runtime_env(
-        self,
-        *,
-        env_name: str,
-        policies: list[str],
-        platform: Platform,
-    ) -> RuntimeGroupStatus:
-        venv_path = self._env_manager._get_venv_path(env_name)
-        python_path = venv_path / "bin" / "python"
-        packages_hash = (venv_path / ".packages_hash").read_text().strip() if (venv_path / ".packages_hash").exists() else None
-        bundled_root = Path.home() / ".cache" / "daihen-physical-ai" / "bundled-torch"
-        bundled_torch_present = (bundled_root / "pytorch").is_dir()
-        source = self._resolve_torch_source(env_name=env_name, platform=platform)
-
-        group = RuntimeGroupStatus(
-            runtime_key=f"torch=unknown|cuda=unknown|source={source}",
-            level="unknown",
-            env_name=env_name,
-            policies=policies,
-            details=RuntimeDetails(
-                packages_hash=packages_hash,
-                bundled_torch_present=bundled_torch_present,
-            ),
-        )
-
-        if not python_path.exists():
-            group.details.error = f"env python not found: {python_path}"
-            return group
-
-        if platform.pytorch_build_required and bundled_torch_present:
-            # bundled-torch extensions are built for a specific Python minor version.
-            # If the runtime env uses a different Python, importing via PYTHONPATH will fail.
-            expected_python_minor = "3.10"
-            actual_python_minor: str | None = None
-            try:
-                result = subprocess.run(
-                    [
-                        str(python_path),
-                        "-c",
-                        "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if result.returncode == 0:
-                    actual_python_minor = (result.stdout or "").strip() or None
-            except Exception:
-                actual_python_minor = None
-
-            if actual_python_minor != expected_python_minor:
-                group.level = "error"
-                group.details.error = (
-                    "bundled-torch requires Python "
-                    f"{expected_python_minor}, but env '{env_name}' uses "
-                    f"{actual_python_minor or 'unknown'}: {python_path}"
-                )
-                return group
-
-        probe_env = os.environ.copy()
-        if platform.pytorch_build_required and bundled_torch_present:
-            extra_paths = [
-                str(bundled_root / "pytorch"),
-                str(bundled_root / "torchvision"),
-            ]
-            probe_env["PYTHONPATH"] = ":".join(extra_paths + [probe_env.get("PYTHONPATH", "")]).rstrip(":")
-
-        ok, payload = run_torch_runtime_probe(
-            python_path=python_path,
-            env=probe_env,
-            cwd=self._root_dir,
-            timeout=30,
-        )
-        if not ok:
-            group.level = "error"
-            group.details.error = (
-                str(payload.get("stderr") or payload.get("stdout") or payload.get("error") or "").strip()
-                or "runtime probe failed"
-            )
-            return group
-
-        torch_version = str(payload.get("torch_version") or "").strip() or None
-        cuda_version = str(payload.get("cuda_version") or "").strip() or None
-        gpu_capability = str(payload.get("gpu_capability") or "").strip() or None
-        cuda_compatible = payload.get("cuda_compatible")
-        group.torch = RuntimeTorchStatus(
-            version=torch_version,
-            cuda_version=cuda_version,
-            source=source,
-            gpu_capability=gpu_capability,
-            cuda_compatible=cuda_compatible if isinstance(cuda_compatible, bool) else None,
-        )
-        group.details.torchvision_version = str(payload.get("torchvision_version") or "").strip() or None
-        group.details.torchaudio_version = str(payload.get("torchaudio_version") or "").strip() or None
-        group.runtime_key = f"torch={torch_version or 'unknown'}|cuda={cuda_version or 'unknown'}|source={source}"
-        if not torch_version:
-            group.level = "unknown"
-        elif group.torch.cuda_compatible is False:
-            group.level = "error"
-        else:
-            group.level = "healthy"
-        return group
-
-    def _resolve_torch_source(self, *, env_name: str, platform: Platform) -> str:
-        if platform.pytorch_build_required:
-            return "bundled-torch"
-        policy = self._env_manager._resolve_torch_index_profile(env_name, platform)
-        if not policy.get("enabled", False):
-            return "unknown"
-        return "pip-nightly" if policy.get("profile") == "nightly" else "pip-stable"
-
     def _refresh_snapshot_locked(self) -> None:
         self._snapshot = self._build_snapshot_locked()
 
     def _build_snapshot_locked(self) -> StatusSnapshot:
         overall = self._build_overall_locked()
-        services = self._services.model_copy(deep=True)
-        inference_env = services.inference.env_name
-        if inference_env:
-            for group in self._runtime_groups:
-                if group.env_name == inference_env:
-                    services.inference.runtime_key = group.runtime_key
-                    break
         return StatusSnapshot(
             generated_at=_now_iso(),
             overall=overall,
-            runtime_groups=[item.model_copy(deep=True) for item in self._runtime_groups],
-            services=services,
+            services=self._services.model_copy(deep=True),
             gpu=self._gpu.model_copy(deep=True),
         )
 
     def _build_overall_locked(self) -> OverallStatus:
         alerts: list[StatusAlert] = []
-
-        for item in self._runtime_groups:
-            if item.level in {"degraded", "error"}:
-                alerts.append(
-                    StatusAlert(
-                        code=f"runtime:{item.env_name}",
-                        level=item.level,
-                        summary=item.details.error or f"Runtime {item.env_name} is {item.level}",
-                        source="runtime",
-                    )
-                )
 
         for name, status in [
             ("recorder", self._services.recorder),
@@ -1050,7 +822,7 @@ print(json.dumps({"nodes": nodes, "topics": topics, "all_topics": topic_names}))
         elif any(item.level == "degraded" for item in alerts):
             level = "degraded"
             summary = "One or more services are degraded."
-        elif self._runtime_groups or self._gpu.gpus:
+        elif self._gpu.gpus:
             level = "healthy"
             summary = "System status is healthy."
         else:

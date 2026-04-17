@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from interfaces_backend.models.settings import (
-    BundledTorchDefaultsModel,
     EnvironmentBuildSettingsModel,
     FeaturesRepoSettingsModel,
     HuggingFaceSecretStatusModel,
@@ -41,13 +40,8 @@ class SystemSettingsService:
     def get_settings(self) -> SystemSettingsModel:
         with self._lock:
             data = self._read()
-        bundled = data.get("bundled_torch") or {}
         environment_build = data.get("environment_build") or {}
         return SystemSettingsModel(
-            bundled_torch=BundledTorchDefaultsModel(
-                pytorch_version=str(bundled.get("pytorch_version") or "v2.10.0"),
-                torchvision_version=str(bundled.get("torchvision_version") or "v0.25.0"),
-            ),
             features_repo=FeaturesRepoSettingsModel(
                 repo_url=str(
                     ((data.get("features_repo") or {}).get("repo_url"))
@@ -68,8 +62,6 @@ class SystemSettingsService:
     def update_settings(
         self,
         *,
-        pytorch_version: str | None = None,
-        torchvision_version: str | None = None,
         features_repo_url: str | None = None,
         features_repo_ref: str | None = None,
         features_repo_commit: str | None = None,
@@ -77,13 +69,8 @@ class SystemSettingsService:
     ) -> SystemSettingsModel:
         with self._lock:
             data = self._read()
-            bundled = data.setdefault("bundled_torch", {})
             features_repo = data.setdefault("features_repo", {})
             environment_build = data.setdefault("environment_build", {})
-            if pytorch_version is not None:
-                bundled["pytorch_version"] = pytorch_version
-            if torchvision_version is not None:
-                bundled["torchvision_version"] = torchvision_version
             if features_repo_url is not None:
                 features_repo["repo_url"] = features_repo_url
             if features_repo_ref is not None:

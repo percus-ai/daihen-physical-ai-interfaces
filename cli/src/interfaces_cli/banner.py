@@ -1,9 +1,7 @@
 """Banner and display utilities."""
 
-import json
 import os
 import platform
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,6 +11,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from interfaces_cli.styles import Colors
+from percus_ai.environment.torch_runtime_probe import run_torch_runtime_probe
 
 
 def clear_screen() -> None:
@@ -86,8 +85,7 @@ _system_info_cache: Optional[Dict[str, Any]] = None
 def check_system_info() -> Dict[str, Any]:
     """Check system info (PyTorch, CUDA, GPU). Cached after first call.
 
-    Uses subprocess to avoid importing torch directly, which prevents
-    numpy version conflicts with bundled-torch.
+    Uses subprocess to avoid importing torch directly.
     """
     global _system_info_cache
     if _system_info_cache is not None:
@@ -103,57 +101,20 @@ def check_system_info() -> Dict[str, Any]:
         "error": None,
     }
 
-    # Build PYTHONPATH with bundled-torch if it exists
-    bundled_torch = Path.home() / ".cache" / "daihen-physical-ai" / "bundled-torch"
-    env = os.environ.copy()
-    if (bundled_torch / "pytorch").is_dir():
-        pytorch_path = str(bundled_torch / "pytorch")
-        torchvision_path = str(bundled_torch / "torchvision")
-        env["PYTHONPATH"] = f"{pytorch_path}:{torchvision_path}:{env.get('PYTHONPATH', '')}"
-
-    # Prefer bundled-torch build venv when present. The CLI may run under a
-    # different Python (e.g. system Python), which cannot import cp310 extensions.
-    probe_python = bundled_torch / ".venv" / "bin" / "python"
-    python_exe = str(probe_python) if probe_python.exists() else sys.executable
-
-    # Python code to run in subprocess
-    torch_check_code = '''
-import json
-import torch
-info = {
-    "torch_version": torch.__version__,
-    "cuda_available": torch.cuda.is_available(),
-    "cuda_version": None,
-    "gpu_name": None,
-    "gpu_count": 0,
-    "mps_available": None,
-    "error": None,
-}
-if info["cuda_available"]:
-    info["cuda_version"] = torch.version.cuda or "N/A"
-    info["gpu_count"] = torch.cuda.device_count()
-    if info["gpu_count"] > 0:
-        info["gpu_name"] = torch.cuda.get_device_name(0)
-else:
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        info["mps_available"] = True
-print(json.dumps(info))
-'''
-
     try:
-        result = subprocess.run(
-            [python_exe, "-c", torch_check_code],
-            capture_output=True,
-            text=True,
+        ok, payload = run_torch_runtime_probe(
+            python_path=sys.executable,
+            env=None,
+            cwd=Path.cwd(),
             timeout=10,
-            env=env,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            info = json.loads(result.stdout.strip())
+        if ok:
+            info = payload
         else:
-            info["error"] = (result.stderr or result.stdout or "").strip() or "PyTorch not installed"
-    except subprocess.TimeoutExpired:
-        info["error"] = "Timeout checking PyTorch"
+            info["error"] = (
+                str(payload.get("stderr") or payload.get("stdout") or payload.get("error") or "").strip()
+                or "PyTorch not installed"
+            )
     except Exception as e:
         info["error"] = str(e)
 

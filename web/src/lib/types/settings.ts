@@ -1,8 +1,3 @@
-export type BundledTorchDefaults = {
-  pytorch_version: string;
-  torchvision_version: string;
-};
-
 export type FeaturesRepoSettings = {
   repo_url: string;
   repo_ref: string;
@@ -24,7 +19,6 @@ export type FeaturesRepoSuggestions = {
 };
 
 export type SystemSettings = {
-  bundled_torch: BundledTorchDefaults;
   features_repo: FeaturesRepoSettings;
   updated_at?: string | null;
 };

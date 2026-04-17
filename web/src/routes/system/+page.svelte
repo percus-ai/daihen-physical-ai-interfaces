@@ -24,7 +24,6 @@
     reconcileSystemTabState,
     type SystemTab
   } from '$lib/system/systemTabRouting';
-  import type { BundledTorchBuildSnapshot } from '$lib/types/bundledTorch';
   import type { FeaturesRepoSuggestions, SystemSettings, UserSettings } from '$lib/types/settings';
   import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
 
@@ -81,7 +80,6 @@
   let activeTab = $state<SystemTab>(normalizeSystemTab(page.url.searchParams.get('tab')));
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let networkStatus = $state<OperateNetworkStatus | null>(null);
-  let bundledTorchSnapshot = $state<BundledTorchBuildSnapshot | null>(null);
   let systemSettings = $state<SystemSettings | null>(null);
   let featuresRepoSuggestions = $state<FeaturesRepoSuggestions | null>(null);
   let featuresRepoSuggestionsPending = $state(false);
@@ -188,18 +186,13 @@
   const loadInitialState = async () => {
     buildLoading = true;
     buildLoadError = '';
-    const [bundledResult, operateResult, systemSettingsResult, userSettingsResult, envBuildsResult, sharedBuildsResult] = await Promise.allSettled([
-      api.system.bundledTorchStatus(),
+    const [operateResult, systemSettingsResult, userSettingsResult, envBuildsResult, sharedBuildsResult] = await Promise.allSettled([
       api.operate.status(),
       api.system.settings(),
       api.user.settings(),
       api.builds.envs(),
       api.builds.shared()
     ]);
-
-    if (bundledResult.status === 'fulfilled') {
-      bundledTorchSnapshot = bundledResult.value;
-    }
 
     if (operateResult.status === 'fulfilled') {
       networkStatus = (operateResult.value as OperateStatusResponse | null)?.network ?? null;
@@ -430,8 +423,6 @@
   };
 
   const saveSystemSettings = async (payload: {
-    pytorchVersion: string;
-    torchvisionVersion: string;
     repoUrl: string;
     repoRef: string;
     repoCommit?: string;
@@ -441,10 +432,6 @@
     systemSettingsSuccess = '';
     try {
       systemSettings = await api.system.updateSettings({
-        bundled_torch: {
-          pytorch_version: payload.pytorchVersion.trim(),
-          torchvision_version: payload.torchvisionVersion.trim()
-        },
         features_repo: {
           repo_url: payload.repoUrl.trim(),
           repo_ref: payload.repoRef.trim(),
@@ -552,7 +539,6 @@
     }
     if (tab === 'runtime') {
       return [
-        { subscription_id: 'system.page.bundled-torch', kind: 'system.bundled-torch', params: {} },
         { subscription_id: 'system.page.builds-status', kind: 'builds.status', params: {} },
         { subscription_id: 'system.page.builds-logs', kind: 'builds.logs', params: {} }
       ];
@@ -575,9 +561,6 @@
         networkStatus = payload.operate_status?.network ?? null;
         return;
       }
-      case 'system.bundled-torch':
-        bundledTorchSnapshot = event.payload as BundledTorchBuildSnapshot;
-        return;
       case 'builds.status':
         applyBuildsSnapshot(event.payload as BuildsStatusSnapshot);
         return;
@@ -631,15 +614,12 @@
     <div>
       <h1 class="text-3xl font-semibold text-slate-900">システム</h1>
       <p class="mt-2 text-sm text-slate-600">
-        監視、プロファイル、bundled-torch、設定を一箇所で管理します。
+        監視、プロファイル、構築管理、設定を一箇所で管理します。
       </p>
     </div>
     <div class="flex flex-wrap gap-2">
       <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(systemStatusSnapshot?.overall?.level)}`}>
         {renderStatusLabel(systemStatusSnapshot?.overall?.level)}
-      </span>
-      <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(bundledTorchSnapshot?.state)}`}>
-        bundled-torch: {renderStatusLabel(bundledTorchSnapshot?.state)}
       </span>
     </div>
   </div>

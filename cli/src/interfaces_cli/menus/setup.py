@@ -7,7 +7,6 @@ from InquirerPy.base.control import Choice
 
 from interfaces_cli.banner import show_section_header
 from interfaces_cli.menu_system import BaseMenu, MenuResult
-from interfaces_cli.menus.build import BuildMenu
 from interfaces_cli.styles import Colors, hacker_style
 
 class SetupMenu(BaseMenu):
@@ -19,7 +18,6 @@ class SetupMenu(BaseMenu):
         return [
             Choice(value="devices", name="🔧 [DEVICES] デバイス設定"),
             Choice(value="calibration", name="🎯 [CALIB] ロボットキャリブレーション"),
-            Choice(value="build", name="🔨 [BUILD] PyTorchビルド (Jetson)"),
         ]
 
     def handle_choice(self, choice: Any) -> MenuResult:
@@ -27,8 +25,6 @@ class SetupMenu(BaseMenu):
             return self.submenu(DevicesMenu)
         if choice == "calibration":
             return self.submenu(CalibrationMenu)
-        if choice == "build":
-            return self.submenu(BuildMenu)
         return MenuResult.CONTINUE
 
 
