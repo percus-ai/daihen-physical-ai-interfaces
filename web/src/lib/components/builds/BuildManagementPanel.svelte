@@ -13,6 +13,7 @@
   import BuildSettingsSection from '$lib/components/builds/BuildSettingsSection.svelte';
 
   type Props = {
+    currentPlatform?: string;
     currentSm?: string;
     envItems?: BuildSettingSummary[];
     sharedItems?: BuildSettingSummary[];
@@ -27,6 +28,7 @@
   };
 
   let {
+    currentPlatform = '',
     currentSm = '',
     envItems = [],
     sharedItems = [],
@@ -138,6 +140,7 @@
     description="推論や実行に使う環境定義と、その最新のビルド結果を一覧します。"
     items={runtimeEnvItems}
     currentSm={currentSm}
+    currentPlatform={currentPlatform}
     {actionPending}
     onRun={onRun}
     onCancel={handleCancel}
@@ -152,6 +155,7 @@
     description="学習ジョブに使う環境定義と、その最新のビルド結果を一覧します。"
     items={trainingEnvItems}
     currentSm={currentSm}
+    currentPlatform={currentPlatform}
     {actionPending}
     onRun={onRun}
     onCancel={handleCancel}
@@ -165,6 +169,7 @@
   description="共有パッケージ定義ごとの variant を一覧し、個別にビルド結果を一覧します。"
   items={sharedItems}
   currentSm={currentSm}
+  currentPlatform={currentPlatform}
   {actionPending}
   onRun={onRun}
   onCancel={handleCancel}

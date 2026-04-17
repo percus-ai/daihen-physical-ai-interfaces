@@ -18,7 +18,7 @@ def test_list_targets_returns_cpu_and_matching_cuda_targets(tmp_path: Path) -> N
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 display_name: Default
@@ -46,7 +46,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -73,12 +73,14 @@ variants: {}
     service = InferenceRuntimeTargetsService(
         config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
         build_store=store,
+        current_platform_resolver=lambda: None,
         current_sm_resolver=lambda: "sm_120",
         backend_python="/usr/bin/python3",
     )
 
     response = service.list_targets(policy_type="groot")
 
+    assert response.current_platform is None
     assert response.current_sm == "sm_120"
     assert response.recommended_target_id == "cuda:default:groot:build-groot-1"
     assert [item.label for item in response.targets] == ["CPU", "CUDA #1"]
@@ -90,7 +92,7 @@ def test_list_targets_returns_cpu_only_when_no_matching_build_exists(tmp_path: P
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 display_name: Default
@@ -108,7 +110,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -119,6 +121,7 @@ variants: {}
     service = InferenceRuntimeTargetsService(
         config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
         build_store=BuildStore(layout=BuildLayout(data_dir=data_dir)),
+        current_platform_resolver=lambda: None,
         current_sm_resolver=lambda: "sm_120",
         backend_python="/usr/bin/python3",
     )
@@ -133,7 +136,7 @@ def test_resolve_target_uses_built_env_python_for_cuda_and_cpu_backing(tmp_path:
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 display_name: Default
@@ -151,7 +154,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -179,6 +182,7 @@ variants: {}
     service = InferenceRuntimeTargetsService(
         config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
         build_store=store,
+        current_platform_resolver=lambda: None,
         current_sm_resolver=lambda: "sm_120",
         backend_python="/usr/bin/python3",
     )
@@ -199,7 +203,7 @@ def test_resolve_target_raises_for_unknown_id(tmp_path: Path) -> None:
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 envs:
@@ -213,7 +217,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -224,9 +228,89 @@ variants: {}
     service = InferenceRuntimeTargetsService(
         config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
         build_store=BuildStore(layout=BuildLayout(data_dir=data_dir)),
+        current_platform_resolver=lambda: None,
         current_sm_resolver=lambda: "sm_120",
         backend_python="/usr/bin/python3",
     )
 
     with pytest.raises(RuntimeError, match="Runtime target 'cuda:missing' is not available"):
         service.resolve_target(policy_type="act", target_id="cuda:missing")
+
+
+def test_list_targets_filters_platform_specific_runtime_envs(tmp_path: Path) -> None:
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        data_dir / "environment/configs/envs/default.yaml",
+        """
+id: default
+envs:
+  groot:
+    display_name: Generic GR00T
+    python: "3.12"
+    policy_types: [groot]
+    supported_sms: [sm_110]
+    installs: []
+    checks: []
+  groot_thor:
+    display_name: Thor GR00T
+    python: "3.12"
+    policy_types: [groot]
+    supported_platforms: [jetson_agx_thor]
+    supported_sms: [sm_110]
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants: {}
+""".strip()
+        + "\n",
+    )
+    layout = BuildLayout(data_dir=data_dir)
+    store = BuildStore(layout=layout)
+    store.save_env_metadata(
+        EnvBuildMetadataModel(
+            build_id="generic-build",
+            env_name="groot",
+            config_id="default",
+            success=True,
+            steps=[BuildStepLogModel(step="ok", started_at="2026-04-16T00:00:00Z", finished_at="2026-04-16T00:01:00Z")],
+        )
+    )
+    store.save_env_metadata(
+        EnvBuildMetadataModel(
+            build_id="thor-build",
+            env_name="groot_thor",
+            config_id="default",
+            success=True,
+            steps=[BuildStepLogModel(step="ok", started_at="2026-04-16T00:00:00Z", finished_at="2026-04-16T00:01:00Z")],
+        )
+    )
+
+    generic_service = InferenceRuntimeTargetsService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=store,
+        current_platform_resolver=lambda: None,
+        current_sm_resolver=lambda: "sm_110",
+        backend_python="/usr/bin/python3",
+    )
+    thor_service = InferenceRuntimeTargetsService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=store,
+        current_platform_resolver=lambda: "jetson_agx_thor",
+        current_sm_resolver=lambda: "sm_110",
+        backend_python="/usr/bin/python3",
+    )
+
+    generic_targets = generic_service.list_targets(policy_type="groot")
+    thor_targets = thor_service.list_targets(policy_type="groot")
+
+    assert [item.label for item in generic_targets.targets] == ["CPU", "CUDA #1"]
+    assert [item.display_name for item in generic_targets.targets[1:]] == ["Generic GR00T"]
+    assert [item.label for item in thor_targets.targets] == ["CPU", "CUDA #1", "CUDA #2"]
+    assert [item.display_name for item in thor_targets.targets[1:]] == ["Generic GR00T", "Thor GR00T"]

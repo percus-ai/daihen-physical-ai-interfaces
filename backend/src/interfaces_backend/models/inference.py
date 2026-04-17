@@ -66,6 +66,9 @@ class InferenceRuntimeTargetInfo(BaseModel):
     config_id: str | None = None
     env_name: str | None = None
     build_id: str | None = None
+    supported_platforms: list[str] = Field(default_factory=list)
+    current_platform: str | None = None
+    platform_supported: bool | None = None
     supported_sms: list[str] = Field(default_factory=list)
     current_sm: str | None = None
     sm_supported: bool | None = None
@@ -73,6 +76,7 @@ class InferenceRuntimeTargetInfo(BaseModel):
 
 class InferenceRuntimeTargetsResponse(BaseModel):
     policy_type: str | None = None
+    current_platform: str | None = None
     current_sm: str | None = None
     targets: list[InferenceRuntimeTargetInfo] = Field(default_factory=list)
     recommended_target_id: str = Field("cpu")

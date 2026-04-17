@@ -25,6 +25,9 @@ class BuildSettingSummaryModel(BaseModel):
     display_name: str
     description: str | None = None
     usage: Literal["runtime", "training"] | None = None
+    supported_platforms: list[str] = Field(default_factory=list)
+    current_platform: str | None = None
+    platform_supported: bool | None = None
     supported_sms: list[str] = Field(default_factory=list)
     current_sm: str | None = None
     sm_supported: bool | None = None
@@ -50,11 +53,13 @@ class BuildSettingSummaryModel(BaseModel):
 
 class EnvBuildSettingsListResponse(BaseModel):
     selected_config_id: str | None = None
+    current_platform: str | None = None
     current_sm: str | None = None
     items: list[BuildSettingSummaryModel] = Field(default_factory=list)
 
 
 class SharedBuildSettingsListResponse(BaseModel):
+    current_platform: str | None = None
     current_sm: str | None = None
     items: list[BuildSettingSummaryModel] = Field(default_factory=list)
 
@@ -104,6 +109,7 @@ class BuildErrorReportResponse(BaseModel):
 
 
 class BuildsStatusSnapshotModel(BaseModel):
+    current_platform: str | None = None
     current_sm: str | None = None
     running_jobs: list[BuildJobSummaryModel] = Field(default_factory=list)
     envs: EnvBuildSettingsListResponse

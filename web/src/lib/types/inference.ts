@@ -52,6 +52,9 @@ export type InferenceRuntimeTarget = {
   config_id?: string | null;
   env_name?: string | null;
   build_id?: string | null;
+  supported_platforms?: string[];
+  current_platform?: string | null;
+  platform_supported?: boolean | null;
   supported_sms?: string[];
   current_sm?: string | null;
   sm_supported?: boolean | null;
@@ -59,6 +62,7 @@ export type InferenceRuntimeTarget = {
 
 export type InferenceRuntimeTargetsResponse = {
   policy_type?: string | null;
+  current_platform?: string | null;
   current_sm?: string | null;
   targets?: InferenceRuntimeTarget[];
   recommended_target_id?: string;

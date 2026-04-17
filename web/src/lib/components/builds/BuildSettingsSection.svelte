@@ -7,6 +7,7 @@
   type Props = {
     title: string;
     description: string;
+    currentPlatform?: string;
     currentSm?: string;
     items: BuildSettingSummary[];
     actionPending?: Record<string, boolean>;
@@ -19,6 +20,7 @@
   let {
     title,
     description,
+    currentPlatform = '',
     currentSm = '',
     items,
     actionPending = {},
@@ -100,17 +102,26 @@
     return 'まだ構築されていません。';
   };
 
-  const smBadgeClass = (item: BuildSettingSummary) => {
-    if (item.sm_supported === true) return 'border-sky-200 bg-sky-50 text-sky-700';
-    if (item.sm_supported === false) return 'border-slate-200 bg-slate-100 text-slate-500';
+  const environmentSupported = (item: BuildSettingSummary) => {
+    if (item.platform_supported === false) return false;
+    if (item.sm_supported === false) return false;
+    if (item.platform_supported === true || item.sm_supported === true) return true;
+    return null;
+  };
+
+  const environmentBadgeClass = (item: BuildSettingSummary) => {
+    const supported = environmentSupported(item);
+    if (supported === true) return 'border-sky-200 bg-sky-50 text-sky-700';
+    if (supported === false) return 'border-slate-200 bg-slate-100 text-slate-500';
     return 'border-slate-200 bg-slate-100 text-slate-500';
   };
 
-  const smBadgeText = (item: BuildSettingSummary) => {
-    if (!currentSm) return '';
-    if (item.sm_supported === true) return `${currentSm} 対応`;
-    if (item.sm_supported === false) return `${currentSm} 非対応`;
-    return `${currentSm} 未判定`;
+  const environmentBadgeText = (item: BuildSettingSummary) => {
+    if (!currentPlatform && !currentSm) return '';
+    const supported = environmentSupported(item);
+    if (supported === true) return 'この環境に対応';
+    if (supported === false) return 'この環境に非対応';
+    return 'この環境は未判定';
   };
 
   const handleSecondary = async (item: BuildSettingSummary) => {
@@ -150,9 +161,9 @@
               <span class={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${stateClass(item.state)}`}>
                 {stateLabel(item.state)}
               </span>
-              {#if currentSm}
-                <span class={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${smBadgeClass(item)}`}>
-                  {smBadgeText(item)}
+              {#if currentPlatform || currentSm}
+                <span class={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${environmentBadgeClass(item)}`}>
+                  {environmentBadgeText(item)}
                 </span>
               {/if}
             </div>

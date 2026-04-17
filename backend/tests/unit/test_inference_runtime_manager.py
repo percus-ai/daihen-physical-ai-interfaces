@@ -61,11 +61,8 @@ def test_start_times_out_only_on_worker_control_socket(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    popen_env: dict[str, str] = {}
-
     def fake_popen(*args, **kwargs):
         _ = args
-        popen_env.update(kwargs.get("env") or {})
         return _FakeProc()
 
     manager = InferenceRuntimeManager()

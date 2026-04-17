@@ -329,6 +329,9 @@ export type BuildSettingSummary = {
   display_name: string;
   description?: string | null;
   usage?: 'runtime' | 'training' | null;
+  supported_platforms?: string[];
+  current_platform?: string | null;
+  platform_supported?: boolean | null;
   supported_sms?: string[];
   current_sm?: string | null;
   sm_supported?: boolean | null;
@@ -354,11 +357,13 @@ export type BuildSettingSummary = {
 
 export type EnvBuildSettingsListResponse = {
   selected_config_id?: string | null;
+  current_platform?: string | null;
   current_sm?: string | null;
   items: BuildSettingSummary[];
 };
 
 export type SharedBuildSettingsListResponse = {
+  current_platform?: string | null;
   current_sm?: string | null;
   items: BuildSettingSummary[];
 };
@@ -408,6 +413,7 @@ export type BuildErrorReportResponse = {
 };
 
 export type BuildsStatusSnapshot = {
+  current_platform?: string | null;
   current_sm?: string | null;
   running_jobs: BuildJobSummary[];
   envs: EnvBuildSettingsListResponse;

@@ -43,7 +43,7 @@ def test_list_env_settings_filters_state_by_config_id(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/config-a.yaml",
+        data_dir / "environment/configs/envs/config-a.yaml",
         """
 id: config-a
 display_name: Config A
@@ -58,7 +58,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/config-b.yaml",
+        data_dir / "environment/configs/envs/config-b.yaml",
         """
 id: config-b
 display_name: Config B
@@ -73,7 +73,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -106,6 +106,7 @@ variants: {}
         build_store=store,
         settings_service=_FakeSettingsService("config-a"),
         build_jobs_service=_FakeBuildJobsService(),
+        current_platform_resolver=lambda: "jetson_agx_thor",
         current_sm_resolver=lambda: "sm_120",
     )
 
@@ -117,6 +118,9 @@ variants: {}
     assert items["config-a"].display_name == "GR00T A"
     assert items["config-a"].description == "config a description"
     assert items["config-a"].current_sm == "sm_120"
+    assert items["config-a"].current_platform == "jetson_agx_thor"
+    assert items["config-a"].supported_platforms == []
+    assert items["config-a"].platform_supported is True
     assert items["config-a"].supported_sms == ["*"]
     assert items["config-a"].sm_supported is True
     assert items["config-a"].current_build_id == "2026-04-16T00-00-00Z_a"
@@ -130,7 +134,7 @@ def test_list_shared_settings_filters_state_by_variant(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 envs: {}
@@ -138,7 +142,7 @@ envs: {}
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants:
@@ -184,14 +188,18 @@ variants:
         build_store=store,
         settings_service=_FakeSettingsService("default"),
         build_jobs_service=_FakeBuildJobsService(),
+        current_platform_resolver=lambda: "jetson_agx_thor",
         current_sm_resolver=lambda: "sm_120",
     )
 
     response = service.list_shared_settings()
 
     items = {item.variant: item for item in response.items}
+    assert response.current_platform == "jetson_agx_thor"
     assert response.current_sm == "sm_120"
     assert items["a"].state == "success"
+    assert items["a"].supported_platforms == []
+    assert items["a"].platform_supported is True
     assert items["a"].supported_sms == ["*"]
     assert items["a"].sm_supported is True
     assert items["b"].state == "failed"
@@ -202,7 +210,7 @@ def test_list_env_settings_overlays_active_job(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 display_name: Default
@@ -217,7 +225,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -245,6 +253,7 @@ variants: {}
                 )
             ]
         ),
+        current_platform_resolver=lambda: None,
         current_sm_resolver=lambda: "sm_120",
     )
 
@@ -264,7 +273,7 @@ def test_list_env_settings_includes_train_group(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 display_name: Default
@@ -280,7 +289,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/train/sm_120.yaml",
+        data_dir / "environment/configs/train/sm_120.yaml",
         """
 id: sm_120
 display_name: SM 120
@@ -296,7 +305,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -325,7 +334,7 @@ def test_list_env_settings_marks_sm_compatibility(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 display_name: Default
@@ -350,7 +359,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         "package: pytorch\nvariants: {}\n",
     )
     service = BuildManagementService(
@@ -373,7 +382,7 @@ def test_delete_env_artifact_unlinks_current_when_current_build_matches(tmp_path
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 display_name: Default
@@ -386,7 +395,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -421,7 +430,7 @@ def test_delete_shared_artifact_filters_by_variant(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/envs/default.yaml",
         """
 id: default
 envs: {}
@@ -429,7 +438,7 @@ envs: {}
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants:

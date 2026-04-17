@@ -10,7 +10,15 @@ from pathlib import Path
 from interfaces_backend.models.inference import InferenceRuntimeTargetInfo, InferenceRuntimeTargetsResponse
 from percus_ai.environment.build import BuildStore
 from percus_ai.environment.build.build_metadata import EnvBuildMetadataModel
-from percus_ai.environment.config import EnvironmentConfigLoader, detect_current_sm, matches_supported_sms, normalize_supported_sms
+from percus_ai.environment.config import (
+    EnvironmentConfigLoader,
+    detect_current_platform,
+    detect_current_sm,
+    matches_supported_platforms,
+    matches_supported_sms,
+    normalize_supported_platforms,
+    normalize_supported_sms,
+)
 
 
 @dataclass(frozen=True)
@@ -30,18 +38,21 @@ class InferenceRuntimeTargetsService:
         *,
         config_loader: EnvironmentConfigLoader | None = None,
         build_store: BuildStore | None = None,
+        current_platform_resolver=None,
         current_sm_resolver=None,
         backend_python: str | None = None,
     ) -> None:
         self._config_loader = config_loader or EnvironmentConfigLoader()
         self._build_store = build_store or BuildStore()
         self._layout = self._build_store.layout
+        self._current_platform_resolver = current_platform_resolver or detect_current_platform
         self._current_sm_resolver = current_sm_resolver or detect_current_sm
         self._backend_python = backend_python or sys.executable
         self._host_arch = str(platform.machine() or "").strip() or "unknown"
 
     def list_targets(self, *, policy_type: str | None) -> InferenceRuntimeTargetsResponse:
         normalized_policy = str(policy_type or "").strip().lower() or None
+        current_platform = self._current_platform_resolver()
         current_sm = self._current_sm_resolver()
 
         cpu_backing = self._resolve_cpu_backing_target(policy_type=normalized_policy)
@@ -57,6 +68,9 @@ class InferenceRuntimeTargetsService:
                 config_id=cpu_backing.config_id if cpu_backing else None,
                 env_name=cpu_backing.env_name if cpu_backing else None,
                 build_id=cpu_backing.build_id if cpu_backing else None,
+                supported_platforms=[],
+                current_platform=current_platform,
+                platform_supported=True,
                 supported_sms=["*"],
                 current_sm=current_sm,
                 sm_supported=True,
@@ -82,6 +96,9 @@ class InferenceRuntimeTargetsService:
                     config_id=candidate.config_id,
                     env_name=candidate.env_name,
                     build_id=candidate.build_metadata.build_id,
+                    supported_platforms=candidate.supported_platforms,
+                    current_platform=current_platform,
+                    platform_supported=candidate.platform_supported,
                     supported_sms=candidate.supported_sms,
                     current_sm=current_sm,
                     sm_supported=candidate.sm_supported,
@@ -91,6 +108,7 @@ class InferenceRuntimeTargetsService:
         recommended = cuda_targets[0].id if cuda_targets else "cpu"
         return InferenceRuntimeTargetsResponse(
             policy_type=normalized_policy,
+            current_platform=current_platform,
             current_sm=current_sm,
             targets=targets,
             recommended_target_id=recommended,
@@ -154,6 +172,7 @@ class InferenceRuntimeTargetsService:
         return None
 
     def _iter_env_candidates(self, *, policy_type: str | None):
+        current_platform = self._current_platform_resolver()
         current_sm = self._current_sm_resolver()
         for ref in self._config_loader.list_env_configs():
             config = self._config_loader.load_env_config(ref.config_id, config_group=ref.group)
@@ -165,12 +184,16 @@ class InferenceRuntimeTargetsService:
                     continue
                 if not supported_policy_types and policy_type and policy_type != env_name.lower():
                     continue
+                if not matches_supported_platforms(current_platform, env_definition.supported_platforms):
+                    continue
                 latest_success = self._find_latest_successful_env_build(config_id=config.id, env_name=env_name)
                 yield _EnvCandidate(
                     config_id=config.id,
                     env_name=env_name,
                     display_name=env_definition.display_name or config.display_name or env_name,
                     description=env_definition.description,
+                    supported_platforms=normalize_supported_platforms(env_definition.supported_platforms),
+                    platform_supported=matches_supported_platforms(current_platform, env_definition.supported_platforms),
                     supported_sms=normalize_supported_sms(env_definition.supported_sms),
                     sm_supported=matches_supported_sms(current_sm, env_definition.supported_sms),
                     build_metadata=latest_success,
@@ -194,6 +217,8 @@ class _EnvCandidate:
     env_name: str
     display_name: str
     description: str | None
+    supported_platforms: list[str]
+    platform_supported: bool
     supported_sms: list[str]
     sm_supported: bool | None
     build_metadata: EnvBuildMetadataModel | None

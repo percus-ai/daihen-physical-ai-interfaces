@@ -88,6 +88,7 @@
   let userSettings = $state<UserSettings | null>(null);
   let buildLoading = $state(false);
   let buildLoadError = $state('');
+  let buildCurrentPlatform = $state('');
   let buildCurrentSm = $state('');
   let envBuildItems = $state<BuildSettingSummary[]>([]);
   let sharedBuildItems = $state<BuildSettingSummary[]>([]);
@@ -220,6 +221,8 @@
 
     if (envBuildsResult.status === 'fulfilled' && sharedBuildsResult.status === 'fulfilled') {
       selectedBuildConfigId = envBuildsResult.value.selected_config_id ?? '';
+      buildCurrentPlatform =
+        envBuildsResult.value.current_platform ?? sharedBuildsResult.value.current_platform ?? '';
       buildCurrentSm = envBuildsResult.value.current_sm ?? sharedBuildsResult.value.current_sm ?? '';
       envBuildItems = envBuildsResult.value.items;
       sharedBuildItems = sharedBuildsResult.value.items;
@@ -256,6 +259,8 @@
   };
 
   const applyBuildsSnapshot = (snapshot: BuildsStatusSnapshot) => {
+    buildCurrentPlatform =
+      snapshot.current_platform ?? snapshot.envs.current_platform ?? snapshot.shared.current_platform ?? '';
     buildCurrentSm = snapshot.current_sm ?? snapshot.envs.current_sm ?? snapshot.shared.current_sm ?? '';
     selectedBuildConfigId = snapshot.envs.selected_config_id ?? '';
     envBuildItems = snapshot.envs.items;
@@ -270,13 +275,29 @@
 
   const allRuntimeBuildItems = $derived([...envBuildItems, ...sharedBuildItems]);
   const allRuntimeBuildSettingIds = $derived(allRuntimeBuildItems.map((item) => item.setting_id));
-  const isRuntimeSettingSmVisible = (item: BuildSettingSummary) => runtimeShowUnsupported || item.sm_supported !== false;
+  const hasCurrentPlatformSpecificMatches = $derived(
+    allRuntimeBuildItems.some(
+      (item) => (item.supported_platforms?.length ?? 0) > 0 && item.platform_supported === true
+    )
+  );
+  const isRuntimeSettingSupportedVisible = (item: BuildSettingSummary) => {
+    if (runtimeShowUnsupported) {
+      return true;
+    }
+    if (item.sm_supported === false) {
+      return false;
+    }
+    if (hasCurrentPlatformSpecificMatches && (item.supported_platforms?.length ?? 0) > 0) {
+      return item.platform_supported !== false;
+    }
+    return true;
+  };
   const runtimeSmVisibleSettingIds = $derived(
-    allRuntimeBuildItems.filter((item) => isRuntimeSettingSmVisible(item)).map((item) => item.setting_id)
+    allRuntimeBuildItems.filter((item) => isRuntimeSettingSupportedVisible(item)).map((item) => item.setting_id)
   );
   const runtimeVisibleBuildItems = $derived(
     allRuntimeBuildItems.filter(
-      (item) => isRuntimeSettingSmVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
+      (item) => isRuntimeSettingSupportedVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
     )
   );
   const runtimeVisibleSettingCount = $derived(runtimeVisibleBuildItems.length);
@@ -285,19 +306,19 @@
   );
   const filteredEnvBuildItems = $derived(
     envBuildItems.filter(
-      (item) => isRuntimeSettingSmVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
+      (item) => isRuntimeSettingSupportedVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
     )
   );
   const filteredSharedBuildItems = $derived(
     sharedBuildItems.filter(
-      (item) => isRuntimeSettingSmVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
+      (item) => isRuntimeSettingSupportedVisible(item) && !runtimeHiddenBuildSettingIds.includes(item.setting_id)
     )
   );
   const runtimeEnvFilterItems = $derived(
-    envBuildItems.filter((item) => item.usage !== 'training' && isRuntimeSettingSmVisible(item))
+    envBuildItems.filter((item) => item.usage !== 'training' && isRuntimeSettingSupportedVisible(item))
   );
   const trainingEnvFilterItems = $derived(
-    envBuildItems.filter((item) => item.usage === 'training' && isRuntimeSettingSmVisible(item))
+    envBuildItems.filter((item) => item.usage === 'training' && isRuntimeSettingSupportedVisible(item))
   );
 
   $effect(() => {
@@ -679,7 +700,8 @@
         <RuntimeTab
           buildLoading={buildLoading}
           buildLoadError={buildLoadError}
-          buildCurrentSm={buildCurrentSm}
+                    buildCurrentPlatform={buildCurrentPlatform}
+                    buildCurrentSm={buildCurrentSm}
           envBuildItems={filteredEnvBuildItems}
           sharedBuildItems={filteredSharedBuildItems}
           runningBuildJobs={runningBuildJobs}
@@ -743,7 +765,7 @@
       <div class="border-b border-slate-200 px-5 py-4">
         <label class="flex items-center justify-between gap-4 rounded-2xl border border-slate-200/80 bg-slate-50/70 px-4 py-3">
           <div class="min-w-0">
-            <p class="text-sm font-semibold text-slate-900">SM対応のみ</p>
+            <p class="text-sm font-semibold text-slate-900">現在の環境に対応のみ</p>
           </div>
           <button
             class={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition ${
@@ -752,7 +774,7 @@
             type="button"
             role="switch"
             aria-checked={!runtimeShowUnsupported}
-            aria-label="SM対応のみを切り替え"
+            aria-label="現在の環境に対応のみを切り替え"
             onclick={() => {
               runtimeShowUnsupported = !runtimeShowUnsupported;
             }}
@@ -857,7 +879,7 @@
               <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">共有パッケージ</h4>
               <div class="flex items-center gap-3">
                 <button class="text-xs font-semibold text-brand transition hover:text-brand-ink" type="button" onclick={() => {
-                  for (const item of sharedBuildItems.filter((entry) => isRuntimeSettingSmVisible(entry))) {
+                  for (const item of sharedBuildItems.filter((entry) => isRuntimeSettingSupportedVisible(entry))) {
                     if (!isRuntimeSettingVisible(item.setting_id)) {
                       toggleRuntimeSettingVisible(item.setting_id, true);
                     }
@@ -866,7 +888,7 @@
                   すべて選択
                 </button>
                 <button class="text-xs font-semibold text-slate-500 transition hover:text-slate-700" type="button" onclick={() => {
-                  for (const item of sharedBuildItems.filter((entry) => isRuntimeSettingSmVisible(entry))) {
+                  for (const item of sharedBuildItems.filter((entry) => isRuntimeSettingSupportedVisible(entry))) {
                     if (isRuntimeSettingVisible(item.setting_id)) {
                       toggleRuntimeSettingVisible(item.setting_id, false);
                     }
@@ -877,7 +899,7 @@
               </div>
             </div>
             <div class="mt-3 space-y-2">
-              {#each sharedBuildItems.filter((item) => isRuntimeSettingSmVisible(item)) as item (item.setting_id)}
+              {#each sharedBuildItems.filter((item) => isRuntimeSettingSupportedVisible(item)) as item (item.setting_id)}
                 <label class="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200/80 px-3 py-3 transition hover:border-slate-300 hover:bg-slate-50">
                   <input
                     class="mt-1 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"

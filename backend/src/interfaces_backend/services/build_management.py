@@ -21,7 +21,10 @@ from percus_ai.environment.build import BuildStore
 from percus_ai.environment.build.build_metadata import BuildStepLogModel, EnvBuildMetadataModel, SharedBuildMetadataModel
 from percus_ai.environment.config import (
     EnvironmentConfigLoader,
+    detect_current_platform,
     detect_current_sm,
+    matches_supported_platforms,
+    normalize_supported_platforms,
     matches_supported_sms,
     normalize_supported_sms,
 )
@@ -43,11 +46,13 @@ class BuildManagementService:
         build_store: BuildStore | None = None,
         settings_service: SystemSettingsReader | None = None,
         build_jobs_service: BuildJobsReader | None = None,
+        current_platform_resolver=None,
         current_sm_resolver=None,
         build_error_reports_service=None,
     ) -> None:
         self._config_loader = config_loader or EnvironmentConfigLoader()
         self._build_store = build_store or BuildStore()
+        self._current_platform_resolver = current_platform_resolver or detect_current_platform
         self._current_sm_resolver = current_sm_resolver or detect_current_sm
         if settings_service is None:
             from interfaces_backend.services.settings_service import get_system_settings_service
@@ -70,6 +75,7 @@ class BuildManagementService:
 
     def list_env_settings(self) -> EnvBuildSettingsListResponse:
         selected_config_id = self._settings_service.get_settings().environment_build.env_config_id
+        current_platform = self._current_platform_resolver()
         current_sm = self._current_sm_resolver()
         active_jobs = {item.setting_id: item for item in self._build_jobs_service.list_active_jobs()}
         items: list[BuildSettingSummaryModel] = []
@@ -85,6 +91,8 @@ class BuildManagementService:
                         env_display_name=env_definition.display_name,
                         env_description=env_definition.description,
                         usage=env_definition.usage,
+                        supported_platforms=env_definition.supported_platforms,
+                        current_platform=current_platform,
                         supported_sms=env_definition.supported_sms,
                         current_sm=current_sm,
                         env_name=env_name,
@@ -92,9 +100,15 @@ class BuildManagementService:
                         active_job=active_jobs.get(f"{config.id}:{env_name}"),
                     )
                 )
-        return EnvBuildSettingsListResponse(selected_config_id=selected_config_id, current_sm=current_sm, items=items)
+        return EnvBuildSettingsListResponse(
+            selected_config_id=selected_config_id,
+            current_platform=current_platform,
+            current_sm=current_sm,
+            items=items,
+        )
 
     def list_shared_settings(self) -> SharedBuildSettingsListResponse:
+        current_platform = self._current_platform_resolver()
         current_sm = self._current_sm_resolver()
         active_jobs = {item.setting_id: item for item in self._build_jobs_service.list_active_jobs()}
         items: list[BuildSettingSummaryModel] = []
@@ -105,18 +119,21 @@ class BuildManagementService:
                     self._build_shared_summary(
                         package=definition.package,
                         variant=variant,
+                        supported_platforms=variant_definition.supported_platforms,
+                        current_platform=current_platform,
                         supported_sms=variant_definition.supported_sms,
                         current_sm=current_sm,
                         config_origin=ref.origin,
                         active_job=active_jobs.get(f"{definition.package}:{variant}"),
                     )
                 )
-        return SharedBuildSettingsListResponse(current_sm=current_sm, items=items)
+        return SharedBuildSettingsListResponse(current_platform=current_platform, current_sm=current_sm, items=items)
 
     def snapshot(self) -> BuildsStatusSnapshotModel:
         envs = self.list_env_settings()
         shared = self.list_shared_settings()
         return BuildsStatusSnapshotModel(
+            current_platform=envs.current_platform or shared.current_platform,
             current_sm=envs.current_sm or shared.current_sm,
             running_jobs=self._build_jobs_service.list_active_jobs(),
             envs=envs,
@@ -189,6 +206,8 @@ class BuildManagementService:
         env_display_name: str | None,
         env_description: str | None,
         usage: str,
+        supported_platforms: list[str],
+        current_platform: str | None,
         supported_sms: list[str],
         current_sm: str | None,
         env_name: str,
@@ -210,6 +229,9 @@ class BuildManagementService:
             display_name=env_display_name or config_display_name or env_name,
             description=env_description,
             usage=usage,  # type: ignore[arg-type]
+            supported_platforms=normalize_supported_platforms(supported_platforms),
+            current_platform=current_platform,
+            platform_supported=matches_supported_platforms(current_platform, supported_platforms),
             supported_sms=normalize_supported_sms(supported_sms),
             current_sm=current_sm,
             sm_supported=matches_supported_sms(current_sm, supported_sms),
@@ -232,6 +254,8 @@ class BuildManagementService:
         *,
         package: str,
         variant: str,
+        supported_platforms: list[str],
+        current_platform: str | None,
         supported_sms: list[str],
         current_sm: str | None,
         config_origin: str,
@@ -250,6 +274,9 @@ class BuildManagementService:
             setting_id=f"{package}:{variant}",
             display_name=package,
             description=variant,
+            supported_platforms=normalize_supported_platforms(supported_platforms),
+            current_platform=current_platform,
+            platform_supported=matches_supported_platforms(current_platform, supported_platforms),
             supported_sms=normalize_supported_sms(supported_sms),
             current_sm=current_sm,
             sm_supported=matches_supported_sms(current_sm, supported_sms),
