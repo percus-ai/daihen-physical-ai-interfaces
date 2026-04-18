@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createViewNode } from '$lib/recording/blueprint';
+import { normalizeBlueprintDocument, createViewNode } from '$lib/recording/blueprint';
 
 const loadBlueprintDraft = vi.fn();
 
@@ -29,9 +29,9 @@ describe('sessionBlueprintState', () => {
     const detail = {
       id: 'bp-1',
       name: 'Blueprint',
-      blueprint: createViewNode('camera', { topic: '/camera/front' })
+      blueprint: normalizeBlueprintDocument(createViewNode('camera', { topic: '/camera/front' }))
     };
-    const draft = createViewNode('joint_state', { topic: '/arm/joint_states' });
+    const draft = normalizeBlueprintDocument(createViewNode('joint_state', { topic: '/arm/joint_states' }));
     loadBlueprintDraft.mockReturnValue(draft);
 
     const { materializeSessionBlueprintState } = await import('./sessionBlueprintState');
@@ -53,9 +53,11 @@ describe('sessionBlueprintState', () => {
     const detail = {
       id: 'bp-1',
       name: 'Blueprint',
-      blueprint: createViewNode('camera', { topic: '/camera/front' })
+      blueprint: normalizeBlueprintDocument(createViewNode('camera', { topic: '/camera/front' }))
     };
-    loadBlueprintDraft.mockReturnValue(createViewNode('joint_state', { topic: '/arm/joint_states' }));
+    loadBlueprintDraft.mockReturnValue(
+      normalizeBlueprintDocument(createViewNode('joint_state', { topic: '/arm/joint_states' }))
+    );
 
     const { materializeSessionBlueprintState } = await import('./sessionBlueprintState');
     expect(

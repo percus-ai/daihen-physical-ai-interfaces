@@ -188,11 +188,13 @@ def _collect_view_types(node: dict) -> list[str]:
 
 def test_default_blueprint_contains_timeline_as_bottom_pane():
     blueprint = webui_api._default_blueprint()
-    assert blueprint["type"] == "split"
-    assert blueprint["direction"] == "column"
-    assert blueprint["children"][1]["type"] == "view"
-    assert blueprint["children"][1]["viewType"] == "timeline"
-    assert "timeline" in _collect_view_types(blueprint)
+    assert blueprint["canvasWidth"] == 2050
+    assert blueprint["canvasHeight"] == 900
+    assert blueprint["root"]["type"] == "split"
+    assert blueprint["root"]["direction"] == "column"
+    assert blueprint["root"]["children"][1]["type"] == "view"
+    assert blueprint["root"]["children"][1]["viewType"] == "timeline"
+    assert "timeline" in _collect_view_types(blueprint["root"])
 
 
 def test_webui_blueprints_resolve_updates_last_used_at(client, monkeypatch):

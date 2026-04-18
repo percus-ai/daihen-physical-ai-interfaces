@@ -1,6 +1,6 @@
 import { api } from '$lib/api/client';
 import { clearBlueprintDraft, type BlueprintSessionKind } from '$lib/blueprints/draftStorage';
-import type { BlueprintNode } from '$lib/recording/blueprint';
+import type { BlueprintDocument } from '$lib/recording/blueprint';
 
 export type WebuiBlueprintSummary = {
   id: string;
@@ -10,7 +10,7 @@ export type WebuiBlueprintSummary = {
 };
 
 export type WebuiBlueprintDetail = WebuiBlueprintSummary & {
-  blueprint: BlueprintNode;
+  blueprint: BlueprintDocument;
 };
 
 export type WebuiBlueprintResolveResponse = {
@@ -38,7 +38,7 @@ type BlueprintManagerOptions = {
   getSessionKind: () => BlueprintSessionKind | '';
   getActiveBlueprintId: () => string;
   getActiveBlueprintName: () => string;
-  getBlueprint: () => BlueprintNode;
+  getBlueprint: () => BlueprintDocument;
   setSavedBlueprints: (items: WebuiBlueprintSummary[]) => void;
   setBusy: (value: boolean) => void;
   setActionPending: (value: boolean) => void;

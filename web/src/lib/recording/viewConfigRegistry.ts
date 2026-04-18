@@ -73,7 +73,7 @@ export const viewConfigRegistry: ViewConfigDefinition[] = [
       },
       {
         key: 'showVelocity',
-        label: 'Show velocity',
+        label: 'Start with Velocity',
         type: 'boolean'
       },
       {
@@ -167,4 +167,3 @@ export const getTopicFieldOptions = (
   if (!isFieldSupported(field, source)) return [];
   return topics.filter((topic) => field.filter?.(topic) ?? true);
 };
-

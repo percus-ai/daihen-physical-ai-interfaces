@@ -1,4 +1,4 @@
-import type { BlueprintNode } from '$lib/recording/blueprint';
+import { normalizeBlueprintDocument, type BlueprintDocument } from '$lib/recording/blueprint';
 
 import { loadBlueprintDraft, type BlueprintSessionKind } from './draftStorage';
 import type { WebuiBlueprintDetail } from './blueprintManager';
@@ -6,7 +6,7 @@ import type { WebuiBlueprintDetail } from './blueprintManager';
 export type SessionBlueprintState = {
   id: string;
   name: string;
-  blueprint: BlueprintNode;
+  blueprint: BlueprintDocument;
 };
 
 export const getBlueprintSessionSignature = (
@@ -24,12 +24,12 @@ export const materializeSessionBlueprintState = (options: {
   sessionId: string;
 }): SessionBlueprintState => {
   const { detail, persistDraft, sessionKind, sessionId } = options;
-  let blueprint = detail.blueprint;
+  let blueprint = normalizeBlueprintDocument(detail.blueprint);
 
   if (persistDraft && sessionId) {
     const draft = loadBlueprintDraft(sessionKind, sessionId, detail.id);
     if (draft) {
-      blueprint = draft;
+      blueprint = normalizeBlueprintDocument(draft);
     }
   }
 

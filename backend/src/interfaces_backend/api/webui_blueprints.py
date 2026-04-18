@@ -21,6 +21,7 @@ from interfaces_backend.models.webui_blueprints import (
     WebuiBlueprintSessionResolveRequest,
     WebuiBlueprintSummary,
     WebuiBlueprintUpdateRequest,
+    validate_blueprint_payload,
 )
 from percus_ai.db import get_current_user_id, get_supabase_async_client
 
@@ -118,13 +119,15 @@ def _default_blueprint() -> dict[str, Any]:
         "viewType": "timeline",
         "config": {},
     }
-    return {
-        "id": _new_node_id(),
-        "type": "split",
-        "direction": "column",
-        "sizes": [0.78, 0.22],
-        "children": [upper, timeline_view],
-    }
+    return validate_blueprint_payload(
+        {
+            "id": _new_node_id(),
+            "type": "split",
+            "direction": "column",
+            "sizes": [0.78, 0.22],
+            "children": [upper, timeline_view],
+        }
+    )
 
 
 def _as_blueprint_summary(row: dict[str, Any]) -> WebuiBlueprintSummary:
@@ -147,12 +150,16 @@ def _as_blueprint_detail(row: dict[str, Any]) -> WebuiBlueprintDetail:
     blueprint = row.get("blueprint")
     if not isinstance(blueprint, dict):
         raise HTTPException(status_code=500, detail=f"Blueprint payload is invalid: {summary.id}")
+    try:
+        normalized_blueprint = validate_blueprint_payload(blueprint)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Blueprint payload is invalid: {summary.id}") from exc
     return WebuiBlueprintDetail(
         id=summary.id,
         name=summary.name,
         created_at=summary.created_at,
         updated_at=summary.updated_at,
-        blueprint=blueprint,
+        blueprint=normalized_blueprint,
     )
 
 

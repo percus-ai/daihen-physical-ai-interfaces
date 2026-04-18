@@ -10,6 +10,8 @@ SessionKind = Literal["recording", "teleop", "inference"]
 ResolveReason = Literal["binding", "last_used", "latest", "default_created"]
 
 _MAX_BLUEPRINT_DEPTH = 48
+_DEFAULT_BLUEPRINT_CANVAS_WIDTH = 2050
+_DEFAULT_BLUEPRINT_CANVAS_HEIGHT = 900
 
 # バリデーションが複雑なため、blueprintの型はAnyとしている
 def _validate_blueprint_node(node: Any, path: str = "root", depth: int = 0) -> None:
@@ -79,9 +81,40 @@ def _validate_blueprint_node(node: Any, path: str = "root", depth: int = 0) -> N
         raise ValueError(f"{path}.activeId must match one of tabs[].id")
 
 
+def _normalize_canvas_dimension(value: Any, *, field_name: str, fallback: int) -> int:
+    try:
+        normalized = int(round(float(value)))
+    except (TypeError, ValueError):
+        return fallback
+    if normalized < 320 or normalized > 4096:
+        raise ValueError(f"{field_name} must be between 320 and 4096")
+    return normalized
+
+
 def validate_blueprint_payload(blueprint: dict[str, Any]) -> dict[str, Any]:
+    root = blueprint.get("root")
+    if isinstance(root, dict):
+        _validate_blueprint_node(root)
+        return {
+            "canvasWidth": _normalize_canvas_dimension(
+                blueprint.get("canvasWidth"),
+                field_name="canvasWidth",
+                fallback=_DEFAULT_BLUEPRINT_CANVAS_WIDTH,
+            ),
+            "canvasHeight": _normalize_canvas_dimension(
+                blueprint.get("canvasHeight"),
+                field_name="canvasHeight",
+                fallback=_DEFAULT_BLUEPRINT_CANVAS_HEIGHT,
+            ),
+            "root": root,
+        }
+
     _validate_blueprint_node(blueprint)
-    return blueprint
+    return {
+        "canvasWidth": _DEFAULT_BLUEPRINT_CANVAS_WIDTH,
+        "canvasHeight": _DEFAULT_BLUEPRINT_CANVAS_HEIGHT,
+        "root": blueprint,
+    }
 
 
 def normalize_blueprint_name(name: str) -> str:

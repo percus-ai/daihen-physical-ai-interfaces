@@ -1,10 +1,10 @@
-import type { BlueprintNode } from '$lib/recording/blueprint';
+import { normalizeBlueprintDocument, type BlueprintDocument } from '$lib/recording/blueprint';
 
 export type BlueprintSessionKind = 'recording' | 'teleop' | 'inference';
 
 type BlueprintDraft = {
   blueprintId: string;
-  blueprint: BlueprintNode;
+  blueprint: BlueprintDocument;
   updatedAt: string;
 };
 
@@ -17,7 +17,7 @@ export const loadBlueprintDraft = (
   sessionKind: BlueprintSessionKind,
   sessionId: string,
   blueprintId: string
-): BlueprintNode | null => {
+): BlueprintDocument | null => {
   if (typeof localStorage === 'undefined' || !sessionId || !blueprintId) return null;
   const raw = localStorage.getItem(buildDraftKey(sessionKind, sessionId));
   if (!raw) return null;
@@ -25,7 +25,7 @@ export const loadBlueprintDraft = (
     const parsed = JSON.parse(raw) as BlueprintDraft;
     if (parsed.blueprintId !== blueprintId) return null;
     if (!parsed.blueprint || typeof parsed.blueprint !== 'object') return null;
-    return parsed.blueprint;
+    return normalizeBlueprintDocument(parsed.blueprint);
   } catch {
     return null;
   }
@@ -35,7 +35,7 @@ export const saveBlueprintDraft = (
   sessionKind: BlueprintSessionKind,
   sessionId: string,
   blueprintId: string,
-  blueprint: BlueprintNode
+  blueprint: BlueprintDocument
 ): void => {
   if (typeof localStorage === 'undefined' || !sessionId || !blueprintId) return;
   const draft: BlueprintDraft = {

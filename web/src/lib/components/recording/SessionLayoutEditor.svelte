@@ -22,9 +22,12 @@
   import {
     addTab,
     createDefaultBlueprint,
+    DEFAULT_BLUEPRINT_CANVAS_HEIGHT,
+    DEFAULT_BLUEPRINT_CANVAS_WIDTH,
     deleteNode,
     ensureValidSelection,
     findNode,
+    normalizeBlueprintDocument,
     removeTab,
     renameTab,
     updateSplitDirection,
@@ -34,7 +37,7 @@
     updateViewType,
     wrapInSplit,
     wrapInTabs,
-    type BlueprintNode
+    type BlueprintDocument
   } from '$lib/recording/blueprint';
   import {
     getTopicFieldOptions,
@@ -153,7 +156,7 @@
   let lastDatasetPlaybackSignature = '';
   let lastDatasetAutoplayNonce = 0;
 
-  let blueprint: BlueprintNode = $state(createDefaultBlueprint());
+  let blueprint: BlueprintDocument = $state(createDefaultBlueprint());
   let selectedId = $state('');
   let activeBlueprintId = $state('');
   let activeBlueprintName = $state('');
@@ -161,17 +164,12 @@
   let filledDefaults = $state(false);
   let editInspectorTab = $state<string>('blueprint');
   let inspectorInitialized = $state(false);
-  let editorShellEl = $state<HTMLDivElement | null>(null);
-  let editorToolbarEl = $state<HTMLDivElement | null>(null);
-  let editorContentEl = $state<HTMLDivElement | null>(null);
-  let editorRightPaneWidth = $state(420);
-  let editorViewScale = $state(1);
   let lastResolvedBlueprintSignature = '';
   let activeBlueprintResolveRequestId = 0;
 
   $effect(() => {
-    if (!selectedId && blueprint?.id) {
-      selectedId = blueprint.id;
+    if (!selectedId && blueprint?.root?.id) {
+      selectedId = blueprint.root.id;
     }
   });
 
@@ -186,10 +184,10 @@
     if (!datasetCameraKeys.length) return;
     // Blueprint can change after the dataset keys are loaded (e.g. workspace load),
     // so normalize on both key changes and blueprint changes.
-    const next = ensureDatasetCameraTopics(blueprint, datasetCameraKeys);
-    if (next === blueprint) return;
-    blueprint = next;
-    selectedId = ensureValidSelection(next, selectedId);
+    const nextRoot = ensureDatasetCameraTopics(blueprint.root, datasetCameraKeys);
+    if (nextRoot === blueprint.root) return;
+    blueprint = { ...blueprint, root: nextRoot };
+    selectedId = ensureValidSelection(nextRoot, selectedId);
   });
 
   $effect(() => {
@@ -197,10 +195,10 @@
     if (viewSource !== 'dataset') return;
     if (!datasetId) return;
     if (!datasetSignalKeys.length) return;
-    const next = ensureDatasetJointTopics(blueprint, datasetSignalKeys);
-    if (next === blueprint) return;
-    blueprint = next;
-    selectedId = ensureValidSelection(next, selectedId);
+    const nextRoot = ensureDatasetJointTopics(blueprint.root, datasetSignalKeys);
+    if (nextRoot === blueprint.root) return;
+    blueprint = { ...blueprint, root: nextRoot };
+    selectedId = ensureValidSelection(nextRoot, selectedId);
   });
 
   $effect(() => {
@@ -214,11 +212,11 @@
     inspectorInitialized = true;
   });
 
-  const applyBlueprintFromWorkspace = (detail: { id: string; name: string; blueprint: BlueprintNode }) => {
+  const applyBlueprintFromWorkspace = (detail: { id: string; name: string; blueprint: BlueprintDocument }) => {
     activeBlueprintId = detail.id;
     activeBlueprintName = detail.name;
-    blueprint = detail.blueprint;
-    selectedId = ensureValidSelection(blueprint, selectedId);
+    blueprint = normalizeBlueprintDocument(detail.blueprint);
+    selectedId = ensureValidSelection(blueprint.root, selectedId);
     filledDefaults = false;
   };
 
@@ -257,9 +255,12 @@
   $effect(() => {
     if (filledDefaults) return;
     if ((viewSource === 'ros' || viewSource === 'dataset') && topics.length === 0) return;
-    blueprint = fillDefaultConfig(blueprint, topics, viewSource);
+    blueprint = {
+      ...blueprint,
+      root: fillDefaultConfig(blueprint.root, topics, viewSource)
+    };
     filledDefaults = true;
-    selectedId = ensureValidSelection(blueprint, selectedId);
+    selectedId = ensureValidSelection(blueprint.root, selectedId);
   });
 
 	  $effect(() => {
@@ -297,7 +298,7 @@
     }
   });
 
-  const selectedNode = $derived(selectedId ? findNode(blueprint, selectedId) : null);
+  const selectedNode = $derived(selectedId ? findNode(blueprint.root, selectedId) : null);
   const selectedViewNode = $derived(selectedNode?.type === 'view' ? selectedNode : null);
   const selectedSplitNode = $derived(selectedNode?.type === 'split' ? selectedNode : null);
   const selectedTabsNode = $derived(selectedNode?.type === 'tabs' ? selectedNode : null);
@@ -307,53 +308,61 @@
   };
 
   const handleResize = (id: string, sizes: [number, number]) => {
-    blueprint = updateSplitSizes(blueprint, id, sizes);
+    blueprint = { ...blueprint, root: updateSplitSizes(blueprint.root, id, sizes) };
   };
 
   const handleTabChange = (id: string, activeId: string) => {
-    blueprint = updateTabsActive(blueprint, id, activeId);
+    blueprint = { ...blueprint, root: updateTabsActive(blueprint.root, id, activeId) };
   };
 
   const handleSplit = (direction: 'row' | 'column') => {
     if (!selectedNode) return;
-    blueprint = wrapInSplit(blueprint, selectedNode.id, direction);
+    blueprint = { ...blueprint, root: wrapInSplit(blueprint.root, selectedNode.id, direction) };
   };
 
   const handleTabs = () => {
     if (!selectedNode) return;
-    blueprint = wrapInTabs(blueprint, selectedNode.id);
+    blueprint = { ...blueprint, root: wrapInTabs(blueprint.root, selectedNode.id) };
   };
 
   const handleViewTypeChange = (nextType: string) => {
     if (!selectedViewNode) return;
     const definition = getViewDefinition(nextType);
     const defaults = definition?.defaultConfig?.(topics, viewSource) ?? {};
-    blueprint = updateViewType(blueprint, selectedViewNode.id, nextType);
-    blueprint = updateViewConfig(blueprint, selectedViewNode.id, defaults);
+    const nextRoot = updateViewConfig(
+      updateViewType(blueprint.root, selectedViewNode.id, nextType),
+      selectedViewNode.id,
+      defaults
+    );
+    blueprint = { ...blueprint, root: nextRoot };
   };
 
   const handleConfigChange = (key: string, value: unknown) => {
     if (!selectedViewNode) return;
-    blueprint = updateViewConfig(blueprint, selectedViewNode.id, {
-      ...selectedViewNode.config,
-      [key]: value
-    });
+    blueprint = {
+      ...blueprint,
+      root: updateViewConfig(blueprint.root, selectedViewNode.id, {
+        ...selectedViewNode.config,
+        [key]: value
+      })
+    };
   };
 
   const handleAddTab = () => {
     if (!selectedTabsNode) return;
-    blueprint = addTab(blueprint, selectedTabsNode.id);
+    blueprint = { ...blueprint, root: addTab(blueprint.root, selectedTabsNode.id) };
   };
 
   const handleRenameTab = (tabId: string, title: string) => {
     if (!selectedTabsNode) return;
-    blueprint = renameTab(blueprint, selectedTabsNode.id, tabId, title);
+    blueprint = { ...blueprint, root: renameTab(blueprint.root, selectedTabsNode.id, tabId, title) };
   };
 
   const handleRemoveTab = (tabId: string) => {
     if (!selectedTabsNode) return;
-    blueprint = removeTab(blueprint, selectedTabsNode.id, tabId);
-    selectedId = ensureValidSelection(blueprint, selectedId);
+    const nextRoot = removeTab(blueprint.root, selectedTabsNode.id, tabId);
+    blueprint = { ...blueprint, root: nextRoot };
+    selectedId = ensureValidSelection(nextRoot, selectedId);
   };
 
   const handleDeleteSelected = (mode: 'view' | 'split' | 'tabs') => {
@@ -365,67 +374,42 @@
           ? 'この分割を解除しますか？（片側のみ残ります）'
           : 'タブセットを解除しますか？（アクティブなタブのみ残ります）';
     if (!confirm(message)) return;
-    blueprint = deleteNode(blueprint, selectedNode.id);
-    selectedId = ensureValidSelection(blueprint, selectedId);
+    const nextRoot = deleteNode(blueprint.root, selectedNode.id);
+    blueprint = { ...blueprint, root: nextRoot };
+    selectedId = ensureValidSelection(nextRoot, selectedId);
   };
 
-  const recomputeEditorPaneWidth = () => {
-    if (typeof window === 'undefined') return;
-    if (!editorShellEl || !editorToolbarEl || !editorContentEl) return;
-    if (!window.matchMedia('(min-width: 1024px)').matches) {
-      editorRightPaneWidth = 420;
-      editorViewScale = 1;
-      return;
-    }
-
-    const shellWidth = editorShellEl.clientWidth;
-    const shellHeight = editorShellEl.clientHeight;
-    const toolbarHeight = editorToolbarEl.getBoundingClientRect().height;
-    const rowGap = Number.parseFloat(window.getComputedStyle(editorShellEl).rowGap || '0') || 0;
-    const columnGap = Number.parseFloat(window.getComputedStyle(editorContentEl).columnGap || '0') || 0;
-    const contentWidth = editorContentEl.clientWidth;
-
-    if (shellWidth <= 0 || shellHeight <= 0 || contentWidth <= 0) return;
-
-    const viewAspectRatio = shellWidth / shellHeight;
-    const editableViewHeight = Math.max(shellHeight - toolbarHeight - rowGap, 1);
-    const targetViewWidth = viewAspectRatio * editableViewHeight;
-    const computedRightWidth = contentWidth - columnGap - targetViewWidth;
-    // Search tab needs extra width; keep the right pane usable in the modal.
-    const nextRightWidth = Math.max(420, computedRightWidth);
-    const actualLeftWidth = Math.max(contentWidth - columnGap - nextRightWidth, 1);
-    editorRightPaneWidth = nextRightWidth;
-    editorViewScale = Math.min(actualLeftWidth / shellWidth, editableViewHeight / shellHeight);
+  const updateCanvasWidth = (value: string) => {
+    const next = Math.max(320, Math.min(4096, Math.round(Number(value) || DEFAULT_BLUEPRINT_CANVAS_WIDTH)));
+    blueprint = { ...blueprint, canvasWidth: next };
   };
 
-  $effect(() => {
-    if (typeof window === 'undefined' || !editMode) return;
-    if (!editorShellEl || !editorToolbarEl || !editorContentEl) return;
+  const updateCanvasHeight = (value: string) => {
+    const next = Math.max(320, Math.min(4096, Math.round(Number(value) || DEFAULT_BLUEPRINT_CANVAS_HEIGHT)));
+    blueprint = { ...blueprint, canvasHeight: next };
+  };
 
-    const observer = new ResizeObserver(() => {
-      recomputeEditorPaneWidth();
-    });
-    observer.observe(editorShellEl);
-    observer.observe(editorToolbarEl);
-    observer.observe(editorContentEl);
-    const onResize = () => {
-      recomputeEditorPaneWidth();
+  const resetCanvasSize = () => {
+    blueprint = {
+      ...blueprint,
+      canvasWidth: DEFAULT_BLUEPRINT_CANVAS_WIDTH,
+      canvasHeight: DEFAULT_BLUEPRINT_CANVAS_HEIGHT
     };
-    window.addEventListener('resize', onResize);
-    recomputeEditorPaneWidth();
+  };
 
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', onResize);
-    };
+  const canvasRatioLabel = $derived.by(() => {
+    const width = Math.max(1, Number(blueprint.canvasWidth) || DEFAULT_BLUEPRINT_CANVAS_WIDTH);
+    const height = Math.max(1, Number(blueprint.canvasHeight) || DEFAULT_BLUEPRINT_CANVAS_HEIGHT);
+    return `${(width / height).toFixed(2)}:1`;
   });
+
 </script>
 
 <section class={embedded ? 'grid h-full min-h-0 gap-6' : 'grid gap-6'}>
   {#if editMode}
     <div class={embedded ? 'card p-4 h-full min-h-0' : 'card p-4 min-h-[640px] lg:h-[var(--app-shell-height)]'}>
-      <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4" bind:this={editorShellEl}>
-        <div bind:this={editorToolbarEl}>
+      <div class="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4">
+        <div>
           <BlueprintWorkspace
             sessionId={blueprintSessionId}
             sessionKind={blueprintSessionKind}
@@ -439,26 +423,97 @@
         </div>
 
         <div
-          class="min-h-0 grid gap-4 lg:grid-cols-[minmax(0,1fr)_var(--editor-right-pane-width)]"
-          style={`--editor-right-pane-width:${Math.round(editorRightPaneWidth)}px;`}
-          bind:this={editorContentEl}
+          class="min-h-0 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(26rem,26rem)]"
         >
 		          <div class="min-h-0 nested-block p-2">
-			            <LayoutNode
-			              node={blueprint}
-			              selectedId={selectedId}
-			              editMode={editMode}
-			              viewScale={editorViewScale}
-			              onSelect={updateSelection}
-			              onResize={handleResize}
-		              onTabChange={handleTabChange}
-            />
+                <div class="session-layout-stage">
+                  <div
+                    class="session-layout-canvas"
+                    style={`--session-canvas-width:${blueprint.canvasWidth}px;--session-canvas-height:${blueprint.canvasHeight}px;`}
+                  >
+                    <div class="session-layout-root">
+			                  <LayoutNode
+			                    node={blueprint.root}
+			                    selectedId={selectedId}
+			                    editMode={editMode}
+			                    onSelect={updateSelection}
+			                    onResize={handleResize}
+		                    onTabChange={handleTabChange}
+                      />
+                    </div>
+                  </div>
+                </div>
           </div>
 
           <aside class="flex min-h-0 flex-col overflow-hidden nested-block p-3">
             <InspectorTabs bind:value={editInspectorTab} extraTabs={effectiveInspectorExtraTabs}>
               {#snippet blueprintPanel()}
-                <BlueprintTree node={blueprint} selectedId={selectedId} onSelect={updateSelection} />
+                <div class="space-y-4">
+                  <BlueprintTree node={blueprint.root} selectedId={selectedId} onSelect={updateSelection} />
+                  <div class="divider"></div>
+                  <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                      <p class="label">Canvas</p>
+                      <Button.Root class="btn-ghost px-3 py-1.5 text-xs" type="button" onclick={resetCanvasSize}>
+                        リセット
+                      </Button.Root>
+                    </div>
+                    <div class="grid gap-3 sm:grid-cols-2">
+                      <label class="text-xs font-semibold text-slate-600">
+                        <span>Width</span>
+                        <input
+                          class="input mt-2"
+                          type="number"
+                          min="320"
+                          max="4096"
+                          value={blueprint.canvasWidth}
+                          onchange={(event) => updateCanvasWidth((event.target as HTMLInputElement).value)}
+                        />
+                      </label>
+                      <label class="text-xs font-semibold text-slate-600">
+                        <span>Height</span>
+                        <input
+                          class="input mt-2"
+                          type="number"
+                          min="320"
+                          max="4096"
+                          value={blueprint.canvasHeight}
+                          onchange={(event) => updateCanvasHeight((event.target as HTMLInputElement).value)}
+                        />
+                      </label>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <Button.Root
+                        class="btn-ghost px-3 py-1.5 text-xs"
+                        type="button"
+                        onclick={() => {
+                          blueprint = { ...blueprint, canvasWidth: 2050, canvasHeight: 900 };
+                        }}
+                      >
+                        2050 x 900
+                      </Button.Root>
+                      <Button.Root
+                        class="btn-ghost px-3 py-1.5 text-xs"
+                        type="button"
+                        onclick={() => {
+                          blueprint = { ...blueprint, canvasWidth: 1600, canvasHeight: 900 };
+                        }}
+                      >
+                        1600 x 900
+                      </Button.Root>
+                      <Button.Root
+                        class="btn-ghost px-3 py-1.5 text-xs"
+                        type="button"
+                        onclick={() => {
+                          blueprint = { ...blueprint, canvasWidth: 1900, canvasHeight: 900 };
+                        }}
+                      >
+                        1900 x 900
+                      </Button.Root>
+                    </div>
+                    <p class="text-[11px] text-slate-500">ratio: {canvasRatioLabel}</p>
+                  </div>
+                </div>
               {/snippet}
 
               {#snippet selectionPanel()}
@@ -564,7 +619,10 @@
                         onchange={(event) => {
                           const nextDirection = (event.target as HTMLSelectElement).value as 'row' | 'column';
                           if (selectedSplitNode) {
-                            blueprint = updateSplitDirection(blueprint, selectedSplitNode.id, nextDirection);
+                            blueprint = {
+                              ...blueprint,
+                              root: updateSplitDirection(blueprint.root, selectedSplitNode.id, nextDirection)
+                            };
                           }
                         }}
                       >
@@ -623,15 +681,51 @@
     </div>
   {:else}
 		    <div class={embedded ? 'card p-4 h-full min-h-0' : 'card p-4 min-h-[640px] lg:h-[var(--app-shell-height)]'}>
-			      <LayoutNode
-			        node={blueprint}
-			        selectedId={selectedId}
-			        editMode={editMode}
-			        viewScale={1}
-			        onSelect={updateSelection}
-			        onResize={handleResize}
-		        onTabChange={handleTabChange}
-	      />
+          <div class="session-layout-stage">
+            <div
+              class="session-layout-canvas"
+              style={`--session-canvas-width:${blueprint.canvasWidth}px;--session-canvas-height:${blueprint.canvasHeight}px;`}
+            >
+              <div class="session-layout-root">
+			        <LayoutNode
+			          node={blueprint.root}
+			          selectedId={selectedId}
+			          editMode={editMode}
+			          onSelect={updateSelection}
+			          onResize={handleResize}
+		          onTabChange={handleTabChange}
+	        />
+              </div>
+            </div>
+          </div>
 	    </div>
   {/if}
 </section>
+
+<style>
+  .session-layout-stage {
+    container-type: size;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+  }
+
+  .session-layout-canvas {
+    --session-layout-scale:
+      min(calc(100cqw / var(--session-canvas-width)), calc(100cqh / var(--session-canvas-height)));
+    width: calc(var(--session-canvas-width) * var(--session-layout-scale));
+    height: calc(var(--session-canvas-height) * var(--session-layout-scale));
+    max-width: 100%;
+    max-height: 100%;
+    overflow: hidden;
+  }
+
+  .session-layout-root {
+    width: var(--session-canvas-width);
+    height: var(--session-canvas-height);
+    transform: scale(var(--session-layout-scale));
+    transform-origin: top left;
+  }
+ </style>

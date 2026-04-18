@@ -12,7 +12,7 @@
     type WebuiBlueprintSummary
   } from '$lib/blueprints/blueprintManager';
   import { getBlueprintSessionSignature, materializeSessionBlueprintState } from '$lib/blueprints/sessionBlueprintState';
-  import type { BlueprintNode } from '$lib/recording/blueprint';
+  import { normalizeBlueprintDocument, type BlueprintDocument } from '$lib/recording/blueprint';
 
   let {
     sessionId = '',
@@ -26,12 +26,12 @@
   }: {
     sessionId?: string;
     sessionKind?: BlueprintSessionKind | '';
-    blueprint: BlueprintNode;
+    blueprint: BlueprintDocument;
     currentBlueprintId?: string;
     currentBlueprintName?: string;
     persistDraft?: boolean;
     disabled?: boolean;
-    onApplyBlueprintDetail?: (detail: { id: string; name: string; blueprint: BlueprintNode }) => void;
+    onApplyBlueprintDetail?: (detail: { id: string; name: string; blueprint: BlueprintDocument }) => void;
   } = $props();
 
   let activeBlueprintId = $state('');
@@ -63,7 +63,7 @@
       : {
           id: detail.id,
           name: detail.name,
-          blueprint: detail.blueprint
+          blueprint: normalizeBlueprintDocument(detail.blueprint)
         };
 
     activeBlueprintId = nextState.id;

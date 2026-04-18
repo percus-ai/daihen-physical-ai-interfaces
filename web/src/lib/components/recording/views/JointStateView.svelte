@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getContext } from 'svelte';
+  import { getContext, untrack } from 'svelte';
   import { AxisX, AxisY, GridY, Line, Plot, RuleX } from 'svelteplot';
   import { api } from '$lib/api/client';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
@@ -41,6 +41,7 @@
     size: number;
   };
   type JointSeries = { name: string; color: string; data: SeriesPoint[] };
+  type ChartMode = 'position' | 'velocity';
   type PendingSample = {
     names: string[];
     positions: number[];
@@ -74,6 +75,7 @@
   let datasetTimestamps = $state<number[]>([]);
   let datasetTimestampsSorted = $state(true);
   let datasetSeriesFps = $state<number | null>(null);
+  let chartMode = $state<ChartMode>('position');
   let playbackState = $state<DatasetPlaybackState>({
     playing: false,
     currentTime: 0,
@@ -88,8 +90,17 @@
   );
   const renderIntervalMs = $derived(1000 / normalizedRenderFps);
   const sourceText = $derived(isDataset ? label || topic || 'dataset series' : topic || 'no topic');
-  const positionPlotHeight = $derived(showVelocity ? 176 : 248);
-  const velocityPlotHeight = $derived(176);
+  const plotHeight = $derived(174);
+  const activeSeries = $derived(chartMode === 'velocity' ? velSeries : posSeries);
+  const activeModeLabel = $derived(chartMode === 'velocity' ? 'Velocity' : 'Position');
+
+  $effect(() => {
+    const nextMode: ChartMode = showVelocity ? 'velocity' : 'position';
+    untrack(() => {
+      if (chartMode === nextMode) return;
+      chartMode = nextMode;
+    });
+  });
 
   const buildRing = (names: string[]): RingSeries[] =>
     names.map((name, idx) => ({
@@ -444,60 +455,64 @@
   </div>
   <div class="flex min-h-0 flex-1 flex-col nested-block p-3">
     {#if posSeries.length}
-      <div class="flex flex-wrap gap-2 text-[10px] text-slate-500">
-        {#each posSeries as series}
-          <span class="flex items-center gap-1">
-            <span class="h-2 w-2 rounded-full" style={`background:${series.color}`}></span>
-            {series.name}
-          </span>
-        {/each}
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap gap-2 text-[10px] text-slate-500">
+          {#each activeSeries as series}
+            <span class="flex items-center gap-1">
+              <span class="h-2 w-2 rounded-full" style={`background:${series.color}`}></span>
+              {series.name}
+            </span>
+          {/each}
+        </div>
+        <div class="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+          <button
+            class={`rounded-md px-2 py-1 transition ${
+              chartMode === 'position' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+            }`}
+            type="button"
+            onclick={() => {
+              chartMode = 'position';
+            }}
+          >
+            Position
+          </button>
+          <button
+            class={`rounded-md px-2 py-1 transition ${
+              chartMode === 'velocity' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+            }`}
+            type="button"
+            onclick={() => {
+              chartMode = 'velocity';
+            }}
+          >
+            Velocity
+          </button>
+        </div>
       </div>
-      <div class="mt-2 flex min-h-0 flex-1 flex-col gap-3">
-        <div class="flex min-h-0 flex-1 flex-col">
-          <div class="text-[10px] uppercase tracking-widest text-slate-400">Position</div>
-          <div class="min-h-0 flex-1">
-            <div class="h-full w-full overflow-hidden">
-              <Plot height={positionPlotHeight} grid>
-                <GridY />
-                <AxisX tickCount={4} />
-                <AxisY tickCount={4} />
-                {#each posSeries as series}
-                  <Line data={series.data} x="i" y="value" stroke={series.color} strokeWidth={2} />
-                {/each}
-                {#if playheadData.length}
-                  <RuleX data={playheadData} x="i" stroke="#0ea5e9" strokeWidth={2} strokeOpacity={0.9} />
-                {/if}
-              </Plot>
-            </div>
+      <div class="mt-2 flex min-h-0 flex-1 flex-col">
+        <div class="text-[10px] uppercase tracking-widest text-slate-400">{activeModeLabel}</div>
+        <div class="min-h-0 flex-1">
+          <div class="h-full w-full overflow-hidden">
+            <Plot height={plotHeight} grid>
+              <GridY />
+              <AxisX tickCount={4} />
+              <AxisY tickCount={4} />
+              {#each activeSeries as series}
+                <Line
+                  data={series.data}
+                  x="i"
+                  y="value"
+                  stroke={series.color}
+                  strokeWidth={chartMode === 'velocity' ? 1.5 : 2}
+                  strokeOpacity={chartMode === 'velocity' ? 0.7 : 1}
+                />
+              {/each}
+              {#if playheadData.length}
+                <RuleX data={playheadData} x="i" stroke="#0ea5e9" strokeWidth={2} strokeOpacity={0.9} />
+              {/if}
+            </Plot>
           </div>
         </div>
-        {#if showVelocity}
-          <div class="flex min-h-0 flex-1 flex-col">
-            <div class="text-[10px] uppercase tracking-widest text-slate-400">Velocity</div>
-            <div class="min-h-0 flex-1">
-              <div class="h-full w-full overflow-hidden">
-                <Plot height={velocityPlotHeight} grid>
-                  <GridY />
-                  <AxisX tickCount={4} />
-                  <AxisY tickCount={4} />
-                  {#each velSeries as series}
-                    <Line
-                      data={series.data}
-                      x="i"
-                      y="value"
-                      stroke={series.color}
-                      strokeWidth={1.5}
-                      strokeOpacity={0.7}
-                    />
-                  {/each}
-                  {#if playheadData.length}
-                    <RuleX data={playheadData} x="i" stroke="#0ea5e9" strokeWidth={2} strokeOpacity={0.9} />
-                  {/if}
-                </Plot>
-              </div>
-            </div>
-          </div>
-        {/if}
       </div>
     {:else}
       <div class="flex h-full min-h-[160px] items-center justify-center text-xs text-slate-400">

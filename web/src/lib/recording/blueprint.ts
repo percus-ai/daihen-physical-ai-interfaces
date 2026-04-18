@@ -27,8 +27,24 @@ export type TabsNode = {
 };
 
 export type BlueprintNode = ViewNode | SplitNode | TabsNode;
+export type BlueprintDocument = {
+  canvasWidth: number;
+  canvasHeight: number;
+  root: BlueprintNode;
+};
+
+export const DEFAULT_BLUEPRINT_CANVAS_WIDTH = 2050;
+export const DEFAULT_BLUEPRINT_CANVAS_HEIGHT = 900;
 
 const createId = () => Math.random().toString(36).slice(2, 10);
+const sanitizeCanvasDimension = (value: unknown, fallback: number) => {
+  const next = Math.max(320, Math.min(4096, Math.round(Number(value) || 0)));
+  return Number.isFinite(next) ? next : fallback;
+};
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+const isBlueprintNode = (value: unknown): value is BlueprintNode =>
+  isRecord(value) && typeof value.id === 'string' && typeof value.type === 'string';
 
 export const createViewNode = (viewType = 'placeholder', config: Record<string, unknown> = {}): ViewNode => ({
   id: createId(),
@@ -291,7 +307,7 @@ export const ensureValidSelection = (node: BlueprintNode, selectedId: string | n
   return node.id;
 };
 
-export const createDefaultBlueprint = (): BlueprintNode =>
+export const createDefaultBlueprintRoot = (): BlueprintNode =>
   createSplitNode(
     'column',
     createSplitNode(
@@ -313,3 +329,29 @@ export const createDefaultBlueprint = (): BlueprintNode =>
     createViewNode('timeline', {}),
     [0.78, 0.22]
   );
+
+export const createDefaultBlueprint = (): BlueprintDocument => ({
+  canvasWidth: DEFAULT_BLUEPRINT_CANVAS_WIDTH,
+  canvasHeight: DEFAULT_BLUEPRINT_CANVAS_HEIGHT,
+  root: createDefaultBlueprintRoot()
+});
+
+export const normalizeBlueprintDocument = (value: unknown): BlueprintDocument => {
+  if (isRecord(value) && isBlueprintNode(value.root)) {
+    return {
+      canvasWidth: sanitizeCanvasDimension(value.canvasWidth, DEFAULT_BLUEPRINT_CANVAS_WIDTH),
+      canvasHeight: sanitizeCanvasDimension(value.canvasHeight, DEFAULT_BLUEPRINT_CANVAS_HEIGHT),
+      root: value.root
+    };
+  }
+
+  if (isBlueprintNode(value)) {
+    return {
+      canvasWidth: DEFAULT_BLUEPRINT_CANVAS_WIDTH,
+      canvasHeight: DEFAULT_BLUEPRINT_CANVAS_HEIGHT,
+      root: value
+    };
+  }
+
+  return createDefaultBlueprint();
+};
