@@ -301,59 +301,77 @@ describe('tabSessionClient', () => {
     expect(realtimeApi.putTabSessionState).toHaveBeenCalledTimes(1);
   });
 
-  it('uses keepalive fetch for pagehide close path', async () => {
+  it('does not send network requests on pagehide', async () => {
     sessionStorage.setItem('percus.realtime.tab_session_id', 'tab-pagehide');
     sessionStorage.setItem('percus.realtime.tab_session_revision', '1');
-    realtimeApi.putTabSessionState.mockResolvedValueOnce({ revision: 1 });
-    const fetchMock = vi
-      .mocked(fetch)
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ revision: 2 }),
-        text: async () => ''
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 204,
-        json: async () => ({}),
-        text: async () => ''
-      } as Response);
 
     const { getTabRealtimeClient } = await import('./tabSessionClient');
     const client = getTabRealtimeClient() as unknown as {
-      registerContributor: (input: {
-        contributorId?: string;
-        subscriptions: Array<{
-          subscription_id: string;
-          kind: 'profiles.active';
-          params: Record<string, never>;
-        }>;
-      }) => unknown;
       syncInFlight?: Promise<void> | null;
     };
-
-    client.registerContributor({
-      contributorId: 'profiles',
-      subscriptions: [
-        {
-          subscription_id: 'profiles.active',
-          kind: 'profiles.active',
-          params: {}
-        }
-      ]
-    });
-    await flushClient(client);
 
     (window as unknown as { dispatch: (type: string) => void }).dispatch('pagehide');
     await flushClient(client);
 
-    expect(realtimeApi.putTabSessionState).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT', keepalive: true });
-    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'DELETE', keepalive: true });
+    expect(realtimeApi.putTabSessionState).not.toHaveBeenCalled();
+    expect(realtimeApi.deleteTabSession).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
     expect(sessionStorage.getItem('percus.realtime.tab_session_id')).toBeNull();
     expect(sessionStorage.getItem('percus.realtime.tab_session_revision')).toBeNull();
+  });
+
+  it('recreates tab session after stream reconnect finds missing server session', async () => {
+    vi.useFakeTimers();
+    try {
+      (window as unknown as { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout }).setTimeout = setTimeout;
+      (window as unknown as { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout }).clearTimeout = clearTimeout;
+      realtimeApi.putTabSessionState
+        .mockResolvedValueOnce({ revision: 1 })
+        .mockResolvedValueOnce({ revision: 1 });
+      realtimeApi.tabSessionState.mockRejectedValueOnce({ status: 404 });
+
+      const { getTabRealtimeClient } = await import('./tabSessionClient');
+      const client = getTabRealtimeClient() as unknown as {
+        registerContributor: (input: {
+          contributorId?: string;
+          subscriptions: Array<{
+            subscription_id: string;
+            kind: 'profiles.active';
+            params: Record<string, never>;
+          }>;
+        }) => unknown;
+        tabSessionId?: string;
+        syncInFlight?: Promise<void> | null;
+      };
+
+      client.registerContributor({
+        contributorId: 'profiles',
+        subscriptions: [
+          {
+            subscription_id: 'profiles.active',
+            kind: 'profiles.active',
+            params: {}
+          }
+        ]
+      });
+      await flushClient(client);
+
+      const firstSource = FakeEventSource.instances[0];
+      const firstTabSessionId = client.tabSessionId;
+
+      firstSource?.onerror?.();
+      await vi.advanceTimersByTimeAsync(1000);
+      await flushClient(client);
+
+      expect(firstSource?.readyState).toBe(FakeEventSource.CLOSED);
+      expect(realtimeApi.tabSessionState).toHaveBeenCalledWith(firstTabSessionId);
+      expect(client.tabSessionId).toBeTruthy();
+      expect(client.tabSessionId).not.toBe(firstTabSessionId);
+      expect(realtimeApi.putTabSessionState).toHaveBeenCalledTimes(2);
+      expect(FakeEventSource.instances.at(-1)?.url).toContain(client.tabSessionId ?? '');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('resets session identity when another tab announces the same tab_session_id', async () => {

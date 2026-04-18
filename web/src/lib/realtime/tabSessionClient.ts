@@ -161,8 +161,8 @@ class TabRealtimeClient {
   private source: EventSource | null = null;
   private syncInFlight: Promise<void> | null = null;
   private syncQueued = false;
-  private syncKeepaliveRequested = false;
   private deleteAfterSyncRequested = false;
+  private verifySessionRequested = false;
   private streamReconnectTimer: number | null = null;
   private disposed = false;
   private lastHandledStreamSeq = 0;
@@ -274,8 +274,7 @@ class TabRealtimeClient {
 
   private readonly handleOnline = () => {
     this.debug('network.online');
-    this.scheduleSync('network.online');
-    this.ensureStream();
+    this.scheduleSync('network.online', { verifySession: true });
   };
 
   private readonly handlePageHide = () => {
@@ -286,8 +285,11 @@ class TabRealtimeClient {
     this.shouldPersistSessionRecord = false;
     this.clearStoredSessionRecord();
     this.closeStream();
+    this.clearStreamReconnectTimer();
+    this.pendingSyncReasons = [];
+    this.syncQueued = false;
+    this.deleteAfterSyncRequested = false;
     this.debug('lifecycle.pagehide', { lifecycle: this.lifecycle });
-    this.scheduleSync('lifecycle.pagehide', { keepalive: true, deleteAfterSync: true });
   };
 
   private composeState(): ComposedState {
@@ -375,23 +377,27 @@ class TabRealtimeClient {
 
   private scheduleSync(
     reason: string,
-    options: { keepalive?: boolean; deleteAfterSync?: boolean } = {}
+    options: { deleteAfterSync?: boolean; verifySession?: boolean } = {}
   ) {
     if (this.disposed) return;
-    this.pendingSyncReasons.push(reason);
-    if (options.keepalive) {
-      this.syncKeepaliveRequested = true;
+    if (this.lifecycle.visibility === 'closing' && this.lifecycle.reason === 'pagehide') {
+      this.debug('sync.skip-pagehide', { reason });
+      return;
     }
+    this.pendingSyncReasons.push(reason);
     if (options.deleteAfterSync) {
       this.deleteAfterSyncRequested = true;
+    }
+    if (options.verifySession) {
+      this.verifySessionRequested = true;
     }
     this.debug('sync.schedule', {
       reason,
       queuedReasons: [...this.pendingSyncReasons],
       inFlight: Boolean(this.syncInFlight),
       syncQueued: this.syncQueued,
-      keepaliveRequested: this.syncKeepaliveRequested,
       deleteAfterSyncRequested: this.deleteAfterSyncRequested,
+      verifySessionRequested: this.verifySessionRequested,
       appliedRevision: this.appliedRevision,
       appliedStateKey: this.shortHash(this.appliedStateKey),
     });
@@ -412,17 +418,17 @@ class TabRealtimeClient {
       });
   }
 
-  private async syncState(options: { keepalive?: boolean; deleteAfterSync?: boolean } = {}) {
-    const keepaliveRequested = options.keepalive ?? this.syncKeepaliveRequested;
+  private async syncState(options: { deleteAfterSync?: boolean; verifySession?: boolean } = {}) {
     const deleteAfterSync = options.deleteAfterSync ?? this.deleteAfterSyncRequested;
+    let verifySession = options.verifySession ?? this.verifySessionRequested;
     const reasons = [...this.pendingSyncReasons];
     this.pendingSyncReasons = [];
-    this.syncKeepaliveRequested = false;
     this.deleteAfterSyncRequested = false;
+    this.verifySessionRequested = false;
     this.debug('sync.start', {
       reasons,
-      keepaliveRequested,
       deleteAfterSync,
+      verifySession,
       appliedRevision: this.appliedRevision,
       appliedStateKey: this.shortHash(this.appliedStateKey),
     });
@@ -437,7 +443,21 @@ class TabRealtimeClient {
         desiredStateKey: this.shortHash(desired.stateKey),
         subscriptionCount: desired.state.subscriptions.length,
       });
+      const syncTabSessionId = this.tabSessionId;
       if (desired.stateKey === this.appliedStateKey) {
+        if (verifySession) {
+          const verification = await this.verifySession(syncTabSessionId, reasons, attempts + 1);
+          verifySession = false;
+          if (verification === 'stale') {
+            continue;
+          }
+          if (verification === 'missing') {
+            continue;
+          }
+          if (verification === 'unauthorized' || verification === 'failed') {
+            return;
+          }
+        }
         this.debug('sync.skip-applied-match', {
           reasons,
           deleteAfterSync,
@@ -445,13 +465,12 @@ class TabRealtimeClient {
           appliedStateKey: this.shortHash(this.appliedStateKey),
         });
         if (deleteAfterSync) {
-          await this.deleteTabSession(this.tabSessionId, { keepalive: keepaliveRequested });
+          await this.deleteTabSession(this.tabSessionId);
         }
         this.ensureStream();
         return;
       }
 
-      const syncTabSessionId = this.tabSessionId;
       const revision = this.appliedRevision + 1;
       const request = this.buildRequest(desired, revision);
       this.inFlightState = { revision, composed: desired };
@@ -461,14 +480,11 @@ class TabRealtimeClient {
         tabSessionId: syncTabSessionId,
         requestedRevision: revision,
         desiredStateKey: this.shortHash(desired.stateKey),
-        keepaliveRequested,
         deleteAfterSync,
       });
 
       try {
-        const result = await this.putTabSessionState(syncTabSessionId, request, {
-          keepalive: keepaliveRequested
-        });
+        const result = await this.putTabSessionState(syncTabSessionId, request);
         this.inFlightState = null;
         this.debug('sync.put.success', {
           attempt: attempts + 1,
@@ -489,7 +505,7 @@ class TabRealtimeClient {
         }
         this.adoptAppliedState(desired, result.revision);
         if (deleteAfterSync) {
-          await this.deleteTabSession(syncTabSessionId, { keepalive: keepaliveRequested });
+          await this.deleteTabSession(syncTabSessionId);
         }
         this.ensureStream();
         return;
@@ -533,7 +549,7 @@ class TabRealtimeClient {
               adoptedStateKey: this.shortHash(currentComposed.stateKey),
             });
             if (deleteAfterSync) {
-              await this.deleteTabSession(syncTabSessionId, { keepalive: keepaliveRequested });
+              await this.deleteTabSession(syncTabSessionId);
             }
             this.ensureStream();
             return;
@@ -596,10 +612,8 @@ class TabRealtimeClient {
       }
     };
     source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) {
-        this.closeStream();
-        this.scheduleStreamReconnect();
-      }
+      this.closeStream();
+      this.scheduleStreamReconnect();
     };
     this.source = source;
   }
@@ -608,8 +622,7 @@ class TabRealtimeClient {
     if (this.disposed || this.streamReconnectTimer !== null) return;
     this.streamReconnectTimer = window.setTimeout(() => {
       this.streamReconnectTimer = null;
-      this.scheduleSync('stream.reconnect');
-      this.ensureStream();
+      this.scheduleSync('stream.reconnect', { verifySession: true });
     }, 1000);
   }
 
@@ -732,8 +745,8 @@ class TabRealtimeClient {
     this.appliedRevision = 0;
     this.appliedSubscriptionOwners = new Map();
     this.inFlightState = null;
-    this.syncKeepaliveRequested = false;
     this.deleteAfterSyncRequested = false;
+    this.verifySessionRequested = false;
     this.bootstrapInFlight = null;
     this.bootstrapComplete = true;
     this.hasStoredSession = false;
@@ -749,52 +762,91 @@ class TabRealtimeClient {
     clearStoredRevision();
   }
 
-  private async putTabSessionState(
-    tabSessionId: string,
-    payload: TabSessionStateRequest,
-    options: { keepalive: boolean }
-  ) {
-    if (!options.keepalive) {
-      return api.realtime.putTabSessionState(tabSessionId, payload);
-    }
-
-    const response = await fetch(
-      new URL(`/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}/state`, getBackendUrl()).toString(),
-      {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        keepalive: true
-      }
-    );
-
-    if (!response.ok) {
-      const message = await response.text().catch(() => '');
-      throw { status: response.status, message };
-    }
-
-    return response.json() as Promise<{ revision: number }>;
+  private async putTabSessionState(tabSessionId: string, payload: TabSessionStateRequest) {
+    return api.realtime.putTabSessionState(tabSessionId, payload);
   }
 
-  private async deleteTabSession(tabSessionId: string, options: { keepalive: boolean }) {
-    if (!options.keepalive) {
-      await api.realtime.deleteTabSession(tabSessionId);
+  private async deleteTabSession(tabSessionId: string) {
+    await api.realtime.deleteTabSession(tabSessionId);
+  }
+
+  private clearStreamReconnectTimer() {
+    if (this.streamReconnectTimer === null) {
       return;
     }
+    window.clearTimeout(this.streamReconnectTimer);
+    this.streamReconnectTimer = null;
+  }
 
-    const response = await fetch(
-      new URL(`/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}`, getBackendUrl()).toString(),
-      {
-        method: 'DELETE',
-        credentials: 'include',
-        keepalive: true
+  private async verifySession(
+    tabSessionId: string,
+    reasons: string[],
+    attempt: number
+  ): Promise<'ready' | 'missing' | 'unauthorized' | 'failed' | 'stale'> {
+    this.debug('sync.verify-session.start', {
+      attempt,
+      reasons,
+      tabSessionId,
+    });
+    try {
+      const current = await api.realtime.tabSessionState(tabSessionId);
+      if (tabSessionId !== this.tabSessionId) {
+        this.debug('sync.verify-session.stale-session-ignored', {
+          attempt,
+          reasons,
+          tabSessionId,
+          currentTabSessionId: this.tabSessionId,
+        });
+        return 'stale';
       }
-    );
-
-    if (!response.ok && response.status !== 404) {
-      const message = await response.text().catch(() => '');
-      throw { status: response.status, message };
+      const currentComposed = this.composeStateFromResponse(current);
+      this.adoptAppliedState(currentComposed, current.revision);
+      const latestDesired = this.composeState();
+      this.debug('sync.verify-session.present', {
+        attempt,
+        reasons,
+        tabSessionId,
+        currentRevision: current.revision,
+        currentStateKey: this.shortHash(currentComposed.stateKey),
+        latestDesiredStateKey: this.shortHash(latestDesired.stateKey),
+      });
+      if (latestDesired.stateKey !== currentComposed.stateKey) {
+        return 'stale';
+      }
+      return 'ready';
+    } catch (error) {
+      const status =
+        typeof error === 'object' && error && 'status' in error
+          ? Number((error as { status?: number }).status)
+          : 0;
+      if (status === 404) {
+        this.debug('sync.verify-session.missing', {
+          attempt,
+          reasons,
+          tabSessionId,
+        });
+        if (tabSessionId === this.tabSessionId) {
+          this.resetSessionIdentity();
+        }
+        return 'missing';
+      }
+      if (status === 401) {
+        this.debug('sync.verify-session.unauthorized', {
+          attempt,
+          reasons,
+          tabSessionId,
+        });
+        this.closeStream();
+        return 'unauthorized';
+      }
+      this.debug('sync.verify-session.failed', {
+        attempt,
+        reasons,
+        tabSessionId,
+        status,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 'failed';
     }
   }
 
