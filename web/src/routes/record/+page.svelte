@@ -827,9 +827,9 @@
   </div>
 </section>
 
-<ActiveSessionSection title="稼働中データセット" description="現在収録中のデータセットを表示します。">
-  <ActiveSessionCard>
-    {#if activeSessionId}
+{#if activeSessionId}
+  <ActiveSessionSection title="稼働中データセット" description="現在収録中のデータセットを表示します。">
+    <ActiveSessionCard>
       {#if rosbridgeStatus !== 'connected'}
         <p class="text-xs text-rose-600">rosbridge が切断されています。状態は更新されません。</p>
       {/if}
@@ -857,11 +857,9 @@
         <summary class="cursor-pointer text-slate-500">状態の生データ</summary>
         <pre class="mt-2 whitespace-pre-wrap text-[11px] text-slate-700">{rawStatus || '-'}</pre>
       </details>
-    {:else}
-      <p class="text-sm text-slate-500">稼働中のデータセットはありません。</p>
-    {/if}
-  </ActiveSessionCard>
-</ActiveSessionSection>
+    </ActiveSessionCard>
+  </ActiveSessionSection>
+{/if}
 
 <section class="card p-6">
   <div class="flex flex-wrap items-center justify-between gap-3">

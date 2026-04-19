@@ -258,6 +258,9 @@
   );
   const taskCandidates = $derived(selectedModel?.task_candidates ?? []);
   const supportsDenoisingSteps = $derived(PI0_POLICY_TYPES.has(selectedPolicyType));
+  const runnerSessionOpenable = $derived.by(() => {
+    return Boolean(runnerStatus.active && runnerStatus.session_id);
+  });
   const runnerActive = $derived(Boolean(runnerStatus.active));
   const startupProgressPercent = $derived(
     Math.min(100, Math.max(0, Number(startupStatus?.progress_percent ?? 0)))
@@ -404,54 +407,52 @@
   </div>
 </section>
 
-<ActiveSessionSection
-  title="稼働中セッション"
-  description="推論セッションの状況を表示します。"
-  badges={[`推論: ${runnerActive ? '稼働中' : '停止'}`]}
->
-  {#if $inferenceRunnerStatusQuery.isLoading}
-    <ActiveSessionCard tone="muted">
-      <p class="text-sm text-slate-600">推論セッションを読み込み中...</p>
-    </ActiveSessionCard>
-  {:else if runnerActive}
-    <ActiveSessionCard>
-      <div class="flex items-start justify-between gap-3">
-        <div>
-          <p class="label">セッション種別</p>
-          <p class="text-base font-semibold text-slate-900">推論</p>
-          <p class="mt-1 text-xs text-slate-500">モデル推論での実行セッション。</p>
+{#if $inferenceRunnerStatusQuery.isLoading || runnerSessionOpenable}
+  <ActiveSessionSection
+    title="稼働中セッション"
+    description="推論セッションの状況を表示します。"
+    badges={[`推論: ${runnerActive ? '稼働中' : '停止'}`]}
+  >
+    {#if $inferenceRunnerStatusQuery.isLoading}
+      <ActiveSessionCard tone="muted">
+        <p class="text-sm text-slate-600">推論セッションを読み込み中...</p>
+      </ActiveSessionCard>
+    {:else}
+      <ActiveSessionCard>
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="label">セッション種別</p>
+            <p class="text-base font-semibold text-slate-900">推論</p>
+            <p class="mt-1 text-xs text-slate-500">モデル推論での実行セッション。</p>
+          </div>
+          <span class="chip">稼働中</span>
         </div>
-        <span class="chip">稼働中</span>
-      </div>
-      <div class="mt-3 space-y-1 text-xs text-slate-500">
-        <p>session_id: {runnerStatus.session_id ?? '-'}</p>
-        <p>task: {runnerStatus.task ?? '-'}</p>
-        <p>queue: {runnerStatus.queue_length ?? 0}</p>
-      </div>
-      <div class="mt-4 flex flex-wrap gap-2">
-        <Button.Root
-          class="btn-primary"
-          href={`/operate/sessions/${encodeURIComponent(runnerStatus.session_id ?? '')}?kind=inference`}
-        >
-          セッションを開く
-        </Button.Root>
-        <Button.Root class="btn-ghost" type="button" onclick={handleInferenceStop} disabled={inferenceStopPending}>
-          停止
-        </Button.Root>
-      </div>
-      {#if runnerStatus.last_error}
-        <p class="mt-2 text-xs text-rose-600">{runnerStatus.last_error}</p>
-      {/if}
-      {#if inferenceStopError}
-        <p class="mt-2 text-xs text-rose-600">{inferenceStopError}</p>
-      {/if}
-    </ActiveSessionCard>
-  {:else}
-    <ActiveSessionCard tone="muted">
-      <p class="text-sm text-slate-600">稼働中のセッションはありません。</p>
-    </ActiveSessionCard>
-  {/if}
-</ActiveSessionSection>
+        <div class="mt-3 space-y-1 text-xs text-slate-500">
+          <p>session_id: {runnerStatus.session_id ?? '-'}</p>
+          <p>task: {runnerStatus.task ?? '-'}</p>
+          <p>queue: {runnerStatus.queue_length ?? 0}</p>
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <Button.Root
+            class="btn-primary"
+            href={`/operate/sessions/${encodeURIComponent(runnerStatus.session_id ?? '')}?kind=inference`}
+          >
+            セッションを開く
+          </Button.Root>
+          <Button.Root class="btn-ghost" type="button" onclick={handleInferenceStop} disabled={inferenceStopPending}>
+            停止
+          </Button.Root>
+        </div>
+        {#if runnerStatus.last_error}
+          <p class="mt-2 text-xs text-rose-600">{runnerStatus.last_error}</p>
+        {/if}
+        {#if inferenceStopError}
+          <p class="mt-2 text-xs text-rose-600">{inferenceStopError}</p>
+        {/if}
+      </ActiveSessionCard>
+    {/if}
+  </ActiveSessionSection>
+{/if}
 
 <section class="card overflow-hidden">
   <div class="border-b border-slate-200/80 bg-[linear-gradient(140deg,rgba(91,124,250,0.14),rgba(255,184,107,0.10),rgba(255,255,255,0.98))] px-6 py-6">

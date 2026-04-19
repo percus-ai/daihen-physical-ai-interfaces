@@ -2,7 +2,9 @@
   import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
   import { getContext } from 'svelte';
+  import { createQuery } from '@tanstack/svelte-query';
   import { AlertDialog, Button } from 'bits-ui';
+  import { toStore } from 'svelte/store';
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
   import { preventModalAutoFocus } from '$lib/components/modal/focus';
@@ -33,6 +35,24 @@
   const mode = $derived(runtime.mode);
   const sessionId = $derived(runtime.kind === 'ros' ? runtime.sessionId : '');
   const sessionKind = $derived(runtime.kind === 'ros' ? runtime.sessionKind : '');
+
+  type InferenceRunnerStatus = {
+    active?: boolean;
+    session_id?: string | null;
+    recording_dataset_id?: string | null;
+  };
+
+  type InferenceRunnerStatusResponse = {
+    runner_status?: InferenceRunnerStatus;
+  };
+
+  const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>(
+    toStore(() => ({
+      queryKey: ['inference', 'runner', 'status', 'controls', sessionKind, sessionId],
+      queryFn: api.inference.runnerStatus,
+      enabled: sessionKind === 'inference'
+    }))
+  );
 
   let recorderStatus = $state<RecorderStatus | null>(null);
   let rosbridgeStatus = $state<RosbridgeStatus>('idle');
@@ -334,6 +354,19 @@
   );
   const statusPhase = $derived(String((status as Record<string, unknown>)?.phase ?? 'wait'));
   const isFinalizing = $derived(statusPhase === 'finalizing');
+  const inferenceRunnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
+  const inferenceSessionMatches = $derived.by(() => {
+    if (sessionKind !== 'inference') return false;
+    if (!sessionId) return false;
+    const activeInferenceSessionId = String(inferenceRunnerStatus.session_id ?? '').trim();
+    const activeRecordingDatasetId = String(inferenceRunnerStatus.recording_dataset_id ?? '').trim();
+    return sessionId === activeInferenceSessionId || sessionId === activeRecordingDatasetId;
+  });
+  const inferenceSessionStartable = $derived.by(() => {
+    if (sessionKind !== 'inference') return false;
+    if (!inferenceSessionMatches) return false;
+    return Boolean(inferenceRunnerStatus.active);
+  });
 
   const canPause = $derived(['recording', 'resetting'].includes(String(statusState)) && !isFinalizing);
   const canResume = $derived(['paused', 'resetting_paused'].includes(String(statusState)) && !isFinalizing);
@@ -365,7 +398,7 @@
   const canStart = $derived.by(() => {
     const startableState = ['idle', 'completed', 'inactive', ''].includes(String(statusState));
     if (!startableState) return false;
-    if (sessionKind === 'inference') return true;
+    if (sessionKind === 'inference') return inferenceSessionStartable;
     return Boolean(sessionId);
   });
 
