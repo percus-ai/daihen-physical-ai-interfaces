@@ -463,6 +463,7 @@ class InferenceSessionManager(BaseSessionManager):
     async def stop(self, session_id: str, **kwargs: Any) -> SessionState:
         state = self._get_or_raise(session_id)
         worker_sid = state.extras.get("worker_session_id")
+        self._recording_controller.mark_stop_requested(session_id)
 
         # Stop worker
         try:

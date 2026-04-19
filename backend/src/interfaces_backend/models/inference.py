@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -181,6 +181,7 @@ class InferenceRunnerSettingsApplyResponse(BaseModel):
 
 class InferenceRecordingDecisionRequest(BaseModel):
     continue_recording: bool
+    stop_reason: Optional[Literal["manual_stop", "batch_declined"]] = None
 
 
 class InferenceRecordingDecisionResponse(BaseModel):
@@ -188,6 +189,7 @@ class InferenceRecordingDecisionResponse(BaseModel):
     message: str = ""
     recording_dataset_id: Optional[str] = None
     awaiting_continue_confirmation: bool = False
+    stop_reason: Optional[Literal["manual_stop", "batch_declined"]] = None
 
 
 class InferenceRunnerControlResponse(BaseModel):

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { browser } from '$app/environment';
+  import { goto } from '$app/navigation';
   import { getContext } from 'svelte';
   import { AlertDialog, Button } from 'bits-ui';
   import toast from 'svelte-french-toast';
@@ -19,6 +20,7 @@
     type RecorderStatus,
     type RosbridgeStatus
   } from '$lib/recording/recorderStatus';
+  import { subscribeInferenceUploadProgressRequests } from '$lib/recording/inferenceUploadProgressRequests';
 
   let {
     title = 'Controls',
@@ -48,6 +50,7 @@
   let uploadDatasetId = $state('');
   let uploadStatus = $state<RecordingUploadStatus | null>(null);
   let uploadContributor: TabRealtimeContributorHandle | null = null;
+  let dismissedUploadDatasetId = $state('');
 
   const runAction = async (
     label: string,
@@ -107,10 +110,8 @@
     if (!pendingConfirmAction) return;
     const action = pendingConfirmAction;
     pendingConfirmAction = null;
-    const success = await action();
-    if (success) {
-      confirmOpen = false;
-    }
+    confirmOpen = false;
+    await action();
   };
   const handleConfirmCancel = () => {
     pendingConfirmAction = null;
@@ -157,8 +158,11 @@
   const handleStop = async () => {
     const targetDatasetId = String(datasetId || sessionId || '').trim();
     openConfirm({
-      title: 'データセット収録を終了しますか？',
-      description: '現在のエピソードは保存された状態で終了します。',
+      title: sessionKind === 'inference' ? '推論セッションを終了しますか？' : 'データセット収録を終了しますか？',
+      description:
+        sessionKind === 'inference'
+          ? '現在のエピソードを保存して、推論と収録を終了します。'
+          : '現在のエピソードは保存された状態で終了します。',
       actionLabel: '終了する',
       action: async () => {
         if (targetDatasetId) {
@@ -168,7 +172,10 @@
           '終了',
           () =>
             sessionKind === 'inference'
-              ? api.inference.decideRecording({ continue_recording: false })
+              ? api.inference.decideRecording({
+                  continue_recording: false,
+                  stop_reason: 'manual_stop'
+                })
               : api.recording.stopSession({
                   dataset_id: datasetId,
                   save_current: true
@@ -222,6 +229,13 @@
     return 0;
   });
 
+  const uploadReturnHref = $derived(
+    sessionKind === 'recording' ? '/record' : sessionKind === 'inference' ? '/operate' : '/'
+  );
+  const uploadReturnLabel = $derived(
+    sessionKind === 'recording' ? '一覧へ戻る' : sessionKind === 'inference' ? '一覧へ戻る' : '一覧へ戻る'
+  );
+
   const disposeUploadContributor = () => {
     uploadContributor?.dispose();
     uploadContributor = null;
@@ -229,9 +243,21 @@
 
   const startUploadModal = (datasetIdForStatus: string) => {
     if (typeof window === 'undefined') return;
+    dismissedUploadDatasetId = '';
     uploadDatasetId = datasetIdForStatus;
     uploadModalOpen = true;
     uploadStatus = createPendingRecordingUploadStatus(datasetIdForStatus);
+  };
+
+  const closeUploadModal = () => {
+    const targetDatasetId = String(uploadDatasetId || uploadStatus?.dataset_id || '').trim();
+    if (targetDatasetId) {
+      dismissedUploadDatasetId = targetDatasetId;
+    }
+    disposeUploadContributor();
+    uploadModalOpen = false;
+    uploadDatasetId = '';
+    uploadStatus = null;
   };
 
   const handleUploadStatusEvent = (event: TabRealtimeEvent) => {
@@ -271,6 +297,15 @@
       onConnectionChange: (next) => {
         rosbridgeStatus = next;
       }
+    });
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    if (sessionKind !== 'inference') return;
+    return subscribeInferenceUploadProgressRequests((request) => {
+      if (request.datasetId !== sessionId) return;
+      startUploadModal(request.datasetId);
     });
   });
 
@@ -411,6 +446,7 @@
 
   $effect(() => {
     if (typeof window === 'undefined') return;
+    if (sessionKind !== 'recording') return;
     const current = String(statusState);
     const previous = previousStatusState;
     const isCompletedNow = current === 'completed';
@@ -421,6 +457,7 @@
       !wasCompleted &&
       previous !== '' &&
       sameSession &&
+      dismissedUploadDatasetId !== sessionId &&
       !uploadModalOpen
     ) {
       startUploadModal(sessionId);
@@ -580,6 +617,7 @@
       <AlertDialog.Description class="mt-2 text-sm text-slate-600">
         収録終了後のデータアップロード状況を表示しています。
       </AlertDialog.Description>
+      <p class="mt-2 text-xs text-slate-500">一覧へ戻ってもアップロードはバックグラウンドで継続します。</p>
 
       <div class="mt-4 nested-block-pane nested-block-stack p-3">
         <div class="flex items-center justify-between text-xs text-slate-500">
@@ -607,16 +645,21 @@
       </div>
 
       <div class="mt-5 flex items-center justify-end gap-2">
-        <AlertDialog.Cancel
+        <Button.Root
           class="btn-ghost"
           type="button"
           onclick={() => {
-            uploadModalOpen = false;
-            uploadDatasetId = '';
-            uploadStatus = null;
+            void goto(uploadReturnHref);
           }}
         >
-          閉じる
+          {uploadReturnLabel}
+        </Button.Root>
+        <AlertDialog.Cancel
+          class="btn-ghost"
+          type="button"
+          onclick={closeUploadModal}
+        >
+          この画面に残る
         </AlertDialog.Cancel>
         {#if String(uploadStatus?.phase ?? uploadStatus?.status ?? '').toLowerCase() === 'completed'}
           <Button.Root class="btn-ghost" type="button" onclick={openDatasetViewer}>

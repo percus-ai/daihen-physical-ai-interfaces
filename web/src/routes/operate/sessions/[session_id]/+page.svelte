@@ -8,6 +8,7 @@
   import { preventModalAutoFocus } from '$lib/components/modal/focus';
   import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
   import { queryClient } from '$lib/queryClient';
+  import { requestInferenceUploadProgress } from '$lib/recording/inferenceUploadProgressRequests';
 
   import SessionLayoutEditor from '$lib/components/recording/SessionLayoutEditor.svelte';
   import { scrollIntoViewSoon, speakSessionMessage } from '$lib/session/sessionUx';
@@ -163,8 +164,20 @@
     if (continueDecisionPending) return;
     continueDecisionPending = true;
     continueDecisionError = '';
+    const targetDatasetId = inferenceRecordingSessionId;
     try {
-      await api.inference.decideRecording({ continue_recording: continueRecording });
+      await api.inference.decideRecording(
+        continueRecording
+          ? { continue_recording: true }
+          : { continue_recording: false, stop_reason: 'batch_declined' }
+      );
+      if (!continueRecording && targetDatasetId) {
+        requestInferenceUploadProgress({
+          inferenceSessionId: sessionId,
+          datasetId: targetDatasetId,
+          stopReason: 'batch_declined'
+        });
+      }
       await $inferenceRunnerStatusQuery.refetch?.();
       continueModalOpen = false;
     } catch (error) {
@@ -263,7 +276,7 @@
             void handleContinueDecision(false);
           }}
         >
-          {continueDecisionPending ? '処理中...' : 'NO（終了）'}
+          {continueDecisionPending ? '処理中...' : '終了'}
         </Button.Root>
         <Button.Root
           class="btn-primary"
@@ -273,7 +286,7 @@
             void handleContinueDecision(true);
           }}
         >
-          {continueDecisionPending ? '処理中...' : `YES（+${continueBatchSize}）`}
+          {continueDecisionPending ? '処理中...' : '追加収録'}
         </Button.Root>
       </div>
     </AlertDialog.Content>

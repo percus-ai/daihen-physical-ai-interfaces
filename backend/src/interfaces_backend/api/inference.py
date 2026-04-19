@@ -609,6 +609,9 @@ async def decide_inference_recording(request: InferenceRecordingDecisionRequest)
     manager = get_inference_session_manager()
     active = manager.any_active()
     active_session_id = active.id if active else "global"
+    if not request.continue_recording and request.stop_reason is None:
+        raise HTTPException(status_code=400, detail="stop_reason is required when continue_recording is false")
+    stop_reason = request.stop_reason if not request.continue_recording else None
 
     if request.continue_recording:
         try:
@@ -645,6 +648,7 @@ async def decide_inference_recording(request: InferenceRecordingDecisionRequest)
             awaiting_continue_confirmation=bool(
                 decision.get("awaiting_continue_confirmation", False)
             ),
+            stop_reason=None,
         )
         await _emit_inference_control_event(
             action="recording_decision",
@@ -666,6 +670,7 @@ async def decide_inference_recording(request: InferenceRecordingDecisionRequest)
         message="Inference and recording stopped.",
         recording_dataset_id=None,
         awaiting_continue_confirmation=False,
+        stop_reason=stop_reason,
     )
     await _emit_inference_control_event(
         action="recording_decision",
@@ -673,7 +678,7 @@ async def decide_inference_recording(request: InferenceRecordingDecisionRequest)
         session_id=active_session_id,
         success=True,
         message=response.message,
-        details={"continue_recording": False},
+        details={"continue_recording": False, "stop_reason": stop_reason},
     )
     return response
 

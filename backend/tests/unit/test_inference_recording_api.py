@@ -97,6 +97,7 @@ def test_decide_inference_recording_continue_calls_manager(monkeypatch) -> None:
     assert response.success is True
     assert response.recording_dataset_id == "dataset-1"
     assert response.awaiting_continue_confirmation is False
+    assert response.stop_reason is None
 
 
 def test_decide_inference_recording_stop_stops_active_session(monkeypatch) -> None:
@@ -115,13 +116,37 @@ def test_decide_inference_recording_stop_stops_active_session(monkeypatch) -> No
 
     response = asyncio.run(
         inference_api.decide_inference_recording(
-            inference_api.InferenceRecordingDecisionRequest(continue_recording=False)
+            inference_api.InferenceRecordingDecisionRequest(
+                continue_recording=False,
+                stop_reason="batch_declined",
+            )
         )
     )
 
     assert response.success is True
     assert calls["stopped"] == "session-1"
     assert response.recording_dataset_id is None
+    assert response.stop_reason == "batch_declined"
+
+
+def test_decide_inference_recording_stop_requires_reason(monkeypatch) -> None:
+    class _FakeManager:
+        def any_active(self):
+            return type("Active", (), {"id": "session-1"})()
+
+    monkeypatch.setattr(inference_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(inference_api, "get_inference_session_manager", lambda: _FakeManager())
+
+    try:
+        asyncio.run(
+            inference_api.decide_inference_recording(
+                inference_api.InferenceRecordingDecisionRequest(continue_recording=False)
+            )
+        )
+        assert False, "Expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert exc.detail == "stop_reason is required when continue_recording is false"
 
 
 def test_pause_inference_runner_calls_manager(monkeypatch) -> None:

@@ -56,6 +56,7 @@ class InferenceRecordingState:
     inference_paused: bool = False
     teleop_enabled: bool = False
     last_recorder_state: str = ""
+    stop_requested: bool = False
 
 
 class InferenceRecordingController:
@@ -114,6 +115,14 @@ class InferenceRecordingController:
         self._cancel_monitor_loop(inference_session_id)
         with self._lock:
             self._states.pop(inference_session_id, None)
+
+    def mark_stop_requested(self, inference_session_id: str) -> None:
+        with self._lock:
+            state = self._states.get(inference_session_id)
+            if state is None:
+                return
+            state.stop_requested = True
+            state.awaiting_continue_confirmation = False
 
     @staticmethod
     def _recorder_state(status: dict | None) -> str:
@@ -349,7 +358,9 @@ class InferenceRecordingController:
                 num_episodes = state.batch_size
 
         awaiting = state.awaiting_continue_confirmation
-        if dataset_matches and recorder_state == "completed":
+        if state.stop_requested:
+            awaiting = False
+        elif dataset_matches and recorder_state == "completed":
             awaiting = True
         elif recording_active:
             awaiting = False
@@ -501,6 +512,7 @@ class InferenceRecordingController:
         state = self._get_state_or_raise(inference_session_id)
         if not continue_recording:
             state.awaiting_continue_confirmation = False
+            state.stop_requested = True
             return {
                 "recording_dataset_id": state.dataset_id,
                 "awaiting_continue_confirmation": False,
@@ -517,6 +529,7 @@ class InferenceRecordingController:
 
         state.awaiting_continue_confirmation = False
         state.manual_paused = False
+        state.stop_requested = False
         state.target_total_episodes += state.batch_size
         await self._dataset.upsert_record(
             dataset_id=state.dataset_id,

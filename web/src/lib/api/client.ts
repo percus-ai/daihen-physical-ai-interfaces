@@ -452,6 +452,7 @@ export type InferenceRunnerSettingsApplyResponse = {
 
 export type InferenceRecordingDecisionPayload = {
   continue_recording: boolean;
+  stop_reason?: 'manual_stop' | 'batch_declined';
 };
 
 export type InferenceRecordingDecisionResponse = {
@@ -459,6 +460,7 @@ export type InferenceRecordingDecisionResponse = {
   message?: string;
   recording_dataset_id?: string | null;
   awaiting_continue_confirmation?: boolean;
+  stop_reason?: 'manual_stop' | 'batch_declined' | null;
 };
 
 export type InferenceRunnerControlResponse = {
