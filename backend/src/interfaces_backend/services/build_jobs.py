@@ -125,24 +125,18 @@ class BuildJobsService:
         next_cursor = int(events[-1]["seq"]) if events else after_seq
         return next_cursor, events
 
-    def start_env_build(self, *, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
+    def start_env_build(self, *, config_group: str, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
         normalized_config_id = config_id.removesuffix(".yaml").removesuffix(".yml")
-        matching_refs = [ref for ref in self._config_loader.list_env_configs() if ref.config_id == normalized_config_id]
-        candidates: list[tuple[Any, Any]] = []
-        for ref in matching_refs:
-            config = self._config_loader.load_env_config(normalized_config_id, config_group=ref.group)
-            if env_name in config.envs:
-                candidates.append((ref, config))
-        if not candidates:
-            raise HTTPException(status_code=404, detail=f"Environment definition not found: {config_id}:{env_name}")
-        if len(candidates) > 1:
-            groups = ", ".join(sorted({ref.group for ref, _ in candidates}))
+        try:
+            config = self._config_loader.load_env_config(normalized_config_id, config_group=config_group)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Environment config not found: {config_group}:{config_id}") from exc
+        if env_name not in config.envs:
             raise HTTPException(
-                status_code=409,
-                detail=f"Environment definition is ambiguous across groups ({groups}): {config_id}:{env_name}",
+                status_code=404,
+                detail=f"Environment definition not found: {config_group}:{config_id}:{env_name}",
             )
-        ref, config = candidates[0]
-        setting_id = f"{config_id}:{env_name}"
+        setting_id = f"{config_group}:{normalized_config_id}:{env_name}"
         with self._lock:
             self._ensure_no_active_job_locked(setting_id)
             record = _BuildJobRecord(
@@ -151,8 +145,8 @@ class BuildJobsService:
                 kind="env",
                 setting_id=setting_id,
                 env_name=env_name,
-                config_id=config_id,
-                config_group=ref.group,
+                config_id=normalized_config_id,
+                config_group=config_group,
                 total_steps=self._count_env_steps_from_definition(config.envs[env_name]),
                 current_step_name="queued",
                 message="環境構築ジョブを受け付けました。",

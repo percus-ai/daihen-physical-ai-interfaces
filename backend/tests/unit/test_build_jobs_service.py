@@ -119,7 +119,7 @@ variants: {}
             environment_build_operation=_FakeEnvironmentBuildOperation(),
             shared_build_operation=_FakeSharedBuildOperation(),
         )
-        accepted = service.start_env_build(config_id="default", env_name="pi0")
+        accepted = service.start_env_build(config_group="envs", config_id="default", env_name="pi0")
         job_id = accepted.job.job_id
 
         await asyncio.sleep(0.15)
@@ -235,7 +235,7 @@ variants: {}
             environment_build_operation=operation,
             shared_build_operation=_FakeSharedBuildOperation(),
         )
-        accepted = service.start_env_build(config_id="sm_120", env_name="pi0_train")
+        accepted = service.start_env_build(config_group="train", config_id="sm_120", env_name="pi0_train")
         terminal_state = await _wait_for_terminal_state(service, accepted.job.job_id)
         assert terminal_state == "completed"
         assert operation.calls[0][:3] == ("sm_120", "pi0_train", "train")

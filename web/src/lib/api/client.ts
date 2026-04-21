@@ -324,6 +324,7 @@ export type BuildSettingSummary = {
   state: BuildSettingState;
   selected?: boolean;
   config_origin?: 'default' | 'data' | null;
+  config_group?: 'envs' | 'train' | null;
   config_id?: string | null;
   env_name?: string | null;
   package?: string | null;
@@ -1219,10 +1220,13 @@ export const api = {
   builds: {
     envs: () => fetchApi<EnvBuildSettingsListResponse>('/api/builds/envs'),
     shared: () => fetchApi<SharedBuildSettingsListResponse>('/api/builds/shared'),
-    runEnv: (configId: string, envName: string) =>
-      fetchApi<BuildRunAcceptedResponse>(`/api/builds/envs/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/run`, {
-        method: 'POST'
-      }),
+    runEnv: (configGroup: string, configId: string, envName: string) =>
+      fetchApi<BuildRunAcceptedResponse>(
+        `/api/builds/envs/${encodeURIComponent(configGroup)}/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/run`,
+        {
+          method: 'POST'
+        }
+      ),
     runShared: (packageName: string, variant: string) =>
       fetchApi<BuildRunAcceptedResponse>(
         `/api/builds/shared/${encodeURIComponent(packageName)}/${encodeURIComponent(variant)}/run`,
@@ -1234,9 +1238,9 @@ export const api = {
       fetchApi<BuildJobCancelResponse>(`/api/builds/jobs/${encodeURIComponent(jobId)}/cancel`, {
         method: 'POST'
       }),
-    deleteEnvArtifact: (configId: string, envName: string, buildId: string) =>
+    deleteEnvArtifact: (configGroup: string, configId: string, envName: string, buildId: string) =>
       fetchApi<BuildArtifactDeleteResponse>(
-        `/api/builds/envs/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/artifacts/${encodeURIComponent(buildId)}`,
+        `/api/builds/envs/${encodeURIComponent(configGroup)}/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/artifacts/${encodeURIComponent(buildId)}`,
         {
           method: 'DELETE'
         }
@@ -1248,9 +1252,9 @@ export const api = {
           method: 'DELETE'
         }
       ),
-    createEnvErrorReport: (configId: string, envName: string, buildId: string) =>
+    createEnvErrorReport: (configGroup: string, configId: string, envName: string, buildId: string) =>
       fetchApi<BuildErrorReportResponse>(
-        `/api/builds/envs/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/artifacts/${encodeURIComponent(buildId)}/error-report`,
+        `/api/builds/envs/${encodeURIComponent(configGroup)}/${encodeURIComponent(configId)}/${encodeURIComponent(envName)}/artifacts/${encodeURIComponent(buildId)}/error-report`,
         {
           method: 'POST'
         }

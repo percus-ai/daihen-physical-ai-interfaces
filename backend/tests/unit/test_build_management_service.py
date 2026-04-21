@@ -119,6 +119,7 @@ variants: {}
     assert items["config-a"].description == "config a description"
     assert items["config-a"].current_sm == "sm_120"
     assert items["config-a"].current_platform == "jetson_agx_thor"
+    assert items["config-a"].config_group == "envs"
     assert items["config-a"].supported_platforms == []
     assert items["config-a"].platform_supported is True
     assert items["config-a"].supported_sms == ["*"]
@@ -242,7 +243,7 @@ variants: {}
                     job_id="job-1",
                     build_id="build-1",
                     kind="env",
-                    setting_id="default:pi0",
+                    setting_id="envs:default:pi0",
                     state="running",
                     current_step_name="runtime-common",
                     current_step_index=1,
@@ -324,10 +325,12 @@ variants: {}
     response = service.list_env_settings()
 
     items = {item.setting_id: item for item in response.items}
-    assert items["default:pi0"].usage == "runtime"
-    assert items["default:pi0"].selected is True
-    assert items["sm_120:pi0_train"].usage == "training"
-    assert items["sm_120:pi0_train"].selected is False
+    assert items["envs:default:pi0"].usage == "runtime"
+    assert items["envs:default:pi0"].selected is True
+    assert items["envs:default:pi0"].config_group == "envs"
+    assert items["train:sm_120:pi0_train"].usage == "training"
+    assert items["train:sm_120:pi0_train"].selected is False
+    assert items["train:sm_120:pi0_train"].config_group == "train"
 
 
 def test_list_env_settings_marks_sm_compatibility(tmp_path: Path):
@@ -374,8 +377,8 @@ envs:
     items = {item.setting_id: item for item in response.items}
 
     assert response.current_sm == "sm_120"
-    assert items["default:groot"].sm_supported is True
-    assert items["default:act"].sm_supported is False
+    assert items["envs:default:groot"].sm_supported is True
+    assert items["envs:default:act"].sm_supported is False
 
 
 def test_delete_env_artifact_unlinks_current_when_current_build_matches(tmp_path: Path):
@@ -420,10 +423,80 @@ variants: {}
         build_jobs_service=_FakeBuildJobsService(),
     )
 
-    service.delete_env_artifact(config_id="default", env_name="pi0", build_id="build-1")
+    service.delete_env_artifact(config_group="envs", config_id="default", env_name="pi0", build_id="build-1")
 
     assert store.read_env_current_build_id("pi0") is None
     assert store.list_env_metadata("pi0") == []
+
+
+def test_create_env_error_report_uses_explicit_config_group(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    for group in ("envs", "train"):
+        _write_text(
+            data_dir / f"environment/configs/{group}/sm_110.yaml",
+            """
+id: sm_110
+envs:
+  groot:
+    python: "3.10"
+    installs: []
+    checks: []
+""".strip()
+            + "\n",
+        )
+    _write_text(
+        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        """
+package: pytorch
+variants: {}
+""".strip()
+        + "\n",
+    )
+    store = BuildStore(layout=BuildLayout(data_dir=data_dir))
+    store.save_env_metadata(
+        EnvBuildMetadataModel(
+            build_id="build-1",
+            env_name="groot",
+            config_id="sm_110",
+            config_group="train",
+            success=False,
+            steps=[BuildStepLogModel(step="build", exit_code=1)],
+        )
+    )
+
+    class _FakeErrorReportsService:
+        def create_report(self, **kwargs):
+            from interfaces_backend.models.build_management import BuildErrorReportResponse
+
+            assert kwargs["kind"] == "env"
+            assert kwargs["setting_id"] == "train:sm_110:groot"
+            assert kwargs["build_id"] == "build-1"
+            return BuildErrorReportResponse(
+                report_id="report-1",
+                kind="env",
+                setting_id=kwargs["setting_id"],
+                build_id=kwargs["build_id"],
+                object_path="s3://daihen/v2/build-reports/env/train-sm-110-groot/report-1.zip",
+                uploaded_at="2026-04-16T00:00:00Z",
+            )
+
+    service = BuildManagementService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=store,
+        settings_service=_FakeSettingsService("sm_110"),
+        build_jobs_service=_FakeBuildJobsService(),
+        build_error_reports_service=_FakeErrorReportsService(),
+    )
+
+    response = service.create_env_error_report(
+        config_group="train",
+        config_id="sm_110",
+        env_name="groot",
+        build_id="build-1",
+    )
+
+    assert response.setting_id == "train:sm_110:groot"
 
 
 def test_delete_shared_artifact_filters_by_variant(tmp_path: Path):

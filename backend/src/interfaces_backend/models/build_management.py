@@ -34,6 +34,7 @@ class BuildSettingSummaryModel(BaseModel):
     state: BuildSettingState
     selected: bool = False
     config_origin: Literal["default", "data"] | None = None
+    config_group: Literal["envs", "train"] | None = None
     config_id: str | None = None
     env_name: str | None = None
     package: str | None = None

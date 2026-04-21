@@ -16,10 +16,11 @@ class _FakeBuildManagementService:
             items=[
                 BuildSettingSummaryModel(
                     kind="env",
-                    setting_id="default:pi0",
+                    setting_id="envs:default:pi0",
                     display_name="Pi0",
                     description="Pi0 runtime",
                     state="unbuilt",
+                    config_group="envs",
                     config_id="default",
                     env_name="pi0",
                     actions=BuildSettingActionsModel(run=True),
@@ -44,7 +45,8 @@ class _FakeBuildManagementService:
             ]
         )
 
-    def delete_env_artifact(self, *, config_id: str, env_name: str, build_id: str) -> None:
+    def delete_env_artifact(self, *, config_group: str, config_id: str, env_name: str, build_id: str) -> None:
+        assert config_group == "envs"
         assert config_id == "default"
         assert env_name == "pi0"
         assert build_id == "build-env-1"
@@ -54,16 +56,17 @@ class _FakeBuildManagementService:
         assert variant == "thor"
         assert build_id == "build-1"
 
-    def create_env_error_report(self, *, config_id: str, env_name: str, build_id: str):
+    def create_env_error_report(self, *, config_group: str, config_id: str, env_name: str, build_id: str):
         from interfaces_backend.models.build_management import BuildErrorReportResponse
 
+        assert config_group == "envs"
         assert config_id == "default"
         assert env_name == "pi0"
         assert build_id == "build-env-1"
         return BuildErrorReportResponse(
             report_id="report-env-1",
             kind="env",
-            setting_id="default:pi0",
+            setting_id="envs:default:pi0",
             build_id=build_id,
             object_path="s3://daihen/v2/build-reports/env/default-pi0/report-env-1.zip",
             uploaded_at="2026-04-16T00:00:00Z",
@@ -86,13 +89,14 @@ class _FakeBuildManagementService:
 
 
 class _FakeBuildJobsService:
-    def start_env_build(self, *, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
+    def start_env_build(self, *, config_group: str, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
+        assert config_group == "envs"
         return BuildRunAcceptedResponse(
             job=BuildJobSummaryModel(
                 job_id="job-env-1",
                 build_id="build-env-1",
                 kind="env",
-                setting_id=f"{config_id}:{env_name}",
+                setting_id=f"{config_group}:{config_id}:{env_name}",
                 state="queued",
                 created_at="2026-04-16T00:00:00Z",
                 updated_at="2026-04-16T00:00:00Z",
@@ -121,7 +125,7 @@ class _FakeBuildJobsService:
                 job_id=job_id,
                 build_id="build-env-1",
                 kind="env",
-                setting_id="default:pi0",
+                setting_id="envs:default:pi0",
                 state="running",
                 created_at="2026-04-16T00:00:00Z",
                 updated_at="2026-04-16T00:00:01Z",
@@ -138,7 +142,8 @@ def test_list_env_build_settings(client, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["selected_config_id"] == "default"
-    assert payload["items"][0]["setting_id"] == "default:pi0"
+    assert payload["items"][0]["setting_id"] == "envs:default:pi0"
+    assert payload["items"][0]["config_group"] == "envs"
     assert payload["items"][0]["actions"]["run"] is True
 
 
@@ -157,12 +162,12 @@ def test_list_shared_build_settings(client, monkeypatch):
 def test_run_env_build(client, monkeypatch):
     monkeypatch.setattr(builds_api, "get_build_jobs_service", lambda: _FakeBuildJobsService())
 
-    response = client.post("/api/builds/envs/default/pi0/run")
+    response = client.post("/api/builds/envs/envs/default/pi0/run")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["job"]["job_id"] == "job-env-1"
-    assert payload["job"]["setting_id"] == "default:pi0"
+    assert payload["job"]["setting_id"] == "envs:default:pi0"
 
 
 def test_run_shared_build(client, monkeypatch):
@@ -190,13 +195,13 @@ def test_cancel_build_job(client, monkeypatch):
 def test_delete_env_build_artifact(client, monkeypatch):
     monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
 
-    response = client.delete("/api/builds/envs/default/pi0/artifacts/build-env-1")
+    response = client.delete("/api/builds/envs/envs/default/pi0/artifacts/build-env-1")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["deleted"] is True
     assert payload["kind"] == "env"
-    assert payload["setting_id"] == "default:pi0"
+    assert payload["setting_id"] == "envs:default:pi0"
 
 
 def test_delete_shared_build_artifact(client, monkeypatch):
@@ -214,7 +219,7 @@ def test_delete_shared_build_artifact(client, monkeypatch):
 def test_create_env_build_error_report(client, monkeypatch):
     monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
 
-    response = client.post("/api/builds/envs/default/pi0/artifacts/build-env-1/error-report")
+    response = client.post("/api/builds/envs/envs/default/pi0/artifacts/build-env-1/error-report")
 
     assert response.status_code == 200
     payload = response.json()

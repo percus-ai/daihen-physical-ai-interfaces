@@ -97,7 +97,7 @@ class BuildManagementService:
                         current_sm=current_sm,
                         env_name=env_name,
                         selected_config_id=selected_config_id,
-                        active_job=active_jobs.get(f"{config.id}:{env_name}"),
+                        active_job=active_jobs.get(f"{ref.group}:{config.id}:{env_name}"),
                     )
                 )
         return EnvBuildSettingsListResponse(
@@ -140,17 +140,16 @@ class BuildManagementService:
             shared=shared,
         )
 
-    def delete_env_artifact(self, *, config_id: str, env_name: str, build_id: str) -> None:
-        self._ensure_no_active_setting_job(setting_id=f"{config_id}:{env_name}")
+    def delete_env_artifact(self, *, config_group: str, config_id: str, env_name: str, build_id: str) -> None:
+        self._ensure_no_active_setting_job(setting_id=f"{config_group}:{config_id}:{env_name}")
         try:
             metadata = self._build_store.load_env_metadata(env_name, build_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Env build artifact not found: {env_name}:{build_id}") from exc
-        config_group = self._resolve_env_config_group(config_id=config_id)
         if metadata.config_id != config_id or metadata.config_group != config_group:
             raise HTTPException(
                 status_code=404,
-                detail=f"Env build artifact not found for config: {config_id}:{env_name}:{build_id}",
+                detail=f"Env build artifact not found for config: {config_group}:{config_id}:{env_name}:{build_id}",
             )
         self._build_store.delete_env_build(env_name, build_id)
 
@@ -170,14 +169,26 @@ class BuildManagementService:
             )
         self._build_store.delete_shared_build(package, build_id)
 
-    def create_env_error_report(self, *, config_id: str, env_name: str, build_id: str) -> BuildErrorReportResponse:
-        metadata = self._load_env_metadata_for_config(config_id=config_id, env_name=env_name, build_id=build_id)
+    def create_env_error_report(
+        self,
+        *,
+        config_group: str,
+        config_id: str,
+        env_name: str,
+        build_id: str,
+    ) -> BuildErrorReportResponse:
+        metadata = self._load_env_metadata_for_config(
+            config_group=config_group,
+            config_id=config_id,
+            env_name=env_name,
+            build_id=build_id,
+        )
         if metadata.success:
             raise HTTPException(status_code=409, detail="Build succeeded; error report is only available for failed builds")
         artifact_dir = self._build_store.env_metadata_path(env_name, build_id).parent
         return self._build_error_reports_service.create_report(
             kind="env",
-            setting_id=f"{config_id}:{env_name}",
+            setting_id=f"{config_group}:{config_id}:{env_name}",
             build_id=build_id,
             artifact_dir=artifact_dir,
             metadata=metadata.model_dump(mode="json"),
@@ -225,7 +236,7 @@ class BuildManagementService:
         has_artifact = bool(matching_metadata)
         summary = BuildSettingSummaryModel(
             kind="env",
-            setting_id=f"{config_id}:{env_name}",
+            setting_id=f"{config_group}:{config_id}:{env_name}",
             display_name=env_display_name or config_display_name or env_name,
             description=env_description,
             usage=usage,  # type: ignore[arg-type]
@@ -238,6 +249,7 @@ class BuildManagementService:
             state=state,
             selected=usage == "runtime" and config_group == "envs" and config_id == selected_config_id,
             config_origin=config_origin,
+            config_group=config_group,  # type: ignore[arg-type]
             config_id=config_id,
             env_name=env_name,
             latest_build_id=latest.build_id if latest else None,
@@ -302,27 +314,24 @@ class BuildManagementService:
             return None
         return metadata if metadata.config_id == config_id and metadata.config_group == config_group else None
 
-    def _load_env_metadata_for_config(self, *, config_id: str, env_name: str, build_id: str) -> EnvBuildMetadataModel:
+    def _load_env_metadata_for_config(
+        self,
+        *,
+        config_group: str,
+        config_id: str,
+        env_name: str,
+        build_id: str,
+    ) -> EnvBuildMetadataModel:
         try:
             metadata = self._build_store.load_env_metadata(env_name, build_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Env build artifact not found: {env_name}:{build_id}") from exc
-        config_group = self._resolve_env_config_group(config_id=config_id)
         if metadata.config_id != config_id or metadata.config_group != config_group:
             raise HTTPException(
                 status_code=404,
-                detail=f"Env build artifact not found for config: {config_id}:{env_name}:{build_id}",
+                detail=f"Env build artifact not found for config: {config_group}:{config_id}:{env_name}:{build_id}",
             )
         return metadata
-
-    def _resolve_env_config_group(self, *, config_id: str) -> str:
-        refs = [ref for ref in self._config_loader.list_env_configs() if ref.config_id == config_id]
-        if len(refs) == 1:
-            return refs[0].group
-        if not refs:
-            raise HTTPException(status_code=404, detail=f"Environment config not found: {config_id}")
-        groups = ", ".join(sorted({ref.group for ref in refs}))
-        raise HTTPException(status_code=409, detail=f"Environment config is ambiguous across groups ({groups}): {config_id}")
 
     def _load_shared_metadata_for_variant(self, *, package: str, variant: str, build_id: str) -> SharedBuildMetadataModel:
         try:

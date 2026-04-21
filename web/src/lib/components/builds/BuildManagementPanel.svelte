@@ -75,8 +75,8 @@
     latestErrorReport = null;
     try {
       let response: BuildErrorReportResponse;
-      if (item.kind === 'env' && item.config_id && item.env_name) {
-        response = await api.builds.createEnvErrorReport(item.config_id, item.env_name, buildId);
+      if (item.kind === 'env' && item.config_group && item.config_id && item.env_name) {
+        response = await api.builds.createEnvErrorReport(item.config_group, item.config_id, item.env_name, buildId);
       } else if (item.kind === 'shared' && item.package && item.variant) {
         response = await api.builds.createSharedErrorReport(item.package, item.variant, buildId);
       } else {

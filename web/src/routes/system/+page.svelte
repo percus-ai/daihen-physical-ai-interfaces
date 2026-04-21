@@ -380,8 +380,8 @@
   const triggerBuildRun = async (item: BuildSettingSummary) => {
     setBuildActionPending(item.setting_id, true);
     try {
-      if (item.kind === 'env' && item.config_id && item.env_name) {
-        await api.builds.runEnv(item.config_id, item.env_name);
+      if (item.kind === 'env' && item.config_group && item.config_id && item.env_name) {
+        await api.builds.runEnv(item.config_group, item.config_id, item.env_name);
       } else if (item.kind === 'shared' && item.package && item.variant) {
         await api.builds.runShared(item.package, item.variant);
       }
@@ -410,8 +410,8 @@
     }
     setBuildActionPending(item.setting_id, true);
     try {
-      if (item.kind === 'env' && item.config_id && item.env_name) {
-        await api.builds.deleteEnvArtifact(item.config_id, item.env_name, buildId);
+      if (item.kind === 'env' && item.config_group && item.config_id && item.env_name) {
+        await api.builds.deleteEnvArtifact(item.config_group, item.config_id, item.env_name, buildId);
       } else if (item.kind === 'shared' && item.package && item.variant) {
         await api.builds.deleteSharedArtifact(item.package, item.variant, buildId);
       }
