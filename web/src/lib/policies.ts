@@ -3,6 +3,7 @@ export type PolicyInfo = {
   displayName: string;
   skipPretrained?: boolean;
   supportsScratchInitialization?: boolean;
+  modelSelectionField?: 'pretrained_path' | 'base_model_path';
   pretrainedModels?: Array<{
     id: string;
     path: string;
@@ -45,6 +46,7 @@ export const POLICY_TYPES: PolicyInfo[] = [
   {
     id: 'smolvla',
     displayName: 'SmolVLA (Small VLA)',
+    modelSelectionField: 'pretrained_path',
     pretrainedModels: [
       {
         id: 'smolvla_base',
@@ -65,6 +67,7 @@ export const POLICY_TYPES: PolicyInfo[] = [
     id: 'pi0',
     displayName: 'π0 (Physical Intelligence)',
     supportsScratchInitialization: true,
+    modelSelectionField: 'pretrained_path',
     pretrainedModels: [
       {
         id: 'pi0_base',
@@ -89,6 +92,7 @@ export const POLICY_TYPES: PolicyInfo[] = [
     id: 'pi05',
     displayName: 'π0.5 (Open-World VLA Model)',
     supportsScratchInitialization: true,
+    modelSelectionField: 'pretrained_path',
     pretrainedModels: [
       {
         id: 'pi05_base',
@@ -118,6 +122,7 @@ export const POLICY_TYPES: PolicyInfo[] = [
   {
     id: 'groot',
     displayName: 'GR00T N1.5',
+    modelSelectionField: 'base_model_path',
     pretrainedModels: [
       {
         id: 'groot_n15_3b',

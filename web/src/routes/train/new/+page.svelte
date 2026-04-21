@@ -45,6 +45,7 @@
     policy?: {
       type?: string;
       pretrained_path?: string;
+      base_model_path?: string;
       initialization?: 'scratch' | 'pretrained';
       dtype?: 'auto' | 'float32' | 'bfloat16' | 'float16';
       use_amp?: boolean;
@@ -222,12 +223,14 @@
     if (policy?.initialization === 'scratch' && info.supportsScratchInitialization) {
       return SCRATCH_PRETRAINED_ID;
     }
-    const pretrainedPath = String(policy?.pretrained_path ?? '').trim();
-    if (!pretrainedPath) {
+    const selectedModelPath = String(
+      info.modelSelectionField === 'base_model_path' ? policy?.base_model_path ?? '' : policy?.pretrained_path ?? ''
+    ).trim();
+    if (!selectedModelPath) {
       return info.pretrainedModels?.[0]?.id ?? '';
     }
     return (
-      info.pretrainedModels?.find((model) => model.path === pretrainedPath)?.id ??
+      info.pretrainedModels?.find((model) => model.path === selectedModelPath)?.id ??
       info.pretrainedModels?.[0]?.id ??
       ''
     );
@@ -565,7 +568,8 @@
       policyPayload.initialization = usesScratchInitialization ? 'scratch' : 'pretrained';
     }
     if (selectedPretrained?.path && !usesScratchInitialization) {
-      policyPayload.pretrained_path = selectedPretrained.path;
+      const selectionField = policyInfo?.modelSelectionField ?? 'pretrained_path';
+      policyPayload[selectionField] = selectedPretrained.path;
     }
     if (datasetVideoBackend !== 'auto') {
       (payload.dataset as Record<string, unknown>).video_backend = datasetVideoBackend;

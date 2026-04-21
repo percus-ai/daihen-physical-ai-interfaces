@@ -21,6 +21,7 @@ describe('training policy definitions', () => {
       expect.objectContaining({
         id: 'groot',
         displayName: 'GR00T N1.5',
+        modelSelectionField: 'base_model_path',
         pretrainedModels: [
           expect.objectContaining({
             id: 'groot_n15_3b',

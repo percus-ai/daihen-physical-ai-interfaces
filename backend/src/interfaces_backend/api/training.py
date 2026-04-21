@@ -680,6 +680,8 @@ def _build_pipeline_config(request: "JobCreateRequest", job_id: str) -> dict:
         config["policy"]["initialization"] = policy.initialization
     if policy.pretrained_path:
         config["policy"]["pretrained_path"] = policy.pretrained_path
+    if policy.base_model_path:
+        config["policy"]["base_model_path"] = policy.base_model_path
     if policy.dtype:
         config["policy"]["dtype"] = policy.dtype
     if policy.compile_model is not None:
@@ -2472,7 +2474,7 @@ def _register_job_for_checkpoint_if_needed(
             "policy_type/dataset_id を確認してください。"
         )
 
-    pretrained_path = policy_cfg.get("pretrained_path")
+    pretrained_path = policy_cfg.get("pretrained_path") or policy_cfg.get("base_model_path")
     author = str(job_data.get("author") or _default_author_user_id()).strip() or "unknown"
     dataset_info = _get_storage_dataset_info_from_manifest(dataset_id)
 

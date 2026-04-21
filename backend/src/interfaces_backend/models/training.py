@@ -257,6 +257,7 @@ class PolicyConfig(BaseModel):
         description="Policy initialization mode: pretrained or scratch",
     )
     pretrained_path: Optional[str] = Field(None, description="Pretrained model path")
+    base_model_path: Optional[str] = Field(None, description="Base foundation model path")
     compile_model: Optional[bool] = Field(None, description="Enable torch.compile")
     gradient_checkpointing: Optional[bool] = Field(None, description="Enable gradient checkpointing")
     dtype: Optional[str] = Field(None, description="Model dtype: float32, float16, bfloat16")
@@ -267,9 +268,13 @@ class PolicyConfig(BaseModel):
         if self.initialization == "scratch":
             if self.pretrained_path:
                 raise ValueError("policy.pretrained_path must not be set when initialization=scratch")
+            if self.base_model_path:
+                raise ValueError("policy.base_model_path must not be set when initialization=scratch")
             return self
-        if self.initialization == "pretrained" and not self.pretrained_path:
-            raise ValueError("policy.pretrained_path is required when initialization=pretrained")
+        if self.initialization == "pretrained" and not (self.pretrained_path or self.base_model_path):
+            raise ValueError(
+                "policy.pretrained_path or policy.base_model_path is required when initialization=pretrained"
+            )
         return self
 
 

@@ -92,6 +92,24 @@ def test_job_create_request_rejects_pretrained_initialization_without_pretrained
         JobCreateRequest.model_validate(payload)
 
 
+def test_job_create_request_allows_pretrained_initialization_with_base_model_path():
+    from interfaces_backend.models.training import JobCreateRequest
+
+    payload = _valid_create_job_payload()
+    payload["policy"] = {
+        "type": "groot",
+        "initialization": "pretrained",
+        "base_model_path": "nvidia/GR00T-N1.5-3B",
+    }
+
+    request = JobCreateRequest.model_validate(payload)
+
+    assert request.policy is not None
+    assert request.policy.initialization == "pretrained"
+    assert request.policy.pretrained_path is None
+    assert request.policy.base_model_path == "nvidia/GR00T-N1.5-3B"
+
+
 def test_build_pipeline_config_preserves_explicit_scratch_initialization():
     from interfaces_backend.models.training import JobCreateRequest
     import interfaces_backend.api.training as training_api
@@ -106,6 +124,23 @@ def test_build_pipeline_config_preserves_explicit_scratch_initialization():
     config = training_api._build_pipeline_config(request, job_id="job-1")
 
     assert config["policy"]["initialization"] == "scratch"
+    assert "pretrained_path" not in config["policy"]
+
+
+def test_build_pipeline_config_preserves_groot_base_model_path():
+    from interfaces_backend.models.training import JobCreateRequest
+    import interfaces_backend.api.training as training_api
+
+    payload = _valid_create_job_payload()
+    payload["policy"] = {
+        "type": "groot",
+        "base_model_path": "nvidia/GR00T-N1.5-3B",
+    }
+
+    request = JobCreateRequest.model_validate(payload)
+    config = training_api._build_pipeline_config(request, job_id="job-1")
+
+    assert config["policy"]["base_model_path"] == "nvidia/GR00T-N1.5-3B"
     assert "pretrained_path" not in config["policy"]
 
 

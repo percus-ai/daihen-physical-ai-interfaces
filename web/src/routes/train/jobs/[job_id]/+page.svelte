@@ -46,7 +46,7 @@
 
   type TrainingConfig = {
     dataset?: { id?: string; video_backend?: string };
-    policy?: { type?: string; pretrained_path?: string };
+    policy?: { type?: string; pretrained_path?: string; base_model_path?: string };
     cloud?: {
       provider?: string;
       gpu_model?: string;
@@ -138,6 +138,11 @@
   let rescueCpuElapsed: number | null = $state(null);
   let rescueCpuTimeout: number | null = $state(null);
   let rescueCpuResult: RescueCPUResult | null = $state(null);
+  const selectedPolicyModelPath = $derived(
+    $jobQuery.data?.training_config?.policy?.base_model_path ??
+      $jobQuery.data?.training_config?.policy?.pretrained_path ??
+      null
+  );
   let rescueCpuCopied = $state(false);
   let rescueCpuOperationSnapshot: TrainingJobOperationStatusResponse | null = $state(null);
   let remoteCheckpointRoot = $state('');
@@ -1117,7 +1122,7 @@
         <div class="nested-block p-4">
           <p class="label">ポリシー</p>
           <p class="mt-2 font-semibold text-slate-800">{trainingConfig?.policy?.type ?? '-'}</p>
-          <p class="mt-1 text-xs text-slate-500">pretrained: {trainingConfig?.policy?.pretrained_path ?? '-'}</p>
+          <p class="mt-1 text-xs text-slate-500">model: {selectedPolicyModelPath ?? '-'}</p>
         </div>
         <div class="nested-block p-4">
           <p class="label">学習</p>
