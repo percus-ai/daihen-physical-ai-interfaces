@@ -336,6 +336,7 @@ class InferenceRuntimeManager:
         task: Optional[str],
         policy_options: Optional[dict[str, Any]] = None,
         joint_names: Optional[list[str]] = None,
+        camera_key_aliases: Optional[dict[str, str]] = None,
         bridge_stream_config: Optional[dict[str, Any]] = None,
         progress_callback: Optional[Callable[[str, float, str, Optional[dict[str, Any]]], None]] = None,
     ) -> str:
@@ -506,6 +507,11 @@ class InferenceRuntimeManager:
             },
             "robot": {
                 "joint_names": [str(name) for name in (joint_names or []) if str(name).strip()],
+                "camera_key_aliases": {
+                    str(src): str(dst)
+                    for src, dst in (camera_key_aliases or {}).items()
+                    if str(src).strip() and str(dst).strip()
+                },
                 "bridge_stream_config": dict(bridge_stream_config or {}),
             },
             "execution_hz": _ACTION_HZ,

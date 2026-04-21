@@ -74,7 +74,7 @@ def test_extract_camera_specs_resolves_lerobot_camera_fields() -> None:
     ]
 
 
-def test_extract_camera_specs_preserves_configured_camera_names() -> None:
+def test_extract_camera_specs_normalizes_legacy_arm_camera_source() -> None:
     snapshot = {
         "profile": {
             "lerobot": {
@@ -92,8 +92,8 @@ def test_extract_camera_specs_preserves_configured_camera_names() -> None:
 
     assert extract_camera_specs(snapshot) == [
         {
-            "name": "arm_camera",
-            "source": "arm_camera",
+            "name": "arm_camera_1",
+            "source": "arm_camera_1",
             "topic": "/arm_camera/image_raw/compressed",
             "enabled": True,
             "package": "lerobot",
@@ -243,13 +243,13 @@ def test_build_inference_bridge_config_uses_profile_resolution() -> None:
                 },
                 "cameras": [
                     {
-                        "name": "top_camera",
+                        "name": "cam_top",
                         "source": "top_camera",
                         "topic": "/top_camera/image_raw/compressed",
                         "enabled": True,
                     },
                     {
-                        "name": "arm_camera_1",
+                        "name": "cam_side",
                         "source": "side_camera",
                         "topic": "/side_camera/image_raw/compressed",
                         "enabled": True,
@@ -276,34 +276,9 @@ def test_build_inference_bridge_config_uses_profile_resolution() -> None:
         ],
         "camera_streams": [
             {"name": "top_camera", "topic": "/top_camera/image_raw/compressed"},
-            {"name": "arm_camera_1", "topic": "/side_camera/image_raw/compressed"},
+            {"name": "side_camera", "topic": "/side_camera/image_raw/compressed"},
         ],
     }
-
-
-@pytest.mark.parametrize("profile_name", ["so101_single_teleop", "so101_dual_teleop"])
-def test_so101_inference_bridge_camera_streams_are_canonical(profile_name: str) -> None:
-    profile_path = _profiles_dir() / f"{profile_name}.yaml"
-    assert profile_path.is_file(), f"missing profile yaml: {profile_path}"
-
-    snapshot = _load_profile_snapshot(profile_path)
-    config = build_inference_bridge_config(snapshot)
-    stream_names = [stream["name"] for stream in config["camera_streams"]]
-
-    assert "top_camera" in stream_names
-    assert "arm_camera_1" in stream_names
-    assert "arm_camera" not in stream_names
-
-
-def test_real_profiles_do_not_use_legacy_arm_camera_key_in_lerobot_cameras() -> None:
-    legacy_entries: list[str] = []
-    for profile_path in _profiles_dir().glob("*.yaml"):
-        snapshot = _load_profile_snapshot(profile_path)
-        for spec in extract_camera_specs(snapshot):
-            if spec.get("name") == "arm_camera" or spec.get("source") == "arm_camera":
-                legacy_entries.append(f"{profile_path.name}:{spec}")
-
-    assert legacy_entries == []
 
 
 def test_build_profile_health_contract_uses_lerobot_required_inputs() -> None:

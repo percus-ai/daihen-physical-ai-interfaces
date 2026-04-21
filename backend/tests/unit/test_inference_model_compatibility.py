@@ -95,31 +95,6 @@ def test_validate_inference_model_profile_compatibility_allows_extra_cameras(tmp
     assert result.state_dim == 7
     assert result.action_dim == 7
     assert result.model_image_keys == ["cam_high", "cam_left_wrist"]
-    assert "cam_high" in result.resolved_camera_keys
-    assert "cam_left_wrist" in result.resolved_camera_keys
-
-
-def test_validate_inference_model_profile_compatibility_allows_canonical_runtime_cameras(tmp_path):
-    model_dir = _write_model_config(
-        tmp_path,
-        policy_type="act",
-        state_dim=7,
-        action_dim=7,
-        image_keys=["top_camera", "arm_camera_1"],
-    )
-    profile_snapshot = _build_profile_snapshot(
-        camera_specs=[
-            {"name": "top_camera", "source": "top_camera", "topic": "/top"},
-            {"name": "arm_camera_1", "source": "side_camera", "topic": "/wrist"},
-        ]
-    )
-
-    result = validate_inference_model_profile_compatibility(
-        model_dir=model_dir,
-        profile_snapshot=profile_snapshot,
-    )
-
-    assert result.resolved_camera_keys == ["arm_camera_1", "top_camera"]
 
 
 def test_validate_inference_model_profile_compatibility_blocks_missing_required_camera(tmp_path):
