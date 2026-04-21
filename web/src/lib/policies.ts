@@ -114,6 +114,25 @@ export const POLICY_TYPES: PolicyInfo[] = [
     gradientCheckpointing: true,
     dtype: 'bfloat16',
     useAmp: false
+  },
+  {
+    id: 'groot',
+    displayName: 'GR00T N1.5',
+    pretrainedModels: [
+      {
+        id: 'groot_n15_3b',
+        path: 'nvidia/GR00T-N1.5-3B',
+        name: 'GR00T N1.5 3B (推奨)',
+        description: 'NVIDIA 公開のベースモデル'
+      }
+    ],
+    defaultSteps: 10000,
+    defaultBatchSize: 32,
+    defaultSaveFreq: 1000,
+    defaultLogFreq: 100,
+    defaultNumWorkers: 8,
+    recommendedStorage: 200,
+    recommendedGpu: 'H100'
   }
 ];
 
