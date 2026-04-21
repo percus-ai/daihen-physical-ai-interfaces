@@ -34,7 +34,6 @@ from interfaces_backend.services.session_manager import (
 )
 from interfaces_backend.services.vlabor_profiles import (
     build_inference_bridge_config,
-    build_inference_camera_aliases,
     build_inference_joint_names,
     extract_arm_namespaces,
     extract_recorder_arm_streams,
@@ -302,7 +301,6 @@ class InferenceSessionManager(BaseSessionManager):
                     status_code=400,
                     detail="No inference joints configured in active profile",
                 )
-            camera_key_aliases = build_inference_camera_aliases(state.profile.snapshot)
             bridge_stream_config = build_inference_bridge_config(state.profile.snapshot)
             self._validate_inference_bridge_resolution(
                 profile_name=state.profile.name,
@@ -407,7 +405,6 @@ class InferenceSessionManager(BaseSessionManager):
                     task=kwargs.get("task"),
                     policy_options=kwargs.get("policy_options"),
                     joint_names=joint_names,
-                    camera_key_aliases=camera_key_aliases,
                     bridge_stream_config=bridge_stream_config,
                     progress_callback=progress_callback,
                 )

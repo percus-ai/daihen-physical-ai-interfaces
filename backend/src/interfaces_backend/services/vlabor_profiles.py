@@ -302,13 +302,6 @@ def _as_bool(value: object) -> bool:
     return bool(value)
 
 
-def _normalize_camera_source_name(value: object) -> str:
-    text = str(value or "").strip()
-    if text == "arm_camera":
-        return "arm_camera_1"
-    return text
-
-
 def _append_unique(items: list[str], value: object) -> None:
     text = str(value or "").strip()
     if text and text not in items:
@@ -380,9 +373,9 @@ def extract_status_camera_specs(snapshot: dict[str, Any]) -> list[dict[str, Any]
             for camera in cameras:
                 if not isinstance(camera, dict):
                     continue
-                source_name = _normalize_camera_source_name(
+                source_name = str(
                     _render_setting(camera.get("source") or camera.get("name") or "", settings)
-                )
+                ).strip()
                 topic = _render_setting(camera.get("topic") or "", settings)
                 add_camera(
                     source_name,
@@ -567,13 +560,9 @@ def extract_camera_specs(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     for camera in cameras:
         if not isinstance(camera, dict):
             continue
-        name = _normalize_camera_source_name(
-            _render_setting(camera.get("name") or camera.get("source") or "", settings)
-        )
+        name = str(_render_setting(camera.get("name") or camera.get("source") or "", settings)).strip()
         topic = str(_render_setting(camera.get("topic") or "", settings)).strip()
-        source = (
-            _normalize_camera_source_name(_render_setting(camera.get("source") or name or "", settings)) or name
-        )
+        source = str(_render_setting(camera.get("source") or name or "", settings)).strip() or name
         enabled = _as_bool(_render_setting(camera.get("enabled", True), settings))
         if not name or not topic:
             continue
@@ -991,9 +980,7 @@ def build_inference_bridge_config(snapshot: dict[str, Any]) -> dict[str, Any]:
         if not _as_bool(spec.get("enabled", True)):
             continue
         topic = str(spec.get("topic") or "").strip()
-        # Inference worker alias mapping is based on "source" camera names.
-        # Prefer source and fallback to display name when source is not present.
-        name = str(spec.get("source") or spec.get("name") or "").strip()
+        name = str(spec.get("name") or "").strip()
         if not name or not topic or name in seen_camera_names:
             continue
         seen_camera_names.add(name)
@@ -1031,19 +1018,6 @@ def build_inference_joint_names(snapshot: dict[str, Any]) -> list[str]:
     for namespace in extract_arm_namespaces(snapshot):
         names.extend(f"{namespace}_{suffix}" for suffix in _SO101_DEFAULT_JOINT_SUFFIXES)
     return names
-
-
-def build_inference_camera_aliases(snapshot: dict[str, Any]) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for spec in extract_camera_specs(snapshot):
-        if not _as_bool(spec.get("enabled", True)):
-            continue
-        source_name = str(spec.get("source") or "").strip()
-        camera_name = str(spec.get("name") or "").strip()
-        if not source_name or not camera_name:
-            continue
-        aliases[source_name] = camera_name
-    return aliases
 
 
 def build_profile_health_contract(snapshot: dict[str, Any]) -> ProfileHealthContract:

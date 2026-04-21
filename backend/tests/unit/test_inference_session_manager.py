@@ -385,11 +385,6 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
     )
     monkeypatch.setattr(
         inference_session,
-        "build_inference_camera_aliases",
-        lambda _snapshot: {"top_camera": "top_camera"},
-    )
-    monkeypatch.setattr(
-        inference_session,
         "build_inference_bridge_config",
         lambda _snapshot: {
             "arm_streams": [
@@ -475,11 +470,6 @@ def test_create_blocks_worker_start_on_model_profile_mismatch(monkeypatch, tmp_p
     )
     monkeypatch.setattr(
         inference_session,
-        "build_inference_camera_aliases",
-        lambda _snapshot: {"top_camera": "top_camera"},
-    )
-    monkeypatch.setattr(
-        inference_session,
         "build_inference_bridge_config",
         lambda _snapshot: {
             "arm_streams": [
@@ -556,11 +546,6 @@ def test_create_rejects_when_worker_already_running_before_sync(monkeypatch) -> 
         inference_session,
         "build_inference_joint_names",
         lambda _snapshot: [f"left_arm_joint{i}" for i in range(1, 8)],
-    )
-    monkeypatch.setattr(
-        inference_session,
-        "build_inference_camera_aliases",
-        lambda _snapshot: {"top_camera": "top_camera"},
     )
     monkeypatch.setattr(
         inference_session,

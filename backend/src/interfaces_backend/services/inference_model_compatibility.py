@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from interfaces_backend.services.vlabor_profiles import (
-    build_inference_camera_aliases,
     build_inference_joint_names,
     extract_camera_specs,
 )
@@ -80,21 +79,19 @@ def _collect_resolved_profile_camera_keys(
     model_image_keys: list[str],
     policy_type: str,
 ) -> list[str]:
-    aliases = build_inference_camera_aliases(profile_snapshot)
     camera_key_map = get_camera_key_map(policy_type)
     resolved_keys: list[str] = []
     seen: set[str] = set()
     for spec in extract_camera_specs(profile_snapshot):
         if not bool(spec.get("enabled", True)):
             continue
-        source_key = str(spec.get("source") or spec.get("name") or "").strip()
-        if not source_key:
+        runtime_key = str(spec.get("name") or "").strip()
+        if not runtime_key:
             continue
-        normalized_key = aliases.get(source_key, source_key)
-        if normalized_key in model_image_keys:
-            resolved_key = normalized_key
+        if runtime_key in model_image_keys:
+            resolved_key = runtime_key
         else:
-            resolved_key = camera_key_map.get(normalized_key, normalized_key)
+            resolved_key = camera_key_map.get(runtime_key, runtime_key)
         if resolved_key in seen:
             continue
         seen.add(resolved_key)
