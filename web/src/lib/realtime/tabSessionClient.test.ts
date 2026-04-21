@@ -6,6 +6,11 @@ const realtimeApi = {
   deleteTabSession: vi.fn()
 };
 
+const authApi = {
+  status: vi.fn(),
+  refresh: vi.fn()
+};
+
 vi.mock('$app/environment', () => ({
   browser: true
 }));
@@ -16,7 +21,8 @@ vi.mock('$lib/config', () => ({
 
 vi.mock('$lib/api/client', () => ({
   api: {
-    realtime: realtimeApi
+    realtime: realtimeApi,
+    auth: authApi
   }
 }));
 
@@ -152,6 +158,14 @@ describe('tabSessionClient', () => {
     vi.clearAllMocks();
     FakeEventSource.instances = [];
     FakeBroadcastChannel.channels.clear();
+    authApi.status.mockResolvedValue({
+      authenticated: true,
+      expires_at: Math.floor(Date.now() / 1000) + 3600
+    });
+    authApi.refresh.mockResolvedValue({
+      authenticated: true,
+      expires_at: Math.floor(Date.now() / 1000) + 3600
+    });
 
     const documentTarget = createEventTarget();
     const windowTarget = createEventTarget();
@@ -395,5 +409,66 @@ describe('tabSessionClient', () => {
 
     expect(client.tabSessionId).toBeTruthy();
     expect(client.tabSessionId).not.toBe(previousTabSessionId);
+  });
+
+  it('refreshes auth and reconnects the stream before the token expires', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-21T00:00:00Z'));
+    try {
+      (window as unknown as { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout }).setTimeout = setTimeout;
+      (window as unknown as { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout }).clearTimeout = clearTimeout;
+
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      authApi.status.mockResolvedValueOnce({
+        authenticated: true,
+        expires_at: nowSeconds + 120
+      });
+      authApi.refresh.mockResolvedValueOnce({
+        authenticated: true,
+        expires_at: nowSeconds + 3600
+      });
+      realtimeApi.putTabSessionState.mockResolvedValue({ revision: 1 });
+      realtimeApi.tabSessionState.mockResolvedValue(
+        buildStateResponse({
+          revision: 1
+        })
+      );
+
+      const { getTabRealtimeClient } = await import('./tabSessionClient');
+      const client = getTabRealtimeClient() as unknown as {
+        registerContributor: (input: {
+          contributorId?: string;
+          subscriptions: Array<{
+            subscription_id: string;
+            kind: 'profiles.active';
+            params: Record<string, never>;
+          }>;
+        }) => unknown;
+        syncInFlight?: Promise<void> | null;
+      };
+
+      client.registerContributor({
+        contributorId: 'profiles',
+        subscriptions: [
+          {
+            subscription_id: 'profiles.active',
+            kind: 'profiles.active',
+            params: {}
+          }
+        ]
+      });
+      await flushClient(client);
+      await Promise.resolve();
+
+      const firstSource = FakeEventSource.instances[0];
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushClient(client);
+
+      expect(authApi.refresh).toHaveBeenCalledTimes(1);
+      expect(firstSource?.readyState).toBe(FakeEventSource.CLOSED);
+      expect(FakeEventSource.instances).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

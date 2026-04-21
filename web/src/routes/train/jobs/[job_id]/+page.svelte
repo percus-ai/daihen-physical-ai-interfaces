@@ -200,7 +200,12 @@
       .map((point: MetricPoint) => ({ step: point.step as number, loss: point.loss as number })) ?? []
   );
 
+  const liveJobStatuses = ['queued', 'starting', 'deploying', 'running'];
+  const terminalJobStatuses = ['completed', 'failed', 'stopped', 'terminated', 'cancelled', 'deleted'];
   const isRunning = $derived(['running', 'starting', 'deploying'].includes(status));
+  const shouldSubscribeJobRealtime = $derived(
+    Boolean(jobId) && (!status || liveJobStatuses.includes(status) || !terminalJobStatuses.includes(status))
+  );
   const shouldQueryInstanceStatus = $derived(
     Boolean(jobId && jobInfo?.instance_id && ['running', 'starting', 'deploying'].includes(status))
   );
@@ -484,11 +489,13 @@
       kind: 'training.job.metrics',
       params: { job_id: targetJobId, limit: 2000 }
     };
-    const subscriptions: TabSessionSubscription[] = [
-      coreSubscription,
-      provisionSubscription,
-      metricsSubscription
-    ];
+    const subscriptions: TabSessionSubscription[] = shouldSubscribeJobRealtime
+      ? [
+          coreSubscription,
+          provisionSubscription,
+          metricsSubscription
+        ]
+      : [];
     if (shouldSubscribeLogStream) {
       const logsSubscription: TrainingJobLogsSubscription = {
         subscription_id: `train.job.${targetJobId}.logs`,

@@ -6,6 +6,9 @@ const TAB_SESSION_ID_KEY = 'percus.realtime.tab_session_id';
 const TAB_SESSION_REVISION_KEY = 'percus.realtime.tab_session_revision';
 const TAB_SESSION_BROADCAST_CHANNEL = 'percus.realtime.tab_session';
 const TAB_SESSION_DEBUG_KEY = 'percus.realtime.debug';
+const AUTH_REFRESH_LEEWAY_SECONDS = 60;
+const AUTH_REFRESH_MIN_DELAY_MS = 10_000;
+const AUTH_REFRESH_RETRY_DELAY_MS = 30_000;
 
 type TabSessionPresenceMessage = {
   type: 'announce' | 'ack';
@@ -174,12 +177,15 @@ class TabRealtimeClient {
   private bootstrapInFlight: Promise<void> | null = null;
   private bootstrapComplete = false;
   private shouldPersistSessionRecord = true;
+  private authRefreshTimer: number | null = null;
+  private authRefreshInFlight: Promise<void> | null = null;
 
   constructor() {
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     window.addEventListener('online', this.handleOnline);
     window.addEventListener('pagehide', this.handlePageHide);
     this.initializePresenceChannel();
+    void this.syncAuthRefreshSchedule('startup');
   }
 
   registerContributor(input: TabRealtimeContributor): TabRealtimeContributorHandle {
@@ -261,6 +267,7 @@ class TabRealtimeClient {
         window.clearTimeout(this.streamReconnectTimer);
         this.streamReconnectTimer = null;
       }
+      this.clearAuthRefreshTimer();
     }
   }
 
@@ -270,11 +277,15 @@ class TabRealtimeClient {
     };
     this.debug('lifecycle.visibilitychange', { lifecycle: this.lifecycle });
     this.scheduleSync('lifecycle.visibilitychange');
+    if (this.lifecycle.visibility === 'foreground') {
+      void this.syncAuthRefreshSchedule('lifecycle.foreground');
+    }
   };
 
   private readonly handleOnline = () => {
     this.debug('network.online');
     this.scheduleSync('network.online', { verifySession: true });
+    void this.syncAuthRefreshSchedule('network.online');
   };
 
   private readonly handlePageHide = () => {
@@ -286,6 +297,7 @@ class TabRealtimeClient {
     this.clearStoredSessionRecord();
     this.closeStream();
     this.clearStreamReconnectTimer();
+    this.clearAuthRefreshTimer();
     this.pendingSyncReasons = [];
     this.syncQueued = false;
     this.deleteAfterSyncRequested = false;
@@ -776,6 +788,112 @@ class TabRealtimeClient {
     }
     window.clearTimeout(this.streamReconnectTimer);
     this.streamReconnectTimer = null;
+  }
+
+  private clearAuthRefreshTimer() {
+    if (this.authRefreshTimer === null) {
+      return;
+    }
+    window.clearTimeout(this.authRefreshTimer);
+    this.authRefreshTimer = null;
+  }
+
+  private scheduleAuthRefresh(expiresAt?: number | null) {
+    this.clearAuthRefreshTimer();
+    if (this.disposed || this.lifecycle.visibility === 'closing') {
+      return;
+    }
+    if (!expiresAt) {
+      return;
+    }
+    const refreshAtMs = (expiresAt - AUTH_REFRESH_LEEWAY_SECONDS) * 1000;
+    const remainingMs = refreshAtMs - Date.now();
+    const delayMs = remainingMs <= 0 ? 0 : Math.max(AUTH_REFRESH_MIN_DELAY_MS, remainingMs);
+    this.debug('auth.refresh.schedule', {
+      expiresAt,
+      delayMs,
+    });
+    this.authRefreshTimer = window.setTimeout(() => {
+      this.authRefreshTimer = null;
+      void this.refreshAuthSession('auth.refresh.timer');
+    }, delayMs);
+  }
+
+  private scheduleAuthRefreshRetry(reason: string) {
+    this.clearAuthRefreshTimer();
+    if (this.disposed || this.lifecycle.visibility === 'closing') {
+      return;
+    }
+    this.debug('auth.refresh.retry-schedule', {
+      reason,
+      delayMs: AUTH_REFRESH_RETRY_DELAY_MS,
+    });
+    this.authRefreshTimer = window.setTimeout(() => {
+      this.authRefreshTimer = null;
+      void this.syncAuthRefreshSchedule('auth.refresh.retry');
+    }, AUTH_REFRESH_RETRY_DELAY_MS);
+  }
+
+  private async syncAuthRefreshSchedule(reason: string) {
+    if (this.disposed || this.lifecycle.visibility === 'closing') {
+      return;
+    }
+    try {
+      const status = await api.auth.status();
+      if (!status.authenticated) {
+        this.clearAuthRefreshTimer();
+        this.closeStream();
+        return;
+      }
+      this.scheduleAuthRefresh(status.expires_at);
+      this.debug('auth.status.synced', {
+        reason,
+        expiresAt: status.expires_at ?? null,
+      });
+    } catch (error) {
+      this.debug('auth.status.failed', {
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.scheduleAuthRefreshRetry(reason);
+    }
+  }
+
+  private async refreshAuthSession(reason: string) {
+    if (this.disposed || this.lifecycle.visibility === 'closing') {
+      return;
+    }
+    if (this.authRefreshInFlight) {
+      await this.authRefreshInFlight;
+      return;
+    }
+    this.authRefreshInFlight = (async () => {
+      try {
+        const refreshed = await api.auth.refresh();
+        if (!refreshed.authenticated) {
+          this.closeStream();
+          this.clearAuthRefreshTimer();
+          return;
+        }
+        this.scheduleAuthRefresh(refreshed.expires_at);
+        this.closeStream();
+        this.clearStreamReconnectTimer();
+        this.scheduleSync(reason, { verifySession: true });
+        this.debug('auth.refresh.success', {
+          reason,
+          expiresAt: refreshed.expires_at ?? null,
+        });
+      } catch (error) {
+        this.debug('auth.refresh.failed', {
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.scheduleAuthRefreshRetry(reason);
+      } finally {
+        this.authRefreshInFlight = null;
+      }
+    })();
+    await this.authRefreshInFlight;
   }
 
   private async verifySession(
