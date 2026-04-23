@@ -324,7 +324,7 @@
       </div>
     </aside>
 
-    <main class={`space-y-8 ${immersiveView ? 'lg:space-y-6' : ''}`}>
+    <main class={`min-w-0 space-y-8 ${immersiveView ? 'lg:space-y-6' : ''}`}>
       {@render children?.()}
     </main>
   </div>

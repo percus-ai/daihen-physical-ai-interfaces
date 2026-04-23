@@ -864,6 +864,7 @@ export type StorageModelInfo = {
   training_steps?: number | null;
   batch_size?: number | null;
   size_bytes?: number | null;
+  artifact_path?: string | null;
   is_local?: boolean;
   source?: string | null;
   status?: string | null;
@@ -904,6 +905,18 @@ export type RemoteCheckpointListResponse = {
   ssh_available: boolean;
   requires_rescue_cpu: boolean;
   message: string;
+};
+
+export type CheckpointDetailResponse = {
+  job_name: string;
+  policy_type: string;
+  dataset_id: string;
+  pretrained_path?: string | null;
+  available_steps: number[];
+  latest_step: number;
+  created_at: string;
+  size_mb: number;
+  author?: string | null;
 };
 
 export type RemoteCheckpointUploadResult = {
@@ -1778,6 +1791,8 @@ export const api = {
     progress: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/progress`),
     remoteCheckpoints: (jobId: string) =>
       fetchApi<RemoteCheckpointListResponse>(`/api/training/jobs/${jobId}/checkpoints/remote`),
+    checkpointDetail: (jobName: string) =>
+      fetchApi<CheckpointDetailResponse>(`/api/training/checkpoints/${encodeURIComponent(jobName)}`),
     startCheckpointUploadOperation: (jobId: string, checkpointName: string) =>
       fetchApi<TrainingJobOperationAcceptedResponse>(
         `/api/training/jobs/${jobId}/operations/checkpoint-upload`,

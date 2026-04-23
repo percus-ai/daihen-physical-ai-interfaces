@@ -15,11 +15,71 @@ export function formatPercent(value: number | null | undefined): string {
   return `${value.toFixed(1)}%`;
 }
 
+const JAPAN_TIME_ZONE = 'Asia/Tokyo';
+
+const dateTimeFormatter = new Intl.DateTimeFormat('ja-JP', {
+  timeZone: JAPAN_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+});
+
+const UUID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+export function parseDateMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const timestampMs = new Date(value).getTime();
+  if (Number.isNaN(timestampMs)) return null;
+  return timestampMs;
+}
+
 export function formatDate(value: string | null | undefined): string {
   if (!value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('ja-JP');
+  return dateTimeFormatter.format(date);
+}
+
+export function formatDurationMs(valueMs: number | null | undefined): string {
+  if (valueMs === null || valueMs === undefined || valueMs < 0 || !Number.isFinite(valueMs)) {
+    return '-';
+  }
+
+  const totalSeconds = Math.floor(valueMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) return `${hours}時間 ${minutes}分`;
+  if (minutes > 0) return `${minutes}分 ${seconds}秒`;
+  return `${seconds}秒`;
+}
+
+export function formatElapsedDuration(
+  startValue: string | null | undefined,
+  endValue: string | null | undefined,
+  fallbackEndMs?: number
+): string {
+  const startMs = parseDateMs(startValue);
+  if (startMs === null) return '-';
+
+  const endMs = parseDateMs(endValue) ?? fallbackEndMs;
+  if (endMs === undefined) return '-';
+
+  return formatDurationMs(endMs - startMs);
+}
+
+export function formatUuidPreview(value: string | null | undefined): string {
+  if (!value) return '-';
+  const trimmed = value.trim();
+  if (!UUID_PATTERN.test(trimmed)) return trimmed || '-';
+
+  return trimmed.split('-').slice(0, 2).join('-');
 }
 
 export function formatRelativeDate(

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class JobStatus(str, Enum):
@@ -82,6 +82,37 @@ class JobInfo(BaseModel):
     deleted_at: Optional[datetime] = None
 
     model_config = ConfigDict(use_enum_values=True)
+
+    @field_validator(
+        "created_at",
+        "updated_at",
+        "started_at",
+        "completed_at",
+        "deleted_at",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_naive_datetime_to_utc(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return value
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            try:
+                parsed = datetime.fromisoformat(normalized)
+            except ValueError:
+                return value
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        return value
 
 
 class JobListResponse(BaseModel):

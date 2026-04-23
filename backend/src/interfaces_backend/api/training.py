@@ -249,6 +249,10 @@ RUNNING_STATUSES_WITH_PENDING = {"running", "starting", "deploying", "pending"}
 _REQUIRED_VAST_ENV_VARS = ("VAST_API_KEY", "VAST_SSH_PRIVATE_KEY")
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _first_dict(*values: object) -> Optional[dict]:
     for value in values:
         if isinstance(value, dict):
@@ -1480,13 +1484,13 @@ async def _refresh_job_status_from_instance(job_data: dict) -> Optional[str]:
     if instance_status is None:
         job_data["status"] = "terminated"
         job_data["termination_reason"] = "INSTANCE_NOT_FOUND"
-        job_data["completed_at"] = datetime.now().isoformat()
+        job_data["completed_at"] = _utcnow_iso()
         await _save_job(job_data)
         return instance_status
     if _is_terminated_instance_status(instance_status):
         job_data["status"] = "terminated"
         job_data["termination_reason"] = "INSTANCE_TERMINATED"
-        job_data["completed_at"] = datetime.now().isoformat()
+        job_data["completed_at"] = _utcnow_iso()
         await _save_job(job_data)
         return instance_status
     return instance_status
@@ -1677,7 +1681,7 @@ async def _load_job(job_id: str, include_deleted: bool = False) -> Optional[dict
 
 async def _save_job(job_data: dict) -> None:
     """Upsert job into DB."""
-    job_data["updated_at"] = datetime.now().isoformat()
+    job_data["updated_at"] = _utcnow_iso()
 
     fixed_fields = {
         "job_id",
@@ -1948,7 +1952,7 @@ async def _upsert_model_for_job(job_data: dict) -> None:
     except Exception as exc:
         logger.debug("Failed to resolve checkpoint entry for model upsert %s: %s", model_id, exc)
 
-    now = datetime.now().isoformat()
+    now = _utcnow_iso()
     job_name = str(job_data.get("job_name") or "").strip()
     explicit_model_name = str(job_data.get("model_name") or "").strip()
     default_model_name = explicit_model_name or job_name or model_id
@@ -1996,6 +2000,9 @@ async def _upsert_model_for_job(job_data: dict) -> None:
     content_hash = str(job_data.get("model_content_hash") or "").strip()
     if content_hash:
         payload["content_hash"] = content_hash
+    artifact_path = str(job_data.get("model_artifact_path") or "").strip()
+    if artifact_path:
+        payload["artifact_path"] = artifact_path
     await upsert_with_owner("models", "id", payload)
 
 
@@ -2085,7 +2092,7 @@ async def _mark_job_completed(
         return
     job_data["status"] = "completed"
     job_data["termination_reason"] = termination_reason
-    job_data["completed_at"] = datetime.now().isoformat()
+    job_data["completed_at"] = _utcnow_iso()
     await _save_job_with_registered_model(job_data)
     await _archive_job_metrics(job_id)
 
@@ -2502,26 +2509,18 @@ def _list_r2_file_objects(s3_manager: object, s3_path: str) -> list[dict]:
     return files
 
 
-def _ensure_model_artifact_in_r2_from_checkpoint(
+def _resolve_model_artifact_in_r2_from_checkpoint(
     checkpoint_mgr: "CheckpointIndexManager",
     *,
     checkpoint_job_name: str,
-    model_id: str,
     step: int,
-) -> tuple[str, int, bool]:
-    """Ensure models/{model_id} exists by copying from checkpoint pretrained_model."""
+) -> tuple[str, int]:
+    """Resolve checkpoint pretrained_model as the model artifact source."""
     sync = checkpoint_mgr.sync
     bucket = sync.bucket
     prefix = sync._get_prefix()
     source_prefix = f"{prefix}checkpoints/{checkpoint_job_name}/step_{step:06d}/pretrained_model/"
-    target_prefix = f"{prefix}models/{model_id}/"
     source_path = f"s3://{bucket}/{source_prefix}"
-    target_path = f"s3://{bucket}/{target_prefix}"
-
-    existing_target_files = _list_r2_file_objects(sync.s3, target_path)
-    if existing_target_files:
-        size_bytes = sum(max(int(obj.get("Size") or 0), 0) for obj in existing_target_files)
-        return target_path.rstrip("/"), size_bytes, False
 
     source_files = _list_r2_file_objects(sync.s3, source_path)
     if not source_files:
@@ -2529,22 +2528,8 @@ def _ensure_model_artifact_in_r2_from_checkpoint(
             f"モデル生成元が見つかりません: {source_path} (pretrained_model が必要です)"
         )
 
-    for obj in source_files:
-        source_key = str(obj.get("Key") or "").strip()
-        if not source_key.startswith(source_prefix):
-            continue
-        relative = source_key[len(source_prefix):].lstrip("/")
-        if not relative:
-            continue
-        target_key = f"{target_prefix}{relative}"
-        sync.s3.client.copy(
-            {"Bucket": bucket, "Key": source_key},
-            bucket,
-            target_key,
-        )
-
     size_bytes = sum(max(int(obj.get("Size") or 0), 0) for obj in source_files)
-    return target_path.rstrip("/"), size_bytes, True
+    return source_path.rstrip("/"), size_bytes
 
 
 def _format_byte_size(size_bytes: int) -> str:
@@ -2616,9 +2601,9 @@ def _decorate_checkpoint_upload_progress(payload: dict) -> dict:
     elif event_type == "updating_last":
         phase = "updating_checkpoint_index"
         progress_percent = 85.0
-    elif event_type in {"uploading_model", "model_uploaded"}:
-        phase = "copying_model_artifact"
-        progress_percent = 90.0 if event_type == "uploading_model" else 95.0
+    elif event_type in {"resolving_model_artifact", "model_artifact_resolved"}:
+        phase = "resolving_model_artifact"
+        progress_percent = 90.0 if event_type == "resolving_model_artifact" else 95.0
     elif event_type in {"registering_model", "model_registered"}:
         phase = "registering_model"
         progress_percent = 97.0 if event_type == "registering_model" else 100.0
@@ -3005,12 +2990,16 @@ def _upload_remote_checkpoint_to_r2_direct(
     emit_progress(
         {
             "type": "updating_last",
-            "message": "last ポインタ用オブジェクトを更新中...",
+            "message": "latest checkpointポインタを更新中...",
             "step": step,
         }
     )
-    checkpoint_mgr._copy_to_last(checkpoint_job_name, step)
-    checkpoint_mgr._update_index_step(checkpoint_job_name, step, total_bytes)
+    if not checkpoint_mgr._update_index_step(checkpoint_job_name, step, total_bytes):
+        raise RuntimeError(f"failed to update checkpoint index for {checkpoint_job_name}")
+    entry = checkpoint_mgr.get_job_info(checkpoint_job_name)
+    latest_step = int(getattr(entry, "latest_step", step) or step)
+    if not checkpoint_mgr._write_last_pointer(checkpoint_job_name, latest_step):
+        raise RuntimeError(f"failed to update last pointer for {checkpoint_job_name}")
     return total_bytes
 
 
@@ -3192,12 +3181,16 @@ def _upload_remote_checkpoint_to_r2(
     emit_progress(
         {
             "type": "updating_last",
-            "message": "last ポインタ用オブジェクトを更新中...",
+            "message": "latest checkpointポインタを更新中...",
             "step": step,
         }
     )
-    checkpoint_mgr._copy_to_last(checkpoint_job_name, step)
-    checkpoint_mgr._update_index_step(checkpoint_job_name, step, total_bytes)
+    if not checkpoint_mgr._update_index_step(checkpoint_job_name, step, total_bytes):
+        raise RuntimeError(f"failed to update checkpoint index for {checkpoint_job_name}")
+    entry = checkpoint_mgr.get_job_info(checkpoint_job_name)
+    latest_step = int(getattr(entry, "latest_step", step) or step)
+    if not checkpoint_mgr._write_last_pointer(checkpoint_job_name, latest_step):
+        raise RuntimeError(f"failed to update last pointer for {checkpoint_job_name}")
     return total_bytes
 
 
@@ -3349,30 +3342,25 @@ async def _upload_selected_remote_checkpoint_with_progress(
     )
     emit_checkpoint_progress(
         {
-            "type": "uploading_model",
-            "message": "推論モデルをR2へ反映中...",
+            "type": "resolving_model_artifact",
+            "message": "checkpoint内の推論モデル参照を確認中...",
         }
     )
     try:
-        model_r2_path, model_size_bytes, copied_model = _ensure_model_artifact_in_r2_from_checkpoint(
+        model_r2_path, model_size_bytes = _resolve_model_artifact_in_r2_from_checkpoint(
             checkpoint_mgr,
             checkpoint_job_name=checkpoint_job_name,
-            model_id=model_id,
             step=step,
         )
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"モデルアーティファクトのR2反映に失敗しました: {exc}",
+            detail=f"モデルアーティファクト参照の解決に失敗しました: {exc}",
         ) from exc
     emit_checkpoint_progress(
         {
-            "type": "model_uploaded",
-            "message": (
-                "推論モデルをR2へ反映しました"
-                if copied_model
-                else "推論モデルは既にR2に存在します"
-            ),
+            "type": "model_artifact_resolved",
+            "message": "checkpoint内の推論モデル参照を確認しました",
             "model_id": model_id,
             "model_r2_path": model_r2_path,
         }
@@ -3387,6 +3375,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
     job_data["model_name"] = model_name
     job_data["model_training_steps"] = step
     job_data["model_size_bytes"] = model_size_bytes
+    job_data["model_artifact_path"] = model_r2_path
     try:
         await _save_job_with_registered_model(job_data)
     except Exception as exc:
@@ -5354,6 +5343,10 @@ async def get_job(job_id: str):
         cloud_port = cloud_cfg.get("ssh_port")
         if cloud_port is not None:
             job_coerced["ssh_port"] = cloud_port
+    dataset_id = str(job_coerced.get("dataset_id") or "").strip()
+    if dataset_id and not str(job_coerced.get("dataset_name") or "").strip():
+        dataset_name_map = await _resolve_dataset_names([dataset_id])
+        job_coerced["dataset_name"] = dataset_name_map.get(dataset_id) or None
     job = JobInfo(**job_coerced)
     remote_status = None
     progress = None
@@ -5999,24 +5992,49 @@ async def get_training_job_operation(operation_id: str):
 
 @router.post("/jobs/{job_id}/stop", response_model=JobActionResponse)
 async def stop_job(job_id: str):
-    """Stop a running training job."""
+    """Stop a training job and terminate its remote instance."""
     job_data = await _load_job(job_id)
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
     status = str(job_data.get("status") or "").strip().lower()
     if status in {"running", "starting", "deploying"}:
-        success = _stop_remote_job(job_data)
-        if success:
+        remote_stop_success = _stop_remote_job(job_data)
+        instance_stop_success, instance_message = _terminate_job_instance(job_data)
+        stop_confirmed = remote_stop_success or instance_stop_success
+
+        if stop_confirmed:
             job_data["status"] = "stopped"
             job_data["termination_reason"] = "USER_STOP"
-            job_data["completed_at"] = datetime.now().isoformat()
+            job_data["completed_at"] = _utcnow_iso()
+            job_data["cleanup_status"] = "done" if instance_stop_success else "failed"
+            if instance_stop_success:
+                job_data["ip"] = None
             await _save_job(job_data)
             await _archive_job_metrics(job_id)
+
+        if remote_stop_success and instance_stop_success:
+            return JobActionResponse(
+                job_id=job_id,
+                success=True,
+                message="Job and instance stopped",
+            )
+        if instance_stop_success:
+            return JobActionResponse(
+                job_id=job_id,
+                success=True,
+                message="Instance stopped; remote process stop was not confirmed",
+            )
+        if remote_stop_success:
+            return JobActionResponse(
+                job_id=job_id,
+                success=False,
+                message=f"Job stopped, but instance stop failed: {instance_message}",
+            )
         return JobActionResponse(
             job_id=job_id,
-            success=success,
-            message="Job stopped" if success else "Failed to stop job",
+            success=False,
+            message=f"Failed to stop job and instance: {instance_message}",
         )
 
     success, message = _terminate_job_instance(job_data)
@@ -6060,7 +6078,7 @@ async def _archive_job_for_bulk(job_id: str) -> BulkActionResult:
     if record.get("deleted_at"):
         return BulkActionResult(id=job_id, status="skipped", message="既にアーカイブ済みです")
 
-    record["deleted_at"] = datetime.now().isoformat()
+    record["deleted_at"] = _utcnow_iso()
     await _save_job(record)
     return BulkActionResult(id=job_id, status="succeeded", message="アーカイブしました")
 
@@ -6162,7 +6180,7 @@ async def delete_job(job_id: str, terminate_instance: bool = True):
     instance_id = job_data.get("instance_id")
     instance_deleted = False
 
-    job_data["deleted_at"] = datetime.now().isoformat()
+    job_data["deleted_at"] = _utcnow_iso()
     job_data["status"] = "terminated"
     job_data["termination_reason"] = "USER_DELETE"
 
@@ -6246,7 +6264,7 @@ async def check_all_jobs_status():
             # Instance not found (deleted or API error)
             job_data["status"] = "terminated"
             job_data["termination_reason"] = "INSTANCE_NOT_FOUND"
-            job_data["completed_at"] = datetime.now().isoformat()
+            job_data["completed_at"] = _utcnow_iso()
             await _save_job(job_data)
             await _archive_job_metrics(job_id)
             updates.append(
@@ -6264,7 +6282,7 @@ async def check_all_jobs_status():
             # Instance terminated (spot preemption, error, etc.)
             job_data["status"] = "terminated"
             job_data["termination_reason"] = "INSTANCE_TERMINATED"
-            job_data["completed_at"] = datetime.now().isoformat()
+            job_data["completed_at"] = _utcnow_iso()
             await _save_job(job_data)
             await _archive_job_metrics(job_id)
             updates.append(
@@ -7010,7 +7028,7 @@ async def create_continue_job(
                 detail="Verda/DataCrunch credentials not configured.",
             )
 
-        now = datetime.now().isoformat()
+        now = _utcnow_iso()
 
         if request.cloud.provider != "verda":
             raise HTTPException(status_code=400, detail="Continue training は現在 Verda のみ対応です。")

@@ -214,12 +214,56 @@ def test_build_rescue_checkpoint_model_identity_is_step_specific():
 def test_stop_job_stops_running_training_process(monkeypatch):
     saved_jobs: list[dict] = []
     archived_job_ids: list[str] = []
+    terminated_job_ids: list[str] = []
 
     async def fake_load_job(_job_id: str):
         return {
             **_job(),
             "status": "running",
             "instance_id": "instance-1",
+            "ip": "86.38.238.107",
+        }
+
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
+    async def fake_archive_job_metrics(job_id: str):
+        archived_job_ids.append(job_id)
+        return True
+
+    def fake_terminate_job_instance(job_data: dict):
+        terminated_job_ids.append(job_data["job_id"])
+        return True, "Instance stopped"
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(training, "_stop_remote_job", lambda _job_data: True)
+    monkeypatch.setattr(training, "_terminate_job_instance", fake_terminate_job_instance)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
+    monkeypatch.setattr(training, "_archive_job_metrics", fake_archive_job_metrics)
+
+    result = asyncio.run(training.stop_job("job-1"))
+
+    assert result.success is True
+    assert result.message == "Job and instance stopped"
+    assert saved_jobs[-1]["status"] == "stopped"
+    assert saved_jobs[-1]["termination_reason"] == "USER_STOP"
+    assert saved_jobs[-1]["cleanup_status"] == "done"
+    assert saved_jobs[-1]["ip"] is None
+    assert saved_jobs[-1]["completed_at"]
+    assert terminated_job_ids == ["job-1"]
+    assert archived_job_ids == ["job-1"]
+
+
+def test_stop_job_stops_instance_when_remote_process_stop_is_not_confirmed(monkeypatch):
+    saved_jobs: list[dict] = []
+    archived_job_ids: list[str] = []
+
+    async def fake_load_job(_job_id: str):
+        return {
+            **_job(),
+            "status": "running",
+            "instance_id": "instance-1",
+            "ip": "86.38.238.107",
         }
 
     async def fake_save_job(job_data: dict):
@@ -230,16 +274,23 @@ def test_stop_job_stops_running_training_process(monkeypatch):
         return True
 
     monkeypatch.setattr(training, "_load_job", fake_load_job)
-    monkeypatch.setattr(training, "_stop_remote_job", lambda _job_data: True)
+    monkeypatch.setattr(training, "_stop_remote_job", lambda _job_data: False)
+    monkeypatch.setattr(
+        training,
+        "_terminate_job_instance",
+        lambda _job_data: (True, "Instance stopped"),
+    )
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_archive_job_metrics", fake_archive_job_metrics)
 
     result = asyncio.run(training.stop_job("job-1"))
 
     assert result.success is True
-    assert result.message == "Job stopped"
+    assert result.message == "Instance stopped; remote process stop was not confirmed"
     assert saved_jobs[-1]["status"] == "stopped"
     assert saved_jobs[-1]["termination_reason"] == "USER_STOP"
+    assert saved_jobs[-1]["cleanup_status"] == "done"
+    assert saved_jobs[-1]["ip"] is None
     assert archived_job_ids == ["job-1"]
 
 
@@ -318,8 +369,11 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     )
     monkeypatch.setattr(
         training,
-        "_ensure_model_artifact_in_r2_from_checkpoint",
-        lambda *_args, **_kwargs: ("s3://daihen/v2/models/job-1", 1234, True),
+        "_resolve_model_artifact_in_r2_from_checkpoint",
+        lambda *_args, **_kwargs: (
+            "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model",
+            1234,
+        ),
     )
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
@@ -346,6 +400,9 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     assert saved_jobs[-1]["model_name"] == expected_model_name
     assert saved_jobs[-1]["model_training_steps"] == 1000
     assert saved_jobs[-1]["model_size_bytes"] == 1234
+    assert saved_jobs[-1]["model_artifact_path"] == (
+        "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model"
+    )
     assert upserted and upserted[-1]["model_id"] == expected_model_id
     assert upserted[-1]["model_name"] == expected_model_name
     assert upserted[-1]["model_training_steps"] == 1000
@@ -413,12 +470,18 @@ def test_get_job_omits_training_job_operations_from_detail(monkeypatch):
         }
 
     monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(
+        training,
+        "_resolve_dataset_names",
+        lambda dataset_ids: asyncio.sleep(0, result={dataset_ids[0]: "Dataset One"}),
+    )
     monkeypatch.setattr(training, "_get_latest_metrics", lambda _job_id: asyncio.sleep(0, result=({}, {})))
     monkeypatch.setattr(training, "_resolve_job_provision_operation", lambda _job_data: asyncio.sleep(0, result=None))
 
     response = asyncio.run(training.get_job("job-1"))
 
     assert response.job.job_id == "job-1"
+    assert response.job.dataset_name == "Dataset One"
 
 
 def test_start_checkpoint_upload_operation_accepts_and_starts_background_worker(monkeypatch):
@@ -539,8 +602,11 @@ def test_upload_selected_remote_checkpoint_reports_db_failure(monkeypatch):
     )
     monkeypatch.setattr(
         training,
-        "_ensure_model_artifact_in_r2_from_checkpoint",
-        lambda *_args, **_kwargs: ("s3://daihen/v2/models/job-1", 1234, True),
+        "_resolve_model_artifact_in_r2_from_checkpoint",
+        lambda *_args, **_kwargs: (
+            "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model",
+            1234,
+        ),
     )
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
@@ -594,8 +660,11 @@ def test_upload_selected_remote_checkpoint_skips_r2_reupload_if_step_exists(monk
     )
     monkeypatch.setattr(
         training,
-        "_ensure_model_artifact_in_r2_from_checkpoint",
-        lambda *_args, **_kwargs: ("s3://daihen/v2/models/job-1", 1234, False),
+        "_resolve_model_artifact_in_r2_from_checkpoint",
+        lambda *_args, **_kwargs: (
+            "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model",
+            1234,
+        ),
     )
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
@@ -1370,6 +1439,7 @@ def test_upsert_model_for_job_includes_checkpoint_size_and_latest_step(monkeypat
         "training_config": {"training": {"steps": 9999, "batch_size": 4}},
         "profile_instance_id": "profile-1",
         "profile_snapshot": {"name": "so101_dual_teleop"},
+        "model_artifact_path": "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_010000/pretrained_model",
     }
     asyncio.run(training._upsert_model_for_job(job_data))
 
@@ -1411,6 +1481,7 @@ def test_upsert_model_for_job_resolves_checkpoint_by_job_name(monkeypatch):
         "training_config": {"training": {"steps": 9999, "batch_size": 4}},
         "profile_instance_id": "profile-1",
         "profile_snapshot": {"name": "so101_dual_teleop"},
+        "model_artifact_path": "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_010000/pretrained_model",
     }
     asyncio.run(training._upsert_model_for_job(job_data))
 
@@ -1522,6 +1593,7 @@ def test_upsert_model_for_job_prefers_explicit_rescue_name_and_step(monkeypatch)
         "training_config": {"training": {"steps": 9999, "batch_size": 4}},
         "profile_instance_id": "profile-1",
         "profile_snapshot": {"name": "so101_dual_teleop"},
+        "model_artifact_path": "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_010000/pretrained_model",
     }
     asyncio.run(training._upsert_model_for_job(job_data))
 
@@ -1529,6 +1601,7 @@ def test_upsert_model_for_job_prefers_explicit_rescue_name_and_step(monkeypatch)
     assert captured["name"] == "pick_place_train_20260309_step_010000"
     assert captured["training_steps"] == 10000
     assert captured["size_bytes"] == int(42.0 * 1024 * 1024)
+    assert captured["artifact_path"] == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_010000/pretrained_model"
 
 
 def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatch):
@@ -1547,11 +1620,13 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
     async def fake_upsert_model(_job_data: dict):
         return None
 
-    def fake_ensure_model_artifact(_checkpoint_mgr, *, checkpoint_job_name: str, model_id: str, step: int):
+    def fake_resolve_model_artifact(_checkpoint_mgr, *, checkpoint_job_name: str, step: int):
         captured["checkpoint_job_name"] = checkpoint_job_name
-        captured["model_id"] = model_id
         captured["step"] = step
-        return "s3://daihen/v2/models/job-1", 1234, True
+        return (
+            "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model",
+            1234,
+        )
 
     monkeypatch.setattr(training, "_load_job", fake_load_job)
     monkeypatch.setattr(
@@ -1604,7 +1679,7 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
         return 1234
 
     monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2", fake_upload_remote_checkpoint)
-    monkeypatch.setattr(training, "_ensure_model_artifact_in_r2_from_checkpoint", fake_ensure_model_artifact)
+    monkeypatch.setattr(training, "_resolve_model_artifact_in_r2_from_checkpoint", fake_resolve_model_artifact)
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
 
@@ -1624,7 +1699,6 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
 
     assert manager.upload_calls[0]["job_name"] == "pick_place_train_20260309"
     assert captured["checkpoint_job_name"] == "pick_place_train_20260309"
-    assert captured["model_id"] == expected_model_id
     assert captured["job_data_job_id"] == "job-1"
     assert result["model_id"] == expected_model_id
     assert result["r2_step_path"] == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000"
@@ -1683,8 +1757,11 @@ def test_upload_selected_remote_checkpoint_falls_back_when_direct_upload_fails(m
     monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2", fake_fallback_upload)
     monkeypatch.setattr(
         training,
-        "_ensure_model_artifact_in_r2_from_checkpoint",
-        lambda *_args, **_kwargs: ("s3://daihen/v2/models/job-1", 1234, True),
+        "_resolve_model_artifact_in_r2_from_checkpoint",
+        lambda *_args, **_kwargs: (
+            "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model",
+            1234,
+        ),
     )
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
@@ -1702,21 +1779,21 @@ def test_upload_selected_remote_checkpoint_falls_back_when_direct_upload_fails(m
     assert any(msg.get("type") == "direct_upload_fallback" for msg in progress)
 
 
-def test_ensure_model_artifact_in_r2_from_checkpoint_skips_when_model_exists():
-    class _CopyClient:
-        calls: list[tuple[dict, str, str]] = []
-
-        def copy(self, source: dict, bucket: str, key: str):
-            self.calls.append((source, bucket, key))
-
+def test_resolve_model_artifact_in_r2_from_checkpoint_uses_checkpoint_pretrained_model():
     class _S3:
-        def __init__(self):
-            self.client = _CopyClient()
-
         @staticmethod
         def list_objects(path: str):
-            if path == "s3://daihen/v2/models/job-1/":
-                return [{"Key": "v2/models/job-1/config.json", "Size": 10}]
+            if path == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/":
+                return [
+                    {
+                        "Key": "v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/config.json",
+                        "Size": 3,
+                    },
+                    {
+                        "Key": "v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/model.safetensors",
+                        "Size": 7,
+                    },
+                ]
             return []
 
     class _Sync:
@@ -1730,46 +1807,20 @@ def test_ensure_model_artifact_in_r2_from_checkpoint_skips_when_model_exists():
     class _Mgr:
         sync = _Sync()
 
-    path, size_bytes, copied = training._ensure_model_artifact_in_r2_from_checkpoint(
+    path, size_bytes = training._resolve_model_artifact_in_r2_from_checkpoint(
         _Mgr(),
         checkpoint_job_name="pick_place_train_20260309",
-        model_id="job-1",
         step=1000,
     )
 
-    assert path == "s3://daihen/v2/models/job-1"
+    assert path == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model"
     assert size_bytes == 10
-    assert copied is False
-    assert _Mgr.sync.s3.client.calls == []
 
 
-def test_ensure_model_artifact_in_r2_from_checkpoint_copies_from_checkpoint():
-    class _CopyClient:
-        def __init__(self):
-            self.calls: list[tuple[dict, str, str]] = []
-
-        def copy(self, source: dict, bucket: str, key: str):
-            self.calls.append((source, bucket, key))
-
+def test_resolve_model_artifact_in_r2_from_checkpoint_raises_when_missing():
     class _S3:
-        def __init__(self):
-            self.client = _CopyClient()
-
         @staticmethod
-        def list_objects(path: str):
-            if path == "s3://daihen/v2/models/job-1/":
-                return []
-            if path == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/":
-                return [
-                    {
-                        "Key": "v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/config.json",
-                        "Size": 3,
-                    },
-                    {
-                        "Key": "v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model/model.safetensors",
-                        "Size": 7,
-                    },
-                ]
+        def list_objects(_path: str):
             return []
 
     class _Sync:
@@ -1787,19 +1838,12 @@ def test_ensure_model_artifact_in_r2_from_checkpoint_copies_from_checkpoint():
             self.sync = _Sync()
 
     mgr = _Mgr()
-    path, size_bytes, copied = training._ensure_model_artifact_in_r2_from_checkpoint(
-        mgr,
-        checkpoint_job_name="pick_place_train_20260309",
-        model_id="job-1",
-        step=1000,
-    )
-
-    assert path == "s3://daihen/v2/models/job-1"
-    assert size_bytes == 10
-    assert copied is True
-    assert len(mgr.sync.s3.client.calls) == 2
-    assert mgr.sync.s3.client.calls[0][2] == "v2/models/job-1/config.json"
-    assert mgr.sync.s3.client.calls[1][2] == "v2/models/job-1/model.safetensors"
+    with pytest.raises(RuntimeError, match="モデル生成元が見つかりません"):
+        training._resolve_model_artifact_in_r2_from_checkpoint(
+            mgr,
+            checkpoint_job_name="pick_place_train_20260309",
+            step=1000,
+        )
 
 
 def test_generate_env_file_reads_features_repo_from_system_settings(

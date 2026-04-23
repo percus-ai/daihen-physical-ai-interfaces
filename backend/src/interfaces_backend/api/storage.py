@@ -685,6 +685,7 @@ def _model_row_to_info(row: dict) -> ModelInfo:
         training_steps=row.get("training_steps"),
         batch_size=row.get("batch_size"),
         size_bytes=row.get("size_bytes") or 0,
+        artifact_path=_normalize_optional_text(row.get("artifact_path")),
         is_local=_model_is_local(str(model_id)) if model_id else False,
         source=row.get("source") or "r2",
         status=row.get("status") or "active",
