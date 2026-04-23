@@ -73,9 +73,6 @@ def test_update_publishes_snapshot(monkeypatch):
     service = TrainingProvisionOperationsService()
     published: list[TrainingProvisionOperationStatusResponse] = []
 
-    async def fake_get_service_db_client():
-        return object()
-
     async def fake_get_supabase_async_client():
         return object()
 
@@ -103,10 +100,6 @@ def test_update_publishes_snapshot(monkeypatch):
     async def fake_publish(snapshot: TrainingProvisionOperationStatusResponse):
         published.append(snapshot)
 
-    monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_operations._get_service_db_client",
-        fake_get_service_db_client,
-    )
     monkeypatch.setattr(
         "interfaces_backend.services.training_provision_operations.get_supabase_async_client",
         fake_get_supabase_async_client,

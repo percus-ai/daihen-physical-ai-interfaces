@@ -297,6 +297,53 @@ def test_tab_realtime_source_registry_supports_builds_logs(monkeypatch):
     assert idle.next_state == 2
 
 
+def test_tab_realtime_source_registry_training_job_core_uses_lightweight_snapshot(monkeypatch):
+    import interfaces_backend.api.training as training_api
+
+    class _Snapshot:
+        def model_dump(self, **_kwargs):
+            return {
+                "job": {"job_id": "job-1", "status": "running"},
+                "training_config": {},
+            }
+
+    async def fake_get_job_core_snapshot(job_id: str):
+        assert job_id == "job-1"
+        return _Snapshot()
+
+    async def fail_get_job(_job_id: str):
+        raise AssertionError("training.job.core must not call get_job")
+
+    class _RealtimeManager:
+        async def subscribe(self, *_args, **_kwargs):
+            raise RuntimeError("realtime disabled in test")
+
+    monkeypatch.setattr(training_api, "get_job_core_snapshot", fake_get_job_core_snapshot)
+    monkeypatch.setattr(training_api, "get_job", fail_get_job)
+    monkeypatch.setattr(training_api, "_get_training_job_realtime_manager", lambda: _RealtimeManager())
+
+    registry = TabRealtimeSourceRegistry()
+    state = TabSessionStateRequest.model_validate(
+        {
+            **_make_state_payload(),
+            "subscriptions": [
+                {
+                    "subscription_id": "job.core",
+                    "kind": "training.job.core",
+                    "params": {"job_id": "job-1"},
+                }
+            ],
+        }
+    )
+
+    result = asyncio.run(registry.poll(state.subscriptions[0], state=None))
+
+    assert result.payload == {
+        "job": {"job_id": "job-1", "status": "running"},
+        "training_config": {},
+    }
+
+
 def test_tab_session_registry_put_get_delete_flow():
     registry = TabRealtimeRegistry()
     state = TabSessionStateRequest.model_validate(_make_state_payload(revision=1))
@@ -516,7 +563,7 @@ def test_tab_session_registry_restores_user_context_for_polling():
     stream.close()
 
 
-def test_tab_session_registry_restores_full_session_for_polling():
+def test_tab_session_registry_restores_access_session_for_polling_without_refresh_token():
     registry = TabRealtimeRegistry()
     source_registry = _FakeSessionCheckingSourceRegistry()
     state = TabSessionStateRequest.model_validate(_make_state_payload(revision=1))
@@ -548,7 +595,45 @@ def test_tab_session_registry_restores_full_session_for_polling():
         assert payloads
         assert all(payload["user_id"] == "user-1" for payload in payloads)
         assert all(payload["access_token"] == "access-token-1" for payload in payloads)
-        assert all(payload["refresh_token"] == "refresh-token-1" for payload in payloads)
+        assert all(payload["refresh_token"] is None for payload in payloads)
+
+    asyncio.run(_run())
+    stream.close()
+
+
+def test_tab_session_registry_closes_stream_before_polling_with_expired_auth():
+    registry = TabRealtimeRegistry()
+    source_registry = _FakeSourceRegistry()
+    state = TabSessionStateRequest.model_validate(_make_state_payload(revision=1))
+    auth_session = {
+        "user_id": "user-1",
+        "access_token": "expired-access-token",
+        "expires_at": 1,
+    }
+    registry.apply_state(
+        user_id="user-1",
+        tab_session_id="tab-1",
+        state=state,
+        auth_session=auth_session,
+    )
+
+    stream = registry.open_stream(
+        user_id="user-1",
+        tab_session_id="tab-1",
+        last_event_id=None,
+        source_registry=source_registry,
+        auth_session=auth_session,
+    )
+
+    async def _run():
+        last_event_id = max(event["stream_seq"] for event in stream.replay_events)
+        status, events = await stream.poll(after_seq=last_event_id)
+        assert status == "superseded"
+        assert source_registry.poll_counts == {}
+        assert any(
+            event["op"] == "control" and event["payload"].get("type") == "auth_expired"
+            for event in events
+        )
 
     asyncio.run(_run())
     stream.close()

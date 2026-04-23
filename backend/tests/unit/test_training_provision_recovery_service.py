@@ -95,7 +95,7 @@ def test_recovery_pass_marks_failed_without_instance(monkeypatch):
         published.append(snapshot)
 
     monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._get_service_db_client",
+        "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
         lambda: asyncio.sleep(0, result=fake_client),
     )
     monkeypatch.setattr(operations, "_publish", fake_publish)
@@ -142,7 +142,7 @@ def test_recovery_pass_deletes_instance_when_present(monkeypatch):
         return True, "deleted"
 
     monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._get_service_db_client",
+        "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
         lambda: asyncio.sleep(0, result=fake_client),
     )
     monkeypatch.setattr(
@@ -189,7 +189,7 @@ def test_recovery_pass_preserves_job_bound_instance(monkeypatch):
         return True, "deleted"
 
     monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._get_service_db_client",
+        "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
         lambda: asyncio.sleep(0, result=fake_client),
     )
     monkeypatch.setattr(
@@ -224,7 +224,7 @@ def test_recovery_pass_retries_when_fetch_fails(monkeypatch):
         return object()
 
     monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._get_service_db_client",
+        "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
         fake_get_client,
     )
     monkeypatch.setattr(recovery, "_load_stale_rows", fake_load_stale_rows)
@@ -271,7 +271,7 @@ def test_recovery_pass_retries_when_cleanup_raises(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._get_service_db_client",
+        "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
         fake_get_client,
     )
     monkeypatch.setattr(
@@ -320,7 +320,7 @@ def test_recovery_publish_failure_is_best_effort(monkeypatch):
         return fake_client
 
     monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._get_service_db_client",
+        "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
         fake_get_client,
     )
     monkeypatch.setattr(operations, "_publish", fake_publish)

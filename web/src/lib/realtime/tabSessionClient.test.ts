@@ -471,4 +471,70 @@ describe('tabSessionClient', () => {
       vi.useRealTimers();
     }
   });
+
+  it('refreshes auth, verifies the session, and reconnects after auth_expired control event', async () => {
+    vi.useFakeTimers();
+    try {
+      (window as unknown as { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout }).setTimeout = setTimeout;
+      (window as unknown as { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout }).clearTimeout = clearTimeout;
+
+      realtimeApi.putTabSessionState.mockResolvedValue({ revision: 1 });
+      realtimeApi.tabSessionState.mockResolvedValue(
+        buildStateResponse({
+          revision: 1
+        })
+      );
+
+      const { getTabRealtimeClient } = await import('./tabSessionClient');
+      const client = getTabRealtimeClient() as unknown as {
+        registerContributor: (input: {
+          contributorId?: string;
+          subscriptions: Array<{
+            subscription_id: string;
+            kind: 'profiles.active';
+            params: Record<string, never>;
+          }>;
+        }) => unknown;
+        syncInFlight?: Promise<void> | null;
+      };
+
+      client.registerContributor({
+        contributorId: 'profiles',
+        subscriptions: [
+          {
+            subscription_id: 'profiles.active',
+            kind: 'profiles.active',
+            params: {}
+          }
+        ]
+      });
+      await flushClient(client);
+
+      const firstSource = FakeEventSource.instances[0];
+      firstSource?.onmessage?.({
+        data: JSON.stringify({
+          v: 1,
+          stream_seq: 1,
+          session_id: 'tab-test',
+          config_revision: 1,
+          emitted_at: '2026-04-23T00:00:00Z',
+          source: null,
+          op: 'control',
+          payload: { type: 'auth_expired' }
+        })
+      } as MessageEvent<string>);
+
+      expect(firstSource?.readyState).toBe(FakeEventSource.CLOSED);
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await flushClient(client);
+
+      expect(authApi.refresh).toHaveBeenCalled();
+      expect(realtimeApi.tabSessionState).toHaveBeenCalled();
+      expect(FakeEventSource.instances).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

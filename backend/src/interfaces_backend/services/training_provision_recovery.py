@@ -9,10 +9,10 @@ import threading
 from datetime import timedelta
 from typing import Any
 
+from percus_ai.db import get_supabase_service_client
 from interfaces_backend.services.training_provision_operations import (
     _ACTIVE_STATES,
     _STALE_TIMEOUT_MINUTES,
-    _get_service_db_client,
     _utcnow,
     _utcnow_iso,
     TRAINING_PROVISION_OPERATION_TABLE,
@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 _DISABLE_RECOVERY_ENV = "PHI_DISABLE_TRAINING_PROVISION_RECOVERY"
 _RECOVERY_RETRY_SECONDS_ENV = "TRAINING_PROVISION_RECOVERY_RETRY_SECONDS"
 _PUBLISH_RETRY_COUNT_ENV = "TRAINING_PROVISION_RECOVERY_PUBLISH_RETRY_COUNT"
+
+
+async def _get_recovery_db_client():
+    return await get_supabase_service_client()
 
 
 def _recovery_disabled() -> bool:
@@ -94,7 +98,7 @@ class TrainingProvisionRecoveryService:
 
     async def _run_recovery_pass(self) -> bool:
         try:
-            service_client = await _get_service_db_client()
+            service_client = await _get_recovery_db_client()
         except asyncio.CancelledError:
             raise
         except Exception:

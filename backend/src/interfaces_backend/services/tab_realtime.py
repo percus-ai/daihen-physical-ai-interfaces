@@ -17,6 +17,7 @@ from interfaces_backend.models.realtime import (
     TabSessionStateRequest,
     TabSessionStateResponse,
 )
+from interfaces_backend.core.request_auth import is_session_expired
 from percus_ai.db import reset_request_session, set_request_session
 
 _ReplayEvent = dict[str, Any]
@@ -138,7 +139,11 @@ class _TabSession:
     def update_auth_session(self, auth_session: dict[str, Any] | None) -> None:
         if auth_session is None:
             return
-        normalized = dict(auth_session)
+        normalized = {
+            key: value
+            for key, value in dict(auth_session).items()
+            if key != "refresh_token"
+        }
         normalized["user_id"] = str(normalized.get("user_id") or self.user_id).strip() or self.user_id
         with self._lock:
             self._auth_session = normalized
@@ -339,6 +344,19 @@ class _TabSession:
                 if existing_events:
                     return "events", existing_events
                 return "idle", []
+            if self._auth_session is not None and is_session_expired(self._auth_session):
+                source_registry = self._source_registry()
+                for runtime in self._subscriptions.values():
+                    source_registry.cleanup(runtime.subscription, runtime.source_state)
+                    runtime.source_state = None
+                    runtime.pending_immediate = True
+                self._append_event_unlocked(
+                    op="control",
+                    payload={"type": "auth_expired"},
+                )
+                self._active_connection_id = None
+                events = [event for event in self._events if event["stream_seq"] > after_seq]
+                return "superseded", events
             for subscription_id, runtime in self._subscriptions.items():
                 interval = source_registry.interval_for(runtime.subscription)
                 should_poll = runtime.pending_immediate or runtime.last_polled_mono == 0.0

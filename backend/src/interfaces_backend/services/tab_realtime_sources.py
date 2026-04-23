@@ -52,6 +52,12 @@ class TrainingJobLogStreamState:
     last_status_poll_mono: float = 0.0
 
 
+@dataclass
+class TrainingJobCoreStreamState:
+    subscription_id: str
+    queue: asyncio.Queue
+
+
 class TabRealtimeSourceRegistry:
     """Resolves supported subscriptions to typed async source handlers."""
 
@@ -85,7 +91,7 @@ class TabRealtimeSourceRegistry:
         if isinstance(subscription, TrainingJobProvisionSubscription):
             return 2.0
         if isinstance(subscription, TrainingJobCoreSubscription):
-            return 5.0
+            return 1.0
         if isinstance(subscription, TrainingJobMetricsSubscription):
             return 5.0
         if isinstance(subscription, TrainingJobLogsSubscription):
@@ -247,12 +253,45 @@ class TabRealtimeSourceRegistry:
                 return RealtimeSourcePollResult(payload=snapshot.model_dump(mode="json"))
 
             if isinstance(subscription, TrainingJobCoreSubscription):
-                from interfaces_backend.api.training import get_job
+                from interfaces_backend.api.training import (
+                    _get_training_job_realtime_manager,
+                    get_job_core_snapshot,
+                )
 
-                snapshot = await get_job(subscription.params.job_id)
-                payload = snapshot.model_dump(mode="json")
-                payload.pop("provision_operation", None)
-                return RealtimeSourcePollResult(payload=payload)
+                core_state = state if isinstance(state, TrainingJobCoreStreamState) else None
+                if core_state is None:
+                    try:
+                        subscriber_id, queue = await _get_training_job_realtime_manager().subscribe(
+                            subscription.params.job_id,
+                            asyncio.get_running_loop(),
+                        )
+                    except Exception:
+                        subscriber_id = ""
+                        queue = asyncio.Queue()
+                    snapshot = await get_job_core_snapshot(subscription.params.job_id)
+                    return RealtimeSourcePollResult(
+                        payload=snapshot.model_dump(mode="json"),
+                        next_state=TrainingJobCoreStreamState(
+                            subscription_id=subscriber_id,
+                            queue=queue,
+                        ),
+                    )
+
+                has_update = False
+                while True:
+                    try:
+                        core_state.queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    has_update = True
+                if not has_update:
+                    return RealtimeSourcePollResult(next_state=core_state)
+
+                snapshot = await get_job_core_snapshot(subscription.params.job_id)
+                return RealtimeSourcePollResult(
+                    payload=snapshot.model_dump(mode="json"),
+                    next_state=core_state,
+                )
 
             if isinstance(subscription, TrainingJobProvisionSubscription):
                 from interfaces_backend.api.training import get_job_provision_operation
@@ -287,6 +326,13 @@ class TabRealtimeSourceRegistry:
         return RealtimeSourcePollResult(error=f"Unsupported subscription kind: {subscription.kind}")
 
     def cleanup(self, subscription: TabSessionSubscription, state: Any | None) -> None:
+        if isinstance(subscription, TrainingJobCoreSubscription):
+            if isinstance(state, TrainingJobCoreStreamState):
+                from interfaces_backend.api.training import _get_training_job_realtime_manager
+
+                if state.subscription_id:
+                    _get_training_job_realtime_manager().unsubscribe(state.subscription_id)
+            return
         if not isinstance(subscription, TrainingJobLogsSubscription):
             return
         if not isinstance(state, TrainingJobLogStreamState):

@@ -150,6 +150,8 @@ async def stream_tab_session(request: Request, tab_session_id: str):
                         after_seq = max(after_seq, int(event.get("stream_seq", 0)))
                         yield _format_sse_event(event)
                         last_sent_mono = time.monotonic()
+                    if status in {"deleted", "superseded"}:
+                        break
                     continue
 
                 if status in {"deleted", "superseded"}:

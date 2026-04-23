@@ -16,7 +16,7 @@ from interfaces_backend.models.training import (
     TrainingProvisionOperationAcceptedResponse,
     TrainingProvisionOperationStatusResponse,
 )
-from percus_ai.db import get_supabase_async_client, get_supabase_service_client
+from percus_ai.db import get_supabase_async_client
 from percus_ai.training.providers.vast import destroy_instance
 from percus_ai.training.providers.verda import VerdaProvider
 
@@ -33,15 +33,6 @@ def _utcnow() -> datetime:
 
 def _utcnow_iso() -> str:
     return _utcnow().isoformat()
-
-
-def _is_jwt_expired_error(exc: Exception) -> bool:
-    text = str(exc)
-    return "JWT expired" in text or "PGRST303" in text
-
-
-async def _get_service_db_client() -> Optional[AsyncClient]:
-    return await get_supabase_service_client()
 
 
 def _cleanup_step_from_progress(progress_type: str) -> str:
@@ -244,16 +235,7 @@ class TrainingProvisionOperationsService:
             response = await query.execute()
             return response.data or []
 
-        client = await get_supabase_async_client()
-        try:
-            rows = await _fetch_with(client)
-        except Exception as exc:
-            if not _is_jwt_expired_error(exc):
-                raise
-            service_client = await _get_service_db_client()
-            if service_client is None:
-                raise
-            rows = await _fetch_with(service_client)
+        rows = await _fetch_with(await get_supabase_async_client())
         return rows[0] if rows else None
 
     async def _load_by_job_id(self, job_id: str, *, owner_user_id: str | None) -> Optional[dict[str, Any]]:
@@ -264,16 +246,7 @@ class TrainingProvisionOperationsService:
             response = await query.execute()
             return response.data or []
 
-        client = await get_supabase_async_client()
-        try:
-            rows = await _fetch_with(client)
-        except Exception as exc:
-            if not _is_jwt_expired_error(exc):
-                raise
-            service_client = await _get_service_db_client()
-            if service_client is None:
-                raise
-            rows = await _fetch_with(service_client)
+        rows = await _fetch_with(await get_supabase_async_client())
         return rows[0] if rows else None
 
     async def _upsert(self, record: dict[str, Any]) -> None:
@@ -301,28 +274,14 @@ class TrainingProvisionOperationsService:
                 return
             await client.table(TRAINING_PROVISION_OPERATION_TABLE).insert(record).execute()
 
-        client = await get_supabase_async_client()
-        try:
-            await _upsert_with(client)
-        except Exception as exc:
-            if not _is_jwt_expired_error(exc):
-                raise
-            service_client = await _get_service_db_client()
-            if service_client is None:
-                raise
-            await _upsert_with(service_client)
+        await _upsert_with(await get_supabase_async_client())
 
     async def _update(self, *, operation_id: str, **patch: Any) -> None:
-        service_client = await _get_service_db_client()
-        client = await get_supabase_async_client()
-        try:
-            await self._update_with_client(client, operation_id=operation_id, patch=patch)
-        except Exception as exc:
-            if not _is_jwt_expired_error(exc):
-                raise
-            if service_client is None:
-                raise
-            await self._update_with_client(service_client, operation_id=operation_id, patch=patch)
+        await self._update_with_client(
+            await get_supabase_async_client(),
+            operation_id=operation_id,
+            patch=patch,
+        )
         snapshot = await self.get_system(operation_id=operation_id)
         if snapshot is None:
             return None

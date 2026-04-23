@@ -423,7 +423,41 @@ def test_build_remote_checkpoint_upload_script_uses_thread_safe_progress_reporte
     assert "with progress_lock:" in script
 
 
-def test_list_remote_job_checkpoints_returns_rescue_hint_when_ssh_unavailable(monkeypatch):
+def test_list_remote_job_checkpoints_returns_saved_candidate_state(monkeypatch):
+    async def fake_load_job(_job_id: str, include_deleted: bool = False):
+        assert include_deleted is True
+        return {
+            **_job(),
+            "summary": {
+                "remote_checkpoint_candidates": {
+                    "checkpoint_names": ["1000", "250"],
+                    "checkpoint_root": "/remote/checkpoints",
+                    "ssh_available": True,
+                    "requires_rescue_cpu": False,
+                    "message": "",
+                    "updated_at": "2026-04-23T00:00:00+00:00",
+                }
+            },
+        }
+
+    monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(
+        training,
+        "_list_remote_checkpoint_dirs",
+        lambda _job_data: (_ for _ in ()).throw(AssertionError("GET must not scan SSH")),
+    )
+
+    response = asyncio.run(training.list_remote_job_checkpoints("job-1"))
+
+    assert response.job_id == "job-1"
+    assert response.checkpoint_names == ["250", "1000"]
+    assert response.checkpoint_root == "/remote/checkpoints"
+    assert response.ssh_available is True
+
+
+def test_rescan_remote_job_checkpoints_returns_rescue_hint_when_ssh_unavailable(monkeypatch):
+    saved_jobs: list[dict] = []
+
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
         assert include_deleted is True
         return {
@@ -432,7 +466,11 @@ def test_list_remote_job_checkpoints_returns_rescue_hint_when_ssh_unavailable(mo
             "training_config": {"cloud": {"provider": "verda"}},
         }
 
+    async def fake_save_job(job_data: dict):
+        saved_jobs.append(dict(job_data))
+
     monkeypatch.setattr(training, "_load_job", fake_load_job)
+    monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(
         training,
         "_refresh_job_ssh_target_if_needed",
@@ -449,13 +487,16 @@ def test_list_remote_job_checkpoints_returns_rescue_hint_when_ssh_unavailable(mo
         lambda func, *args, **kwargs: asyncio.sleep(0, result=func(*args, **kwargs)),
     )
 
-    response = asyncio.run(training.list_remote_job_checkpoints("job-1"))
+    response = asyncio.run(training.rescan_remote_job_checkpoints("job-1"))
 
     assert response.job_id == "job-1"
     assert response.checkpoint_names == []
     assert response.ssh_available is False
     assert response.requires_rescue_cpu is True
     assert "SSH接続に失敗" in response.message
+    saved_state = saved_jobs[-1]["summary"]["remote_checkpoint_candidates"]
+    assert saved_state["ssh_available"] is False
+    assert saved_state["requires_rescue_cpu"] is True
 
 
 def test_get_job_omits_training_job_operations_from_detail(monkeypatch):
@@ -475,13 +516,23 @@ def test_get_job_omits_training_job_operations_from_detail(monkeypatch):
         "_resolve_dataset_names",
         lambda dataset_ids: asyncio.sleep(0, result={dataset_ids[0]: "Dataset One"}),
     )
-    monkeypatch.setattr(training, "_get_latest_metrics", lambda _job_id: asyncio.sleep(0, result=({}, {})))
-    monkeypatch.setattr(training, "_resolve_job_provision_operation", lambda _job_data: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(
+        training,
+        "_get_latest_metrics",
+        lambda _job_id: (_ for _ in ()).throw(AssertionError("GET job must not load metrics")),
+    )
+    monkeypatch.setattr(
+        training,
+        "_resolve_job_provision_operation",
+        lambda _job_data: (_ for _ in ()).throw(AssertionError("GET job must not load provision operations")),
+    )
 
     response = asyncio.run(training.get_job("job-1"))
 
     assert response.job.job_id == "job-1"
     assert response.job.dataset_name == "Dataset One"
+    assert response.latest_train_metrics is None
+    assert response.provision_operation is None
 
 
 def test_start_checkpoint_upload_operation_accepts_and_starts_background_worker(monkeypatch):

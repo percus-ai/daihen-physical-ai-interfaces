@@ -16,7 +16,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, Literal, Optional, TypeVar
+from typing import Callable, Literal, Optional
 
 from verda import VerdaClient
 from fastapi import (
@@ -107,7 +107,6 @@ from percus_ai.storage import (
 from percus_ai.db import (
     get_current_user_id,
     get_supabase_async_client,
-    get_supabase_service_client,
     get_supabase_session,
     reset_request_session,
     set_request_session,
@@ -127,12 +126,6 @@ from interfaces_backend.services.training_job_operations import (
 from interfaces_backend.services.user_directory import resolve_user_directory_entries
 
 logger = logging.getLogger(__name__)
-_T = TypeVar("_T")
-
-
-def _is_jwt_expired_error(exc: Exception) -> bool:
-    text = str(exc)
-    return "JWT expired" in text or "PGRST303" in text
 
 
 def _is_invalid_uuid_error(exc: Exception) -> bool:
@@ -169,29 +162,6 @@ def _parse_job_created_at(value: str) -> datetime:
     else:
         normalized = f"{prefix}{tz}"
     return datetime.fromisoformat(normalized)
-
-
-async def _get_service_db_client() -> Optional[AsyncClient]:
-    return await get_supabase_service_client()
-
-
-async def _with_training_service_role_retry(
-    *,
-    action: str,
-    target: str,
-    operation: Callable[[AsyncClient], Awaitable[_T]],
-) -> _T:
-    client = await get_supabase_async_client()
-    try:
-        return await operation(client)
-    except Exception as exc:
-        if not _is_jwt_expired_error(exc):
-            raise
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            raise
-        logger.warning("JWT expired while %s %s; retrying with service key", action, target)
-        return await operation(service_client)
 
 
 def _default_author_user_id() -> str:
@@ -1428,11 +1398,7 @@ async def _has_recent_training_metrics(job_id: str) -> bool:
         )
         return response.data or []
 
-    data = await _with_training_service_role_retry(
-        action="loading latest metric timestamp for training job",
-        target=normalized_job_id,
-        operation=_fetch_with,
-    )
+    data = await _fetch_with(await get_supabase_async_client())
     if not data:
         return False
 
@@ -1654,22 +1620,12 @@ async def _load_job(job_id: str, include_deleted: bool = False) -> Optional[dict
         response = await client.table(DB_TABLE).select("*").eq("job_id", job_id).execute()
         return response.data or []
 
-    client = await get_supabase_async_client()
     try:
-        records = await _fetch_with(client)
+        records = await _fetch_with(await get_supabase_async_client())
     except Exception as exc:
         if _is_invalid_uuid_error(exc):
             return None
-        if not _is_jwt_expired_error(exc):
-            raise
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            raise
-        logger.warning(
-            "JWT expired while loading training job %s; retrying with service key",
-            job_id,
-        )
-        records = await _fetch_with(service_client)
+        raise
 
     if not records:
         return None
@@ -1749,20 +1705,7 @@ async def _save_job(job_data: dict) -> None:
             insert_record["owner_user_id"] = owner_user_id
         await client.table(DB_TABLE).insert(insert_record).execute()
 
-    client = await get_supabase_async_client()
-    try:
-        await _upsert_with(client)
-    except Exception as exc:
-        if not _is_jwt_expired_error(exc):
-            raise
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            raise
-        logger.warning(
-            "JWT expired while saving training job %s; retrying with service key",
-            job_id,
-        )
-        await _upsert_with(service_client)
+    await _upsert_with(await get_supabase_async_client())
 
 
 def _run_async(coro):
@@ -1832,20 +1775,7 @@ async def _resolve_profile_info(
             .execute()
         ).data or []
 
-    client = await get_supabase_async_client()
-    try:
-        rows = await _fetch_with(client)
-    except Exception as exc:
-        if not _is_jwt_expired_error(exc):
-            raise
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            raise
-        logger.warning(
-            "JWT expired while resolving dataset profile info %s; retrying with service key",
-            dataset_id,
-        )
-        rows = await _fetch_with(service_client)
+    rows = await _fetch_with(await get_supabase_async_client())
 
     if rows:
         return rows[0].get("profile_instance_id"), rows[0].get("profile_snapshot")
@@ -1858,20 +1788,7 @@ async def _load_existing_model_name(model_id: str) -> Optional[str]:
             await client.table("models").select("name").eq("id", model_id).limit(1).execute()
         ).data or []
 
-    client = await get_supabase_async_client()
-    try:
-        rows = await _fetch_with(client)
-    except Exception as exc:
-        if not _is_jwt_expired_error(exc):
-            raise
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            raise
-        logger.warning(
-            "JWT expired while loading model name %s; retrying with service key",
-            model_id,
-        )
-        rows = await _fetch_with(service_client)
+    rows = await _fetch_with(await get_supabase_async_client())
 
     if not rows:
         return None
@@ -2205,17 +2122,7 @@ async def _list_jobs(
         response = await query.execute()
         return response.data or []
 
-    client = await get_supabase_async_client()
-    try:
-        jobs = await _fetch_with(client)
-    except Exception as exc:
-        if not _is_jwt_expired_error(exc):
-            raise
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            raise
-        logger.warning("JWT expired while listing training jobs; retrying with service key")
-        jobs = await _fetch_with(service_client)
+    jobs = await _fetch_with(await get_supabase_async_client())
 
     cutoff_date = datetime.now() - timedelta(days=days)
     filtered = []
@@ -2344,17 +2251,7 @@ async def _resolve_dataset_names(dataset_ids: list[str]) -> dict[str, str]:
         )
         return response.data or []
 
-    client = await get_supabase_async_client()
-    try:
-        rows = await _fetch_with(client)
-    except Exception as exc:
-        if not _is_jwt_expired_error(exc):
-            raise
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            raise
-        logger.warning("JWT expired while resolving dataset names; retrying with service key")
-        rows = await _fetch_with(service_client)
+    rows = await _fetch_with(await get_supabase_async_client())
 
     return {
         str(row.get("id") or "").strip(): str(row.get("name") or row.get("id") or "").strip()
@@ -2454,6 +2351,104 @@ def _list_remote_checkpoint_dirs(job_data: dict) -> tuple[list[str], str]:
         return names, checkpoint_root
     finally:
         conn.disconnect()
+
+
+_REMOTE_CHECKPOINT_CANDIDATES_SUMMARY_KEY = "remote_checkpoint_candidates"
+
+
+def _checkpoint_candidates_from_job_state(job_data: dict) -> RemoteCheckpointListResponse:
+    job_id = str(job_data.get("job_id") or job_data.get("id") or "").strip()
+    checkpoint_root = _get_remote_checkpoint_root(job_data)
+    summary = job_data.get("summary")
+    state = (
+        summary.get(_REMOTE_CHECKPOINT_CANDIDATES_SUMMARY_KEY)
+        if isinstance(summary, dict)
+        else None
+    )
+    if not isinstance(state, dict):
+        return RemoteCheckpointListResponse(
+            job_id=job_id,
+            checkpoint_names=[],
+            checkpoint_root=checkpoint_root,
+            ssh_available=True,
+            requires_rescue_cpu=False,
+            message="候補は未取得です。",
+        )
+
+    raw_names = state.get("checkpoint_names")
+    checkpoint_names = (
+        [
+            str(name).strip()
+            for name in raw_names
+            if str(name).strip().isdigit()
+        ]
+        if isinstance(raw_names, list)
+        else []
+    )
+    checkpoint_names.sort(key=lambda value: int(value))
+    return RemoteCheckpointListResponse(
+        job_id=job_id,
+        checkpoint_names=checkpoint_names,
+        checkpoint_root=str(state.get("checkpoint_root") or checkpoint_root),
+        ssh_available=state.get("ssh_available") is not False,
+        requires_rescue_cpu=bool(state.get("requires_rescue_cpu")),
+        message=str(state.get("message") or ""),
+    )
+
+
+async def _save_checkpoint_candidates_to_job_state(
+    job_data: dict,
+    response: RemoteCheckpointListResponse,
+) -> None:
+    summary = job_data.get("summary")
+    next_summary = dict(summary) if isinstance(summary, dict) else {}
+    next_summary[_REMOTE_CHECKPOINT_CANDIDATES_SUMMARY_KEY] = {
+        **response.model_dump(mode="python"),
+        "updated_at": _utcnow_iso(),
+    }
+    job_data["summary"] = next_summary
+    await _save_job(job_data)
+
+
+async def _rescan_remote_checkpoint_candidates(job_id: str) -> RemoteCheckpointListResponse:
+    job_data = await _load_job(job_id, include_deleted=True)
+    if not job_data:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    job_data = await _refresh_job_ssh_target_if_needed(job_data)
+    checkpoint_root = _get_remote_checkpoint_root(job_data)
+
+    try:
+        checkpoint_names, checkpoint_root = await asyncio.to_thread(
+            _list_remote_checkpoint_dirs, job_data
+        )
+        response = RemoteCheckpointListResponse(
+            job_id=job_id,
+            checkpoint_names=checkpoint_names,
+            checkpoint_root=checkpoint_root,
+            ssh_available=True,
+            requires_rescue_cpu=False,
+            message="",
+        )
+    except RuntimeError as exc:
+        detail = str(exc)
+        ssh_available = "SSH接続に失敗" not in detail
+        requires_rescue_cpu = (
+            not ssh_available
+            and _get_job_provider(job_data) == "verda"
+            and str(job_data.get("status") or "").strip().lower()
+            in {"completed", "failed", "stopped", "terminated"}
+        )
+        response = RemoteCheckpointListResponse(
+            job_id=job_id,
+            checkpoint_names=[],
+            checkpoint_root=checkpoint_root,
+            ssh_available=ssh_available,
+            requires_rescue_cpu=requires_rescue_cpu,
+            message=detail,
+        )
+
+    await _save_checkpoint_candidates_to_job_state(job_data, response)
+    return response
 
 
 def _register_job_for_checkpoint_if_needed(
@@ -3748,11 +3743,7 @@ async def _get_remote_progress(job_id: str) -> Optional[dict]:
         )
         return response.data or []
 
-    data = await _with_training_service_role_retry(
-        action="loading remote progress for training job",
-        target=job_id,
-        operation=_fetch_with,
-    )
+    data = await _fetch_with(await get_supabase_async_client())
     if not data:
         return None
     latest = data[0]
@@ -3777,11 +3768,7 @@ async def _get_latest_metric(job_id: str, split: str) -> Optional[dict]:
         )
         return response.data or []
 
-    data = await _with_training_service_role_retry(
-        action=f"loading latest {split} metrics for training job",
-        target=job_id,
-        operation=_fetch_with,
-    )
+    data = await _fetch_with(await get_supabase_async_client())
     if not data:
         return None
     return data[0]
@@ -3808,11 +3795,7 @@ async def _get_metrics_series(job_id: str, split: str, limit: int) -> list[dict]
         )
         return response.data or []
 
-    return await _with_training_service_role_retry(
-        action=f"loading {split} metric series for training job",
-        target=job_id,
-        operation=_fetch_with,
-    )
+    return await _fetch_with(await get_supabase_async_client())
 
 
 def _stop_remote_job(job_data: dict) -> bool:
@@ -5296,17 +5279,7 @@ async def get_last_training_config():
         records = response.data or []
         return records[0] if records else None
 
-    client = await get_supabase_async_client()
-    try:
-        record = await _fetch_with(client)
-    except Exception as exc:
-        if not _is_jwt_expired_error(exc):
-            raise
-        service_client = await _get_service_db_client()
-        if service_client is None:
-            raise
-        logger.warning("JWT expired while loading last training config; retrying with service key")
-        record = await _fetch_with(service_client)
+    record = await _fetch_with(await get_supabase_async_client())
 
     if not record:
         return LastTrainingConfigResponse()
@@ -5319,15 +5292,11 @@ async def get_last_training_config():
     )
 
 
-@router.get("/jobs/{job_id}", response_model=JobDetailResponse)
-async def get_job(job_id: str):
-    """Get job details with remote status."""
+async def _build_job_db_snapshot(job_id: str) -> JobDetailResponse:
+    """Build a job detail snapshot from DB-backed fields only."""
     job_data = await _load_job(job_id)
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
-
-    if job_data.get("status") in ("running", "starting", "deploying"):
-        await _refresh_job_status_from_instance(job_data)
 
     job_coerced = dict(job_data or {})
     if job_coerced.get("instance_id") is None:
@@ -5347,38 +5316,29 @@ async def get_job(job_id: str):
     if dataset_id and not str(job_coerced.get("dataset_name") or "").strip():
         dataset_name_map = await _resolve_dataset_names([dataset_id])
         job_coerced["dataset_name"] = dataset_name_map.get(dataset_id) or None
-    job = JobInfo(**job_coerced)
-    remote_status = None
-    progress = None
-    summary = job_data.get("summary")
-    early_stopping = job_data.get("early_stopping")
-    training_config = job_data.get("training_config")
-    if job.status in ("running", "starting", "deploying"):
-        (
-            (latest_train_metrics, latest_val_metrics),
-            provision_operation,
-            progress,
-        ) = await asyncio.gather(
-            _get_latest_metrics(job_id),
-            _resolve_job_provision_operation(job_data),
-            _get_remote_progress(job_id),
-        )
-    else:
-        (latest_train_metrics, latest_val_metrics), provision_operation = await asyncio.gather(
-            _get_latest_metrics(job_id),
-            _resolve_job_provision_operation(job_data),
-        )
+
     return JobDetailResponse(
-        job=job,
-        provision_operation=provision_operation,
-        remote_status=remote_status,
-        progress=progress,
-        latest_train_metrics=latest_train_metrics,
-        latest_val_metrics=latest_val_metrics,
-        summary=summary,
-        early_stopping=early_stopping,
-        training_config=training_config,
+        job=JobInfo(**job_coerced),
+        provision_operation=None,
+        remote_status=None,
+        progress=None,
+        latest_train_metrics=None,
+        latest_val_metrics=None,
+        summary=job_data.get("summary"),
+        early_stopping=job_data.get("early_stopping"),
+        training_config=job_data.get("training_config"),
     )
+
+
+@router.get("/jobs/{job_id}", response_model=JobDetailResponse)
+async def get_job(job_id: str):
+    """Get the DB-backed initial snapshot for a job."""
+    return await _build_job_db_snapshot(job_id)
+
+
+async def get_job_core_snapshot(job_id: str) -> JobDetailResponse:
+    """Get the lightweight job snapshot used by tab realtime core updates."""
+    return await _build_job_db_snapshot(job_id)
 
 
 @router.get("/jobs/{job_id}/logs", response_model=JobLogsResponse)
@@ -5604,43 +5564,20 @@ async def get_instance_status(job_id: str):
     response_model=RemoteCheckpointListResponse,
 )
 async def list_remote_job_checkpoints(job_id: str):
-    """List checkpoint directories available on the remote instance."""
+    """Return backend-owned remote checkpoint candidate state."""
     job_data = await _load_job(job_id, include_deleted=True)
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
-    job_data = await _refresh_job_ssh_target_if_needed(job_data)
-    checkpoint_root = _get_remote_checkpoint_root(job_data)
+    return _checkpoint_candidates_from_job_state(job_data)
 
-    try:
-        checkpoint_names, checkpoint_root = await asyncio.to_thread(
-            _list_remote_checkpoint_dirs, job_data
-        )
-    except RuntimeError as exc:
-        detail = str(exc)
-        ssh_available = "SSH接続に失敗" not in detail
-        requires_rescue_cpu = (
-            not ssh_available
-            and _get_job_provider(job_data) == "verda"
-            and str(job_data.get("status") or "").strip().lower()
-            in {"completed", "failed", "stopped", "terminated"}
-        )
-        return RemoteCheckpointListResponse(
-            job_id=job_id,
-            checkpoint_names=[],
-            checkpoint_root=checkpoint_root,
-            ssh_available=ssh_available,
-            requires_rescue_cpu=requires_rescue_cpu,
-            message=detail,
-        )
 
-    return RemoteCheckpointListResponse(
-        job_id=job_id,
-        checkpoint_names=checkpoint_names,
-        checkpoint_root=checkpoint_root,
-        ssh_available=True,
-        requires_rescue_cpu=False,
-        message="",
-    )
+@router.post(
+    "/jobs/{job_id}/checkpoints/remote/rescan",
+    response_model=RemoteCheckpointListResponse,
+)
+async def rescan_remote_job_checkpoints(job_id: str):
+    """Scan the remote instance for checkpoint candidates and persist the state."""
+    return await _rescan_remote_checkpoint_candidates(job_id)
 
 
 @router.post("/jobs/{job_id}/rescue-cpu", response_model=RescueCPUResponse)

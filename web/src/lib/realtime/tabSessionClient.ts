@@ -652,6 +652,10 @@ class TabRealtimeClient {
         this.resetSessionIdentity();
         this.scheduleSync('control.session_deleted');
       }
+      if (event.op === 'control' && event.payload.type === 'auth_expired') {
+        this.closeStream();
+        void this.refreshAuthSession('control.auth_expired');
+      }
       return;
     }
 

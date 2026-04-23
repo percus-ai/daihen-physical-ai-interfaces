@@ -1791,6 +1791,10 @@ export const api = {
     progress: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/progress`),
     remoteCheckpoints: (jobId: string) =>
       fetchApi<RemoteCheckpointListResponse>(`/api/training/jobs/${jobId}/checkpoints/remote`),
+    rescanRemoteCheckpoints: (jobId: string) =>
+      fetchApi<RemoteCheckpointListResponse>(`/api/training/jobs/${jobId}/checkpoints/remote/rescan`, {
+        method: 'POST'
+      }),
     checkpointDetail: (jobName: string) =>
       fetchApi<CheckpointDetailResponse>(`/api/training/checkpoints/${encodeURIComponent(jobName)}`),
     startCheckpointUploadOperation: (jobId: string, checkpointName: string) =>

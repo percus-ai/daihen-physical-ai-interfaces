@@ -41,30 +41,21 @@ class _FakeMetricsClient:
         return _FakeMetricsQuery(self)
 
 
-def test_get_latest_metric_retries_with_service_key_after_jwt_expiry(monkeypatch):
+def test_get_latest_metric_propagates_jwt_expiry_without_service_key(monkeypatch):
     import interfaces_backend.api.training as training_api
 
-    expired_client = _FakeMetricsClient(data=[], error=Exception("JWT expired"))
-    service_client = _FakeMetricsClient(
-        data=[{"step": 12, "loss": 0.34, "ts": "2026-03-07T23:16:12Z", "metrics": {"lr": 1e-4}}]
-    )
+    jwt_error = Exception("JWT expired")
+    expired_client = _FakeMetricsClient(data=[], error=jwt_error)
 
     async def fake_get_supabase_async_client():
         return expired_client
 
-    async def fake_get_service_db_client():
-        return service_client
-
     monkeypatch.setattr(training_api, "get_supabase_async_client", fake_get_supabase_async_client)
-    monkeypatch.setattr(training_api, "_get_service_db_client", fake_get_service_db_client)
 
-    result = asyncio.run(training_api._get_latest_metric("job-1", "train"))
-
-    assert result == {
-        "step": 12,
-        "loss": 0.34,
-        "ts": "2026-03-07T23:16:12Z",
-        "metrics": {"lr": 1e-4},
-    }
+    try:
+        asyncio.run(training_api._get_latest_metric("job-1", "train"))
+    except Exception as exc:
+        assert exc is jwt_error
+    else:
+        raise AssertionError("JWT expiry should be propagated")
     assert expired_client.calls == 1
-    assert service_client.calls == 1

@@ -10,6 +10,7 @@
   import {
     api,
     type CheckpointDetailResponse,
+    type RemoteCheckpointListResponse,
     type RemoteCheckpointUploadResult,
     type RescueCPUResult,
     type TabSessionSubscription,
@@ -103,11 +104,7 @@
     toStore(() => ({
       queryKey: ['training', 'job', jobId, 'instance-status'],
       queryFn: () => api.training.instanceStatus(jobId) as Promise<InstanceStatusResponse>,
-      enabled: Boolean(
-        jobId &&
-          $jobQuery.data?.job?.instance_id &&
-          ['running', 'starting', 'deploying'].includes(String($jobQuery.data?.job?.status ?? ''))
-      )
+      enabled: false
     }))
   );
 
@@ -157,8 +154,9 @@
   let remoteCheckpointMessage = $state('');
   let remoteCheckpointSshAvailable = $state(true);
   let remoteCheckpointRequiresRescueCpu = $state(false);
-  let remoteCheckpointAutoKey = $state('');
+  let remoteCheckpointRequested = $state(false);
   let remoteCheckpointRequestActive = false;
+  let remoteCheckpointSummaryKey = $state('');
   let checkpointUploadInProgress = $state(false);
   let checkpointUploadPhase = $state('');
   let checkpointUploadProgressPercent = $state(0);
@@ -584,9 +582,58 @@
     });
   };
 
+  const applyRemoteCheckpointCandidates = (result: RemoteCheckpointListResponse) => {
+    remoteCheckpointRoot = result.checkpoint_root || '';
+    remoteCheckpointNames = result.checkpoint_names ?? [];
+    remoteCheckpointSshAvailable = result.ssh_available;
+    remoteCheckpointRequiresRescueCpu = result.requires_rescue_cpu;
+    remoteCheckpointMessage = result.message || '';
+    remoteCheckpointRequested = true;
+    if (remoteCheckpointNames.length === 0) {
+      selectedRemoteCheckpoint = '';
+    } else if (!remoteCheckpointNames.includes(selectedRemoteCheckpoint)) {
+      selectedRemoteCheckpoint = remoteCheckpointNames[0];
+    }
+  };
+
+  const remoteCheckpointCandidatesFromSummary = (
+    value: Record<string, unknown> | null | undefined
+  ): RemoteCheckpointListResponse | null => {
+    const state = value?.remote_checkpoint_candidates;
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
+    const record = state as Record<string, unknown>;
+    const rawNames = Array.isArray(record.checkpoint_names) ? record.checkpoint_names : [];
+    const checkpointNames = rawNames
+      .map((name) => String(name ?? '').trim())
+      .filter((name) => /^\d+$/.test(name))
+      .sort((left, right) => Number(left) - Number(right));
+    return {
+      job_id: String(record.job_id ?? jobId),
+      checkpoint_names: checkpointNames,
+      checkpoint_root: String(record.checkpoint_root ?? ''),
+      ssh_available: record.ssh_available !== false,
+      requires_rescue_cpu: Boolean(record.requires_rescue_cpu),
+      message: String(record.message ?? '')
+    };
+  };
+
+  $effect(() => {
+    const candidates = remoteCheckpointCandidatesFromSummary(summary);
+    if (!candidates) return;
+    const nextKey = JSON.stringify(candidates);
+    if (remoteCheckpointSummaryKey === nextKey) return;
+    remoteCheckpointSummaryKey = nextKey;
+    applyRemoteCheckpointCandidates(candidates);
+  });
+
   const setJobDetailSnapshot = (targetJobId: string, snapshot: JobDetailResponse) => {
     if (!targetJobId) return;
     queryClient.setQueryData<JobDetailResponse>(['training', 'job', targetJobId], snapshot);
+    const candidates = remoteCheckpointCandidatesFromSummary(snapshot.summary);
+    if (candidates) {
+      remoteCheckpointSummaryKey = JSON.stringify(candidates);
+      applyRemoteCheckpointCandidates(candidates);
+    }
   };
 
   const setMetricsSnapshot = (targetJobId: string, snapshot: MetricsResponse) => {
@@ -641,7 +688,7 @@
       ['completed', 'failed', 'cancelled'].includes(snapshot.state)
     ) {
       void refresh();
-      void fetchRemoteCheckpoints();
+      void fetchRemoteCheckpoints({ silent: true });
     }
 
   };
@@ -671,7 +718,7 @@
       ['completed', 'failed', 'cancelled'].includes(snapshot.state)
     ) {
       void refresh();
-      void fetchRemoteCheckpoints();
+      void fetchRemoteCheckpoints({ silent: true });
     }
 
   };
@@ -869,7 +916,7 @@
     }
   };
 
-  const fetchRemoteCheckpoints = async (options: { silent?: boolean } = {}) => {
+  const fetchRemoteCheckpoints = async (options: { silent?: boolean; rescan?: boolean } = {}) => {
     if (!jobId) return;
     if (remoteCheckpointLoading || remoteCheckpointRequestActive) return;
     remoteCheckpointRequestActive = true;
@@ -880,18 +927,12 @@
     }
     remoteCheckpointError = '';
     remoteCheckpointMessage = '';
+    remoteCheckpointRequested = true;
     try {
-      const result = await api.training.remoteCheckpoints(jobId);
-      remoteCheckpointRoot = result.checkpoint_root || '';
-      remoteCheckpointNames = result.checkpoint_names ?? [];
-      remoteCheckpointSshAvailable = result.ssh_available;
-      remoteCheckpointRequiresRescueCpu = result.requires_rescue_cpu;
-      remoteCheckpointMessage = result.message || '';
-      if (remoteCheckpointNames.length === 0) {
-        selectedRemoteCheckpoint = '';
-      } else if (!remoteCheckpointNames.includes(selectedRemoteCheckpoint)) {
-        selectedRemoteCheckpoint = remoteCheckpointNames[0];
-      }
+      const result = options.rescan
+        ? await api.training.rescanRemoteCheckpoints(jobId)
+        : await api.training.remoteCheckpoints(jobId);
+      applyRemoteCheckpointCandidates(result);
     } catch (error) {
       remoteCheckpointError =
         error instanceof Error ? error.message : 'リモートチェックポイント一覧の取得に失敗しました。';
@@ -930,32 +971,6 @@
         error instanceof Error ? error.message : 'チェックポイントのR2登録に失敗しました。';
     }
   };
-
-  $effect(() => {
-    if (!browser || !jobId) {
-      return;
-    }
-
-    const nextAutoKey = `${jobId}:${status}:${jobInfo?.instance_id ?? ''}:${jobInfo?.ip ?? ''}`;
-    if (remoteCheckpointAutoKey !== nextAutoKey) {
-      remoteCheckpointAutoKey = nextAutoKey;
-      window.setTimeout(() => {
-        void fetchRemoteCheckpoints({ silent: true });
-      }, 0);
-    }
-
-    if (!(isRunning || hasLiveInstance || checkpointUploadInProgress || rescueCpuInProgress)) {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      void fetchRemoteCheckpoints({ silent: true });
-    }, 15_000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  });
 
   const fetchLogs = async () => {
     await loadLogsSnapshot(jobId, logsType, logLines);
@@ -1063,8 +1078,9 @@
       remoteCheckpointMessage = '';
       remoteCheckpointSshAvailable = true;
       remoteCheckpointRequiresRescueCpu = false;
-      remoteCheckpointAutoKey = '';
+      remoteCheckpointRequested = false;
       remoteCheckpointRequestActive = false;
+      remoteCheckpointSummaryKey = '';
       checkpointUploadInProgress = false;
       checkpointUploadPhase = '';
       checkpointUploadProgressPercent = 0;
@@ -1393,7 +1409,7 @@
       <section class="nested-block p-4 text-sm text-slate-600">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <h3 class="text-base font-semibold text-slate-900">チェックポイント</h3>
-          <Button.Root class="btn-ghost" type="button" onclick={() => fetchRemoteCheckpoints()} disabled={remoteCheckpointLoading || checkpointUploadInProgress || rescueCpuInProgress}>
+          <Button.Root class="btn-ghost" type="button" onclick={() => fetchRemoteCheckpoints({ rescan: true })} disabled={remoteCheckpointLoading || checkpointUploadInProgress || rescueCpuInProgress}>
             {remoteCheckpointLoading ? '更新中' : '再取得'}
           </Button.Root>
         </div>
@@ -1429,6 +1445,8 @@
           </div>
         {:else if remoteCheckpointLoading}
           <p class="mt-4 text-sm text-slate-500">候補を確認中です。</p>
+        {:else if !remoteCheckpointRequested}
+          <p class="mt-4 text-sm text-slate-500">候補は未取得です。</p>
         {:else}
           <p class="mt-4 text-sm text-slate-500">候補はありません。</p>
         {/if}
