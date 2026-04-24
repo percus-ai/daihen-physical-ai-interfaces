@@ -90,6 +90,8 @@
     };
   };
 
+  type PolicyBooleanValue = 'true' | 'false';
+
   const datasetsQuery = createQuery<DatasetListResponse>({
     queryKey: ['datasets', 'train'],
     queryFn: () => api.storage.datasets()
@@ -149,9 +151,9 @@
   let selectedPretrainedId = $state('');
 
   let policyDtype = $state<'auto' | 'float32' | 'bfloat16' | 'float16'>('auto');
-  let policyUseAmp = $state<'auto' | 'true' | 'false'>('auto');
-  let policyGradientCheckpointing = $state<'auto' | 'true' | 'false'>('auto');
-  let policyCompileModel = $state<'auto' | 'true' | 'false'>('auto');
+  let policyUseAmp = $state<PolicyBooleanValue>('false');
+  let policyGradientCheckpointing = $state<PolicyBooleanValue>('false');
+  let policyCompileModel = $state<PolicyBooleanValue>('false');
 
   let gpuModel = $state('H100');
   let gpuCount = $state(GPU_COUNTS[0] ?? 1);
@@ -216,14 +218,17 @@
 
   const SCRATCH_PRETRAINED_ID = '__scratch__';
 
-  const toTriState = (value: boolean | null | undefined): 'auto' | 'true' | 'false' => {
-    if (typeof value !== 'boolean') return 'auto';
-    return value ? 'true' : 'false';
-  };
-
-  const toConcreteTriState = (value: boolean | null | undefined, fallback = false): 'true' | 'false' => {
+  const toConcreteTriState = (value: boolean | null | undefined, fallback = false): PolicyBooleanValue => {
     const resolved = typeof value === 'boolean' ? value : fallback;
     return resolved ? 'true' : 'false';
+  };
+
+  const toDefaultedPolicyBoolean = (
+    value: boolean | null | undefined,
+    defaultValue: PolicyBooleanValue
+  ): PolicyBooleanValue => {
+    if (typeof value !== 'boolean') return defaultValue;
+    return value ? 'true' : 'false';
   };
 
   const clampGpuCount = (value: unknown) => {
@@ -295,9 +300,18 @@
     }
 
     if (config.policy?.dtype) policyDtype = config.policy.dtype;
-    policyUseAmp = toTriState(config.policy?.use_amp);
-    policyGradientCheckpointing = toTriState(config.policy?.gradient_checkpointing);
-    policyCompileModel = toTriState(config.policy?.compile_model);
+    const restoredPolicyInfo = POLICY_TYPES.find((policy) => policy.id === restoredPolicyType);
+    const restoredUseAmpDefault =
+      policyDtype === 'bfloat16' ? 'false' : toConcreteTriState(restoredPolicyInfo?.useAmp);
+    policyUseAmp = toDefaultedPolicyBoolean(config.policy?.use_amp, restoredUseAmpDefault);
+    policyGradientCheckpointing = toDefaultedPolicyBoolean(
+      config.policy?.gradient_checkpointing,
+      toConcreteTriState(restoredPolicyInfo?.gradientCheckpointing)
+    );
+    policyCompileModel = toDefaultedPolicyBoolean(
+      config.policy?.compile_model,
+      toConcreteTriState(restoredPolicyInfo?.compileModel)
+    );
 
     const restoredProvider = config.cloud?.provider === 'vast' ? 'vast' : 'verda';
     cloudProvider = restoredProvider;
@@ -364,13 +378,12 @@
     earlyStoppingMode = 'min';
 
     policyDtype = info.dtype ? (info.dtype as typeof policyDtype) : 'auto';
-    policyCompileModel = info.compileModel === undefined ? 'auto' : info.compileModel ? 'true' : 'false';
-    policyGradientCheckpointing =
-      info.gradientCheckpointing === undefined ? 'auto' : info.gradientCheckpointing ? 'true' : 'false';
+    policyCompileModel = toConcreteTriState(info.compileModel);
+    policyGradientCheckpointing = toConcreteTriState(info.gradientCheckpointing);
     if (policyDtype === 'bfloat16') {
       policyUseAmp = 'false';
     } else {
-      policyUseAmp = info.useAmp === undefined ? 'auto' : info.useAmp ? 'true' : 'false';
+      policyUseAmp = toConcreteTriState(info.useAmp);
     }
 
     if (policyId === 'pi05') {
@@ -531,8 +544,7 @@
 
   const generatedJobName = $derived(buildJobName(policyType, datasetShortId));
 
-  const toBool = (value: 'auto' | 'true' | 'false') => {
-    if (value === 'auto') return null;
+  const toBool = (value: PolicyBooleanValue) => {
     return value === 'true';
   };
 
@@ -636,9 +648,9 @@
     const gradValue = toBool(policyGradientCheckpointing);
     const compileValue = toBool(policyCompileModel);
 
-    if (useAmpValue !== null) policyPayload.use_amp = useAmpValue;
-    if (gradValue !== null) policyPayload.gradient_checkpointing = gradValue;
-    if (compileValue !== null) policyPayload.compile_model = compileValue;
+    policyPayload.use_amp = useAmpValue;
+    policyPayload.gradient_checkpointing = gradValue;
+    policyPayload.compile_model = compileValue;
 
     return payload;
   };

@@ -2,18 +2,17 @@
   import { ToggleGroup } from 'bits-ui';
   import HelpLabel from '$lib/components/HelpLabel.svelte';
 
-  type TriStateSegmentedValue = 'auto' | 'true' | 'false';
-  type ConcreteTriStateSegmentedValue = 'true' | 'false';
+  type SegmentedBooleanValue = 'true' | 'false';
 
   let {
-    value = $bindable<TriStateSegmentedValue>('auto'),
+    value = $bindable<SegmentedBooleanValue>('false'),
     defaultValue = 'false',
     disabled = false,
     text,
     help
   }: {
-    value?: TriStateSegmentedValue;
-    defaultValue?: ConcreteTriStateSegmentedValue;
+    value?: SegmentedBooleanValue;
+    defaultValue?: SegmentedBooleanValue;
     disabled?: boolean;
     text: string;
     help: string;
@@ -27,8 +26,7 @@
   const disabledItemClass = `${itemBaseClass} data-[state=on]:bg-white data-[state=on]:text-slate-900 data-[state=on]:shadow-sm`;
   const resetButtonClass =
     'text-[11px] font-semibold text-slate-400 underline decoration-dotted underline-offset-2 transition hover:text-slate-900 disabled:cursor-default disabled:text-slate-300 disabled:no-underline disabled:hover:text-slate-300';
-  const displayValue = $derived(value === 'auto' ? defaultValue : value);
-  const canReset = $derived(!disabled && value !== 'auto');
+  const canReset = $derived(!disabled && value !== defaultValue);
 
   const handleValueChange = (nextValue: string) => {
     if (nextValue === 'true' || nextValue === 'false') {
@@ -37,7 +35,7 @@
   };
 
   const resetToDefault = () => {
-    value = 'auto';
+    value = defaultValue;
   };
 </script>
 
@@ -57,7 +55,7 @@
   <ToggleGroup.Root
     type="single"
     class={rootClass}
-    value={displayValue}
+    {value}
     onValueChange={handleValueChange}
     {disabled}
     title={help}
