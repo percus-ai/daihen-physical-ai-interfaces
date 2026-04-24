@@ -318,6 +318,8 @@ class TrainingParams(BaseModel):
     log_freq: Optional[int] = Field(None, ge=1, description="Logging frequency (steps)")
     num_workers: Optional[int] = Field(None, ge=0, description="Dataloader workers")
     save_checkpoint: Optional[bool] = Field(None, description="Save checkpoints during training")
+    drop_last: Optional[bool] = Field(None, description="Drop incomplete final train batch")
+    persistent_workers: Optional[bool] = Field(None, description="Keep DataLoader workers alive across epochs")
 
 
 class ValidationConfig(BaseModel):
@@ -729,6 +731,8 @@ class ContinueTrainingParams(BaseModel):
     log_freq: Optional[int] = Field(None, ge=1, description="Logging frequency (steps)")
     num_workers: Optional[int] = Field(None, ge=0, description="Dataloader workers")
     save_checkpoint: Optional[bool] = Field(None, description="Save checkpoints during training")
+    drop_last: Optional[bool] = Field(None, description="Drop incomplete final train batch")
+    persistent_workers: Optional[bool] = Field(None, description="Keep DataLoader workers alive across epochs")
 
 
 class JobCreateContinueRequest(BaseModel):

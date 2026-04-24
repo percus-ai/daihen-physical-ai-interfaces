@@ -144,6 +144,25 @@ def test_build_pipeline_config_preserves_groot_base_model_path():
     assert "pretrained_path" not in config["policy"]
 
 
+def test_build_pipeline_config_preserves_dataloader_runtime_options():
+    from interfaces_backend.models.training import JobCreateRequest
+    import interfaces_backend.api.training as training_api
+
+    payload = _valid_create_job_payload()
+    payload["training"] = {
+        "steps": 100,
+        "batch_size": 2,
+        "drop_last": True,
+        "persistent_workers": True,
+    }
+
+    request = JobCreateRequest.model_validate(payload)
+    config = training_api._build_pipeline_config(request, job_id="job-1")
+
+    assert config["training"]["drop_last"] is True
+    assert config["training"]["persistent_workers"] is True
+
+
 def test_start_provision_operation_preflights_without_fastapi_lifecycle(monkeypatch):
     from interfaces_backend.models.training import JobCreateRequest
     import interfaces_backend.api.training as training_api

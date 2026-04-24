@@ -71,6 +71,8 @@
       save_freq?: number;
       log_freq?: number;
       save_checkpoint?: boolean;
+      drop_last?: boolean;
+      persistent_workers?: boolean;
     };
     validation?: { enable?: boolean };
     early_stopping?: { enable?: boolean };
@@ -1591,6 +1593,11 @@
               <CopyableDetailField label="バッチサイズ" value={trainingConfig?.training?.batch_size ?? null} />
               <CopyableDetailField label="保存頻度" value={trainingConfig?.training?.save_freq ?? null} />
               <CopyableDetailField label="ログ頻度" value={trainingConfig?.training?.log_freq ?? null} />
+              <CopyableDetailField label="drop_last" value={trainingConfig?.training?.drop_last ? '有効' : '無効'} />
+              <CopyableDetailField
+                label="Persistent workers"
+                value={trainingConfig?.training?.persistent_workers ? '有効' : '無効'}
+              />
             </dl>
           </div>
         </div>

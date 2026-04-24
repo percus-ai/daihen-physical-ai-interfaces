@@ -10,7 +10,9 @@
     type LastTrainingConfigResponse,
     type TrainingProvisionOperationStatusResponse
   } from '$lib/api/client';
+  import BooleanSegmentedControl from '$lib/components/BooleanSegmentedControl.svelte';
   import HelpLabel from '$lib/components/HelpLabel.svelte';
+  import TriStateSegmentedControl from '$lib/components/TriStateSegmentedControl.svelte';
   import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
   import { formatBytes, formatDate } from '$lib/format';
   import { getGpuModelLabel, GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
@@ -59,6 +61,8 @@
       log_freq?: number;
       num_workers?: number;
       save_checkpoint?: boolean;
+      drop_last?: boolean;
+      persistent_workers?: boolean;
     };
     validation?: {
       enable?: boolean;
@@ -126,6 +130,8 @@
   let logFreq = $state(200);
   let numWorkers = $state(4);
   let saveCheckpoint = $state(true);
+  let dropLast = $state(false);
+  let persistentWorkers = $state(false);
 
   let validationEnable = $state(false);
   let validationTrainRatioPercent = $state(70);
@@ -184,6 +190,10 @@
     log_freq: '何ステップごとに学習ログを記録するかです。',
     num_workers: 'データ読み込みを並列処理する数です。増やすと前処理が速くなる場合があります。',
     save_checkpoint: '有効にすると途中状態を保存します。再開やEarly Stopping運用には有効化が推奨です。',
+    drop_last:
+      '最後の端数バッチを学習から除外して、学習中のbatch shapeを固定します。torch.compile使用時のepoch境界コストを抑える用途です。',
+    persistent_workers:
+      'DataLoader workerをepoch間で維持します。num_workersが0の場合は無効です。',
     validation_enable:
       '有効にすると train/val 分割を作って検証を実行します。Early Stopping を使う場合は有効化が必要です。',
     validation_train_ratio:
@@ -209,6 +219,11 @@
   const toTriState = (value: boolean | null | undefined): 'auto' | 'true' | 'false' => {
     if (typeof value !== 'boolean') return 'auto';
     return value ? 'true' : 'false';
+  };
+
+  const toConcreteTriState = (value: boolean | null | undefined, fallback = false): 'true' | 'false' => {
+    const resolved = typeof value === 'boolean' ? value : fallback;
+    return resolved ? 'true' : 'false';
   };
 
   const clampGpuCount = (value: unknown) => {
@@ -262,6 +277,10 @@
     if (typeof config.training?.log_freq === 'number') logFreq = config.training.log_freq;
     if (typeof config.training?.num_workers === 'number') numWorkers = config.training.num_workers;
     if (typeof config.training?.save_checkpoint === 'boolean') saveCheckpoint = config.training.save_checkpoint;
+    if (typeof config.training?.drop_last === 'boolean') dropLast = config.training.drop_last;
+    if (typeof config.training?.persistent_workers === 'boolean') {
+      persistentWorkers = config.training.persistent_workers;
+    }
 
     validationEnable = Boolean(config.validation?.enable);
     if (typeof config.validation?.eval_freq === 'number') validationEvalFreq = config.validation.eval_freq;
@@ -331,6 +350,8 @@
     logFreq = info.defaultLogFreq;
     numWorkers = info.defaultNumWorkers;
     saveCheckpoint = true;
+    dropLast = false;
+    persistentWorkers = false;
     validationEnable = false;
     validationTrainRatioPercent = 70;
     validationSplitSeed = 42;
@@ -438,6 +459,12 @@
   });
 
   $effect(() => {
+    if (numWorkers <= 0 && persistentWorkers) {
+      persistentWorkers = false;
+    }
+  });
+
+  $effect(() => {
     if (lastConfigApplied) return;
     if ($lastConfigQuery.isPending) return;
     lastConfigApplied = true;
@@ -449,6 +476,15 @@
   const useAmpDisabled = $derived(policyDtype === 'bfloat16');
   const isVast = $derived(cloudProvider === 'vast');
   const isVerda = $derived(cloudProvider === 'verda');
+  const policyUseAmpDefault = $derived(useAmpDisabled ? 'false' : toConcreteTriState(policyInfo?.useAmp));
+  const policyGradientCheckpointingDefault = $derived(toConcreteTriState(policyInfo?.gradientCheckpointing));
+  const policyCompileModelDefault = $derived(toConcreteTriState(policyInfo?.compileModel));
+
+  $effect(() => {
+    if (useAmpDisabled && policyUseAmp !== 'false') {
+      policyUseAmp = 'false';
+    }
+  });
 
   const progressLabelMap: Record<string, string> = {
     queued: '開始待ち',
@@ -518,7 +554,9 @@
         batch_size: batchSize,
         log_freq: logFreq,
         num_workers: numWorkers,
-        save_checkpoint: saveCheckpoint
+        save_checkpoint: saveCheckpoint,
+        drop_last: dropLast,
+        persistent_workers: numWorkers > 0 && persistentWorkers
       },
       validation: {
         enable: validationEnable
@@ -900,24 +938,68 @@
           <HelpLabel text="DataLoader workers" help={PARAMETER_HELP.num_workers} />
           <input class="input mt-2" type="number" min="0" bind:value={numWorkers} title={PARAMETER_HELP.num_workers} />
         </label>
+        <BooleanSegmentedControl
+          text="チェックポイント保存"
+          help={PARAMETER_HELP.save_checkpoint}
+          bind:checked={saveCheckpoint}
+        />
+      </div>
+    </section>
+
+    <section class="card p-6">
+      <h2 class="text-xl font-semibold text-slate-900">モデル設定</h2>
+      <div class="mt-4 grid gap-4 sm:grid-cols-2">
         <label class="text-sm font-semibold text-slate-700">
-          <HelpLabel text="チェックポイント保存" help={PARAMETER_HELP.save_checkpoint} />
-          <div class="mt-3 flex items-center gap-2 text-sm text-slate-600">
-            <input type="checkbox" bind:checked={saveCheckpoint} title={PARAMETER_HELP.save_checkpoint} />
-            <span>{saveCheckpoint ? '有効' : '無効'}</span>
-          </div>
+          <HelpLabel text="dtype" help={PARAMETER_HELP.dtype} />
+          <select class="input mt-2" bind:value={policyDtype} title={PARAMETER_HELP.dtype}>
+            <option value="auto">指定しない</option>
+            <option value="float32">float32</option>
+            <option value="bfloat16">bfloat16</option>
+            <option value="float16">float16</option>
+          </select>
         </label>
+        <div>
+          <TriStateSegmentedControl
+            text="AMP"
+            help={PARAMETER_HELP.amp}
+            bind:value={policyUseAmp}
+            defaultValue={policyUseAmpDefault}
+            disabled={useAmpDisabled}
+          />
+          {#if useAmpDisabled}
+            <p class="mt-2 text-xs text-slate-500">bfloat16 選択時は AMP を無効化します。</p>
+          {/if}
+        </div>
+        <TriStateSegmentedControl
+          text="Gradient checkpointing"
+          help={PARAMETER_HELP.gradient_checkpointing}
+          bind:value={policyGradientCheckpointing}
+          defaultValue={policyGradientCheckpointingDefault}
+        />
+        <TriStateSegmentedControl
+          text="torch.compile"
+          help={PARAMETER_HELP.torch_compile}
+          bind:value={policyCompileModel}
+          defaultValue={policyCompileModelDefault}
+        />
+        <BooleanSegmentedControl text="drop_last" help={PARAMETER_HELP.drop_last} bind:checked={dropLast} />
+        <BooleanSegmentedControl
+          text="Persistent workers"
+          help={PARAMETER_HELP.persistent_workers}
+          bind:checked={persistentWorkers}
+          disabled={numWorkers <= 0}
+        />
       </div>
     </section>
 
     <section class="card p-6">
       <h2 class="text-xl font-semibold text-slate-900">検証 / Early Stopping</h2>
-      <div class="mt-4 text-sm font-semibold text-slate-700">
-        <HelpLabel text="検証を有効" help={PARAMETER_HELP.validation_enable} />
-        <div class="mt-3 flex items-center gap-2 text-sm text-slate-600">
-          <input type="checkbox" bind:checked={validationEnable} title={PARAMETER_HELP.validation_enable} />
-          <span>{validationEnable ? '有効' : '無効'}</span>
-        </div>
+      <div class="mt-4 max-w-md">
+        <BooleanSegmentedControl
+          text="検証を有効"
+          help={PARAMETER_HELP.validation_enable}
+          bind:checked={validationEnable}
+        />
       </div>
       <div class="mt-4 grid gap-4 sm:grid-cols-3">
         <label class="text-sm font-semibold text-slate-700">
@@ -980,17 +1062,13 @@
 
       <div class="divider my-6"></div>
 
-      <div class="text-sm font-semibold text-slate-700">
-        <HelpLabel text="Early Stopping" help={PARAMETER_HELP.early_stopping_enable} />
-        <div class="mt-3 flex items-center gap-2 text-sm text-slate-600">
-          <input
-            type="checkbox"
-            bind:checked={earlyStoppingEnable}
-            disabled={!validationEnable}
-            title={PARAMETER_HELP.early_stopping_enable}
-          />
-          <span>{earlyStoppingEnable ? '有効' : '無効'}</span>
-        </div>
+      <div class="max-w-md">
+        <BooleanSegmentedControl
+          text="Early Stopping"
+          help={PARAMETER_HELP.early_stopping_enable}
+          bind:checked={earlyStoppingEnable}
+          disabled={!validationEnable}
+        />
       </div>
       <div class="mt-4 grid gap-4 sm:grid-cols-3">
         <label class="text-sm font-semibold text-slate-700">
@@ -1026,52 +1104,6 @@
             disabled={!earlyStoppingEnable}
             title={PARAMETER_HELP.early_stopping_min_delta}
           />
-        </label>
-      </div>
-    </section>
-
-    <section class="card p-6">
-      <h2 class="text-xl font-semibold text-slate-900">モデル設定</h2>
-      <div class="mt-4 grid gap-4 sm:grid-cols-2">
-        <label class="text-sm font-semibold text-slate-700">
-          <HelpLabel text="dtype" help={PARAMETER_HELP.dtype} />
-          <select class="input mt-2" bind:value={policyDtype} title={PARAMETER_HELP.dtype}>
-            <option value="auto">指定しない</option>
-            <option value="float32">float32</option>
-            <option value="bfloat16">bfloat16</option>
-            <option value="float16">float16</option>
-          </select>
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <HelpLabel text="AMP" help={PARAMETER_HELP.amp} />
-          <select class="input mt-2" bind:value={policyUseAmp} disabled={useAmpDisabled} title={PARAMETER_HELP.amp}>
-            <option value="auto">指定しない</option>
-            <option value="true">有効</option>
-            <option value="false">無効</option>
-          </select>
-          {#if useAmpDisabled}
-            <p class="mt-2 text-xs text-slate-500">bfloat16 選択時は AMP を無効化します。</p>
-          {/if}
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <HelpLabel text="Gradient checkpointing" help={PARAMETER_HELP.gradient_checkpointing} />
-          <select
-            class="input mt-2"
-            bind:value={policyGradientCheckpointing}
-            title={PARAMETER_HELP.gradient_checkpointing}
-          >
-            <option value="auto">指定しない</option>
-            <option value="true">有効</option>
-            <option value="false">無効</option>
-          </select>
-        </label>
-        <label class="text-sm font-semibold text-slate-700">
-          <HelpLabel text="torch.compile" help={PARAMETER_HELP.torch_compile} />
-          <select class="input mt-2" bind:value={policyCompileModel} title={PARAMETER_HELP.torch_compile}>
-            <option value="auto">指定しない</option>
-            <option value="true">有効</option>
-            <option value="false">無効</option>
-          </select>
         </label>
       </div>
     </section>
