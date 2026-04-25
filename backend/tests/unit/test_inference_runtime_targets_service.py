@@ -18,7 +18,7 @@ def test_list_targets_returns_cpu_and_matching_cuda_targets(tmp_path: Path) -> N
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 display_name: Default
@@ -46,7 +46,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -92,7 +92,7 @@ def test_list_targets_includes_multiple_cuda_candidates_for_same_policy(tmp_path
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 display_name: Default
@@ -108,7 +108,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/envs/sm_120.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/sm_120.yaml",
         """
 id: sm_120
 display_name: SM 120
@@ -125,7 +125,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -170,7 +170,7 @@ def test_list_targets_returns_cpu_only_when_no_matching_build_exists(tmp_path: P
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 display_name: Default
@@ -188,7 +188,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -214,7 +214,7 @@ def test_resolve_target_uses_built_env_python_for_cuda_and_cpu_backing(tmp_path:
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 display_name: Default
@@ -232,7 +232,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -281,7 +281,7 @@ def test_resolve_target_raises_for_unknown_id(tmp_path: Path) -> None:
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 envs:
@@ -295,7 +295,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -319,7 +319,7 @@ def test_list_targets_filters_platform_specific_runtime_targets(tmp_path: Path) 
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 envs:
@@ -342,7 +342,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}

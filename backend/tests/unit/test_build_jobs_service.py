@@ -87,7 +87,7 @@ def test_build_jobs_service_cancel_and_log_buffer(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 envs:
@@ -104,7 +104,7 @@ envs:
         + "\n",
     )
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/shared_packages/pytorch.yaml",
+        root_dir / "features/percus_ai/environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -119,7 +119,7 @@ variants: {}
             environment_build_operation=_FakeEnvironmentBuildOperation(),
             shared_build_operation=_FakeSharedBuildOperation(),
         )
-        accepted = service.start_env_build(config_group="envs", config_id="default", env_name="pi0")
+        accepted = service.start_env_build(config_group="vla_runtime", config_id="default", env_name="pi0")
         job_id = accepted.job.job_id
 
         await asyncio.sleep(0.15)
@@ -145,7 +145,7 @@ def test_build_jobs_service_keeps_latest_100_log_lines_per_job(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        root_dir / "features/percus_ai/environment/configs/envs/default.yaml",
+        root_dir / "features/percus_ai/environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 envs:
@@ -157,7 +157,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants:
@@ -206,7 +206,7 @@ def test_build_jobs_service_passes_train_config_group(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/train/sm_120.yaml",
+        data_dir / "environment/configs/venv/vla/train/sm_120.yaml",
         """
 id: sm_120
 envs:
@@ -219,7 +219,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -235,10 +235,10 @@ variants: {}
             environment_build_operation=operation,
             shared_build_operation=_FakeSharedBuildOperation(),
         )
-        accepted = service.start_env_build(config_group="train", config_id="sm_120", env_name="pi0_train")
+        accepted = service.start_env_build(config_group="vla_train", config_id="sm_120", env_name="pi0_train")
         terminal_state = await _wait_for_terminal_state(service, accepted.job.job_id)
         assert terminal_state == "completed"
-        assert operation.calls[0][:3] == ("sm_120", "pi0_train", "train")
+        assert operation.calls[0][:3] == ("sm_120", "pi0_train", "vla_train")
         await service.shutdown()
 
     asyncio.run(_run())

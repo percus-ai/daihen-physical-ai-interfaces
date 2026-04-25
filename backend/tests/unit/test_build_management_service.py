@@ -43,7 +43,7 @@ def test_list_env_settings_filters_state_by_config_id(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/config-a.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/config-a.yaml",
         """
 id: config-a
 display_name: Config A
@@ -58,7 +58,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/envs/config-b.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/config-b.yaml",
         """
 id: config-b
 display_name: Config B
@@ -73,7 +73,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -86,6 +86,7 @@ variants: {}
             build_id="2026-04-16T00-00-00Z_a",
             env_name="groot",
             config_id="config-a",
+            config_group="vla_runtime",
             success=True,
             steps=[BuildStepLogModel(step="install", started_at="2026-04-16T00:00:00Z", finished_at="2026-04-16T00:01:00Z")],
         )
@@ -96,6 +97,7 @@ variants: {}
             build_id="2026-04-16T00-00-01Z_b",
             env_name="groot",
             config_id="config-b",
+            config_group="vla_runtime",
             success=False,
             steps=[BuildStepLogModel(step="flash-attn", exit_code=1, started_at="2026-04-16T00:02:00Z", finished_at="2026-04-16T00:03:00Z")],
         )
@@ -119,7 +121,7 @@ variants: {}
     assert items["config-a"].description == "config a description"
     assert items["config-a"].current_sm == "sm_120"
     assert items["config-a"].current_platform == "jetson_agx_thor"
-    assert items["config-a"].config_group == "envs"
+    assert items["config-a"].config_group == "vla_runtime"
     assert items["config-a"].supported_platforms == []
     assert items["config-a"].platform_supported is True
     assert items["config-a"].supported_sms == ["*"]
@@ -135,7 +137,7 @@ def test_list_shared_settings_filters_state_by_variant(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 envs: {}
@@ -143,7 +145,7 @@ envs: {}
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants:
@@ -211,7 +213,7 @@ def test_list_env_settings_overlays_active_job(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 display_name: Default
@@ -226,7 +228,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -243,7 +245,7 @@ variants: {}
                     job_id="job-1",
                     build_id="build-1",
                     kind="env",
-                    setting_id="envs:default:pi0",
+                    setting_id="vla_runtime:default:pi0",
                     state="running",
                     current_step_name="runtime-common",
                     current_step_index=1,
@@ -260,7 +262,7 @@ variants: {}
 
     response = service.list_env_settings()
 
-    item = response.items[0]
+    item = next(item for item in response.items if item.setting_id == "vla_runtime:default:pi0")
     assert item.display_name == "Pi0"
     assert item.description == "Pi0 runtime"
     assert item.state == "building"
@@ -274,7 +276,7 @@ def test_list_env_settings_includes_train_group(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 display_name: Default
@@ -290,7 +292,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/train/sm_120.yaml",
+        data_dir / "environment/configs/venv/vla/train/sm_120.yaml",
         """
 id: sm_120
 display_name: SM 120
@@ -306,7 +308,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -325,19 +327,19 @@ variants: {}
     response = service.list_env_settings()
 
     items = {item.setting_id: item for item in response.items}
-    assert items["envs:default:pi0"].usage == "runtime"
-    assert items["envs:default:pi0"].selected is True
-    assert items["envs:default:pi0"].config_group == "envs"
-    assert items["train:sm_120:pi0_train"].usage == "training"
-    assert items["train:sm_120:pi0_train"].selected is False
-    assert items["train:sm_120:pi0_train"].config_group == "train"
+    assert items["vla_runtime:default:pi0"].usage == "runtime"
+    assert items["vla_runtime:default:pi0"].selected is True
+    assert items["vla_runtime:default:pi0"].config_group == "vla_runtime"
+    assert items["vla_train:sm_120:pi0_train"].usage == "training"
+    assert items["vla_train:sm_120:pi0_train"].selected is False
+    assert items["vla_train:sm_120:pi0_train"].config_group == "vla_train"
 
 
 def test_list_env_settings_marks_sm_compatibility(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 display_name: Default
@@ -362,7 +364,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         "package: pytorch\nvariants: {}\n",
     )
     service = BuildManagementService(
@@ -377,15 +379,15 @@ envs:
     items = {item.setting_id: item for item in response.items}
 
     assert response.current_sm == "sm_120"
-    assert items["envs:default:groot"].sm_supported is True
-    assert items["envs:default:act"].sm_supported is False
+    assert items["vla_runtime:default:groot"].sm_supported is True
+    assert items["vla_runtime:default:act"].sm_supported is False
 
 
 def test_delete_env_artifact_unlinks_current_when_current_build_matches(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 display_name: Default
@@ -398,7 +400,7 @@ envs:
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -411,6 +413,7 @@ variants: {}
             build_id="build-1",
             env_name="pi0",
             config_id="default",
+            config_group="vla_runtime",
             success=True,
             steps=[BuildStepLogModel(step="done")],
         )
@@ -423,7 +426,7 @@ variants: {}
         build_jobs_service=_FakeBuildJobsService(),
     )
 
-    service.delete_env_artifact(config_group="envs", config_id="default", env_name="pi0", build_id="build-1")
+    service.delete_env_artifact(config_group="vla_runtime", config_id="default", env_name="pi0", build_id="build-1")
 
     assert store.read_env_current_build_id("pi0") is None
     assert store.list_env_metadata("pi0") == []
@@ -432,9 +435,9 @@ variants: {}
 def test_create_env_error_report_uses_explicit_config_group(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
-    for group in ("envs", "train"):
+    for path in ("vla/runtime", "vla/train"):
         _write_text(
-            data_dir / f"environment/configs/{group}/sm_110.yaml",
+            data_dir / f"environment/configs/venv/{path}/sm_110.yaml",
             """
 id: sm_110
 envs:
@@ -446,7 +449,7 @@ envs:
             + "\n",
         )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants: {}
@@ -459,7 +462,7 @@ variants: {}
             build_id="build-1",
             env_name="groot",
             config_id="sm_110",
-            config_group="train",
+            config_group="vla_train",
             success=False,
             steps=[BuildStepLogModel(step="build", exit_code=1)],
         )
@@ -470,7 +473,7 @@ variants: {}
             from interfaces_backend.models.build_management import BuildErrorReportResponse
 
             assert kwargs["kind"] == "env"
-            assert kwargs["setting_id"] == "train:sm_110:groot"
+            assert kwargs["setting_id"] == "vla_train:sm_110:groot"
             assert kwargs["build_id"] == "build-1"
             return BuildErrorReportResponse(
                 report_id="report-1",
@@ -490,20 +493,20 @@ variants: {}
     )
 
     response = service.create_env_error_report(
-        config_group="train",
+        config_group="vla_train",
         config_id="sm_110",
         env_name="groot",
         build_id="build-1",
     )
 
-    assert response.setting_id == "train:sm_110:groot"
+    assert response.setting_id == "vla_train:sm_110:groot"
 
 
 def test_delete_shared_artifact_filters_by_variant(tmp_path: Path):
     root_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     _write_text(
-        data_dir / "environment/configs/envs/default.yaml",
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
         """
 id: default
 envs: {}
@@ -511,7 +514,7 @@ envs: {}
         + "\n",
     )
     _write_text(
-        data_dir / "environment/configs/shared_packages/pytorch.yaml",
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
         """
 package: pytorch
 variants:

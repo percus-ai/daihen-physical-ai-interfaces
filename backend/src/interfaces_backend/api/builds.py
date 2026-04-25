@@ -31,8 +31,11 @@ async def list_shared_build_settings() -> SharedBuildSettingsListResponse:
     return await asyncio.to_thread(get_build_management_service().list_shared_settings)
 
 
+EnvConfigGroup = Literal["vla_runtime", "vla_train", "lingbot_depth"]
+
+
 @router.post("/envs/{config_group}/{config_id}/{env_name}/run", response_model=BuildRunAcceptedResponse)
-async def run_env_build(config_group: Literal["envs", "train"], config_id: str, env_name: str) -> BuildRunAcceptedResponse:
+async def run_env_build(config_group: EnvConfigGroup, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
     return get_build_jobs_service().start_env_build(config_group=config_group, config_id=config_id, env_name=env_name)
 
 
@@ -48,7 +51,7 @@ async def cancel_build_job(job_id: str) -> BuildJobCancelResponse:
 
 @router.delete("/envs/{config_group}/{config_id}/{env_name}/artifacts/{build_id}", response_model=BuildArtifactDeleteResponse)
 async def delete_env_build_artifact(
-    config_group: Literal["envs", "train"],
+    config_group: EnvConfigGroup,
     config_id: str,
     env_name: str,
     build_id: str,
@@ -84,7 +87,7 @@ async def delete_shared_build_artifact(package: str, variant: str, build_id: str
 
 @router.post("/envs/{config_group}/{config_id}/{env_name}/artifacts/{build_id}/error-report", response_model=BuildErrorReportResponse)
 async def create_env_build_error_report(
-    config_group: Literal["envs", "train"],
+    config_group: EnvConfigGroup,
     config_id: str,
     env_name: str,
     build_id: str,

@@ -247,7 +247,7 @@ class BuildManagementService:
             current_sm=current_sm,
             sm_supported=matches_supported_sms(current_sm, supported_sms),
             state=state,
-            selected=usage == "runtime" and config_group == "envs" and config_id == selected_config_id,
+            selected=usage == "runtime" and config_group == "vla_runtime" and config_id == selected_config_id,
             config_origin=config_origin,
             config_group=config_group,  # type: ignore[arg-type]
             config_id=config_id,
