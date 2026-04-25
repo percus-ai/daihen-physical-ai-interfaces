@@ -17,6 +17,8 @@
     onCreateErrorReport?: (item: BuildSettingSummary) => Promise<void>;
   };
 
+  type PrimaryAction = 'run' | 'cancel' | 'delete';
+
   let {
     title,
     description,
@@ -45,41 +47,68 @@
   };
 
   const handleRun = async (item: BuildSettingSummary) => {
-    if (!onRun || actionPending[item.setting_id]) return;
+    if (!onRun || !item.actions.run || actionPending[item.setting_id]) return;
     await onRun(item);
   };
 
   const handleCancel = async (item: BuildSettingSummary) => {
-    if (!onCancel || actionPending[item.setting_id]) return;
+    if (!onCancel || !item.actions.cancel || actionPending[item.setting_id]) return;
     await onCancel(item);
   };
 
   const handleDelete = async (item: BuildSettingSummary) => {
-    if (!onDelete || actionPending[item.setting_id]) return;
+    if (!onDelete || !item.actions.delete || actionPending[item.setting_id]) return;
     await onDelete(item);
   };
 
   const handleCreateErrorReport = async (item: BuildSettingSummary) => {
-    if (!onCreateErrorReport || actionPending[item.setting_id]) return;
+    if (!onCreateErrorReport || !item.actions.create_error_report || actionPending[item.setting_id]) return;
     await onCreateErrorReport(item);
   };
 
-  const primaryLabel = (item: BuildSettingSummary) => {
-    if (item.state === 'building') return '中止';
-    if (item.state === 'success') return '削除';
-    if (item.state === 'failed') return '削除';
+  const primaryAction = (item: BuildSettingSummary): PrimaryAction | null => {
+    if (item.state === 'building' && item.actions.cancel) return 'cancel';
+    if ((item.state === 'success' || item.state === 'failed') && item.actions.delete) return 'delete';
+    if (item.actions.run) return 'run';
+    return null;
+  };
+
+  const primaryLabel = (action: PrimaryAction) => {
+    if (action === 'cancel') return '中止';
+    if (action === 'delete') return '削除';
     return '構築';
   };
 
-  const primaryClass = (item: BuildSettingSummary) => {
-    if (item.state === 'success' || item.state === 'failed') {
+  const primaryPendingLabel = (action: PrimaryAction) => {
+    if (action === 'cancel') return '中止中...';
+    if (action === 'delete') return '削除中...';
+    return '処理中...';
+  };
+
+  const primaryClass = (action: PrimaryAction) => {
+    if (action === 'delete') {
       return 'btn-ghost border-rose-200/70 text-rose-600 hover:border-rose-300/80 hover:text-rose-700';
     }
     return 'btn-primary';
   };
 
+  const primaryButtonClass = (item: BuildSettingSummary) => {
+    const action = primaryAction(item);
+    return action ? primaryClass(action) : '';
+  };
+
+  const primaryButtonLabel = (item: BuildSettingSummary) => {
+    const action = primaryAction(item);
+    return action ? primaryLabel(action) : '';
+  };
+
+  const primaryButtonPendingLabel = (item: BuildSettingSummary) => {
+    const action = primaryAction(item);
+    return action ? primaryPendingLabel(action) : '';
+  };
+
   const secondaryLabel = (item: BuildSettingSummary) => {
-    if (item.state === 'failed') return '報告';
+    if (item.state === 'failed' && item.actions.create_error_report) return '報告';
     return '';
   };
 
@@ -125,21 +154,24 @@
   };
 
   const handleSecondary = async (item: BuildSettingSummary) => {
-    if (item.state === 'failed' && item.actions.create_error_report) {
+    if (secondaryLabel(item)) {
       await handleCreateErrorReport(item);
     }
   };
 
   const handlePrimary = async (item: BuildSettingSummary) => {
-    if (item.state === 'building') {
+    const action = primaryAction(item);
+    if (action === 'cancel') {
       await handleCancel(item);
       return;
     }
-    if (item.state === 'success' || item.state === 'failed') {
+    if (action === 'delete') {
       await handleDelete(item);
       return;
     }
-    await handleRun(item);
+    if (action === 'run') {
+      await handleRun(item);
+    }
   };
 </script>
 
@@ -192,15 +224,11 @@
               </Button.Root>
             {/if}
 
-            <Button.Root class={`${primaryClass(item)} mt-auto w-full`} type="button" disabled={actionPending[item.setting_id]} onclick={() => handlePrimary(item)}>
-              {actionPending[item.setting_id]
-                ? item.state === 'building'
-                  ? '中止中...'
-                  : item.state === 'success'
-                    ? '削除中...'
-                    : '処理中...'
-                : primaryLabel(item)}
-            </Button.Root>
+            {#if primaryAction(item)}
+              <Button.Root class={`${primaryButtonClass(item)} mt-auto w-full`} type="button" disabled={actionPending[item.setting_id]} onclick={() => handlePrimary(item)}>
+                {actionPending[item.setting_id] ? primaryButtonPendingLabel(item) : primaryButtonLabel(item)}
+              </Button.Root>
+            {/if}
           </div>
         </div>
       </article>

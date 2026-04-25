@@ -324,7 +324,7 @@ export type BuildSettingSummary = {
   state: BuildSettingState;
   selected?: boolean;
   config_origin?: 'default' | 'data' | null;
-  config_group?: 'envs' | 'train' | null;
+  config_group?: 'vla_runtime' | 'vla_train' | 'lingbot_depth' | null;
   config_id?: string | null;
   env_name?: string | null;
   package?: string | null;

@@ -49,6 +49,16 @@
 
   const RUNTIME_BUILD_FILTER_STORAGE_KEY = 'runtime-build-filter:v1';
 
+  type WebRunnableEnvConfigGroup = 'vla_runtime' | 'vla_train';
+  type WebRunnableEnvBuildItem = BuildSettingSummary & {
+    kind: 'env';
+    config_group: WebRunnableEnvConfigGroup;
+    config_id: string;
+    env_name: string;
+  };
+
+  const WEB_RUNNABLE_ENV_CONFIG_GROUPS = new Set<string>(['vla_runtime', 'vla_train']);
+
   type RuntimeBuildFilterStorage = {
     showUnsupported?: boolean;
     hiddenSettingIds?: string[];
@@ -377,14 +387,23 @@
     };
   };
 
+  const isWebRunnableEnvBuildItem = (item: BuildSettingSummary): item is WebRunnableEnvBuildItem =>
+    item.kind === 'env' &&
+    item.actions.run &&
+    typeof item.config_group === 'string' &&
+    WEB_RUNNABLE_ENV_CONFIG_GROUPS.has(item.config_group) &&
+    typeof item.config_id === 'string' &&
+    item.config_id.length > 0 &&
+    typeof item.env_name === 'string' &&
+    item.env_name.length > 0;
+
   const triggerBuildRun = async (item: BuildSettingSummary) => {
+    if (!isWebRunnableEnvBuildItem(item)) {
+      return;
+    }
     setBuildActionPending(item.setting_id, true);
     try {
-      if (item.kind === 'env' && item.config_group && item.config_id && item.env_name) {
-        await api.builds.runEnv(item.config_group, item.config_id, item.env_name);
-      } else if (item.kind === 'shared' && item.package && item.variant) {
-        await api.builds.runShared(item.package, item.variant);
-      }
+      await api.builds.runEnv(item.config_group, item.config_id, item.env_name);
     } catch (error) {
       buildLoadError = error instanceof Error ? error.message : '構築の開始に失敗しました。';
     } finally {

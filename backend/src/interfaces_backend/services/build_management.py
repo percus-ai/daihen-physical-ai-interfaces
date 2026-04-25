@@ -29,6 +29,9 @@ from percus_ai.environment.config import (
     normalize_supported_sms,
 )
 
+_WEB_MANAGED_ENV_CONFIG_GROUPS = ("vla_runtime", "vla_train")
+_WEB_RUNNABLE_ENV_CONFIG_GROUPS = set(_WEB_MANAGED_ENV_CONFIG_GROUPS)
+
 
 class SystemSettingsReader(Protocol):
     def get_settings(self) -> SystemSettingsModel: ...
@@ -79,7 +82,7 @@ class BuildManagementService:
         current_sm = self._current_sm_resolver()
         active_jobs = {item.setting_id: item for item in self._build_jobs_service.list_active_jobs()}
         items: list[BuildSettingSummaryModel] = []
-        for ref in self._config_loader.list_env_configs():
+        for ref in self._config_loader.list_env_configs(config_groups=_WEB_MANAGED_ENV_CONFIG_GROUPS):
             config = self._config_loader.load_env_config(ref.config_id, config_group=ref.group)
             for env_name, env_definition in sorted(config.envs.items()):
                 items.append(
@@ -257,7 +260,7 @@ class BuildManagementService:
             latest_started_at=_started_at(latest.steps) if latest else None,
             latest_finished_at=_finished_at(latest.steps) if latest else None,
             latest_error_summary=_error_summary(latest) if latest else None,
-            actions=_actions_for_state(state=state, has_artifact=has_artifact),
+            actions=_actions_for_env_state(config_group=config_group, state=state, has_artifact=has_artifact),
         )
         return _with_active_job(summary, active_job)
 
@@ -300,7 +303,7 @@ class BuildManagementService:
             latest_started_at=_started_at(latest.steps) if latest else None,
             latest_finished_at=_finished_at(latest.steps) if latest else None,
             latest_error_summary=_error_summary(latest) if latest else None,
-            actions=_actions_for_state(state=state, has_artifact=has_artifact),
+            actions=_actions_for_shared_state(state=state, has_artifact=has_artifact),
         )
         return _with_active_job(summary, active_job)
 
@@ -390,6 +393,22 @@ def _actions_for_state(*, has_artifact: bool, state: BuildSettingState) -> Build
         delete=has_artifact,
         create_error_report=state == "failed",
     )
+
+
+def _actions_for_env_state(
+    *,
+    config_group: str,
+    has_artifact: bool,
+    state: BuildSettingState,
+) -> BuildSettingActionsModel:
+    actions = _actions_for_state(state=state, has_artifact=has_artifact)
+    if config_group in _WEB_RUNNABLE_ENV_CONFIG_GROUPS:
+        return actions
+    return actions.model_copy(update={"run": False})
+
+
+def _actions_for_shared_state(*, has_artifact: bool, state: BuildSettingState) -> BuildSettingActionsModel:
+    return _actions_for_state(state=state, has_artifact=has_artifact).model_copy(update={"run": False})
 
 
 def _with_active_job(

@@ -205,6 +205,8 @@ variants:
     assert items["a"].platform_supported is True
     assert items["a"].supported_sms == ["*"]
     assert items["a"].sm_supported is True
+    assert items["a"].actions.run is False
+    assert items["a"].actions.delete is True
     assert items["b"].state == "failed"
     assert items["b"].latest_error_summary == "build failed (exit=7)"
 
@@ -333,6 +335,74 @@ variants: {}
     assert items["vla_train:sm_120:pi0_train"].usage == "training"
     assert items["vla_train:sm_120:pi0_train"].selected is False
     assert items["vla_train:sm_120:pi0_train"].config_group == "vla_train"
+
+
+def test_list_env_settings_excludes_non_vla_env_groups(tmp_path: Path):
+    root_dir = tmp_path / "repo"
+    data_dir = tmp_path / "data"
+    _write_text(
+        data_dir / "environment/configs/venv/vla/runtime/default.yaml",
+        """
+id: default
+display_name: Default
+envs:
+  pi0:
+    display_name: Pi0
+    usage: runtime
+    python: "3.10"
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        data_dir / "environment/configs/venv/vla/train/sm_120.yaml",
+        """
+id: sm_120
+display_name: SM 120
+envs:
+  pi0_train:
+    display_name: Pi0 Train
+    usage: training
+    python: "3.10"
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        data_dir / "environment/configs/venv/lingbot_depth/sm_120.yaml",
+        """
+id: sm_120
+display_name: LingBot Depth SM 120
+envs:
+  lingbot_depth:
+    display_name: LingBot Depth
+    usage: runtime
+    python: "3.10"
+    installs: []
+    checks: []
+""".strip()
+        + "\n",
+    )
+    _write_text(
+        data_dir / "environment/configs/venv/shared_packages/pytorch.yaml",
+        "package: pytorch\nvariants: {}\n",
+    )
+
+    service = BuildManagementService(
+        config_loader=EnvironmentConfigLoader(root_dir=root_dir, data_dir=data_dir),
+        build_store=BuildStore(layout=BuildLayout(data_dir=data_dir)),
+        settings_service=_FakeSettingsService("default"),
+        build_jobs_service=_FakeBuildJobsService(),
+    )
+
+    response = service.list_env_settings()
+
+    items = {item.setting_id: item for item in response.items}
+    assert items["vla_runtime:default:pi0"].actions.run is True
+    assert items["vla_train:sm_120:pi0_train"].actions.run is True
+    assert "lingbot_depth:sm_120:lingbot_depth" not in items
 
 
 def test_list_env_settings_marks_sm_compatibility(tmp_path: Path):
