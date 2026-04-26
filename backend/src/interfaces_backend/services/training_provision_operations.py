@@ -13,6 +13,10 @@ from supabase._async.client import AsyncClient
 
 from interfaces_backend.models.training import (
     JobCreateRequest,
+    TrainingProvisionOperationCompletedEvent,
+    TrainingProvisionOperationEvent,
+    TrainingProvisionOperationFailedEvent,
+    TrainingProvisionOperationProgressEvent,
     TrainingProvisionOperationAcceptedResponse,
     TrainingProvisionOperationStatusResponse,
 )
@@ -29,6 +33,7 @@ _ACTIVE_STATES = {"queued", "running"}
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
 _STALE_TIMEOUT_MINUTES = int(os.environ.get("TRAINING_PROVISION_STALE_TIMEOUT_MINUTES", "15"))
 
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -37,7 +42,7 @@ def _utcnow_iso() -> str:
     return _utcnow().isoformat()
 
 
-def _cleanup_step_from_progress(progress_type: str) -> str:
+def _step_from_provision_progress_type(progress_type: str) -> str:
     mapping = {
         "start": "validate",
         "validating": "validate",
@@ -57,11 +62,21 @@ def _cleanup_step_from_progress(progress_type: str) -> str:
         "deploying": "deploy_files",
         "setting_up": "setup_env",
         "starting_training": "start_training",
+        "cleaning_up": "cleanup",
         "job_created": "job_created",
-        "complete": "completed",
-        "error": "failed",
     }
     return mapping.get(progress_type, progress_type or "running")
+
+
+def _identity_patch_from_event(
+    event: TrainingProvisionOperationEvent,
+) -> dict[str, str | None]:
+    patch: dict[str, str | None] = {}
+    if event.instance_id is not None:
+        patch["instance_id"] = str(event.instance_id or "").strip() or None
+    if event.job_id is not None:
+        patch["job_id"] = str(event.job_id or "").strip() or None
+    return patch
 
 
 def cleanup_provision_instance(provider: str, instance_id: str) -> tuple[bool, str]:
@@ -201,37 +216,72 @@ class TrainingProvisionOperationsService:
             finished_at=_utcnow_iso(),
         )
 
-    async def update_from_progress(self, *, operation_id: str, progress: dict[str, Any]) -> None:
-        progress_type = str(progress.get("type") or "").strip()
+    async def update_from_event(self, *, operation_id: str, event: TrainingProvisionOperationEvent) -> None:
+        if isinstance(event, TrainingProvisionOperationProgressEvent):
+            await self._update_from_progress_event(operation_id=operation_id, event=event)
+            return
+        if isinstance(event, TrainingProvisionOperationCompletedEvent):
+            await self._update_from_completed_event(operation_id=operation_id, event=event)
+            return
+        if isinstance(event, TrainingProvisionOperationFailedEvent):
+            await self._update_from_failed_event(operation_id=operation_id, event=event)
+            return
+        raise TypeError(f"Unsupported training provision operation event: {type(event).__name__}")
+
+    async def _update_from_progress_event(
+        self,
+        *,
+        operation_id: str,
+        event: TrainingProvisionOperationProgressEvent,
+    ) -> None:
+        progress_type = str(event.type or "").strip()
         if not progress_type:
             return
 
         patch: dict[str, Any] = {
-            "step": _cleanup_step_from_progress(progress_type),
-            "message": str(progress.get("message") or progress.get("error") or "").strip() or None,
+            "step": _step_from_provision_progress_type(progress_type),
+            "message": str(event.message or event.error or "").strip() or None,
+            "state": "running",
+            "failure_reason": None,
         }
+        patch.update(_identity_patch_from_event(event))
 
-        if progress_type == "error":
-            patch["state"] = "failed"
-            patch["failure_reason"] = str(progress.get("error") or "provision_failed")
-            patch["finished_at"] = _utcnow_iso()
-        elif progress_type == "complete":
-            patch["state"] = "completed"
-            patch["step"] = "completed"
-            patch["finished_at"] = _utcnow_iso()
-        else:
-            patch["state"] = "running"
-            patch["failure_reason"] = None
-
-        if progress.get("instance_id") is not None:
-            patch["instance_id"] = str(progress.get("instance_id") or "").strip() or None
-        if progress.get("job_id") is not None:
-            patch["job_id"] = str(progress.get("job_id") or "").strip() or None
         if progress_type == "job_created":
-            patch["job_id"] = str(progress.get("job_id") or "").strip() or patch.get("job_id")
             patch["step"] = "job_created"
             patch["message"] = patch["message"] or "学習ジョブを作成しました。"
 
+        await self._update(operation_id=operation_id, **patch)
+
+    async def _update_from_completed_event(
+        self,
+        *,
+        operation_id: str,
+        event: TrainingProvisionOperationCompletedEvent,
+    ) -> None:
+        patch: dict[str, Any] = {
+            "state": "completed",
+            "step": "completed",
+            "message": str(event.message or "").strip() or None,
+            "finished_at": _utcnow_iso(),
+        }
+        patch.update(_identity_patch_from_event(event))
+        await self._update(operation_id=operation_id, **patch)
+
+    async def _update_from_failed_event(
+        self,
+        *,
+        operation_id: str,
+        event: TrainingProvisionOperationFailedEvent,
+    ) -> None:
+        error = str(event.error or "").strip() or "provision_failed"
+        patch: dict[str, Any] = {
+            "state": "failed",
+            "step": "failed",
+            "message": str(event.message or error).strip() or None,
+            "failure_reason": error,
+            "finished_at": _utcnow_iso(),
+        }
+        patch.update(_identity_patch_from_event(event))
         await self._update(operation_id=operation_id, **patch)
 
     async def _load(self, operation_id: str, *, owner_user_id: str | None) -> Optional[dict[str, Any]]:

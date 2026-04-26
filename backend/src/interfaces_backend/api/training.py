@@ -47,6 +47,10 @@ from interfaces_backend.models.training import (
     JobCreateRequest,
     JobCreateResponse,
     TrainingProvisionOperationAcceptedResponse,
+    TrainingProvisionOperationCompletedEvent,
+    TrainingProvisionOperationEvent,
+    TrainingProvisionOperationFailedEvent,
+    TrainingProvisionOperationProgressEvent,
     TrainingProvisionOperationStatusResponse,
     TrainingJobOperationAcceptedResponse,
     TrainingJobOperationEvent,
@@ -5561,6 +5565,32 @@ async def check_all_jobs_status():
     return JobStatusCheckResponse(updates=updates, checked_count=checked)
 
 
+def _training_progress_to_provision_operation_event(
+    event: TrainingJobProgressEvent,
+) -> TrainingProvisionOperationEvent:
+    if event.type == "complete":
+        return TrainingProvisionOperationCompletedEvent(
+            message=event.message or None,
+            instance_id=event.instance_id,
+            job_id=event.job_id,
+        )
+    if event.type == "error":
+        error = str(event.error or event.message or "provision_failed").strip() or "provision_failed"
+        return TrainingProvisionOperationFailedEvent(
+            message=event.message or event.error or None,
+            error=error,
+            instance_id=event.instance_id,
+            job_id=event.job_id,
+        )
+    return TrainingProvisionOperationProgressEvent(
+        type=event.type,
+        message=event.message or None,
+        error=event.error,
+        instance_id=event.instance_id,
+        job_id=event.job_id,
+    )
+
+
 async def _run_training_provision_operation(
     *,
     operation_id: str,
@@ -5574,29 +5604,28 @@ async def _run_training_provision_operation(
     latest: dict[str, Optional[str]] = {"instance_id": None, "job_id": None}
     job_id = str(request_data.get("job_id") or "").strip()
 
-    async def update_progress(payload: dict) -> None:
+    async def update_provision_operation(event: TrainingProvisionOperationEvent) -> None:
         try:
-            await operations.update_from_progress(operation_id=operation_id, progress=payload)
+            await operations.update_from_event(operation_id=operation_id, event=event)
         except Exception:  # noqa: BLE001
             logger.exception(
-                "Failed to persist training provision progress: operation_id=%s payload=%s",
+                "Failed to persist training provision event: operation_id=%s event=%s",
                 operation_id,
-                payload,
+                event.model_dump(mode="json"),
             )
 
-    def schedule_progress_update(payload: dict) -> None:
-        asyncio.create_task(update_progress(payload))
+    def schedule_provision_operation_update(event: TrainingProvisionOperationEvent) -> None:
+        asyncio.create_task(update_provision_operation(event))
 
     active_streams = get_training_job_event_stream_registry()
 
     def handle_progress_event(event: TrainingJobProgressEvent) -> None:
-        payload = event.model_dump(mode="json", exclude_none=True)
-        payload.pop("event", None)
-        if payload.get("instance_id") is not None:
-            latest["instance_id"] = str(payload.get("instance_id") or "").strip() or None
-        if payload.get("job_id") is not None:
-            latest["job_id"] = str(payload.get("job_id") or "").strip() or None
-        loop.call_soon_threadsafe(schedule_progress_update, dict(payload))
+        provision_event = _training_progress_to_provision_operation_event(event)
+        if provision_event.instance_id is not None:
+            latest["instance_id"] = str(provision_event.instance_id or "").strip() or None
+        if provision_event.job_id is not None:
+            latest["job_id"] = str(provision_event.job_id or "").strip() or None
+        loop.call_soon_threadsafe(schedule_provision_operation_update, provision_event)
 
     def handle_log_append_event(event: TrainingJobLogAppendEvent) -> None:
         _publish_training_job_event(user_id=user_id, event=event)

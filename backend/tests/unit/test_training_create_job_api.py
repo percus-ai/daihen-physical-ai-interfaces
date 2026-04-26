@@ -320,13 +320,13 @@ def test_run_training_provision_operation_cleans_up_instance_after_job_created(m
     from fastapi import HTTPException
     from percus_ai.training import orchestrator as orch
 
-    progress_events: list[dict[str, Any]] = []
+    progress_events: list[Any] = []
     cleanup_calls: list[tuple[str, str]] = []
     fail_calls: list[dict[str, str]] = []
 
     class _FakeOperations:
-        async def update_from_progress(self, *, operation_id: str, progress: dict):
-            progress_events.append({"operation_id": operation_id, **progress})
+        async def update_from_event(self, *, operation_id: str, event):
+            progress_events.append((operation_id, event))
 
         async def fail(self, *, operation_id: str, message: str, failure_reason: str):
             fail_calls.append(
@@ -383,7 +383,38 @@ def test_run_training_provision_operation_cleans_up_instance_after_job_created(m
             "failure_reason": "ssh failed",
         }
     ]
-    assert [event["type"] for event in progress_events] == ["instance_created", "job_created"]
+    assert [event.type for _, event in progress_events] == ["instance_created", "job_created"]
+    assert [operation_id for operation_id, _event in progress_events] == ["op-1", "op-1"]
+
+
+def test_training_progress_to_provision_operation_event_maps_terminal_events():
+    import interfaces_backend.api.training as training_api
+    from interfaces_backend.models.training import (
+        TrainingProvisionOperationCompletedEvent,
+        TrainingProvisionOperationFailedEvent,
+        TrainingProvisionOperationProgressEvent,
+    )
+    from percus_ai.training.events import progress_event
+
+    completed = training_api._training_progress_to_provision_operation_event(
+        progress_event("complete", job_id="job-1", instance_id="inst-1")
+    )
+    failed = training_api._training_progress_to_provision_operation_event(
+        progress_event("error", error="boom", instance_id="inst-2")
+    )
+    progress = training_api._training_progress_to_provision_operation_event(
+        progress_event("cleaning_up", instance_id="inst-3")
+    )
+
+    assert isinstance(completed, TrainingProvisionOperationCompletedEvent)
+    assert completed.job_id == "job-1"
+    assert completed.instance_id == "inst-1"
+    assert isinstance(failed, TrainingProvisionOperationFailedEvent)
+    assert failed.error == "boom"
+    assert failed.instance_id == "inst-2"
+    assert isinstance(progress, TrainingProvisionOperationProgressEvent)
+    assert progress.type == "cleaning_up"
+    assert progress.instance_id == "inst-3"
 
 
 def test_create_continue_job_rejects_non_verda_provider():

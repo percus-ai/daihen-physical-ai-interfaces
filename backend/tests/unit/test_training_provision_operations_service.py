@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import asyncio
 
+from interfaces_backend.models.training import (
+    TrainingProvisionOperationCompletedEvent,
+    TrainingProvisionOperationFailedEvent,
+    TrainingProvisionOperationProgressEvent,
+)
 from interfaces_backend.services.realtime_runtime import get_realtime_runtime, reset_realtime_runtime
 from interfaces_backend.services.training_provision_operations import (
     TrainingProvisionOperationsService,
 )
 
 
-def test_update_from_progress_maps_job_created(monkeypatch):
+def test_update_from_event_maps_job_created(monkeypatch):
     service = TrainingProvisionOperationsService()
     captured: dict[str, object] = {}
 
@@ -19,14 +24,14 @@ def test_update_from_progress_maps_job_created(monkeypatch):
     monkeypatch.setattr(service, '_update', fake_update)
 
     asyncio.run(
-        service.update_from_progress(
+        service.update_from_event(
             operation_id='op-1',
-            progress={
-                'type': 'job_created',
-                'message': 'ジョブ作成完了',
-                'job_id': 'job-1',
-                'instance_id': 'inst-1',
-            },
+            event=TrainingProvisionOperationProgressEvent(
+                type='job_created',
+                message='ジョブ作成完了',
+                job_id='job-1',
+                instance_id='inst-1',
+            ),
         )
     )
 
@@ -39,7 +44,7 @@ def test_update_from_progress_maps_job_created(monkeypatch):
     assert patch['message'] == 'ジョブ作成完了'
 
 
-def test_update_from_progress_maps_error_to_failed(monkeypatch):
+def test_update_from_event_maps_failed_event(monkeypatch):
     service = TrainingProvisionOperationsService()
     captured: dict[str, object] = {}
 
@@ -50,13 +55,9 @@ def test_update_from_progress_maps_error_to_failed(monkeypatch):
     monkeypatch.setattr(service, '_update', fake_update)
 
     asyncio.run(
-        service.update_from_progress(
+        service.update_from_event(
             operation_id='op-2',
-            progress={
-                'type': 'error',
-                'error': 'boom',
-                'instance_id': 'inst-2',
-            },
+            event=TrainingProvisionOperationFailedEvent(error='boom', instance_id='inst-2'),
         )
     )
 
@@ -67,6 +68,64 @@ def test_update_from_progress_maps_error_to_failed(monkeypatch):
     assert patch['failure_reason'] == 'boom'
     assert patch['instance_id'] == 'inst-2'
     assert patch['finished_at']
+
+
+def test_update_from_event_maps_completed_event(monkeypatch):
+    service = TrainingProvisionOperationsService()
+    captured: dict[str, object] = {}
+
+    async def fake_update(*, operation_id: str, **patch):
+        captured['operation_id'] = operation_id
+        captured['patch'] = patch
+
+    monkeypatch.setattr(service, '_update', fake_update)
+
+    asyncio.run(
+        service.update_from_event(
+            operation_id='op-4',
+            event=TrainingProvisionOperationCompletedEvent(
+                job_id='job-4',
+                instance_id='inst-4',
+            ),
+        )
+    )
+
+    patch = captured['patch']
+    assert captured['operation_id'] == 'op-4'
+    assert patch['state'] == 'completed'
+    assert patch['step'] == 'completed'
+    assert patch['job_id'] == 'job-4'
+    assert patch['instance_id'] == 'inst-4'
+    assert patch['finished_at']
+
+
+def test_update_from_event_maps_cleanup_progress(monkeypatch):
+    service = TrainingProvisionOperationsService()
+    captured: dict[str, object] = {}
+
+    async def fake_update(*, operation_id: str, **patch):
+        captured['operation_id'] = operation_id
+        captured['patch'] = patch
+
+    monkeypatch.setattr(service, '_update', fake_update)
+
+    asyncio.run(
+        service.update_from_event(
+            operation_id='op-5',
+            event=TrainingProvisionOperationProgressEvent(
+                type='cleaning_up',
+                message='cleanup',
+                instance_id='inst-5',
+            ),
+        )
+    )
+
+    patch = captured['patch']
+    assert captured['operation_id'] == 'op-5'
+    assert patch['state'] == 'running'
+    assert patch['step'] == 'cleanup'
+    assert patch['message'] == 'cleanup'
+    assert patch['instance_id'] == 'inst-5'
 
 
 def test_update_emits_snapshot(monkeypatch):

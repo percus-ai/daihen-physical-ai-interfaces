@@ -472,6 +472,29 @@ class JobCreateResponse(BaseModel):
 
 
 TrainingProvisionOperationState = Literal["queued", "running", "completed", "failed", "cancelled"]
+TrainingProvisionOperationProgressType = Literal[
+    "start",
+    "validating",
+    "validated",
+    "selecting_instance",
+    "instance_selected",
+    "finding_location",
+    "location_found",
+    "creating_instance",
+    "instance_created",
+    "waiting_ip",
+    "ip_assigned",
+    "waiting_running",
+    "instance_running",
+    "connecting_ssh",
+    "ssh_ready",
+    "deploying",
+    "setting_up",
+    "starting_training",
+    "cleaning_up",
+    "job_created",
+    "warning",
+]
 TrainingJobOperationKind = Literal["checkpoint_upload", "rescue_cpu"]
 TrainingJobOperationState = Literal["queued", "running", "completed", "failed", "cancelled"]
 
@@ -512,6 +535,52 @@ TrainingJobOperationEvent = Annotated[
 ]
 TrainingJobOperationEventEmitter = Callable[[TrainingJobOperationEvent], None]
 TrainingJobOperationEventAdapter = TypeAdapter(TrainingJobOperationEvent)
+
+
+class TrainingProvisionOperationProgressEvent(BaseModel):
+    """Progress event for backend-owned training provision operations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Literal["progress"] = "progress"
+    type: TrainingProvisionOperationProgressType
+    message: Optional[str] = None
+    error: Optional[str] = None
+    instance_id: Optional[str] = None
+    job_id: Optional[str] = None
+
+
+class TrainingProvisionOperationCompletedEvent(BaseModel):
+    """Completion event for backend-owned training provision operations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Literal["completed"] = "completed"
+    message: Optional[str] = None
+    instance_id: Optional[str] = None
+    job_id: Optional[str] = None
+
+
+class TrainingProvisionOperationFailedEvent(BaseModel):
+    """Failure event for backend-owned training provision operations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Literal["failed"] = "failed"
+    message: Optional[str] = None
+    error: str
+    instance_id: Optional[str] = None
+    job_id: Optional[str] = None
+
+
+TrainingProvisionOperationEvent = Annotated[
+    TrainingProvisionOperationProgressEvent
+    | TrainingProvisionOperationCompletedEvent
+    | TrainingProvisionOperationFailedEvent,
+    Field(discriminator="event"),
+]
+TrainingProvisionOperationEventEmitter = Callable[[TrainingProvisionOperationEvent], None]
+TrainingProvisionOperationEventAdapter = TypeAdapter(TrainingProvisionOperationEvent)
 
 
 class TrainingProvisionOperationAcceptedResponse(BaseModel):
