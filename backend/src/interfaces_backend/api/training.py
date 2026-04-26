@@ -120,6 +120,12 @@ from percus_ai.training.providers.vast import (
     list_volumes,
     search_offers_minimal,
 )
+from percus_ai.training.events import (
+    TrainingJobEvent,
+    TrainingJobLogAppendEvent,
+    TrainingJobLogControlEvent,
+    TrainingJobProgressEvent,
+)
 from interfaces_backend.services.training_provision_operations import (
     cleanup_provision_instance,
     get_training_provision_operations_service,
@@ -128,6 +134,7 @@ from interfaces_backend.services.training_job_operations import (
     get_training_job_operations_service,
 )
 from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
+from interfaces_backend.services.training_job_event_streams import get_training_job_event_stream_registry
 from interfaces_backend.services.user_directory import resolve_user_directory_entries
 
 logger = logging.getLogger(__name__)
@@ -200,10 +207,6 @@ DB_TABLE = "training_jobs"
 
 _REQUIRED_VAST_ENV_VARS = ("VAST_API_KEY", "VAST_SSH_PRIVATE_KEY")
 _LIVE_JOB_STATUSES = {"queued", "starting", "deploying", "running"}
-_TRAINING_LOG_STREAM_SSH_TIMEOUT_SECONDS = 8
-_TRAINING_LOG_STREAM_STARTUP_WAIT_SECONDS = 120
-_training_log_stream_tasks: dict[tuple[str, str, TrainingJobLogType], asyncio.Task[None]] = {}
-_training_log_stream_tail_lines: dict[tuple[str, str, TrainingJobLogType], int] = {}
 
 
 def _utcnow_iso() -> str:
@@ -3149,14 +3152,6 @@ def _read_remote_logs_from_connection(
     return stdout
 
 
-async def _open_training_log_stream_connection(
-    job_data: dict,
-    *,
-    timeout: int,
-) -> Optional[SSHConnection]:
-    return await asyncio.to_thread(_get_ssh_connection_for_job, job_data, timeout)
-
-
 def _get_remote_log_file(
     job_data: dict,
     log_type: str = "training",
@@ -3357,85 +3352,12 @@ def _training_log_track_key(job_id: str, log_type: TrainingJobLogType) -> str:
     return f"{job_id}:{log_type}"
 
 
-def _get_training_log_tmux_session_name(log_type: str) -> str:
-    if log_type == "setup":
-        return TMUX_SETUP_SESSION_NAME
-    return TMUX_TRAIN_SESSION_NAME
-
-
-def _build_follow_training_log_command(
-    job_data: dict,
-    *,
-    lines: int,
-    log_type: str,
-    startup_wait_seconds: int = _TRAINING_LOG_STREAM_STARTUP_WAIT_SECONDS,
-) -> str:
-    log_file = (
-        _get_setup_log_file_path(job_data)
-        if log_type == "setup"
-        else _get_training_log_file_path(job_data)
-    )
-    safe_lines = max(1, min(int(lines), 10000))
-    safe_startup_wait_seconds = max(0, min(int(startup_wait_seconds), 600))
-    session_name = _get_training_log_tmux_session_name(log_type)
-    return textwrap.dedent(
-        f"""\
-        set -u
-        log_file={shlex.quote(log_file)}
-        session_name={shlex.quote(session_name)}
-        startup_deadline=$(( $(date +%s) + {safe_startup_wait_seconds} ))
-        while [ ! -e "$log_file" ] && ! tmux has-session -t "$session_name" 2>/dev/null; do
-            if [ "$(date +%s)" -ge "$startup_deadline" ]; then
-                exit 0
-            fi
-            sleep 1
-        done
-        tail -n {safe_lines} -F -- "$log_file" 2>/dev/null &
-        tail_pid=$!
-        trap 'kill "$tail_pid" 2>/dev/null || true' EXIT INT TERM
-        while tmux has-session -t "$session_name" 2>/dev/null; do
-            sleep 1
-        done
-        sleep 1
-        kill "$tail_pid" 2>/dev/null || true
-        wait "$tail_pid" 2>/dev/null || true
-        """
-    )
-
-
-def _stream_training_log_lines_from_connection(
-    conn: SSHConnection,
-    job_data: dict,
-    *,
-    lines: int,
-    log_type: str,
-    startup_wait_seconds: int,
-    on_lines: Callable[[list[str]], None],
-) -> None:
-    command = _build_follow_training_log_command(
-        job_data,
-        lines=lines,
-        log_type=log_type,
-        startup_wait_seconds=startup_wait_seconds,
-    )
-    _stdin, stdout, _stderr = conn.client.exec_command(command)
-    try:
-        for line in iter(stdout.readline, ""):
-            on_lines([line.rstrip("\r\n")])
-        stdout.channel.recv_exit_status()
-    finally:
-        try:
-            stdout.channel.close()
-        except Exception:
-            pass
-
-
 def _publish_training_log_control(
     *,
     user_id: str,
     job_id: str,
     log_type: TrainingJobLogType,
-    control_type: Literal["connected", "stream_ended", "job_missing", "ip_missing"],
+    control_type: str,
     status: str | None = None,
     message: str = "",
 ) -> None:
@@ -3476,166 +3398,25 @@ def _publish_training_log_lines(
     )
 
 
-async def _run_training_log_stream(
-    *,
-    user_id: str,
-    job_id: str,
-    log_type: TrainingJobLogType,
-    tail_lines: int,
-) -> None:
-    stream_key = (user_id, job_id, log_type)
-    conn: SSHConnection | None = None
-    try:
-        job_data = await _load_job_system(job_id)
-        if not job_data:
-            _publish_training_log_control(
-                user_id=user_id,
-                job_id=job_id,
-                log_type=log_type,
-                control_type="job_missing",
-                status="missing",
-                message="ジョブが見つかりません。",
-            )
-            return
-
-        status = str(job_data.get("status") or "").strip().lower()
-        if not _job_has_ssh_target(job_data):
-            _publish_training_log_control(
-                user_id=user_id,
-                job_id=job_id,
-                log_type=log_type,
-                control_type="ip_missing",
-                status=status or None,
-                message="ログ取得に必要なIPがまだありません。",
-            )
-            return
-
-        conn = await _open_training_log_stream_connection(
-            job_data,
-            timeout=_TRAINING_LOG_STREAM_SSH_TIMEOUT_SECONDS,
-        )
-        if conn is None:
-            _publish_training_log_control(
-                user_id=user_id,
-                job_id=job_id,
-                log_type=log_type,
-                control_type="stream_ended",
-                status="ssh_unavailable",
-                message="SSH接続を確立できませんでした。",
-            )
-            return
-
-        _publish_training_log_control(
+def _publish_training_job_event(*, user_id: str, event: TrainingJobEvent) -> None:
+    if isinstance(event, TrainingJobLogAppendEvent):
+        _publish_training_log_lines(
             user_id=user_id,
-            job_id=job_id,
-            log_type=log_type,
-            control_type="connected",
-            status="streaming",
-            message="ログストリームに接続しました。",
-        )
-
-        loop = asyncio.get_running_loop()
-
-        def publish_lines(lines: list[str]) -> None:
-            next_lines = list(lines)
-            try:
-                loop.call_soon_threadsafe(
-                    lambda: _publish_training_log_lines(
-                        user_id=user_id,
-                        job_id=job_id,
-                        log_type=log_type,
-                        lines=next_lines,
-                    )
-                )
-            except RuntimeError:
-                return
-
-        await asyncio.to_thread(
-            _stream_training_log_lines_from_connection,
-            conn,
-            job_data,
-            lines=tail_lines,
-            log_type=log_type,
-            startup_wait_seconds=_TRAINING_LOG_STREAM_STARTUP_WAIT_SECONDS,
-            on_lines=publish_lines,
-        )
-
-        latest_job_data = await _load_job_system(job_id)
-        latest_status = (
-            str((latest_job_data or {}).get("status") or status or "stopped")
-            .strip()
-            .lower()
-        )
-        _publish_training_log_control(
-            user_id=user_id,
-            job_id=job_id,
-            log_type=log_type,
-            control_type="stream_ended",
-            status=latest_status or "stopped",
-            message="ログストリームを終了しました。",
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Training log stream failed for %s %s: %s", job_id, log_type, exc)
-        _publish_training_log_control(
-            user_id=user_id,
-            job_id=job_id,
-            log_type=log_type,
-            control_type="stream_ended",
-            status="error",
-            message=str(exc),
-        )
-    finally:
-        if conn is not None:
-            conn.disconnect()
-        current_task = asyncio.current_task()
-        if _training_log_stream_tasks.get(stream_key) is current_task:
-            _training_log_stream_tasks.pop(stream_key, None)
-            _training_log_stream_tail_lines.pop(stream_key, None)
-
-
-def _ensure_training_log_stream(
-    *,
-    user_id: str,
-    job_id: str,
-    log_type: TrainingJobLogType,
-    tail_lines: int,
-) -> None:
-    stream_key = (user_id, job_id, log_type)
-    for existing_key, existing_task in list(_training_log_stream_tasks.items()):
-        existing_user_id, existing_job_id, existing_log_type = existing_key
-        if existing_user_id != user_id or existing_job_id != job_id:
-            continue
-        if existing_log_type == log_type or existing_task.done():
-            continue
-        existing_task.cancel()
-
-    existing = _training_log_stream_tasks.get(stream_key)
-    existing_tail_lines = _training_log_stream_tail_lines.get(stream_key)
-    if existing is not None and not existing.done() and existing_tail_lines == tail_lines:
-        _publish_training_log_control(
-            user_id=user_id,
-            job_id=job_id,
-            log_type=log_type,
-            control_type="connected",
-            status="streaming",
-            message="ログストリームに接続しました。",
+            job_id=event.job_id,
+            log_type=event.log_type,
+            lines=event.lines,
         )
         return
-
-    if existing is not None and not existing.done():
-        existing.cancel()
-
-    _training_log_stream_tail_lines[stream_key] = tail_lines
-    _training_log_stream_tasks[stream_key] = asyncio.create_task(
-        _run_training_log_stream(
+    if isinstance(event, TrainingJobLogControlEvent):
+        _publish_training_log_control(
             user_id=user_id,
-            job_id=job_id,
-            log_type=log_type,
-            tail_lines=tail_lines,
+            job_id=event.job_id,
+            log_type=event.log_type,
+            control_type=event.control_type,
+            status=event.status,
+            message=event.message,
         )
-    )
+        return
 
 
 async def _get_remote_progress(job_id: str) -> Optional[dict]:
@@ -4955,12 +4736,26 @@ async def start_job_log_stream(job_id: str, request: TrainingJobLogStreamRequest
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    _ensure_training_log_stream(
-        user_id=user_id,
-        job_id=job_id,
-        log_type=request.log_type,
-        tail_lines=request.tail_lines,
-    )
+    is_active = get_training_job_event_stream_registry().is_active(job_id=job_id)
+    status = str(job_data.get("status") or "").strip().lower() or None
+    if is_active:
+        _publish_training_log_control(
+            user_id=user_id,
+            job_id=job_id,
+            log_type=request.log_type,
+            control_type="connected",
+            status="streaming",
+            message="ログストリームに接続しました。",
+        )
+    else:
+        _publish_training_log_control(
+            user_id=user_id,
+            job_id=job_id,
+            log_type=request.log_type,
+            control_type="stream_ended",
+            status=status,
+            message="このジョブの実行中イベントストリームはありません。",
+        )
     return TrainingJobLogStreamResponse(
         job_id=job_id,
         log_type=request.log_type,
@@ -5886,6 +5681,7 @@ async def check_all_jobs_status():
 async def _run_training_provision_operation(
     *,
     operation_id: str,
+    user_id: str,
     request_data: dict,
     supabase_session: dict,
 ) -> None:
@@ -5893,6 +5689,7 @@ async def _run_training_provision_operation(
     loop = asyncio.get_running_loop()
     provider = str(((request_data.get("cloud") or {}).get("provider") or "")).strip().lower()
     latest: dict[str, Optional[str]] = {"instance_id": None, "job_id": None}
+    job_id = str(request_data.get("job_id") or "").strip()
 
     async def update_progress(payload: dict) -> None:
         try:
@@ -5907,18 +5704,45 @@ async def _run_training_provision_operation(
     def schedule_progress_update(payload: dict) -> None:
         asyncio.create_task(update_progress(payload))
 
-    def emit_progress(message: dict) -> None:
-        payload = (
-            message if isinstance(message, dict) else {"type": "status", "message": str(message)}
-        )
+    active_streams = get_training_job_event_stream_registry()
+
+    def handle_progress_event(event: TrainingJobProgressEvent) -> None:
+        payload = event.model_dump(mode="json", exclude_none=True)
+        payload.pop("event", None)
         if payload.get("instance_id") is not None:
             latest["instance_id"] = str(payload.get("instance_id") or "").strip() or None
         if payload.get("job_id") is not None:
             latest["job_id"] = str(payload.get("job_id") or "").strip() or None
         loop.call_soon_threadsafe(schedule_progress_update, dict(payload))
 
+    def handle_log_append_event(event: TrainingJobLogAppendEvent) -> None:
+        _publish_training_job_event(user_id=user_id, event=event)
+
+    def handle_log_control_event(event: TrainingJobLogControlEvent) -> None:
+        _publish_training_job_event(user_id=user_id, event=event)
+        if event.log_type == "training" and event.control_type == "stream_ended":
+            active_streams.close(job_id=event.job_id)
+
+    def emit_training_job_event(event: TrainingJobEvent) -> None:
+        if isinstance(event, TrainingJobProgressEvent):
+            handle_progress_event(event)
+            return
+        if isinstance(event, TrainingJobLogAppendEvent):
+            handle_log_append_event(event)
+            return
+        if isinstance(event, TrainingJobLogControlEvent):
+            handle_log_control_event(event)
+            return
+        raise TypeError(f"Unsupported training job event: {type(event).__name__}")
+
+    active_streams.open(job_id=job_id)
+
     def worker() -> dict:
-        return training_orchestrator.create_job_with_progress(request_data, emit_progress, supabase_session)
+        return training_orchestrator.create_job_with_progress(
+            request_data,
+            emit_training_job_event,
+            supabase_session,
+        )
 
     async def cleanup_failed_instance() -> str:
         if not latest["instance_id"]:
@@ -5942,6 +5766,7 @@ async def _run_training_provision_operation(
             await _publish_training_job_core_snapshot(result_job_id)
     except HTTPException as exc:
         cleanup_note = await cleanup_failed_instance()
+        active_streams.close(job_id=job_id)
         await operations.fail(
             operation_id=operation_id,
             message=f"学習インスタンス作成に失敗しました。{cleanup_note}".strip(),
@@ -5949,6 +5774,7 @@ async def _run_training_provision_operation(
         )
     except Exception as exc:
         cleanup_note = await cleanup_failed_instance()
+        active_streams.close(job_id=job_id)
         await operations.fail(
             operation_id=operation_id,
             message=f"学習インスタンス作成に失敗しました。{cleanup_note}".strip(),
@@ -5981,6 +5807,7 @@ async def start_training_provision_operation(request: JobCreateRequest):
     asyncio.create_task(
         _run_training_provision_operation(
             operation_id=accepted.operation_id,
+            user_id=user_id,
             request_data=request_data,
             supabase_session=session,
         )

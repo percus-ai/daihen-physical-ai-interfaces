@@ -417,7 +417,7 @@
     provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
   );
   const hasLogSshTarget = $derived(Boolean(String(jobInfo?.ip ?? '').trim()));
-  const shouldSubscribeLogStream = $derived(isRunning && hasLogSshTarget);
+  const shouldSubscribeLogStream = $derived(isRunning);
   const shouldLoadLogSnapshot = $derived(hasLogSshTarget || isTerminal);
   const provisionStepLabels: Record<string, string> = {
     queued: '開始待ち',
@@ -729,8 +729,7 @@
 
   const buildRealtimeTracks = (
     targetJobId: string,
-    nextLogsType: 'training' | 'setup',
-    nextLogLines: number
+    nextLogsType: 'training' | 'setup'
   ): RealtimeTrackSelector[] => {
     const coreTrack: RealtimeTrackSelector = {
       kind: 'training.job.core',
@@ -756,8 +755,7 @@
         kind: 'training.job.logs',
         params: {
           job_id: targetJobId,
-          log_type: nextLogsType,
-          tail_lines: nextLogLines
+          log_type: nextLogsType
         }
       };
       tracks.push(logsTrack);
@@ -1033,11 +1031,10 @@
   const startRealtimeLogStream = async (
     targetJobId: string,
     targetLogsType: 'training' | 'setup',
-    targetLogLines: number,
     registrationKey: string
   ) => {
     try {
-      await api.training.startLogStream(targetJobId, targetLogsType, targetLogLines);
+      await api.training.startLogStream(targetJobId, targetLogsType);
     } catch (error) {
       if (registrationKey !== activeLogSnapshotKey) {
         return;
@@ -1133,14 +1130,14 @@
 
     streamStatus = shouldSubscribeLogStream ? 'connecting' : 'idle';
     realtimeContributor = registerRealtimeTrackConsumer({
-      tracks: buildRealtimeTracks(currentJobId, currentLogsType, logLines),
+      tracks: buildRealtimeTracks(currentJobId, currentLogsType),
       onEvent: (event) => handleRealtimeEvent(currentJobId, registrationKey, event)
     });
     if (!realtimeContributor) {
       return;
     }
     if (shouldSubscribeLogStream) {
-      void startRealtimeLogStream(currentJobId, currentLogsType, logLines, registrationKey);
+      void startRealtimeLogStream(currentJobId, currentLogsType, registrationKey);
     }
 
     return () => {
@@ -1156,7 +1153,7 @@
     if (!realtimeContributor || !jobId) {
       return;
     }
-    realtimeContributor.setTracks(buildRealtimeTracks(jobId, logsType, logLines));
+    realtimeContributor.setTracks(buildRealtimeTracks(jobId, logsType));
   });
 
   $effect(() => {

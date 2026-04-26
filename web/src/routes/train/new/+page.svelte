@@ -720,6 +720,9 @@
   };
 
   const submit = async () => {
+    if (submitting) {
+      return;
+    }
     submitError = '';
     createStatus = 'idle';
     if (cloudProvider === 'vast' && !isVastProviderEnabled) {

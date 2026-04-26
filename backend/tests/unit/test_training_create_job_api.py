@@ -257,10 +257,17 @@ def test_start_provision_operation_preflights_without_fastapi_lifecycle(monkeypa
                 message="accepted",
             )
 
-    async def fake_run_training_provision_operation(*, operation_id: str, request_data: dict, supabase_session: dict):
+    async def fake_run_training_provision_operation(
+        *,
+        operation_id: str,
+        user_id: str,
+        request_data: dict,
+        supabase_session: dict,
+    ):
         called["request_data"] = request_data
         called["supabase_session"] = supabase_session
         called["operation_id"] = operation_id
+        called["runner_user_id"] = user_id
 
     def fake_create_task(coro):
         return asyncio.get_running_loop().create_task(coro)
@@ -274,7 +281,7 @@ def test_start_provision_operation_preflights_without_fastapi_lifecycle(monkeypa
     monkeypatch.setenv("VAST_SSH_PRIVATE_KEY", "/tmp/id_rsa_test")
 
     request = JobCreateRequest.model_validate(_valid_create_job_payload())
-    
+
     async def _run():
         response = await training_api.start_training_provision_operation(request)
         await asyncio.sleep(0)
@@ -285,6 +292,7 @@ def test_start_provision_operation_preflights_without_fastapi_lifecycle(monkeypa
     assert response.state == "queued"
     assert response.operation_id == "op-1"
     assert called["created_user_id"] == "user-1"
+    assert called["runner_user_id"] == "user-1"
     assert called["operation_id"] == "op-1"
     assert called["request_data"]["cloud"]["provider"] == "vast"
     assert called["supabase_session"]["user_id"] == "user-1"
@@ -329,11 +337,17 @@ def test_run_training_provision_operation_cleans_up_instance_after_job_created(m
                 }
             )
 
-    def fake_create_job_with_progress(request_data: dict, emit_progress, supabase_session: dict):
+    def fake_create_job_with_progress(
+        request_data: dict,
+        emit,
+        supabase_session: dict,
+    ):
+        from percus_ai.training.events import progress_event
+
         assert request_data["job_id"] == "job-1"
         assert supabase_session["user_id"] == "user-1"
-        emit_progress({"type": "instance_created", "instance_id": "inst-1"})
-        emit_progress({"type": "job_created", "job_id": "job-1", "instance_id": "inst-1"})
+        emit(progress_event("instance_created", instance_id="inst-1"))
+        emit(progress_event("job_created", job_id="job-1", instance_id="inst-1"))
         raise HTTPException(status_code=500, detail="ssh failed")
 
     def fake_cleanup(provider: str, instance_id: str):
@@ -347,6 +361,7 @@ def test_run_training_provision_operation_cleans_up_instance_after_job_created(m
     async def _run():
         await training_api._run_training_provision_operation(
             operation_id="op-1",
+            user_id="user-1",
             request_data={
                 "job_id": "job-1",
                 "job_name": "job",

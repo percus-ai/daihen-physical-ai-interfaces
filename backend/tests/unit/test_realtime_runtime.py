@@ -268,80 +268,45 @@ def test_realtime_sse_frame_format():
     )
 
 
-def test_training_job_log_stream_emits_append_frames(monkeypatch):
+def test_training_job_event_publishes_log_frames():
     async def _run():
         import interfaces_backend.api.training as training_api
+        from percus_ai.training.events import TrainingJobLogAppendEvent, TrainingJobLogControlEvent
 
         reset_realtime_runtime()
-        training_api._training_log_stream_tasks.clear()
-        training_api._training_log_stream_tail_lines.clear()
-
-        load_count = 0
-        open_count = 0
-
-        class FakeSSHConnection:
-            def __init__(self) -> None:
-                self.disconnect_count = 0
-
-            def disconnect(self) -> None:
-                self.disconnect_count += 1
-
-        fake_conn = FakeSSHConnection()
-
-        async def fake_load_job_system(job_id: str, include_deleted: bool = False):
-            nonlocal load_count
-            load_count += 1
-            return {
-                "job_id": job_id,
-                "status": "running" if load_count < 2 else "completed",
-                "ip": "192.0.2.10",
-            }
-
-        async def fake_open_training_log_stream_connection(_job_data, *, timeout: int):
-            nonlocal open_count
-            open_count += 1
-            return fake_conn
-
-        def fake_stream_training_log_lines_from_connection(
-            _conn,
-            _job_data,
-            *,
-            lines: int,
-            log_type: str,
-            startup_wait_seconds: int,
-            on_lines,
-        ):
-            assert _conn is fake_conn
-            assert lines == 30
-            assert log_type == "setup"
-            assert startup_wait_seconds == training_api._TRAINING_LOG_STREAM_STARTUP_WAIT_SECONDS
-            on_lines(["setup line 1", "setup line 2"])
-            on_lines(["setup line 3"])
-
-        monkeypatch.setattr(training_api, "_load_job_system", fake_load_job_system)
-        monkeypatch.setattr(
-            training_api,
-            "_open_training_log_stream_connection",
-            fake_open_training_log_stream_connection,
-        )
-        monkeypatch.setattr(
-            training_api,
-            "_stream_training_log_lines_from_connection",
-            fake_stream_training_log_lines_from_connection,
-        )
 
         runtime = get_realtime_runtime()
         connection = runtime.open_connection(user_id="user-1", tab_id="tab-1")
-        training_api._ensure_training_log_stream(
+        training_api._publish_training_job_event(
             user_id="user-1",
-            job_id="job-1",
-            log_type="setup",
-            tail_lines=30,
+            event=TrainingJobLogControlEvent(
+                job_id="job-1",
+                log_type="setup",
+                control_type="connected",
+                status="streaming",
+                message="connected",
+            ),
+        )
+        training_api._publish_training_job_event(
+            user_id="user-1",
+            event=TrainingJobLogAppendEvent(
+                job_id="job-1",
+                log_type="setup",
+                lines=["setup line 1", "setup line 2"],
+            ),
+        )
+        training_api._publish_training_job_event(
+            user_id="user-1",
+            event=TrainingJobLogControlEvent(
+                job_id="job-1",
+                log_type="setup",
+                control_type="stream_ended",
+                status="completed",
+            ),
         )
 
         connected = await connection.next_frame(timeout_seconds=0.1)
         first = await connection.next_frame(timeout_seconds=0.1)
-        second = await connection.next_frame(timeout_seconds=0.1)
         ended = await connection.next_frame(timeout_seconds=0.1)
 
         assert connected is not None
@@ -350,98 +315,92 @@ def test_training_job_log_stream_emits_append_frames(monkeypatch):
         assert connected.detail["type"] == "connected"
         assert first is not None
         assert first.detail["lines"] == ["setup line 1", "setup line 2"]
-        assert second is not None
-        assert second.detail["lines"] == ["setup line 3"]
         assert ended is not None
         assert ended.detail["type"] == "stream_ended"
         assert ended.detail["status"] == "completed"
-        assert open_count == 1
-        assert fake_conn.disconnect_count == 1
 
     asyncio.run(_run())
 
 
-def test_training_job_log_stream_returns_ip_missing_without_polling(monkeypatch):
+def test_start_job_log_stream_uses_active_event_stream_without_opening_ssh(monkeypatch):
     async def _run():
         import interfaces_backend.api.training as training_api
+        from interfaces_backend.models.training import TrainingJobLogStreamRequest
+        from interfaces_backend.services.training_job_event_streams import get_training_job_event_stream_registry
 
         reset_realtime_runtime()
-        training_api._training_log_stream_tasks.clear()
-        training_api._training_log_stream_tail_lines.clear()
+        registry = get_training_job_event_stream_registry()
+        registry.clear()
+        registry.open(job_id="job-1")
 
-        load_count = 0
-
-        async def fake_load_job_system(job_id: str, include_deleted: bool = False):
-            nonlocal load_count
-            load_count += 1
+        async def fake_load_job(job_id: str, include_deleted: bool = False):
             return {
                 "job_id": job_id,
                 "status": "starting",
-                "ip": None,
+                "ip": "192.0.2.10",
             }
 
-        async def fail_open_training_log_stream_connection(_job_data, *, timeout: int):
-            raise AssertionError("log stream must not open SSH before the job has an IP")
+        def fail_get_ssh_connection_for_job(*_args, **_kwargs):
+            raise AssertionError("/logs/live must not open SSH")
 
-        monkeypatch.setattr(training_api, "_load_job_system", fake_load_job_system)
-        monkeypatch.setattr(
-            training_api,
-            "_open_training_log_stream_connection",
-            fail_open_training_log_stream_connection,
-        )
+        monkeypatch.setattr(training_api, "get_current_user_id", lambda: "user-1")
+        monkeypatch.setattr(training_api, "_load_job", fake_load_job)
+        monkeypatch.setattr(training_api, "_get_ssh_connection_for_job", fail_get_ssh_connection_for_job)
 
         runtime = get_realtime_runtime()
         connection = runtime.open_connection(user_id="user-1", tab_id="tab-1")
-        training_api._ensure_training_log_stream(
-            user_id="user-1",
-            job_id="job-1",
-            log_type="setup",
-            tail_lines=30,
+        response = await training_api.start_job_log_stream(
+            "job-1",
+            TrainingJobLogStreamRequest(log_type="setup"),
         )
 
         frame = await connection.next_frame(timeout_seconds=0.1)
+        assert response.key == "job-1:setup"
         assert frame is not None
         assert frame.kind == "training.job.logs"
-        assert frame.detail["type"] == "ip_missing"
+        assert frame.detail["type"] == "connected"
         assert await connection.next_frame(timeout_seconds=0.05) is None
-        assert load_count == 1
+        registry.clear()
 
     asyncio.run(_run())
 
 
-def test_setup_log_follow_command_waits_for_tmux_source_startup():
-    import interfaces_backend.api.training as training_api
+def test_start_job_log_stream_without_active_event_stream_does_not_open_ssh(monkeypatch):
+    async def _run():
+        import interfaces_backend.api.training as training_api
+        from interfaces_backend.models.training import TrainingJobLogStreamRequest
+        from interfaces_backend.services.training_job_event_streams import get_training_job_event_stream_registry
 
-    command = training_api._build_follow_training_log_command(
-        {
-            "remote_base_dir": "/root/.physical-ai",
-            "mode": "train",
-        },
-        lines=30,
-        log_type="setup",
-        startup_wait_seconds=120,
-    )
+        reset_realtime_runtime()
+        registry = get_training_job_event_stream_registry()
+        registry.clear()
 
-    assert "log_file=/root/.physical-ai/run/setup_env_train.log" in command
-    assert "session_name=instance_setup" in command
-    assert "[ ! -e \"$log_file\" ] && ! tmux has-session -t \"$session_name\"" in command
-    assert "tail -n 30 -F -- \"$log_file\"" in command
+        async def fake_load_job(job_id: str, include_deleted: bool = False):
+            return {
+                "job_id": job_id,
+                "status": "completed",
+                "ip": "192.0.2.10",
+            }
 
+        def fail_get_ssh_connection_for_job(*_args, **_kwargs):
+            raise AssertionError("/logs/live must not open SSH")
 
-def test_training_log_follow_command_waits_for_tmux_source_startup():
-    import interfaces_backend.api.training as training_api
+        monkeypatch.setattr(training_api, "get_current_user_id", lambda: "user-1")
+        monkeypatch.setattr(training_api, "_load_job", fake_load_job)
+        monkeypatch.setattr(training_api, "_get_ssh_connection_for_job", fail_get_ssh_connection_for_job)
 
-    command = training_api._build_follow_training_log_command(
-        {
-            "remote_base_dir": "/root/.physical-ai",
-            "mode": "train",
-        },
-        lines=30,
-        log_type="training",
-        startup_wait_seconds=120,
-    )
+        runtime = get_realtime_runtime()
+        connection = runtime.open_connection(user_id="user-1", tab_id="tab-1")
+        response = await training_api.start_job_log_stream(
+            "job-1",
+            TrainingJobLogStreamRequest(log_type="training"),
+        )
 
-    assert "log_file=/root/.physical-ai/run/training_train.log" in command
-    assert "session_name=training_run" in command
-    assert "[ ! -e \"$log_file\" ] && ! tmux has-session -t \"$session_name\"" in command
-    assert "tail -n 30 -F -- \"$log_file\"" in command
+        frame = await connection.next_frame(timeout_seconds=0.1)
+        assert response.key == "job-1:training"
+        assert frame is not None
+        assert frame.kind == "training.job.logs"
+        assert frame.detail["type"] == "stream_ended"
+        assert frame.detail["status"] == "completed"
+
+    asyncio.run(_run())

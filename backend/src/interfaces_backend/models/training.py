@@ -201,7 +201,6 @@ class TrainingJobLogStreamRequest(BaseModel):
     """Request to start publishing a job log track."""
 
     log_type: TrainingJobLogType = "training"
-    tail_lines: int = Field(default=30, ge=1, le=10000)
 
 
 class TrainingJobLogStreamResponse(BaseModel):
