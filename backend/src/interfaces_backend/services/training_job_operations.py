@@ -12,7 +12,11 @@ from fastapi import HTTPException
 
 from interfaces_backend.models.training import (
     TrainingJobOperationAcceptedResponse,
+    TrainingJobOperationCompletedEvent,
+    TrainingJobOperationEvent,
+    TrainingJobOperationFailedEvent,
     TrainingJobOperationKind,
+    TrainingJobOperationProgressEvent,
     TrainingJobOperationState,
     TrainingJobOperationStatusResponse,
 )
@@ -132,16 +136,34 @@ class TrainingJobOperationsService:
                 raise HTTPException(status_code=404, detail=f"Training operation not found: {operation_id}")
             return record.to_response()
 
-    def update_from_progress(self, *, operation_id: str, progress: dict[str, Any]) -> None:
-        event_type = str(progress.get("type") or "").strip()
-        phase = str(progress.get("phase") or event_type or "running").strip() or "running"
-        message = str(progress.get("message") or progress.get("error") or "").strip() or None
-        progress_percent = self._to_progress_percent(progress.get("progress_percent"))
+    def update_from_event(self, *, operation_id: str, event: TrainingJobOperationEvent) -> None:
+        if isinstance(event, TrainingJobOperationCompletedEvent):
+            self.complete(
+                operation_id=operation_id,
+                message=event.message,
+                result=event.result,
+            )
+            return
+
+        if isinstance(event, TrainingJobOperationFailedEvent):
+            self.fail(
+                operation_id=operation_id,
+                message=event.message,
+                error=event.error,
+            )
+            return
+
+        if not isinstance(event, TrainingJobOperationProgressEvent):
+            raise TypeError(f"Unsupported training job operation event: {event!r}")
+
+        event_type = event.type.strip()
+        phase = str(event.phase or event_type or "running").strip() or "running"
+        message = str(event.message or event.error or "").strip() or None
+        progress_percent = self._to_progress_percent(event.progress_percent)
         detail = {
             key: value
-            for key, value in progress.items()
-            if key not in {"type", "phase", "progress_percent", "message", "error", "result"}
-            and value is not None
+            for key, value in event.detail.items()
+            if value is not None
         }
 
         state: TrainingJobOperationState = "running"
@@ -156,7 +178,7 @@ class TrainingJobOperationsService:
             phase=phase,
             progress_percent=progress_percent,
             message=message,
-            error=str(progress.get("error") or "").strip() or None,
+            error=str(event.error or "").strip() or None,
             detail=detail,
             started=True,
             finished=state in _TERMINAL_STATES,

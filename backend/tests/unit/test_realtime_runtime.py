@@ -80,6 +80,7 @@ def test_broadcast_track_is_delivered_to_all_user_connections():
 
 def test_training_job_operations_emit_full_job_operations_state():
     async def _run():
+        from interfaces_backend.models.training import TrainingJobOperationProgressEvent
         from interfaces_backend.services.training_job_operations import TrainingJobOperationsService
 
         reset_realtime_runtime()
@@ -100,15 +101,15 @@ def test_training_job_operations_emit_full_job_operations_state():
         assert frame_1.detail["operations"][0]["operation_id"] == accepted.operation_id
         assert frame_1.detail["operations"][0]["state"] == "queued"
 
-        operations.update_from_progress(
+        operations.update_from_event(
             operation_id=accepted.operation_id,
-            progress={
-                "type": "creating_instance",
-                "phase": "creating_instance",
-                "progress_percent": 40,
-                "message": "CPUインスタンスを作成中...",
-                "instance_id": "instance-1",
-            },
+            event=TrainingJobOperationProgressEvent(
+                type="creating_instance",
+                phase="creating_instance",
+                progress_percent=40,
+                message="CPUインスタンスを作成中...",
+                detail={"instance_id": "instance-1"},
+            ),
         )
         frame_2 = await connection.next_frame(timeout_seconds=0.1)
         assert frame_2 is not None

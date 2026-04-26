@@ -365,7 +365,7 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     saved_jobs: list[dict] = []
     upserted: list[dict] = []
     call_order: list[str] = []
-    progress: list[dict] = []
+    progress: list[training.TrainingJobOperationProgressEvent] = []
 
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
         assert include_deleted is True
@@ -411,7 +411,7 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     )
 
     result = asyncio.run(
-        training._upload_selected_remote_checkpoint_with_progress(
+        training._upload_selected_remote_checkpoint(
             "job-1",
             "001000",
             progress.append,
@@ -433,9 +433,9 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     assert upserted[-1]["model_name"] == expected_model_name
     assert upserted[-1]["model_training_steps"] == 1000
     assert call_order == ["upsert", "save"]
-    assert any(msg.get("type") == "model_registered" for msg in progress)
-    assert any(msg.get("phase") == "registering_model" for msg in progress)
-    assert all("progress_percent" in msg for msg in progress)
+    assert any(event.type == "model_registered" for event in progress)
+    assert any(event.phase == "registering_model" for event in progress)
+    assert all(event.progress_percent is not None for event in progress)
     assert conn.disconnected is True
 
 
@@ -685,7 +685,7 @@ def test_upload_selected_remote_checkpoint_reports_db_failure(monkeypatch):
 
     try:
         asyncio.run(
-            training._upload_selected_remote_checkpoint_with_progress(
+            training._upload_selected_remote_checkpoint(
                 "job-1",
                 "001000",
                 lambda _msg: None,
@@ -742,7 +742,7 @@ def test_upload_selected_remote_checkpoint_skips_r2_reupload_if_step_exists(monk
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
 
     result = asyncio.run(
-        training._upload_selected_remote_checkpoint_with_progress(
+        training._upload_selected_remote_checkpoint(
             "job-1",
             "001000",
             lambda _msg: None,
@@ -1291,7 +1291,7 @@ def test_rescue_cpu_rejects_non_verda_job(monkeypatch):
     monkeypatch.setattr(training, "_get_verda_client", fail_if_called)
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(training._rescue_cpu_job_with_progress("job-vast-rescue-1", lambda _msg: None))
+        asyncio.run(training._rescue_cpu_job("job-vast-rescue-1", lambda _event: None))
     assert exc.value.status_code == 400
     assert "cloud.provider=verda" in str(exc.value.detail)
 
@@ -1400,7 +1400,7 @@ def test_create_verda_instance_from_volume_retries_until_detached(monkeypatch):
             return types.SimpleNamespace(id="new-instance-1")
 
     client = types.SimpleNamespace(instances=_Instances())
-    progress: list[dict] = []
+    progress: list[training.TrainingJobOperationProgressEvent] = []
     waited: list[tuple[str, int]] = []
     slept: list[float] = []
 
@@ -1419,7 +1419,7 @@ def test_create_verda_instance_from_volume_retries_until_detached(monkeypatch):
         location="FIN-02",
         hostname="rescue-cpu-job",
         description="Rescue CPU job",
-        emit_progress=progress.append,
+        emit=progress.append,
         retry_timeout_sec=30,
     )
 
@@ -1427,7 +1427,7 @@ def test_create_verda_instance_from_volume_retries_until_detached(monkeypatch):
     assert calls == ["vol-1", "vol-1"]
     assert waited == [("vol-1", 20)]
     assert slept == [5]
-    assert any(msg.get("type") == "waiting_detach_propagation" for msg in progress)
+    assert any(event.type == "waiting_detach_propagation" for event in progress)
 
 
 def test_get_ssh_connection_for_job_uses_cloud_ssh_port(monkeypatch, tmp_path: Path):
@@ -1664,7 +1664,7 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
     manager = _DummyCheckpointManager(existing_steps=[])
     conn = _DummyConn()
     captured: dict = {}
-    progress: list[dict] = []
+    progress: list[training.TrainingJobOperationProgressEvent] = []
 
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
         assert include_deleted is True
@@ -1701,7 +1701,7 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
         checkpoint_job_name: str,
         step: int,
         remote_checkpoint_path: str,
-        emit_progress,
+        emit,
     ):
         captured["job_data_job_id"] = job_data["job_id"]
         manager.upload_calls.append(
@@ -1711,7 +1711,11 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
                 "remote_checkpoint_path": remote_checkpoint_path,
             }
         )
-        emit_progress({"type": "uploaded", "message": "R2登録が完了しました", "step": step})
+        emit(
+            training._checkpoint_upload_progress_event(
+                {"type": "uploaded", "message": "R2登録が完了しました", "step": step}
+            )
+        )
         return 1234
 
     monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2_direct", fake_upload_remote_checkpoint_direct)
@@ -1726,7 +1730,7 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
     )
 
     result = asyncio.run(
-        training._upload_selected_remote_checkpoint_with_progress(
+        training._upload_selected_remote_checkpoint(
             "job-1",
             "001000",
             progress.append,
@@ -1743,7 +1747,7 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
 def test_upload_selected_remote_checkpoint_fails_when_direct_upload_fails(monkeypatch):
     manager = _DummyCheckpointManager(existing_steps=[])
     conn = _DummyConn()
-    progress: list[dict] = []
+    progress: list[training.TrainingJobOperationProgressEvent] = []
 
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
         assert include_deleted is True
@@ -1782,14 +1786,14 @@ def test_upload_selected_remote_checkpoint_fails_when_direct_upload_fails(monkey
 
     with pytest.raises(RuntimeError, match="direct path failed"):
         asyncio.run(
-            training._upload_selected_remote_checkpoint_with_progress(
+            training._upload_selected_remote_checkpoint(
                 "job-1",
                 "001000",
                 progress.append,
             )
         )
 
-    progress_types = {msg.get("type") for msg in progress}
+    progress_types = {event.type for event in progress}
     assert "direct_upload" in progress_types
     assert "direct_upload_complete" not in progress_types
     assert conn.disconnected is True

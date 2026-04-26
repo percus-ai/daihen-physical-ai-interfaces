@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Callable, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from interfaces_backend.services.profile_snapshot import extract_profile_name
 
@@ -474,6 +474,44 @@ class JobCreateResponse(BaseModel):
 TrainingProvisionOperationState = Literal["queued", "running", "completed", "failed", "cancelled"]
 TrainingJobOperationKind = Literal["checkpoint_upload", "rescue_cpu"]
 TrainingJobOperationState = Literal["queued", "running", "completed", "failed", "cancelled"]
+
+
+class TrainingJobOperationProgressEvent(BaseModel):
+    """Progress event for backend-owned training job operations."""
+
+    event: Literal["progress"] = "progress"
+    type: str
+    phase: Optional[str] = None
+    progress_percent: Optional[float] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingJobOperationCompletedEvent(BaseModel):
+    """Completion event for backend-owned training job operations."""
+
+    event: Literal["completed"] = "completed"
+    message: str
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingJobOperationFailedEvent(BaseModel):
+    """Failure event for backend-owned training job operations."""
+
+    event: Literal["failed"] = "failed"
+    message: str
+    error: str
+
+
+TrainingJobOperationEvent = Annotated[
+    TrainingJobOperationProgressEvent
+    | TrainingJobOperationCompletedEvent
+    | TrainingJobOperationFailedEvent,
+    Field(discriminator="event"),
+]
+TrainingJobOperationEventEmitter = Callable[[TrainingJobOperationEvent], None]
+TrainingJobOperationEventAdapter = TypeAdapter(TrainingJobOperationEvent)
 
 
 class TrainingProvisionOperationAcceptedResponse(BaseModel):

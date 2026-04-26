@@ -49,6 +49,9 @@ from interfaces_backend.models.training import (
     TrainingProvisionOperationAcceptedResponse,
     TrainingProvisionOperationStatusResponse,
     TrainingJobOperationAcceptedResponse,
+    TrainingJobOperationEvent,
+    TrainingJobOperationEventEmitter,
+    TrainingJobOperationProgressEvent,
     TrainingJobOperationStatusResponse,
     TrainingJobLogAppendRealtimeDetail,
     TrainingJobLogControlRealtimeDetail,
@@ -785,7 +788,7 @@ def _ensure_volume_active_and_detached(
     client: VerdaClient,
     volume_id: str,
     *,
-    emit_progress: Callable[[dict], None] | None = None,
+    emit: TrainingJobOperationEventEmitter | None = None,
 ) -> object:
     try:
         volume = client.volumes.get_by_id(volume_id)
@@ -796,23 +799,27 @@ def _ensure_volume_active_and_detached(
 
     status = str(getattr(volume, "status", "") or "").strip().lower()
     if status in {"deleted", "deleting", "trash"}:
-        if emit_progress is not None:
-            emit_progress(
-                {
-                    "type": "restore_storage",
-                    "message": "ストレージを復活中...",
-                    "volume_id": volume_id,
-                }
+        if emit is not None:
+            emit(
+                _rescue_cpu_progress_event(
+                    {
+                        "type": "restore_storage",
+                        "message": "ストレージを復活中...",
+                        "volume_id": volume_id,
+                    }
+                )
             )
         _restore_verda_volumes(client, [volume_id])
         _wait_for_volume_restore(client, volume_id)
-        if emit_progress is not None:
-            emit_progress(
-                {
-                    "type": "restore_complete",
-                    "message": "ストレージ復活完了",
-                    "volume_id": volume_id,
-                }
+        if emit is not None:
+            emit(
+                _rescue_cpu_progress_event(
+                    {
+                        "type": "restore_complete",
+                        "message": "ストレージ復活完了",
+                        "volume_id": volume_id,
+                    }
+                )
             )
         volume = client.volumes.get_by_id(volume_id)
 
@@ -2151,7 +2158,30 @@ def _interpolate_progress(
     return _clamp_progress_percent(start_percent + ((end_percent - start_percent) * ratio))
 
 
-def _decorate_checkpoint_upload_progress(payload: dict) -> dict:
+def _operation_progress_event(
+    payload: dict,
+    *,
+    phase: str,
+    progress_percent: float,
+) -> TrainingJobOperationProgressEvent:
+    event_type = str(payload.get("type") or "").strip() or "progress"
+    detail = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"type", "phase", "progress_percent", "message", "error", "result"}
+        and value is not None
+    }
+    return TrainingJobOperationProgressEvent(
+        type=event_type,
+        phase=phase,
+        progress_percent=progress_percent,
+        message=str(payload.get("message") or "").strip() or None,
+        error=str(payload.get("error") or "").strip() or None,
+        detail=detail,
+    )
+
+
+def _checkpoint_upload_progress_event(payload: dict) -> TrainingJobOperationProgressEvent:
     decorated = dict(payload)
     event_type = str(decorated.get("type") or "").strip()
     phase = "uploading_checkpoint"
@@ -2197,12 +2227,14 @@ def _decorate_checkpoint_upload_progress(payload: dict) -> dict:
         phase = "failed"
         progress_percent = 100.0
 
-    decorated["phase"] = phase
-    decorated["progress_percent"] = progress_percent
-    return decorated
+    return _operation_progress_event(
+        decorated,
+        phase=phase,
+        progress_percent=progress_percent,
+    )
 
 
-def _decorate_rescue_cpu_progress(payload: dict) -> dict:
+def _rescue_cpu_progress_event(payload: dict) -> TrainingJobOperationProgressEvent:
     decorated = dict(payload)
     event_type = str(decorated.get("type") or "").strip()
     phase = "loading_storage"
@@ -2215,6 +2247,8 @@ def _decorate_rescue_cpu_progress(payload: dict) -> dict:
         phase = "loading_storage"
         progress_percent = 8.0
     elif event_type in {
+        "restore_storage",
+        "restore_complete",
         "detaching_from_other",
         "stopping_old_instance",
         "detaching_storage",
@@ -2223,6 +2257,8 @@ def _decorate_rescue_cpu_progress(payload: dict) -> dict:
     }:
         phase = "detaching_storage"
         detaching_map = {
+            "restore_storage": 12.0,
+            "restore_complete": 16.0,
             "detaching_from_other": 18.0,
             "stopping_old_instance": 24.0,
             "detaching_storage": 34.0,
@@ -2249,9 +2285,11 @@ def _decorate_rescue_cpu_progress(payload: dict) -> dict:
         phase = "failed"
         progress_percent = 100.0
 
-    decorated["phase"] = phase
-    decorated["progress_percent"] = progress_percent
-    return decorated
+    return _operation_progress_event(
+        decorated,
+        phase=phase,
+        progress_percent=progress_percent,
+    )
 
 
 def _normalize_env_value(value: object) -> str:
@@ -2494,7 +2532,7 @@ def _upload_remote_checkpoint_to_r2_direct(
     checkpoint_job_name: str,
     step: int,
     remote_checkpoint_path: str,
-    emit_progress: Callable[[dict], None],
+    emit: TrainingJobOperationEventEmitter,
 ) -> int:
     remote_base_dir = str(job_data.get("remote_base_dir") or "/root/.physical-ai").strip() or "/root/.physical-ai"
     script_path = _ensure_remote_checkpoint_upload_script(conn, remote_base_dir=remote_base_dir)
@@ -2542,10 +2580,18 @@ def _upload_remote_checkpoint_to_r2_direct(
         try:
             payload = json.loads(stripped)
         except json.JSONDecodeError:
-            emit_progress({"type": "remote_log", "message": stripped, "step": step})
+            emit(
+                _checkpoint_upload_progress_event(
+                    {"type": "remote_log", "message": stripped, "step": step}
+                )
+            )
             return
         if not isinstance(payload, dict):
-            emit_progress({"type": "remote_log", "message": stripped, "step": step})
+            emit(
+                _checkpoint_upload_progress_event(
+                    {"type": "remote_log", "message": stripped, "step": step}
+                )
+            )
             return
         payload.setdefault("step", step)
         payload_type = str(payload.get("type") or "").strip()
@@ -2554,7 +2600,7 @@ def _upload_remote_checkpoint_to_r2_direct(
             return
         if payload_type == "error":
             last_error = str(payload.get("message") or payload.get("error") or "").strip() or stripped
-        emit_progress(payload)
+        emit(_checkpoint_upload_progress_event(payload))
 
     exit_code = run_remote_command(
         conn,
@@ -2570,12 +2616,14 @@ def _upload_remote_checkpoint_to_r2_direct(
     if total_bytes <= 0:
         raise RuntimeError("remote direct upload completed without total_bytes result")
 
-    emit_progress(
-        {
-            "type": "updating_last",
-            "message": "latest checkpointポインタを更新中...",
-            "step": step,
-        }
+    emit(
+        _checkpoint_upload_progress_event(
+            {
+                "type": "updating_last",
+                "message": "latest checkpointポインタを更新中...",
+                "step": step,
+            }
+        )
     )
     if not checkpoint_mgr._update_index_step(checkpoint_job_name, step, total_bytes):
         raise RuntimeError(f"failed to update checkpoint index for {checkpoint_job_name}")
@@ -2595,7 +2643,7 @@ def _create_verda_instance_from_volume(
     location: str,
     hostname: str,
     description: str,
-    emit_progress: Callable[[dict], None] | None = None,
+    emit: TrainingJobOperationEventEmitter | None = None,
     retry_timeout_sec: int = 120,
 ) -> object:
     deadline = time.time() + retry_timeout_sec
@@ -2624,13 +2672,15 @@ def _create_verda_instance_from_volume(
                 attempt,
                 detail,
             )
-            if emit_progress is not None:
-                emit_progress(
-                    {
-                        "type": "waiting_detach_propagation",
-                        "message": "ストレージの分離反映待ち...",
-                        "volume_id": volume_id,
-                    }
+            if emit is not None:
+                emit(
+                    _rescue_cpu_progress_event(
+                        {
+                            "type": "waiting_detach_propagation",
+                            "message": "ストレージの分離反映待ち...",
+                            "volume_id": volume_id,
+                        }
+                    )
                 )
             try:
                 _wait_for_volume_detached(client, volume_id, timeout_sec=20)
@@ -2642,13 +2692,13 @@ def _create_verda_instance_from_volume(
     raise RuntimeError("instance creation retry timeout")
 
 
-async def _upload_selected_remote_checkpoint_with_progress(
+async def _upload_selected_remote_checkpoint(
     job_id: str,
     checkpoint_name: str,
-    emit_progress: Callable[[dict], None],
+    emit: TrainingJobOperationEventEmitter,
 ) -> dict:
     def emit_checkpoint_progress(payload: dict) -> None:
-        emit_progress(_decorate_checkpoint_upload_progress(payload))
+        emit(_checkpoint_upload_progress_event(payload))
 
     emit_checkpoint_progress({"type": "start", "message": "チェックポイント登録を開始しました"})
 
@@ -2726,7 +2776,7 @@ async def _upload_selected_remote_checkpoint_with_progress(
                 checkpoint_job_name=checkpoint_job_name,
                 step=step,
                 remote_checkpoint_path=remote_checkpoint_path,
-                emit_progress=emit_checkpoint_progress,
+                emit=emit,
             )
             emit_checkpoint_progress(
                 {
@@ -4806,11 +4856,9 @@ async def rescan_remote_job_checkpoints(job_id: str):
     return await _rescan_remote_checkpoint_candidates(job_id)
 
 
-async def _rescue_cpu_job_with_progress(
-    job_id: str, emit_progress: Callable[[dict], None]
-) -> dict:
+async def _rescue_cpu_job(job_id: str, emit: TrainingJobOperationEventEmitter) -> dict:
     def emit_rescue_progress(payload: dict) -> None:
-        emit_progress(_decorate_rescue_cpu_progress(payload))
+        emit(_rescue_cpu_progress_event(payload))
 
     emit_rescue_progress({"type": "start", "message": "CPU rescue を開始しました"})
     job_data = await _load_job(job_id, include_deleted=True)
@@ -4894,7 +4942,7 @@ async def _rescue_cpu_job_with_progress(
     volume = _ensure_volume_active_and_detached(
         client,
         volume_id,
-        emit_progress=emit_rescue_progress,
+        emit=emit,
     )
     emit_rescue_progress(
         {
@@ -4928,7 +4976,7 @@ async def _rescue_cpu_job_with_progress(
         location=location,
         hostname=hostname,
         description=f"Rescue CPU job: {job_id}",
-        emit_progress=emit_rescue_progress,
+        emit=emit,
     )
     new_instance_id = instance.id
 
@@ -5080,15 +5128,15 @@ async def start_checkpoint_upload_operation(job_id: str, request: RemoteCheckpoi
     if accepted.reused:
         return accepted
 
-    def emit_progress(payload: dict) -> None:
-        operations.update_from_progress(operation_id=accepted.operation_id, progress=payload)
+    def emit(event: TrainingJobOperationEvent) -> None:
+        operations.update_from_event(operation_id=accepted.operation_id, event=event)
 
     def worker() -> dict:
         return asyncio.run(
-            _upload_selected_remote_checkpoint_with_progress(
+            _upload_selected_remote_checkpoint(
                 job_id,
                 request.checkpoint_name,
-                emit_progress,
+                emit,
             )
         )
 
@@ -5122,11 +5170,11 @@ async def start_rescue_cpu_operation(job_id: str):
     if accepted.reused:
         return accepted
 
-    def emit_progress(payload: dict) -> None:
-        operations.update_from_progress(operation_id=accepted.operation_id, progress=payload)
+    def emit(event: TrainingJobOperationEvent) -> None:
+        operations.update_from_event(operation_id=accepted.operation_id, event=event)
 
     def worker() -> dict:
-        return asyncio.run(_rescue_cpu_job_with_progress(job_id, emit_progress))
+        return asyncio.run(_rescue_cpu_job(job_id, emit))
 
     _start_training_job_operation_thread(
         operation_id=accepted.operation_id,
