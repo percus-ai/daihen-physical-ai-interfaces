@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import shlex
-import stat
 import textwrap
 import time
 import threading
@@ -2164,7 +2163,7 @@ def _decorate_checkpoint_upload_progress(payload: dict) -> dict:
     elif event_type == "validating":
         phase = "validating"
         progress_percent = 15.0
-    elif event_type in {"downloading", "registering", "direct_upload", "direct_upload_fallback", "scanning"}:
+    elif event_type in {"downloading", "registering", "direct_upload", "scanning"}:
         phase = "scanning"
         progress_percent = 20.0
     elif event_type in {"uploading", "uploading_file", "uploaded", "direct_upload_complete"}:
@@ -2643,141 +2642,6 @@ def _create_verda_instance_from_volume(
     raise RuntimeError("instance creation retry timeout")
 
 
-def _list_remote_checkpoint_files(
-    conn: SSHConnection,
-    remote_path: str,
-    *,
-    relative_prefix: str = "",
-) -> list[tuple[str, str, int]]:
-    files: list[tuple[str, str, int]] = []
-    for attr in sorted(conn.sftp.listdir_attr(remote_path), key=lambda item: item.filename):
-        name = str(getattr(attr, "filename", "") or "").strip()
-        if not name:
-            continue
-        child_remote_path = f"{remote_path.rstrip('/')}/{name}"
-        child_relative_path = f"{relative_prefix}/{name}".lstrip("/")
-        mode = int(getattr(attr, "st_mode", 0) or 0)
-        if stat.S_ISDIR(mode):
-            files.extend(
-                _list_remote_checkpoint_files(
-                    conn,
-                    child_remote_path,
-                    relative_prefix=child_relative_path,
-                )
-            )
-            continue
-        size = max(int(getattr(attr, "st_size", 0) or 0), 0)
-        files.append((child_remote_path, child_relative_path, size))
-    return files
-
-
-def _upload_remote_checkpoint_to_r2(
-    checkpoint_mgr: "CheckpointIndexManager",
-    conn: SSHConnection,
-    *,
-    checkpoint_job_name: str,
-    step: int,
-    remote_checkpoint_path: str,
-    emit_progress: Callable[[dict], None],
-) -> int:
-    remote_files = _list_remote_checkpoint_files(conn, remote_checkpoint_path)
-    if not remote_files:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Remote checkpoint is empty: {remote_checkpoint_path}",
-        )
-
-    step_path = checkpoint_mgr._get_step_path(checkpoint_job_name, step)
-    bucket, step_prefix = checkpoint_mgr.sync.s3.parse_s3_path(step_path)
-    total_bytes = sum(size for _, _, size in remote_files)
-    transferred_bytes = 0
-    last_emit_time = 0.0
-    last_emit_bytes = 0
-
-    def emit_transfer_progress(*, current_file: str | None = None, force: bool = False) -> None:
-        nonlocal last_emit_time, last_emit_bytes
-        now = time.time()
-        byte_delta = transferred_bytes - last_emit_bytes
-        if not force and byte_delta < 128 * 1024 * 1024 and (now - last_emit_time) < 1.0:
-            return
-
-        detail = (
-            f"{_format_byte_size(transferred_bytes)} / {_format_byte_size(total_bytes)}"
-            if total_bytes > 0
-            else _format_byte_size(transferred_bytes)
-        )
-        message = f"checkpointをR2へ転送中... ({detail})"
-        if current_file:
-            message = f"{message} {current_file}"
-        emit_progress(
-            {
-                "type": "uploading",
-                "message": message,
-                "step": step,
-                "transferred_bytes": transferred_bytes,
-                "total_bytes": total_bytes,
-            }
-        )
-        last_emit_time = now
-        last_emit_bytes = transferred_bytes
-
-    emit_transfer_progress(force=True)
-
-    for index, (remote_file_path, relative_path, file_size) in enumerate(remote_files, start=1):
-        emit_progress(
-            {
-                "type": "uploading_file",
-                "message": (
-                    f"R2へ転送中 {index}/{len(remote_files)}: "
-                    f"{relative_path} ({_format_byte_size(file_size)})"
-                ),
-                "step": step,
-            }
-        )
-        target_key = f"{step_prefix.rstrip('/')}/{relative_path}".lstrip("/")
-        with conn.sftp.file(remote_file_path, "rb") as remote_file:
-            prefetch = getattr(remote_file, "prefetch", None)
-            if callable(prefetch):
-                try:
-                    prefetch(file_size if file_size > 0 else None)
-                except TypeError:
-                    try:
-                        prefetch()
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-
-            def _callback(bytes_transferred: int) -> None:
-                nonlocal transferred_bytes
-                transferred_bytes += max(int(bytes_transferred or 0), 0)
-                emit_transfer_progress(current_file=relative_path)
-
-            checkpoint_mgr.sync.s3.upload_fileobj(
-                remote_file,
-                bucket,
-                target_key,
-                callback=_callback,
-                use_threads=False,
-            )
-        emit_transfer_progress(current_file=relative_path, force=True)
-
-    emit_progress(
-        {
-            "type": "updating_last",
-            "message": "latest checkpointポインタを更新中...",
-            "step": step,
-        }
-    )
-    if not checkpoint_mgr._update_index_step(checkpoint_job_name, step, total_bytes):
-        raise RuntimeError(f"failed to update checkpoint index for {checkpoint_job_name}")
-    entry = checkpoint_mgr.get_job_info(checkpoint_job_name)
-    latest_step = int(getattr(entry, "latest_step", step) or step)
-    if not checkpoint_mgr._write_last_pointer(checkpoint_job_name, latest_step):
-        raise RuntimeError(f"failed to update last pointer for {checkpoint_job_name}")
-    return total_bytes
-
-
 async def _upload_selected_remote_checkpoint_with_progress(
     job_id: str,
     checkpoint_name: str,
@@ -2848,58 +2712,29 @@ async def _upload_selected_remote_checkpoint_with_progress(
             emit_checkpoint_progress({"type": "registering", "message": "checkpoint index登録中..."})
             _register_job_for_checkpoint_if_needed(checkpoint_mgr, job_data)
 
-            direct_upload_error: Exception | None = None
-            try:
-                emit_checkpoint_progress(
-                    {
-                        "type": "direct_upload",
-                        "message": "現在の SSH 接続先から R2 へ直接転送します...",
-                        "step": step,
-                    }
-                )
-                _upload_remote_checkpoint_to_r2_direct(
-                    checkpoint_mgr,
-                    conn,
-                    job_data=job_data,
-                    checkpoint_job_name=checkpoint_job_name,
-                    step=step,
-                    remote_checkpoint_path=remote_checkpoint_path,
-                    emit_progress=emit_checkpoint_progress,
-                )
-            except Exception as exc:
-                direct_upload_error = exc
-                logger.warning(
-                    "Remote direct checkpoint upload failed; falling back to backend relay: job_id=%s step=%s error=%s",
-                    job_id,
-                    step,
-                    exc,
-                )
-                emit_checkpoint_progress(
-                    {
-                        "type": "direct_upload_fallback",
-                        "message": (
-                            "現在の SSH 接続先からの直接転送に失敗したため、"
-                            "バックエンド経由転送に切り替えます..."
-                        ),
-                        "step": step,
-                    }
-                )
-                _upload_remote_checkpoint_to_r2(
-                    checkpoint_mgr,
-                    conn,
-                    checkpoint_job_name=checkpoint_job_name,
-                    step=step,
-                    remote_checkpoint_path=remote_checkpoint_path,
-                    emit_progress=emit_checkpoint_progress,
-                )
-            if direct_upload_error is None:
-                emit_checkpoint_progress(
-                    {
-                        "type": "direct_upload_complete",
-                        "message": "現在の SSH 接続先からの直接転送が完了しました",
-                        "step": step,
-                    }
-                )
+            emit_checkpoint_progress(
+                {
+                    "type": "direct_upload",
+                    "message": "現在の SSH 接続先から R2 へ直接転送します...",
+                    "step": step,
+                }
+            )
+            _upload_remote_checkpoint_to_r2_direct(
+                checkpoint_mgr,
+                conn,
+                job_data=job_data,
+                checkpoint_job_name=checkpoint_job_name,
+                step=step,
+                remote_checkpoint_path=remote_checkpoint_path,
+                emit_progress=emit_checkpoint_progress,
+            )
+            emit_checkpoint_progress(
+                {
+                    "type": "direct_upload_complete",
+                    "message": "現在の SSH 接続先からの直接転送が完了しました",
+                    "step": step,
+                }
+            )
         finally:
             conn.disconnect()
     else:

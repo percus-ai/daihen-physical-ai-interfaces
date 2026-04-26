@@ -18,6 +18,7 @@ def _load_training_api_module():
     providers_pkg = types.ModuleType("percus_ai.training.providers")
     providers_vast_module = types.ModuleType("percus_ai.training.providers.vast")
     providers_verda_module = types.ModuleType("percus_ai.training.providers.verda")
+    events_module = types.ModuleType("percus_ai.training.events")
     features_repo_module = types.ModuleType("percus_ai.training.features_repo")
     orchestrator_module = types.ModuleType("percus_ai.training.orchestrator")
     ssh_pkg = types.ModuleType("percus_ai.training.ssh")
@@ -49,6 +50,15 @@ def _load_training_api_module():
         def terminate_instance(self, *_args, **_kwargs):
             return None
 
+    class _StubTrainingJobProgressEvent:
+        pass
+
+    class _StubTrainingJobLogAppendEvent:
+        pass
+
+    class _StubTrainingJobLogControlEvent:
+        pass
+
     class _StubFeaturesRepoConfig:
         def __init__(self, repo_url: str = "", repo_ref: str = "", repo_commit: str | None = None):
             self.repo_url = repo_url
@@ -65,6 +75,10 @@ def _load_training_api_module():
     providers_vast_module.list_volumes = _stub_list_volumes
     providers_vast_module.search_offers_minimal = _stub_search_offers_minimal
     providers_verda_module.VerdaProvider = _StubVerdaProvider
+    events_module.TrainingJobEvent = object
+    events_module.TrainingJobProgressEvent = _StubTrainingJobProgressEvent
+    events_module.TrainingJobLogAppendEvent = _StubTrainingJobLogAppendEvent
+    events_module.TrainingJobLogControlEvent = _StubTrainingJobLogControlEvent
     features_repo_module.resolve_features_repo_config = lambda: _StubFeaturesRepoConfig(
         repo_url="https://github.com/percus-ai/physical-ai-features.git",
         repo_ref="main",
@@ -76,6 +90,7 @@ def _load_training_api_module():
         ("percus_ai.training.providers", providers_pkg),
         ("percus_ai.training.providers.vast", providers_vast_module),
         ("percus_ai.training.providers.verda", providers_verda_module),
+        ("percus_ai.training.events", events_module),
         ("percus_ai.training.features_repo", features_repo_module),
         ("percus_ai.training.orchestrator", orchestrator_module),
         ("percus_ai.training.ssh", ssh_pkg),
@@ -380,11 +395,6 @@ def test_upload_selected_remote_checkpoint_registers_model(monkeypatch):
     )
     monkeypatch.setattr(
         training,
-        "_upload_remote_checkpoint_to_r2",
-        lambda *_args, **_kwargs: 1234,
-    )
-    monkeypatch.setattr(
-        training,
         "_resolve_model_artifact_in_r2_from_checkpoint",
         lambda *_args, **_kwargs: (
             "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000/pretrained_model",
@@ -660,11 +670,6 @@ def test_upload_selected_remote_checkpoint_reports_db_failure(monkeypatch):
     monkeypatch.setattr(
         training,
         "_upload_remote_checkpoint_to_r2_direct",
-        lambda *_args, **_kwargs: 1234,
-    )
-    monkeypatch.setattr(
-        training,
-        "_upload_remote_checkpoint_to_r2",
         lambda *_args, **_kwargs: 1234,
     )
     monkeypatch.setattr(
@@ -1710,26 +1715,6 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
         return 1234
 
     monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2_direct", fake_upload_remote_checkpoint_direct)
-    def fake_upload_remote_checkpoint(
-        _checkpoint_mgr,
-        _conn,
-        *,
-        checkpoint_job_name: str,
-        step: int,
-        remote_checkpoint_path: str,
-        emit_progress,
-    ):
-        manager.upload_calls.append(
-            {
-                "job_name": checkpoint_job_name,
-                "step": step,
-                "remote_checkpoint_path": remote_checkpoint_path,
-            }
-        )
-        emit_progress({"type": "uploaded", "message": "R2登録が完了しました", "step": step})
-        return 1234
-
-    monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2", fake_upload_remote_checkpoint)
     monkeypatch.setattr(training, "_resolve_model_artifact_in_r2_from_checkpoint", fake_resolve_model_artifact)
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
@@ -1755,11 +1740,10 @@ def test_upload_selected_remote_checkpoint_uses_job_name_for_r2_paths(monkeypatc
     assert result["r2_step_path"] == "s3://daihen/v2/checkpoints/pick_place_train_20260309/step_001000"
 
 
-def test_upload_selected_remote_checkpoint_falls_back_when_direct_upload_fails(monkeypatch):
+def test_upload_selected_remote_checkpoint_fails_when_direct_upload_fails(monkeypatch):
     manager = _DummyCheckpointManager(existing_steps=[])
     conn = _DummyConn()
     progress: list[dict] = []
-    fallback_calls: list[dict] = []
 
     async def fake_load_job(_job_id: str, include_deleted: bool = False):
         assert include_deleted is True
@@ -1785,27 +1769,6 @@ def test_upload_selected_remote_checkpoint_falls_back_when_direct_upload_fails(m
         "_upload_remote_checkpoint_to_r2_direct",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("direct path failed")),
     )
-
-    def fake_fallback_upload(
-        _checkpoint_mgr,
-        _conn,
-        *,
-        checkpoint_job_name: str,
-        step: int,
-        remote_checkpoint_path: str,
-        emit_progress,
-    ):
-        fallback_calls.append(
-            {
-                "job_name": checkpoint_job_name,
-                "step": step,
-                "remote_checkpoint_path": remote_checkpoint_path,
-            }
-        )
-        emit_progress({"type": "uploaded", "message": "R2登録が完了しました", "step": step})
-        return 1234
-
-    monkeypatch.setattr(training, "_upload_remote_checkpoint_to_r2", fake_fallback_upload)
     monkeypatch.setattr(
         training,
         "_resolve_model_artifact_in_r2_from_checkpoint",
@@ -1817,17 +1780,19 @@ def test_upload_selected_remote_checkpoint_falls_back_when_direct_upload_fails(m
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_upsert_model_for_job", fake_upsert_model)
 
-    result = asyncio.run(
-        training._upload_selected_remote_checkpoint_with_progress(
-            "job-1",
-            "001000",
-            progress.append,
+    with pytest.raises(RuntimeError, match="direct path failed"):
+        asyncio.run(
+            training._upload_selected_remote_checkpoint_with_progress(
+                "job-1",
+                "001000",
+                progress.append,
+            )
         )
-    )
 
-    assert result["step"] == 1000
-    assert fallback_calls and fallback_calls[0]["job_name"] == "pick_place_train_20260309"
-    assert any(msg.get("type") == "direct_upload_fallback" for msg in progress)
+    progress_types = {msg.get("type") for msg in progress}
+    assert "direct_upload" in progress_types
+    assert "direct_upload_complete" not in progress_types
+    assert conn.disconnected is True
 
 
 def test_resolve_model_artifact_in_r2_from_checkpoint_uses_checkpoint_pretrained_model():
