@@ -141,6 +141,9 @@ from interfaces_backend.services.training_job_operations import (
 )
 from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 from interfaces_backend.services.training_job_event_streams import get_training_job_event_stream_registry
+from interfaces_backend.services.training_job_metrics_publisher import (
+    get_training_job_metrics_publisher_service,
+)
 from interfaces_backend.services.user_directory import resolve_user_directory_entries
 
 logger = logging.getLogger(__name__)
@@ -4823,11 +4826,10 @@ async def get_job_metrics(
     result = JobMetricsResponse(job_id=job_id, train=train, val=val)
     owner_user_id = str(job_data.get("owner_user_id") or "").strip()
     if owner_user_id:
-        get_realtime_runtime().track(
-            scope=UserID(owner_user_id),
-            kind="training.job.metrics",
-            key=job_id,
-        ).replace(result.model_dump(mode="json"))
+        metrics_publisher = get_training_job_metrics_publisher_service()
+        metrics_publisher.publish_snapshot(user_id=owner_user_id, job_id=job_id, snapshot=result)
+        if not from_archive and _is_live_job_status(job_data):
+            metrics_publisher.ensure_running(user_id=owner_user_id, job_id=job_id, limit=limit)
     return result
 
 

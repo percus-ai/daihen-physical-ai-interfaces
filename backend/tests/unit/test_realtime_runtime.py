@@ -123,6 +123,64 @@ def test_training_job_operations_emit_full_job_operations_state():
     asyncio.run(_run())
 
 
+def test_training_job_metrics_publisher_emits_changed_metrics_and_stops():
+    async def _run():
+        from interfaces_backend.models.training import JobMetricsResponse
+        from interfaces_backend.services.training_job_metrics_publisher import (
+            TrainingJobMetricsPublisherService,
+        )
+
+        reset_realtime_runtime()
+        runtime = get_realtime_runtime()
+        connection = runtime.open_connection(user_id="user-1", tab_id="tab-1")
+        service = TrainingJobMetricsPublisherService(interval_seconds=0.01)
+        snapshots = [
+            JobMetricsResponse(job_id="job-1", train=[{"step": 1, "loss": 0.5}], val=[]),
+            JobMetricsResponse(job_id="job-1", train=[{"step": 1, "loss": 0.5}], val=[]),
+            JobMetricsResponse(job_id="job-1", train=[{"step": 1, "loss": 0.5}, {"step": 2, "loss": 0.4}], val=[]),
+        ]
+        statuses = ["running", "running", "completed"]
+        snapshot_index = 0
+        status_index = 0
+
+        async def fake_fetch_snapshot(*, job_id: str, limit: int):
+            nonlocal snapshot_index
+            assert job_id == "job-1"
+            assert limit == 2000
+            snapshot = snapshots[min(snapshot_index, len(snapshots) - 1)]
+            snapshot_index += 1
+            return snapshot
+
+        async def fake_fetch_job_status(job_id: str):
+            nonlocal status_index
+            assert job_id == "job-1"
+            status = statuses[min(status_index, len(statuses) - 1)]
+            status_index += 1
+            return status
+
+        service._fetch_snapshot = fake_fetch_snapshot
+        service._fetch_job_status = fake_fetch_job_status
+        service.ensure_running(user_id="user-1", job_id="job-1", limit=2000)
+
+        frame_1 = await connection.next_frame(timeout_seconds=0.1)
+        frame_2 = await connection.next_frame(timeout_seconds=0.2)
+
+        assert frame_1 is not None
+        assert frame_1.kind == "training.job.metrics"
+        assert frame_1.key == "job-1"
+        assert frame_1.detail["train"] == [{"step": 1, "loss": 0.5, "ts": None}]
+        assert frame_2 is not None
+        assert frame_2.revision == 2
+        assert frame_2.detail["train"] == [
+            {"step": 1, "loss": 0.5, "ts": None},
+            {"step": 2, "loss": 0.4, "ts": None},
+        ]
+        assert await connection.next_frame(timeout_seconds=0.05) is None
+        service.shutdown()
+
+    asyncio.run(_run())
+
+
 def test_training_provision_operation_emits_operation_and_job_tracks(monkeypatch):
     async def _run():
         from interfaces_backend.services.training_provision_operations import (
