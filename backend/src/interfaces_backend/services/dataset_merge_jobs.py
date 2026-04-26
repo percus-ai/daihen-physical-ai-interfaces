@@ -12,6 +12,9 @@ from fastapi import HTTPException
 from interfaces_backend.models.storage import (
     DatasetMergeJobAcceptedResponse,
     DatasetMergeJobDetail,
+    DatasetMergeJobEvent,
+    DatasetMergeJobFailedEvent,
+    DatasetMergeJobProgressEvent,
     DatasetMergeJobState,
     DatasetMergeJobStatus,
     DatasetMergeRequest,
@@ -151,20 +154,25 @@ class DatasetMergeJobsService:
                 key=snapshot.job_id,
             ).replace(snapshot.model_dump(mode="json"))
 
-    def update_from_progress(self, *, job_id: str, progress: dict) -> None:
-        """Translate merge/upload progress callbacks into a single job snapshot."""
-        msg_type = str(progress.get("type") or "").strip()
-        step = str(progress.get("step") or "").strip()
-        message = str(progress.get("message") or "").strip() or None
+    def update_from_event(self, *, job_id: str, event: DatasetMergeJobEvent) -> None:
+        """Translate merge/upload events into a single job snapshot."""
+        if isinstance(event, DatasetMergeJobFailedEvent):
+            self._update(
+                job_id=job_id,
+                state="failed",
+                progress_percent=100.0,
+                message=event.message,
+                error=event.error,
+                detail={"step": event.step} if event.step else None,
+            )
+            return
 
-        current_dataset_id = progress.get("dataset_id")
-        current_file = progress.get("current_file")
-        files_done = progress.get("files_done")
-        total_files = progress.get("total_files")
-        total_size = progress.get("total_size")
-        bytes_transferred = progress.get("bytes_transferred")
-        file_size = progress.get("file_size")
-        error = progress.get("error")
+        if not isinstance(event, DatasetMergeJobProgressEvent):
+            raise TypeError(f"Unsupported dataset merge job event: {event!r}")
+
+        msg_type = event.type.strip()
+        step = event.step.strip()
+        message = str(event.message or "").strip() or None
 
         with self._lock:
             record = self._jobs.get(job_id)
@@ -173,22 +181,22 @@ class DatasetMergeJobsService:
             update_detail: dict = {}
             if step:
                 update_detail["step"] = step
-            if current_dataset_id:
-                update_detail["current_dataset_id"] = str(current_dataset_id)
+            if event.dataset_id:
+                update_detail["current_dataset_id"] = event.dataset_id
                 downloaded = list(record.detail.downloaded_dataset_ids)
-                if str(current_dataset_id) not in downloaded:
-                    downloaded.append(str(current_dataset_id))
+                if event.dataset_id not in downloaded:
+                    downloaded.append(event.dataset_id)
                 update_detail["downloaded_dataset_ids"] = downloaded
-            if current_file:
-                update_detail["current_file"] = str(current_file)
-            if isinstance(files_done, int):
-                update_detail["files_done"] = files_done
-            if isinstance(total_files, int):
-                update_detail["total_files"] = total_files
-            if isinstance(total_size, int):
-                update_detail["total_size"] = total_size
-            if isinstance(bytes_transferred, int):
-                update_detail["transferred_bytes"] = bytes_transferred
+            if event.current_file:
+                update_detail["current_file"] = event.current_file
+            if isinstance(event.files_done, int):
+                update_detail["files_done"] = event.files_done
+            if isinstance(event.total_files, int):
+                update_detail["total_files"] = event.total_files
+            if isinstance(event.total_size, int):
+                update_detail["total_size"] = event.total_size
+            if isinstance(event.bytes_transferred, int):
+                update_detail["transferred_bytes"] = event.bytes_transferred
 
             progress_percent = self._progress_from_event(
                 record=record,
@@ -196,21 +204,10 @@ class DatasetMergeJobsService:
                 step=step,
                 detail=update_detail,
                 raw={
-                    "file_size": file_size,
-                    "bytes_transferred": bytes_transferred,
+                    "file_size": event.file_size,
+                    "bytes_transferred": event.bytes_transferred,
                 },
             )
-
-        if msg_type == "error":
-            self._update(
-                job_id=job_id,
-                state="failed",
-                progress_percent=100.0,
-                message=message or "マージに失敗しました。",
-                error=str(error or "unknown error"),
-                detail=update_detail,
-            )
-            return
 
         # Keep the job in running state until the worker marks it completed.
         self._update(

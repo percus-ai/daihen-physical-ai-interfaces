@@ -40,9 +40,13 @@ from interfaces_backend.models.storage import (
     DatasetViewerEpisodeVideoWindow,
     DatasetViewerEpisodeVideoWindowResponse,
     DatasetReuploadResponse,
+    DatasetMergeJobEvent,
+    DatasetMergeJobEventEmitter,
+    DatasetMergeJobFailedEvent,
     DatasetMergeRequest,
     DatasetMergeResponse,
     DatasetMergeJobAcceptedResponse,
+    DatasetMergeJobProgressEvent,
     DatasetMergeJobStatus,
     DatasetInfo,
     DatasetDetailInfo,
@@ -337,6 +341,15 @@ def _is_missing_column_error(exc: APIError, *, table_name: str, column_name: str
 def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:
+        return None
 
 
 def _normalize_source_datasets(raw: object) -> list[DatasetSourceInfo]:
@@ -1284,15 +1297,46 @@ async def list_datasets(
     )
 
 
+def _dataset_merge_progress_event(
+    *,
+    event_type: str,
+    step: str,
+    message: str | None = None,
+    **payload: object,
+) -> DatasetMergeJobProgressEvent:
+    return DatasetMergeJobProgressEvent(
+        type=event_type,
+        step=step,
+        message=message,
+        dataset_id=_normalize_optional_text(payload.get("dataset_id")),
+        current_file=_normalize_optional_text(payload.get("current_file")),
+        files_done=_optional_int(payload.get("files_done")),
+        total_files=_optional_int(payload.get("total_files")),
+        total_size=_optional_int(payload.get("total_size")),
+        bytes_transferred=_optional_int(
+            payload.get("bytes_transferred")
+            if payload.get("bytes_transferred") is not None
+            else payload.get("transferred_bytes")
+        ),
+        file_size=_optional_int(payload.get("file_size")),
+    )
+
+
 async def _merge_datasets(
     request: DatasetMergeRequest,
-    progress_callback: Optional[Callable[[dict], None]] = None,
+    emit: DatasetMergeJobEventEmitter,
     *,
     owner_user_id: str,
 ) -> DatasetMergeResponse:
-    def report(message: dict) -> None:
-        if progress_callback:
-            progress_callback(message)
+    def report(event_type: str, step: str, message: str | None = None, **payload: object) -> None:
+        emit(
+            _dataset_merge_progress_event(
+                event_type=event_type,
+                step=step,
+                message=message,
+                **payload,
+            )
+        )
 
     source_dataset_ids = list(dict.fromkeys(request.source_dataset_ids))
     if len(source_dataset_ids) < 2:
@@ -1305,7 +1349,7 @@ async def _merge_datasets(
     merged_dataset_id = generate_dataset_id()
     client = await get_supabase_service_client_required()
 
-    report({"type": "start", "step": "validate", "message": "Validating datasets"})
+    report("start", "validate", "Validating datasets")
     source_rows = []
     for dataset_id in source_dataset_ids:
         rows = (
@@ -1321,7 +1365,7 @@ async def _merge_datasets(
         if row.get("status") != "active":
             raise HTTPException(status_code=400, detail=f"Dataset is not active: {dataset_id}")
         source_rows.append(row)
-    report({"type": "step_complete", "step": "validate", "message": "Validation complete"})
+    report("step_complete", "validate", "Validation complete")
 
     profile_names = {
         profile_name
@@ -1337,21 +1381,21 @@ async def _merge_datasets(
     )
     source_datasets = _build_source_dataset_snapshots(source_rows)
 
-    report({"type": "start", "step": "download", "message": "Ensuring local datasets"})
+    report("start", "download", "Ensuring local datasets")
     sync_service = R2DBSyncService()
     for dataset_id in source_dataset_ids:
-        report({"type": "progress", "step": "download", "dataset_id": dataset_id})
+        report("progress", "download", dataset_id=dataset_id)
         result = await sync_service.ensure_dataset_local(dataset_id, auto_download=True)
         if not result.success:
             raise HTTPException(status_code=500, detail=f"Dataset download failed: {result.message}")
-    report({"type": "step_complete", "step": "download", "message": "Local datasets ready"})
+    report("step_complete", "download", "Local datasets ready")
 
     datasets_dir = get_datasets_dir()
     merged_root = datasets_dir / merged_dataset_id
     if merged_root.exists():
         raise HTTPException(status_code=409, detail=f"Local dataset already exists: {merged_dataset_id}")
 
-    report({"type": "start", "step": "aggregate", "message": "Aggregating datasets"})
+    report("start", "aggregate", "Aggregating datasets")
     roots = [datasets_dir / dataset_id for dataset_id in source_dataset_ids]
     try:
         aggregate_datasets(
@@ -1364,7 +1408,7 @@ async def _merge_datasets(
         if merged_root.exists():
             shutil.rmtree(merged_root)
         raise HTTPException(status_code=500, detail=f"Dataset merge failed: {e}") from e
-    report({"type": "step_complete", "step": "aggregate", "message": "Aggregation complete"})
+    report("step_complete", "aggregate", "Aggregation complete")
 
     content_hash = compute_directory_hash(merged_root, use_content=True)
     size_bytes = _write_dataset_metadata_file(
@@ -1379,10 +1423,17 @@ async def _merge_datasets(
     episode_count = metadata.total_episodes
 
     def upload_progress(event: StorageSyncEvent) -> None:
-        message = _storage_sync_event_to_progress_dict(event)
-        msg_type = str(message["type"])
+        payload = _storage_sync_event_to_progress_dict(event)
+        msg_type = str(payload.pop("type"))
+        message = _normalize_optional_text(payload.pop("message", None))
         if msg_type == "error":
-            report({"type": "error", "error": message.get("error")})
+            emit(
+                DatasetMergeJobFailedEvent(
+                    step="upload",
+                    message=message or "Upload failed",
+                    error=str(payload.get("error") or "unknown error"),
+                )
+            )
             return
         type_map = {
             "start": "upload_start",
@@ -1392,14 +1443,14 @@ async def _merge_datasets(
             "complete": "upload_complete",
             "cancelled": "cancelled",
         }
-        report({**message, "type": type_map[msg_type], "step": "upload"})
+        report(type_map[msg_type], "upload", message, **payload)
 
-    report({"type": "start", "step": "upload", "message": "Uploading merged dataset"})
+    report("start", "upload", "Uploading merged dataset")
     ok, error = await sync_service.upload_dataset_with_progress(merged_dataset_id, upload_progress)
     if not ok:
         shutil.rmtree(merged_root)
         raise HTTPException(status_code=500, detail=f"R2 upload failed: {error}")
-    report({"type": "step_complete", "step": "upload", "message": "Upload complete"})
+    report("step_complete", "upload", "Upload complete")
 
     payload = {
         "id": merged_dataset_id,
@@ -1433,14 +1484,14 @@ async def _run_dataset_merge_job(*, user_id: str, job_id: str, request: DatasetM
     jobs = get_dataset_merge_jobs_service()
     main_loop = asyncio.get_running_loop()
 
-    def progress_callback(progress: dict) -> None:
-        jobs.update_from_progress(job_id=job_id, progress=progress)
+    def emit(event: DatasetMergeJobEvent) -> None:
+        jobs.update_from_event(job_id=job_id, event=event)
 
     def _merge_datasets_sync() -> DatasetMergeResponse:
         return asyncio.run(
             _merge_datasets(
                 request,
-                progress_callback,
+                emit,
                 owner_user_id=user_id,
             )
         )

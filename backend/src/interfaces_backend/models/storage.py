@@ -1,8 +1,8 @@
 """Storage API request/response models (DB-backed)."""
 
-from typing import List, Literal, Optional
+from typing import Annotated, Callable, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 
 
 # --- API Request/Response Models ---
@@ -157,6 +157,39 @@ class DatasetMergeResponse(BaseModel):
 
 
 DatasetMergeJobState = Literal["queued", "running", "completed", "failed"]
+
+
+class DatasetMergeJobProgressEvent(BaseModel):
+    """Progress event for backend-owned dataset merge jobs."""
+
+    event: Literal["progress"] = "progress"
+    type: str
+    step: str = ""
+    message: Optional[str] = None
+    dataset_id: Optional[str] = None
+    current_file: Optional[str] = None
+    files_done: Optional[int] = None
+    total_files: Optional[int] = None
+    total_size: Optional[int] = None
+    bytes_transferred: Optional[int] = None
+    file_size: Optional[int] = None
+
+
+class DatasetMergeJobFailedEvent(BaseModel):
+    """Failure event for backend-owned dataset merge jobs."""
+
+    event: Literal["failed"] = "failed"
+    step: str = ""
+    message: str
+    error: str
+
+
+DatasetMergeJobEvent = Annotated[
+    DatasetMergeJobProgressEvent | DatasetMergeJobFailedEvent,
+    Field(discriminator="event"),
+]
+DatasetMergeJobEventEmitter = Callable[[DatasetMergeJobEvent], None]
+DatasetMergeJobEventAdapter = TypeAdapter(DatasetMergeJobEvent)
 
 
 class DatasetMergeJobDetail(BaseModel):

@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from interfaces_backend.models.storage import DatasetMergeRequest, DatasetMergeResponse
+from interfaces_backend.models.storage import (
+    DatasetMergeJobFailedEvent,
+    DatasetMergeJobProgressEvent,
+    DatasetMergeRequest,
+    DatasetMergeResponse,
+)
 from interfaces_backend.services.dataset_merge_jobs import DatasetMergeJobsService
 
 
@@ -39,14 +44,19 @@ def test_create_allows_new_job_after_completion() -> None:
     assert second.job_id != first.job_id
 
 
-def test_update_from_progress_upload_advances_progress() -> None:
+def test_update_from_event_upload_advances_progress() -> None:
     service = DatasetMergeJobsService()
     request = DatasetMergeRequest(dataset_name="merged", source_dataset_ids=["a", "b"])
     accepted = service.create(user_id="user-1", request=request)
 
-    service.update_from_progress(
+    service.update_from_event(
         job_id=accepted.job_id,
-        progress={"type": "upload_start", "step": "upload", "total_files": 10, "total_size": 100},
+        event=DatasetMergeJobProgressEvent(
+            type="upload_start",
+            step="upload",
+            total_files=10,
+            total_size=100,
+        ),
     )
 
     status = service.get(user_id="user-1", job_id=accepted.job_id)
@@ -57,14 +67,14 @@ def test_update_from_progress_upload_advances_progress() -> None:
     assert status.progress_percent >= 55.0
 
 
-def test_update_from_progress_error_marks_failed() -> None:
+def test_update_from_event_error_marks_failed() -> None:
     service = DatasetMergeJobsService()
     request = DatasetMergeRequest(dataset_name="merged", source_dataset_ids=["a", "b"])
     accepted = service.create(user_id="user-1", request=request)
 
-    service.update_from_progress(
+    service.update_from_event(
         job_id=accepted.job_id,
-        progress={"type": "error", "step": "validate", "error": "boom"},
+        event=DatasetMergeJobFailedEvent(step="validate", message="マージに失敗しました。", error="boom"),
     )
 
     status = service.get(user_id="user-1", job_id=accepted.job_id)
