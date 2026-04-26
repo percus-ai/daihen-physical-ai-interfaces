@@ -124,4 +124,33 @@ describe('RealtimeTrackClient', () => {
       })
     );
   });
+
+  it('treats job log terminal control frames as control events', async () => {
+    const { registerRealtimeTrackConsumer } = await import('./trackClient');
+    const handler = vi.fn();
+
+    registerRealtimeTrackConsumer({
+      tracks: [
+        {
+          kind: 'training.job.logs',
+          params: { job_id: 'job-1', log_type: 'setup' }
+        }
+      ],
+      onEvent: handler
+    });
+
+    eventSources[0].emit('realtime', {
+      kind: 'training.job.logs',
+      key: 'job-1:setup',
+      revision: 1,
+      detail: { type: 'ip_missing', job_id: 'job-1', log_type: 'setup' }
+    });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        op: 'control',
+        payload: { type: 'ip_missing', job_id: 'job-1', log_type: 'setup' }
+      })
+    );
+  });
 });

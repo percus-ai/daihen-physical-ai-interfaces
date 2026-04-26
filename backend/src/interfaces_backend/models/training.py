@@ -177,6 +177,43 @@ class JobLogsResponse(BaseModel):
     source: Optional[str] = None
 
 
+TrainingJobLogType = Literal["training", "setup"]
+
+
+class TrainingJobLogStreamRequest(BaseModel):
+    """Request to start publishing a job log track."""
+
+    log_type: TrainingJobLogType = "training"
+    tail_lines: int = Field(default=30, ge=1, le=10000)
+
+
+class TrainingJobLogStreamResponse(BaseModel):
+    """Accepted realtime log stream descriptor."""
+
+    job_id: str
+    log_type: TrainingJobLogType
+    key: str
+    state: str
+
+
+class TrainingJobLogAppendRealtimeDetail(BaseModel):
+    """Append payload for training.job.logs."""
+
+    job_id: str
+    log_type: TrainingJobLogType
+    lines: list[str] = Field(default_factory=list)
+
+
+class TrainingJobLogControlRealtimeDetail(BaseModel):
+    """Control payload for training.job.logs."""
+
+    type: Literal["connected", "stream_ended", "job_status", "job_missing", "ip_missing"]
+    job_id: str
+    log_type: TrainingJobLogType
+    status: Optional[str] = None
+    message: str = ""
+
+
 class JobProgressResponse(BaseModel):
     """Response for job progress endpoint."""
 

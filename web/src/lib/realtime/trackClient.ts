@@ -89,7 +89,14 @@ const matchesSelector = (selector: RealtimeTrackSelector, frame: RealtimeFrame) 
 
 const eventOpForFrame = (frame: RealtimeFrame): RealtimeTrackEvent['op'] => {
   const type = String(frame.detail.type ?? '').trim();
-  if (type === 'connected' || type === 'stream_ended' || type === 'job_status') {
+  if (
+    type === 'connected' ||
+    type === 'stream_ended' ||
+    type === 'job_status' ||
+    type === 'job_deleted' ||
+    type === 'job_missing' ||
+    type === 'ip_missing'
+  ) {
     return 'control';
   }
   if (frame.detail.error || frame.detail.failure_reason) {

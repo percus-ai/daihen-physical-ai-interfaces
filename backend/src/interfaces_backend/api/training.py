@@ -51,6 +51,11 @@ from interfaces_backend.models.training import (
     TrainingProvisionOperationStatusResponse,
     TrainingJobOperationAcceptedResponse,
     TrainingJobOperationStatusResponse,
+    TrainingJobLogAppendRealtimeDetail,
+    TrainingJobLogControlRealtimeDetail,
+    TrainingJobLogStreamRequest,
+    TrainingJobLogStreamResponse,
+    TrainingJobLogType,
     JobMetricsResponse,
     InstanceStatusResponse,
     # Checkpoint models
@@ -105,7 +110,7 @@ from percus_ai.db import (
 )
 from percus_ai.training.ssh.client import SSHConnection
 from percus_ai.training.ssh.executor import run_remote_command
-from percus_ai.training.orchestrator import create_job_with_progress
+from percus_ai.training import orchestrator as training_orchestrator
 from percus_ai.training.providers.vast import (
     delete_volumes,
     destroy_instance,
@@ -192,6 +197,11 @@ _executor = ThreadPoolExecutor(max_workers=2)
 DB_TABLE = "training_jobs"
 
 _REQUIRED_VAST_ENV_VARS = ("VAST_API_KEY", "VAST_SSH_PRIVATE_KEY")
+_LIVE_JOB_STATUSES = {"queued", "starting", "deploying", "running"}
+_TRAINING_LOG_STREAM_INTERVAL_SECONDS = 2.0
+_TRAINING_LOG_STREAM_SSH_TIMEOUT_SECONDS = 8
+_training_log_stream_tasks: dict[tuple[str, str, TrainingJobLogType], asyncio.Task[None]] = {}
+_training_log_stream_tail_lines: dict[tuple[str, str, TrainingJobLogType], int] = {}
 
 
 def _utcnow_iso() -> str:
@@ -989,6 +999,13 @@ async def _refresh_job_status_from_instance(job_data: dict) -> Optional[str]:
         job_data["completed_at"] = _utcnow_iso()
         await _save_job(job_data)
         return instance_status
+    if instance_status == "running" and job_data.get("status") in ("starting", "deploying"):
+        remote_status = await _check_remote_status_async(job_data)
+        if remote_status == "running":
+            job_data["status"] = "running"
+            if not job_data.get("started_at"):
+                job_data["started_at"] = _utcnow_iso()
+            await _save_job(job_data)
     return instance_status
 
 
@@ -1234,17 +1251,23 @@ async def _save_job(job_data: dict) -> None:
         await client.table(DB_TABLE).insert(insert_record).execute()
 
     await _upsert_with(await get_supabase_async_client())
-    if owner_user_id:
-        try:
-            snapshot = await _build_job_db_snapshot(str(job_id))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to publish training job core snapshot for %s: %s", job_id, exc)
-            return
-        get_realtime_runtime().track(
-            scope=UserID(owner_user_id),
-            kind="training.job.core",
-            key=str(job_id),
-        ).replace(snapshot.model_dump(mode="json"))
+    await _publish_training_job_core_snapshot(str(job_id), owner_user_id=owner_user_id)
+
+
+async def _publish_training_job_core_snapshot(job_id: str, *, owner_user_id: str = "") -> None:
+    try:
+        snapshot = await _build_job_db_snapshot(job_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to publish training job core snapshot for %s: %s", job_id, exc)
+        return
+    target_user_id = owner_user_id or str(snapshot.job.owner_user_id or "").strip()
+    if not target_user_id:
+        return
+    get_realtime_runtime().track(
+        scope=UserID(target_user_id),
+        kind="training.job.core",
+        key=job_id,
+    ).replace(snapshot.model_dump(mode="json"))
 
 
 def _run_async(coro):
@@ -3043,10 +3066,13 @@ async def _check_remote_status_async(job_data: dict) -> str:
 
 
 def _get_remote_logs(
-    job_data: dict, lines: int = 100, log_type: str = "training"
+    job_data: dict,
+    lines: int = 100,
+    log_type: str = "training",
+    timeout: int = 30,
 ) -> Optional[str]:
     """Get remote logs via SSH."""
-    conn = _get_ssh_connection_for_job(job_data)
+    conn = _get_ssh_connection_for_job(job_data, timeout=timeout)
     if not conn:
         return None
 
@@ -3068,8 +3094,9 @@ async def _get_remote_logs_async(
     job_data: dict,
     lines: int = 100,
     log_type: str = "training",
+    timeout: int = 30,
 ) -> Optional[str]:
-    return await asyncio.to_thread(_get_remote_logs, job_data, lines, log_type)
+    return await asyncio.to_thread(_get_remote_logs, job_data, lines, log_type, timeout)
 
 
 def _get_remote_log_file(
@@ -3257,6 +3284,214 @@ def _check_logs_in_r2(job_data: dict, log_type: str) -> dict:
 
 async def _check_logs_in_r2_async(job_data: dict, log_type: str) -> dict:
     return await asyncio.to_thread(_check_logs_in_r2, job_data, log_type)
+
+
+def _training_log_track_key(job_id: str, log_type: TrainingJobLogType) -> str:
+    return f"{job_id}:{log_type}"
+
+
+def _log_lines(text: str) -> list[str]:
+    return str(text or "").splitlines()
+
+
+def _appended_log_lines(previous_text: str, current_text: str) -> list[str]:
+    if not current_text:
+        return []
+    if not previous_text:
+        return _log_lines(current_text)
+    if current_text == previous_text:
+        return []
+    if current_text.startswith(previous_text):
+        return _log_lines(current_text[len(previous_text):])
+
+    previous_lines = _log_lines(previous_text)
+    current_lines = _log_lines(current_text)
+    max_overlap = min(len(previous_lines), len(current_lines))
+    for size in range(max_overlap, 0, -1):
+        if previous_lines[-size:] == current_lines[:size]:
+            return current_lines[size:]
+    return current_lines
+
+
+def _publish_training_log_control(
+    *,
+    user_id: str,
+    job_id: str,
+    log_type: TrainingJobLogType,
+    control_type: Literal["connected", "stream_ended", "job_status", "job_missing", "ip_missing"],
+    status: str | None = None,
+    message: str = "",
+) -> None:
+    get_realtime_runtime().track(
+        scope=UserID(user_id),
+        kind="training.job.logs",
+        key=_training_log_track_key(job_id, log_type),
+    ).replace(
+        TrainingJobLogControlRealtimeDetail(
+            type=control_type,
+            job_id=job_id,
+            log_type=log_type,
+            status=status,
+            message=message,
+        ).model_dump(mode="json")
+    )
+
+
+def _publish_training_log_lines(
+    *,
+    user_id: str,
+    job_id: str,
+    log_type: TrainingJobLogType,
+    lines: list[str],
+) -> None:
+    if not lines:
+        return
+    get_realtime_runtime().track(
+        scope=UserID(user_id),
+        kind="training.job.logs",
+        key=_training_log_track_key(job_id, log_type),
+    ).replace(
+        TrainingJobLogAppendRealtimeDetail(
+            job_id=job_id,
+            log_type=log_type,
+            lines=lines,
+        ).model_dump(mode="json")
+    )
+
+
+async def _run_training_log_stream(
+    *,
+    user_id: str,
+    job_id: str,
+    log_type: TrainingJobLogType,
+    tail_lines: int,
+) -> None:
+    stream_key = (user_id, job_id, log_type)
+    previous_text = ""
+    try:
+        while True:
+            job_data = await _load_job(job_id)
+            if not job_data:
+                _publish_training_log_control(
+                    user_id=user_id,
+                    job_id=job_id,
+                    log_type=log_type,
+                    control_type="job_missing",
+                    status="missing",
+                    message="ジョブが見つかりません。",
+                )
+                return
+
+            status = str(job_data.get("status") or "").strip().lower()
+            if not str(job_data.get("ip") or "").strip():
+                _publish_training_log_control(
+                    user_id=user_id,
+                    job_id=job_id,
+                    log_type=log_type,
+                    control_type="ip_missing",
+                    status=status or None,
+                    message="ログ取得に必要なIPがまだありません。",
+                )
+                if status not in _LIVE_JOB_STATUSES:
+                    return
+                await asyncio.sleep(_TRAINING_LOG_STREAM_INTERVAL_SECONDS)
+                continue
+
+            text = await _get_remote_logs_async(
+                job_data,
+                tail_lines,
+                log_type,
+                timeout=_TRAINING_LOG_STREAM_SSH_TIMEOUT_SECONDS,
+            )
+            if text is not None:
+                _publish_training_log_lines(
+                    user_id=user_id,
+                    job_id=job_id,
+                    log_type=log_type,
+                    lines=_appended_log_lines(previous_text, text),
+                )
+                previous_text = text
+
+            if status not in _LIVE_JOB_STATUSES:
+                _publish_training_log_control(
+                    user_id=user_id,
+                    job_id=job_id,
+                    log_type=log_type,
+                    control_type="job_status",
+                    status=status or "stopped",
+                    message="ジョブがライブ状態ではありません。",
+                )
+                _publish_training_log_control(
+                    user_id=user_id,
+                    job_id=job_id,
+                    log_type=log_type,
+                    control_type="stream_ended",
+                    status=status or "stopped",
+                    message="ログストリームを終了しました。",
+                )
+                return
+
+            await asyncio.sleep(_TRAINING_LOG_STREAM_INTERVAL_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Training log stream failed for %s %s: %s", job_id, log_type, exc)
+        _publish_training_log_control(
+            user_id=user_id,
+            job_id=job_id,
+            log_type=log_type,
+            control_type="stream_ended",
+            status="error",
+            message=str(exc),
+        )
+    finally:
+        current_task = asyncio.current_task()
+        if _training_log_stream_tasks.get(stream_key) is current_task:
+            _training_log_stream_tasks.pop(stream_key, None)
+            _training_log_stream_tail_lines.pop(stream_key, None)
+
+
+def _ensure_training_log_stream(
+    *,
+    user_id: str,
+    job_id: str,
+    log_type: TrainingJobLogType,
+    tail_lines: int,
+) -> None:
+    stream_key = (user_id, job_id, log_type)
+    existing = _training_log_stream_tasks.get(stream_key)
+    existing_tail_lines = _training_log_stream_tail_lines.get(stream_key)
+    if existing is not None and not existing.done() and existing_tail_lines == tail_lines:
+        _publish_training_log_control(
+            user_id=user_id,
+            job_id=job_id,
+            log_type=log_type,
+            control_type="connected",
+            status="streaming",
+            message="ログストリームに接続しました。",
+        )
+        return
+
+    if existing is not None and not existing.done():
+        existing.cancel()
+
+    _publish_training_log_control(
+        user_id=user_id,
+        job_id=job_id,
+        log_type=log_type,
+        control_type="connected",
+        status="streaming",
+        message="ログストリームに接続しました。",
+    )
+    _training_log_stream_tail_lines[stream_key] = tail_lines
+    _training_log_stream_tasks[stream_key] = asyncio.create_task(
+        _run_training_log_stream(
+            user_id=user_id,
+            job_id=job_id,
+            log_type=log_type,
+            tail_lines=tail_lines,
+        )
+    )
 
 
 async def _get_remote_progress(job_id: str) -> Optional[dict]:
@@ -4542,6 +4777,35 @@ async def get_job_logs(
     return JobLogsResponse(job_id=job_id, logs=logs, lines=lines, source=source)
 
 
+@router.post(
+    "/jobs/{job_id}/logs/live",
+    response_model=TrainingJobLogStreamResponse,
+    status_code=202,
+)
+async def start_job_log_stream(job_id: str, request: TrainingJobLogStreamRequest):
+    """Start publishing a job log track on the single realtime SSE stream."""
+    user_id = get_current_user_id()
+    job_data = await _load_job(job_id)
+    if not job_data:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    if job_data.get("status") in ("running", "starting", "deploying"):
+        await _refresh_job_status_from_instance(job_data)
+
+    _ensure_training_log_stream(
+        user_id=user_id,
+        job_id=job_id,
+        log_type=request.log_type,
+        tail_lines=request.tail_lines,
+    )
+    return TrainingJobLogStreamResponse(
+        job_id=job_id,
+        log_type=request.log_type,
+        key=_training_log_track_key(job_id, request.log_type),
+        state="accepted",
+    )
+
+
 @router.get(
     "/jobs/{job_id}/provision-operation",
     response_model=TrainingProvisionOperationStatusResponse,
@@ -5487,7 +5751,7 @@ async def _run_training_provision_operation(
         )
 
     def worker() -> dict:
-        return create_job_with_progress(request_data, emit_progress, supabase_session)
+        return training_orchestrator.create_job_with_progress(request_data, emit_progress, supabase_session)
 
     async def cleanup_failed_instance() -> str:
         if not latest["instance_id"]:
@@ -5505,7 +5769,10 @@ async def _run_training_provision_operation(
         )
 
     try:
-        await loop.run_in_executor(_executor, worker)
+        result = await loop.run_in_executor(_executor, worker)
+        result_job_id = str(result.get("job_id") or latest["job_id"] or "").strip()
+        if result_job_id:
+            await _publish_training_job_core_snapshot(result_job_id)
     except HTTPException as exc:
         cleanup_note = await cleanup_failed_instance()
         await operations.fail(

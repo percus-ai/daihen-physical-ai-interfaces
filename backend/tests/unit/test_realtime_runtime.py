@@ -266,3 +266,58 @@ def test_realtime_sse_frame_format():
         'event: realtime\n'
         'data: {"detail": {"backend": "ok"}, "key": "system", "kind": "system.status", "revision": 1}\n\n'
     )
+
+
+def test_training_job_log_stream_emits_append_frames(monkeypatch):
+    async def _run():
+        import interfaces_backend.api.training as training_api
+
+        reset_realtime_runtime()
+        training_api._training_log_stream_tasks.clear()
+        training_api._training_log_stream_tail_lines.clear()
+        monkeypatch.setattr(training_api, "_TRAINING_LOG_STREAM_INTERVAL_SECONDS", 0.001)
+
+        load_count = 0
+        log_texts = ["setup line 1\nsetup line 2\n", "setup line 1\nsetup line 2\nsetup line 3\n"]
+
+        async def fake_load_job(job_id: str):
+            nonlocal load_count
+            load_count += 1
+            return {
+                "job_id": job_id,
+                "status": "running" if load_count < 3 else "completed",
+                "ip": "192.0.2.10",
+            }
+
+        async def fake_get_remote_logs_async(_job_data, _lines, _log_type, timeout=30):
+            return log_texts[min(load_count - 1, len(log_texts) - 1)]
+
+        monkeypatch.setattr(training_api, "_load_job", fake_load_job)
+        monkeypatch.setattr(training_api, "_get_remote_logs_async", fake_get_remote_logs_async)
+
+        runtime = get_realtime_runtime()
+        connection = runtime.open_connection(user_id="user-1", tab_id="tab-1")
+        training_api._ensure_training_log_stream(
+            user_id="user-1",
+            job_id="job-1",
+            log_type="setup",
+            tail_lines=30,
+        )
+
+        connected = await connection.next_frame(timeout_seconds=0.1)
+        first = await connection.next_frame(timeout_seconds=0.1)
+        second = await connection.next_frame(timeout_seconds=0.1)
+        ended = await connection.next_frame(timeout_seconds=0.1)
+
+        assert connected is not None
+        assert connected.kind == "training.job.logs"
+        assert connected.key == "job-1:setup"
+        assert connected.detail["type"] == "connected"
+        assert first is not None
+        assert first.detail["lines"] == ["setup line 1", "setup line 2"]
+        assert second is not None
+        assert second.detail["lines"] == ["setup line 3"]
+        assert ended is not None
+        assert ended.detail["type"] == "job_status"
+
+    asyncio.run(_run())

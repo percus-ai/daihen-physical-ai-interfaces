@@ -171,6 +171,7 @@
   type MetricPoint = { step?: number; loss?: number; ts?: string };
   let activeLogSnapshotKey = $state('');
   let loadedLogSnapshotKey = $state('');
+  let lastAutoLogStatus = $state('');
 
   const parseCheckpointStep = (value: unknown): number | null => {
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
@@ -803,11 +804,6 @@
     registrationKey: string,
     event: RealtimeTrackEvent
   ) => {
-    const activeKey = `${jobId}:${logsType}`;
-    if (registrationKey !== activeKey) {
-      return;
-    }
-
     switch (event.source?.kind) {
       case 'training.job.core':
         if (event.op === 'snapshot') {
@@ -832,6 +828,9 @@
         }
         return;
       case 'training.job.logs':
+        if (registrationKey !== `${jobId}:${logsType}`) {
+          return;
+        }
         if (event.op === 'append') {
           const payload = event.payload as { lines?: string[] };
           appendLogLines(payload.lines ?? []);
@@ -1040,6 +1039,24 @@
     streamStatus = 'idle';
   };
 
+  const startRealtimeLogStream = async (
+    targetJobId: string,
+    targetLogsType: 'training' | 'setup',
+    targetLogLines: number,
+    registrationKey: string
+  ) => {
+    try {
+      await api.training.startLogStream(targetJobId, targetLogsType, targetLogLines);
+    } catch (error) {
+      if (registrationKey !== activeLogSnapshotKey) {
+        return;
+      }
+      logStreamActive = false;
+      streamStatus = 'error';
+      streamError = error instanceof Error ? error.message : 'ログストリームの開始に失敗しました。';
+    }
+  };
+
   $effect(() => {
     if (!isRunning && logStreamActive) {
       logStreamActive = false;
@@ -1053,6 +1070,7 @@
   $effect(() => {
     if (jobId && jobId !== lastJobId) {
       lastJobId = jobId;
+      lastAutoLogStatus = '';
       resetLogAppendState();
       logs = '';
       logsSource = '';
@@ -1088,6 +1106,20 @@
     }
   });
 
+  $effect(() => {
+    if (!status || status === lastAutoLogStatus) {
+      return;
+    }
+    lastAutoLogStatus = status;
+    if (status === 'starting') {
+      logsType = 'setup';
+      return;
+    }
+    if (status === 'running') {
+      logsType = 'training';
+    }
+  });
+
   let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
 
   $effect(() => {
@@ -1116,6 +1148,9 @@
     if (!realtimeContributor) {
       return;
     }
+    if (shouldSubscribeLogStream) {
+      void startRealtimeLogStream(currentJobId, currentLogsType, logLines, registrationKey);
+    }
 
     return () => {
       realtimeContributor?.dispose();
@@ -1136,15 +1171,8 @@
   $effect(() => {
     const currentJobId = jobId;
     const currentJob = jobInfo;
-    const currentStatus = status;
     const currentLogsType = logsType;
     if (!currentJobId || !currentJob) {
-      return;
-    }
-
-    const shouldLoadSnapshot =
-      !currentJob.ip || !['running', 'starting', 'deploying'].includes(currentStatus);
-    if (!shouldLoadSnapshot) {
       return;
     }
 

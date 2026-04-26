@@ -1625,6 +1625,11 @@ export const api = {
       }),
     logs: (jobId: string, logType: string, lines: number = 30) =>
       fetchApi(`/api/training/jobs/${jobId}/logs?log_type=${logType}&lines=${lines}`),
+    startLogStream: (jobId: string, logType: string, tailLines: number = 30) =>
+      fetchApi(`/api/training/jobs/${jobId}/logs/live`, {
+        method: 'POST',
+        body: JSON.stringify({ log_type: logType, tail_lines: tailLines })
+      }),
     downloadLogs: (jobId: string, logType: string) =>
       fetchText(`/api/training/jobs/${jobId}/logs/download?log_type=${logType}`),
     metrics: (jobId: string, limit: number = 2000) =>
