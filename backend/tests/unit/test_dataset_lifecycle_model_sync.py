@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from percus_ai.storage.events import StorageSyncCompletedEvent, StorageSyncProgressEvent
 
 os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
 
@@ -14,16 +15,35 @@ class _FakeSyncDownloaded:
     async def ensure_model_local(self, _model_id, auto_download=True, progress_callback=None):
         assert auto_download is True
         assert progress_callback is not None
-        progress_callback({"type": "start", "total_files": 4, "total_size": 4000})
-        progress_callback({
-            "type": "progress",
-            "current_file": "weights.safetensors",
-            "files_done": 2,
-            "total_files": 4,
-            "bytes_done_total": 2500,
-            "total_size": 4000,
-        })
-        progress_callback({"type": "complete", "total_files": 4, "total_size": 4000})
+        progress_callback(
+            StorageSyncProgressEvent(
+                entry_type="models",
+                item_id="model-1",
+                type="start",
+                total_files=4,
+                total_size=4000,
+            )
+        )
+        progress_callback(
+            StorageSyncProgressEvent(
+                entry_type="models",
+                item_id="model-1",
+                type="progress",
+                current_file="weights.safetensors",
+                files_done=2,
+                total_files=4,
+                bytes_done_total=2500,
+                total_size=4000,
+            )
+        )
+        progress_callback(
+            StorageSyncCompletedEvent(
+                entry_type="models",
+                item_id="model-1",
+                total_files=4,
+                total_size=4000,
+            )
+        )
         return SimpleNamespace(success=True, message="Downloaded", skipped=False, cancelled=False)
 
 
@@ -45,42 +65,61 @@ class _FakeSyncPhasedProgress:
     async def ensure_model_local(self, _model_id, auto_download=True, progress_callback=None):
         assert auto_download is True
         assert progress_callback is not None
-        progress_callback({
-            "type": "checking",
-            "message": "リモート状態を確認中...",
-            "progress_percent": 6.0,
-        })
-        progress_callback({
-            "type": "start",
-            "total_files": 2,
-            "total_size": 1000,
-            "progress_percent": 30.0,
-            "message": "モデルをクラウドから同期中です...",
-        })
-        progress_callback({
-            "type": "progress",
-            "current_file": "weights.safetensors",
-            "files_done": 0,
-            "total_files": 2,
-            "bytes_done_total": 550,
-            "total_size": 1000,
-            "progress_percent": 60.5,
-        })
-        progress_callback({
-            "type": "hashing",
-            "message": "ハッシュを計算中です...",
-            "progress_percent": 92.0,
-            "total_files": 2,
-            "total_size": 1000,
-            "bytes_done_total": 1000,
-        })
-        progress_callback({
-            "type": "complete",
-            "message": "モデル同期が完了しました。",
-            "progress_percent": 100.0,
-            "total_files": 2,
-            "total_size": 1000,
-        })
+        progress_callback(
+            StorageSyncProgressEvent(
+                entry_type="models",
+                item_id="model-phased",
+                type="checking",
+                message="リモート状態を確認中...",
+                progress_percent=6.0,
+            )
+        )
+        progress_callback(
+            StorageSyncProgressEvent(
+                entry_type="models",
+                item_id="model-phased",
+                type="start",
+                total_files=2,
+                total_size=1000,
+                progress_percent=30.0,
+                message="モデルをクラウドから同期中です...",
+            )
+        )
+        progress_callback(
+            StorageSyncProgressEvent(
+                entry_type="models",
+                item_id="model-phased",
+                type="progress",
+                current_file="weights.safetensors",
+                files_done=0,
+                total_files=2,
+                bytes_done_total=550,
+                total_size=1000,
+                progress_percent=60.5,
+            )
+        )
+        progress_callback(
+            StorageSyncProgressEvent(
+                entry_type="models",
+                item_id="model-phased",
+                type="hashing",
+                message="ハッシュを計算中です...",
+                progress_percent=92.0,
+                total_files=2,
+                total_size=1000,
+                bytes_done_total=1000,
+            )
+        )
+        progress_callback(
+            StorageSyncCompletedEvent(
+                entry_type="models",
+                item_id="model-phased",
+                message="モデル同期が完了しました。",
+                progress_percent=100.0,
+                total_files=2,
+                total_size=1000,
+            )
+        )
         return SimpleNamespace(success=True, message="Downloaded", skipped=False, cancelled=False)
 
 

@@ -16,6 +16,13 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from percus_ai.storage.events import (
+    StorageSyncCancelledEvent,
+    StorageSyncCompletedEvent,
+    StorageSyncEvent,
+    StorageSyncFailedEvent,
+    StorageSyncProgressEvent,
+)
 from percus_ai.storage.r2_db_sync import R2DBSyncService, StorageSyncCancelledError
 
 from interfaces_backend.models.storage import (
@@ -32,7 +39,7 @@ _ACTIVE_STATES: set[DatasetSyncJobState] = {"queued", "running"}
 _TERMINAL_STATES: set[DatasetSyncJobState] = {"completed", "failed", "cancelled"}
 _DEFAULT_TTL_SECONDS = 1800
 
-ProgressCallback = Callable[[dict[str, Any]], None]
+ProgressCallback = Callable[[StorageSyncEvent], None]
 
 
 def _utcnow() -> datetime:
@@ -320,32 +327,35 @@ class DatasetSyncJobsService:
         )
 
     def build_progress_callback(self, *, job_id: str) -> ProgressCallback:
-        def _callback(progress: dict[str, Any]) -> None:
-            event_type = str(progress.get("type") or "")
-            if event_type == "cancelled":
-                self.cancelled(job_id=job_id, message=str(progress.get("message") or "データセット同期を中断しました。"))
+        def _callback(event: StorageSyncEvent) -> None:
+            if isinstance(event, StorageSyncCancelledEvent):
+                self.cancelled(job_id=job_id, message=event.message or "データセット同期を中断しました。")
                 return
-            if event_type == "complete":
-                self.complete(job_id=job_id, message=str(progress.get("message") or "データセット同期が完了しました。"))
+            if isinstance(event, StorageSyncCompletedEvent):
+                self.complete(job_id=job_id, message=event.message or "データセット同期が完了しました。")
                 return
-            if event_type == "error":
+            if isinstance(event, StorageSyncFailedEvent):
                 self.fail(
                     job_id=job_id,
-                    message=str(progress.get("message") or "データセット同期に失敗しました。"),
-                    error=str(progress.get("error") or "unknown error"),
+                    message=event.message or "データセット同期に失敗しました。",
+                    error=event.error or "unknown error",
                 )
                 return
+            if not isinstance(event, StorageSyncProgressEvent):
+                raise TypeError(f"Unsupported storage sync event: {event!r}")
 
-            message = str(progress.get("message") or "データセットを同期中です...")
-            progress_percent = self._to_float(progress.get("progress_percent"))
+            message = event.message or "データセットを同期中です..."
+            progress_percent = event.progress_percent
             detail = {
-                "files_done": self._to_int(progress.get("files_done")),
-                "total_files": self._to_int(progress.get("total_files")),
+                "files_done": self._to_int(event.files_done),
+                "total_files": self._to_int(event.total_files),
                 "transferred_bytes": self._to_int(
-                    progress.get("bytes_done_total", progress.get("bytes_transferred"))
+                    event.bytes_done_total
+                    if event.bytes_done_total is not None
+                    else event.bytes_transferred
                 ),
-                "total_bytes": self._to_int(progress.get("total_size")),
-                "current_file": str(progress.get("current_file")) if progress.get("current_file") else None,
+                "total_bytes": self._to_int(event.total_size),
+                "current_file": event.current_file,
             }
             if progress_percent is None:
                 progress_percent = self._compute_progress_percent(
@@ -431,13 +441,6 @@ class DatasetSyncJobsService:
             return max(int(value or 0), 0)
         except (TypeError, ValueError):
             return 0
-
-    @staticmethod
-    def _to_float(value: object) -> float | None:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
 
     @classmethod
     def _compute_progress_percent(

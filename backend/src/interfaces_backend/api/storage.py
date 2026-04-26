@@ -93,6 +93,13 @@ from percus_ai.db import (
     upsert_with_explicit_owner,
     upsert_with_owner,
 )
+from percus_ai.storage.events import (
+    StorageSyncCancelledEvent,
+    StorageSyncCompletedEvent,
+    StorageSyncEvent,
+    StorageSyncFailedEvent,
+    StorageSyncProgressEvent,
+)
 from percus_ai.storage.hash import compute_directory_hash, compute_directory_size
 from percus_ai.storage.hub import download_model, get_local_model_info, upload_model
 from percus_ai.storage.models import (
@@ -1371,8 +1378,9 @@ async def _merge_datasets(
     metadata = LeRobotDatasetMetadata(merged_dataset_id, root=merged_root)
     episode_count = metadata.total_episodes
 
-    def upload_progress(message: dict) -> None:
-        msg_type = message.get("type")
+    def upload_progress(event: StorageSyncEvent) -> None:
+        message = _storage_sync_event_to_progress_dict(event)
+        msg_type = str(message["type"])
         if msg_type == "error":
             report({"type": "error", "error": message.get("error")})
             return
@@ -1382,8 +1390,9 @@ async def _merge_datasets(
             "progress": "upload_progress",
             "uploaded": "upload_file_complete",
             "complete": "upload_complete",
+            "cancelled": "cancelled",
         }
-        report({**message, "type": type_map.get(msg_type, msg_type), "step": "upload"})
+        report({**message, "type": type_map[msg_type], "step": "upload"})
 
     report({"type": "start", "step": "upload", "message": "Uploading merged dataset"})
     ok, error = await sync_service.upload_dataset_with_progress(merged_dataset_id, upload_progress)
@@ -2324,23 +2333,40 @@ async def _upsert_model_from_hf(
     await upsert_with_owner("models", "id", payload)
 
 
+def _storage_sync_event_to_progress_dict(event: StorageSyncEvent) -> dict[str, Any]:
+    payload = event.model_dump(mode="python", exclude_none=True)
+    payload.pop("event", None)
+    if isinstance(event, StorageSyncCompletedEvent):
+        payload["type"] = "complete"
+    elif isinstance(event, StorageSyncFailedEvent):
+        payload["type"] = "error"
+    elif isinstance(event, StorageSyncProgressEvent):
+        payload["type"] = event.type
+    elif isinstance(event, StorageSyncCancelledEvent):
+        payload["type"] = "cancelled"
+    else:
+        raise TypeError(f"Unsupported storage sync event: {event!r}")
+    return payload
+
+
 def _report_upload_progress(
-    message: dict,
+    event: StorageSyncEvent,
     report: Optional[Callable[[dict], None]],
 ) -> None:
     if report is None:
         return
-    msg_type = message.get("type")
-    if not msg_type:
-        return
+    message = _storage_sync_event_to_progress_dict(event)
+    msg_type = str(message["type"])
     type_map = {
         "start": "upload_start",
         "uploading": "uploading",
         "progress": "upload_progress",
         "uploaded": "upload_file_complete",
         "complete": "upload_complete",
+        "error": "error",
+        "cancelled": "cancelled",
     }
-    report({**message, "type": type_map.get(msg_type, msg_type), "step": "upload"})
+    report({**message, "type": type_map[msg_type], "step": "upload"})
 
 
 async def _import_dataset_from_huggingface(

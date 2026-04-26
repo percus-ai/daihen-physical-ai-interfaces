@@ -22,6 +22,13 @@ from interfaces_backend.models.realtime_payloads import RecordingUploadStatusRes
 from interfaces_backend.services.profile_snapshot import extract_profile_name
 from interfaces_backend.services.realtime_runtime import Broadcast, get_realtime_runtime
 from percus_ai.db import get_supabase_service_client_required, upsert_with_owner
+from percus_ai.storage.events import (
+    StorageSyncCancelledEvent,
+    StorageSyncCompletedEvent,
+    StorageSyncEvent,
+    StorageSyncFailedEvent,
+    StorageSyncProgressEvent,
+)
 from percus_ai.storage.paths import get_datasets_dir, get_user_config_path
 from percus_ai.storage.r2_db_sync import R2DBSyncService
 
@@ -202,18 +209,58 @@ class DatasetLifecycle:
         *,
         dataset_id: str,
         running_message: str,
-    ) -> Callable[[dict], None]:
-        def upload_progress(message: dict) -> None:
-            event_type = str(message.get("type") or "")
-            files_done = self._to_int(message.get("files_done"))
-            total_files = self._to_int(message.get("total_files"))
-            current_file_raw = message.get("current_file")
-            current_file = str(current_file_raw) if current_file_raw else None
+    ) -> Callable[[StorageSyncEvent], None]:
+        def upload_progress(event: StorageSyncEvent) -> None:
+            if isinstance(event, StorageSyncFailedEvent):
+                self._set_dataset_upload_status(
+                    dataset_id=dataset_id,
+                    status="failed",
+                    phase="failed",
+                    progress_percent=self._to_float(event.progress_percent) or 0.0,
+                    message=event.message or "Upload failed.",
+                    files_done=self._to_int(event.files_done),
+                    total_files=self._to_int(event.total_files),
+                    current_file=event.current_file,
+                    error=event.error or "unknown error",
+                )
+                return
+
+            if isinstance(event, StorageSyncCancelledEvent):
+                self._set_dataset_upload_status(
+                    dataset_id=dataset_id,
+                    status="failed",
+                    phase="cancelled",
+                    message=event.message or "Upload cancelled.",
+                    current_file=None,
+                    error=None,
+                )
+                return
+
+            files_done = self._to_int(event.files_done)
+            total_files = self._to_int(event.total_files)
+            current_file = event.current_file
             progress_percent = 0.0
             if total_files > 0:
                 progress_percent = round(min(max(files_done / total_files, 0.0), 1.0) * 100.0, 2)
 
-            if event_type == "start":
+            if isinstance(event, StorageSyncCompletedEvent):
+                self._set_dataset_upload_status(
+                    dataset_id=dataset_id,
+                    status="completed",
+                    phase="completed",
+                    progress_percent=100.0,
+                    message=event.message or "Upload completed.",
+                    files_done=total_files,
+                    total_files=total_files,
+                    current_file=None,
+                    error=None,
+                )
+                return
+
+            if not isinstance(event, StorageSyncProgressEvent):
+                raise TypeError(f"Unsupported storage sync event: {event!r}")
+
+            if event.type == "start":
                 self._set_dataset_upload_status(
                     dataset_id=dataset_id,
                     status="running",
@@ -227,7 +274,7 @@ class DatasetLifecycle:
                 )
                 return
 
-            if event_type in {"uploading", "progress", "uploaded"}:
+            if event.type in {"uploading", "progress", "uploaded"}:
                 self._set_dataset_upload_status(
                     dataset_id=dataset_id,
                     status="running",
@@ -241,32 +288,7 @@ class DatasetLifecycle:
                 )
                 return
 
-            if event_type == "complete":
-                self._set_dataset_upload_status(
-                    dataset_id=dataset_id,
-                    status="completed",
-                    phase="completed",
-                    progress_percent=100.0,
-                    message="Upload completed.",
-                    files_done=total_files,
-                    total_files=total_files,
-                    current_file=None,
-                    error=None,
-                )
-                return
-
-            if event_type == "error":
-                self._set_dataset_upload_status(
-                    dataset_id=dataset_id,
-                    status="failed",
-                    phase="failed",
-                    progress_percent=progress_percent,
-                    message="Upload failed.",
-                    files_done=files_done,
-                    total_files=total_files,
-                    current_file=current_file,
-                    error=str(message.get("error") or "unknown error"),
-                )
+            raise ValueError(f"Unsupported dataset upload progress event type: {event.type}")
 
         return upload_progress
 
@@ -361,20 +383,21 @@ class DatasetLifecycle:
         if sync_status_callback is not None:
             sync_status_callback(status_snapshot)
 
-        def on_sync_progress(progress: dict) -> None:
-            event_type = str(progress.get("type") or "")
-            total_files = self._to_int(progress.get("total_files"))
-            files_done = self._to_int(progress.get("files_done"))
-            total_bytes = self._to_int(progress.get("total_size"))
+        def on_sync_progress(event: StorageSyncEvent) -> None:
+            total_files = self._to_int(event.total_files)
+            files_done = self._to_int(event.files_done)
+            total_bytes = self._to_int(event.total_size)
             transferred_bytes = self._to_int(
-                progress.get("bytes_done_total", progress.get("bytes_transferred"))
+                event.bytes_done_total
+                if event.bytes_done_total is not None
+                else event.bytes_transferred
             )
-            current_file = progress.get("current_file")
-            explicit_progress = self._to_float(progress.get("progress_percent"))
-            event_message = str(progress.get("message") or "").strip()
+            current_file = event.current_file
+            explicit_progress = self._to_float(event.progress_percent)
+            event_message = event.message.strip()
             message = event_message or "モデルをクラウドから同期中です..."
 
-            if event_type == "checking":
+            if isinstance(event, StorageSyncProgressEvent) and event.type == "checking":
                 snapshot = self._set_model_sync_status(
                     active=True,
                     status="checking",
@@ -384,14 +407,14 @@ class DatasetLifecycle:
                     files_done=files_done,
                     total_bytes=total_bytes,
                     transferred_bytes=transferred_bytes,
-                    current_file=str(current_file) if current_file else None,
+                    current_file=current_file,
                     error=None,
                 )
                 if sync_status_callback is not None:
                     sync_status_callback(snapshot)
                 return
 
-            if event_type == "hashing":
+            if isinstance(event, StorageSyncProgressEvent) and event.type == "hashing":
                 snapshot = self._set_model_sync_status(
                     active=True,
                     status="syncing",
@@ -408,7 +431,7 @@ class DatasetLifecycle:
                     sync_status_callback(snapshot)
                 return
 
-            if event_type == "start":
+            if isinstance(event, StorageSyncProgressEvent) and event.type == "start":
                 snapshot = self._set_model_sync_status(
                     active=True,
                     status="syncing",
@@ -424,7 +447,7 @@ class DatasetLifecycle:
                 if sync_status_callback is not None:
                     sync_status_callback(snapshot)
                 return
-            if event_type in {"downloading", "progress", "downloaded"}:
+            if isinstance(event, StorageSyncProgressEvent) and event.type in {"downloading", "progress", "downloaded"}:
                 progress_percent = (
                     explicit_progress
                     if explicit_progress is not None
@@ -443,14 +466,16 @@ class DatasetLifecycle:
                     files_done=files_done,
                     total_bytes=total_bytes,
                     transferred_bytes=transferred_bytes,
-                    current_file=str(current_file) if current_file else None,
+                    current_file=current_file,
                     progress_percent=progress_percent,
                     error=None,
                 )
                 if sync_status_callback is not None:
                     sync_status_callback(snapshot)
                 return
-            if event_type == "complete":
+            if isinstance(event, StorageSyncProgressEvent):
+                raise ValueError(f"Unsupported model sync progress event type: {event.type}")
+            if isinstance(event, StorageSyncCompletedEvent):
                 snapshot = self._set_model_sync_status(
                     active=False,
                     status="completed",
@@ -466,17 +491,17 @@ class DatasetLifecycle:
                 if sync_status_callback is not None:
                     sync_status_callback(snapshot)
                 return
-            if event_type == "error":
+            if isinstance(event, StorageSyncFailedEvent):
                 snapshot = self._set_model_sync_status(
                     active=False,
                     status="error",
                     message=event_message or "モデル同期に失敗しました。",
-                    error=str(progress.get("error") or "unknown error"),
+                    error=event.error or "unknown error",
                 )
                 if sync_status_callback is not None:
                     sync_status_callback(snapshot)
                 return
-            if event_type == "cancelled":
+            if isinstance(event, StorageSyncCancelledEvent):
                 snapshot = self._set_model_sync_status(
                     active=False,
                     status="cancelled",
@@ -486,6 +511,8 @@ class DatasetLifecycle:
                 )
                 if sync_status_callback is not None:
                     sync_status_callback(snapshot)
+                return
+            raise TypeError(f"Unsupported storage sync event: {event!r}")
 
         sync_result = await self._get_sync_service().ensure_model_local(
             model_id,
