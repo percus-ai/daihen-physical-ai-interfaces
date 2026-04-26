@@ -18,6 +18,7 @@
   import { api, type BulkActionResponse } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import TableSkeletonRows from '$lib/components/TableSkeletonRows.svelte';
   import { formatBytes, formatDate } from '$lib/format';
   import type { ListFilterField } from '$lib/listFilters';
   import {
@@ -29,6 +30,8 @@
     parsePageParam,
     parsePageSizeParam
   } from '$lib/pagination';
+  import { buildTableSkeletonRows } from '$lib/tableSkeleton';
+  import { updateSelectedId, updateSelectedPageIds } from '$lib/tableSelection';
   import {
     registerRealtimeTrackConsumer,
     type RealtimeTrackConsumerHandle,
@@ -64,7 +67,6 @@
     episode_time_s?: number;
     reset_time_s?: number;
     continuable?: boolean;
-    continue_block_reason?: string;
     size_bytes?: number;
     is_local?: boolean;
     is_uploaded?: boolean;
@@ -232,6 +234,23 @@
   const recordings = $derived($recordingsQuery.data?.recordings ?? []);
   const totalRecordings = $derived($recordingsQuery.data?.total ?? 0);
   const displayedRecordings = $derived(recordings);
+  const showRecordingSkeleton = $derived(
+    $recordingsQuery.isLoading || ($recordingsQuery.isFetching && displayedRecordings.length === 0)
+  );
+  const recordingSkeletonRows = $derived(
+    buildTableSkeletonRows(pageSize, 0, showRecordingSkeleton)
+  );
+  const recordingSkeletonCells = [
+    { tdClass: 'w-12 py-3 align-middle', barClass: 'h-4 w-4', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3', barClass: 'h-4 w-44 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-24 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-10 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-16 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3 text-center', barClass: 'h-3 w-16 max-w-full', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3 pr-3 text-right', barClass: 'h-8 w-8', barRadiusClass: 'rounded-full', wrapperClass: 'ml-auto flex w-8 justify-center' }
+  ];
 
   const navigateToPage = async (nextPage: number) => {
     const href = buildPageHref(page.url, nextPage);
@@ -264,6 +283,7 @@
     filterDialogOpen = false;
     const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
     if (nextHref === currentHref) return;
+    selectedRecordingIds = [];
     await goto(nextHref, {
       replaceState: true,
       noScroll: true,
@@ -494,11 +514,14 @@
     allDisplayedRecordingIds.length > 0 && allDisplayedRecordingIds.every((id) => selectedRecordingIds.includes(id))
   );
   const toggleSelectAllDisplayedRecordings = () => {
-    if (allDisplayedRecordingsSelected) {
-      selectedRecordingIds = selectedRecordingIds.filter((id) => !allDisplayedRecordingIds.includes(id));
-      return;
-    }
-    selectedRecordingIds = Array.from(new Set([...selectedRecordingIds, ...allDisplayedRecordingIds]));
+    selectedRecordingIds = updateSelectedPageIds(
+      selectedRecordingIds,
+      allDisplayedRecordingIds,
+      !allDisplayedRecordingsSelected
+    );
+  };
+  const toggleSelectedRecording = (recordingId: string, selected: boolean) => {
+    selectedRecordingIds = updateSelectedId(selectedRecordingIds, recordingId, selected);
   };
   const clearRecordingSelection = () => {
     selectedRecordingIds = [];
@@ -756,17 +779,6 @@
     }
     if (Object.keys(nextMap).length !== Object.keys(uploadStatusMap).length) {
       uploadStatusMap = nextMap;
-    }
-  });
-
-  $effect(() => {
-    const visibleIds = new Set(displayedRecordings.map((recording) => recording.recording_id));
-    const nextSelectedIds = selectedRecordingIds.filter((id) => visibleIds.has(id));
-    if (
-      nextSelectedIds.length !== selectedRecordingIds.length ||
-      nextSelectedIds.some((id, index) => id !== selectedRecordingIds[index])
-    ) {
-      selectedRecordingIds = nextSelectedIds;
     }
   });
 
@@ -1032,8 +1044,8 @@
         </tr>
       </thead>
       <tbody class="text-slate-600">
-        {#if $recordingsQuery.isLoading}
-          <tr><td class="py-3" colspan="9">読み込み中...</td></tr>
+        {#if showRecordingSkeleton}
+          <TableSkeletonRows rows={recordingSkeletonRows} cells={recordingSkeletonCells} />
         {:else if displayedRecordings.length}
           {#each displayedRecordings as recording}
             {@const uploadCellStatus = presentRecordingUploadStatus(
@@ -1046,8 +1058,13 @@
                   <input
                     type="checkbox"
                     class="block h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/40"
-                    bind:group={selectedRecordingIds}
+                    checked={selectedRecordingIds.includes(recording.recording_id)}
                     value={recording.recording_id}
+                    onchange={(event) =>
+                      toggleSelectedRecording(
+                        recording.recording_id,
+                        (event.currentTarget as HTMLInputElement).checked
+                      )}
                   />
                 </div>
               </td>
@@ -1061,9 +1078,6 @@
                   </a>
                 {:else}
                   <span class="text-slate-500">{recording.dataset_name ?? recording.recording_id}</span>
-                  {#if recording.continue_block_reason}
-                    <p class="mt-1 text-[11px] text-slate-400">{recording.continue_block_reason}</p>
-                  {/if}
                 {/if}
               </td>
               <td class="py-3">{ownerLabel(recording)}</td>

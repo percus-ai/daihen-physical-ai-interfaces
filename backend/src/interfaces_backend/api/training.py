@@ -216,6 +216,60 @@ DB_TABLE = "training_jobs"
 
 _REQUIRED_VAST_ENV_VARS = ("VAST_API_KEY", "VAST_SSH_PRIVATE_KEY")
 _LIVE_JOB_STATUSES = {"queued", "starting", "deploying", "running"}
+_RECENT_JOB_PINNED_STATUSES = ("running", "starting")
+_TRAINING_JOB_LIST_COLUMNS = ",".join(
+    [
+        "job_id",
+        "job_name",
+        "model_id",
+        "policy_type",
+        "dataset_id",
+        "profile_instance_id",
+        "status",
+        "termination_reason",
+        "cleanup_status",
+        "deleted_at",
+        "author",
+        "base_checkpoint",
+        "notes",
+        "instance_id",
+        "ip",
+        "mode",
+        "ssh_user",
+        "ssh_private_key",
+        "remote_base_dir",
+        "checkpoint_repo_id",
+        "gpu_model",
+        "gpus_per_instance",
+        "exit_code",
+        "completed_at",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "provision_operation_id",
+        "owner_user_id",
+    ]
+)
+_TRAINING_JOB_FILTER_OPTION_COLUMNS = ",".join(
+    [
+        "job_id",
+        "job_name",
+        "status",
+        "policy_type",
+        "created_at",
+        "owner_user_id",
+        "profile_instance_id",
+    ]
+)
+_TRAINING_JOB_LIST_SORT_COLUMNS: dict[JobListSortBy, str] = {
+    "created_at": "created_at",
+    "updated_at": "updated_at",
+    "job_name": "job_name",
+    "owner_name": "owner_user_id",
+    "policy_type": "policy_type",
+    "status": "status",
+}
+_TRAINING_JOB_UNBOUNDED_RANGE_END = 1_000_000_000
 
 
 def _utcnow_iso() -> str:
@@ -1610,6 +1664,71 @@ def _normalize_query_text(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
 
 
+def _normalize_filter_value(value: Optional[str]) -> str:
+    return str(value or "").strip()
+
+
+def _format_training_job_query_datetime(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _apply_training_job_base_scope(query, *, cutoff_date: datetime):
+    pinned_statuses = ",".join(_RECENT_JOB_PINNED_STATUSES)
+    cutoff = _format_training_job_query_datetime(cutoff_date)
+    return (
+        query.is_("deleted_at", "null")
+        .or_(f"status.in.({pinned_statuses}),created_at.gte.{cutoff}")
+    )
+
+
+def _apply_training_job_list_filters(
+    query,
+    *,
+    owner_user_id: Optional[str],
+    profile_instance_id: Optional[str],
+    search: Optional[str],
+    status: Optional[str],
+    policy_type: Optional[str],
+    created_from_dt: Optional[datetime],
+    created_to_dt: Optional[datetime],
+):
+    normalized_owner = _normalize_filter_value(owner_user_id)
+    if normalized_owner:
+        query = query.eq("owner_user_id", normalized_owner)
+
+    normalized_profile = _normalize_filter_value(profile_instance_id)
+    if normalized_profile:
+        query = query.eq("profile_instance_id", normalized_profile)
+
+    normalized_search = _normalize_filter_value(search)
+    if normalized_search:
+        query = query.ilike("job_name", f"%{normalized_search}%")
+
+    normalized_status = _normalize_query_text(status)
+    if normalized_status:
+        query = query.eq("status", normalized_status)
+
+    normalized_policy_type = _normalize_query_text(policy_type)
+    if normalized_policy_type:
+        query = query.eq("policy_type", normalized_policy_type)
+
+    if created_from_dt:
+        query = query.gte(
+            "created_at",
+            _format_training_job_query_datetime(created_from_dt),
+        )
+    if created_to_dt:
+        query = query.lte(
+            "created_at",
+            _format_training_job_query_datetime(created_to_dt),
+        )
+    return query
+
+
 def _build_training_owner_filter_options(
     all_jobs: list[dict],
     available_jobs: list[dict],
@@ -1687,6 +1806,7 @@ def _build_training_value_filter_options(
 async def _list_jobs(
     days: int = 365,
     owner_user_id: Optional[str] = None,
+    profile_instance_id: Optional[str] = None,
     search: Optional[str] = None,
     status: Optional[str] = None,
     policy_type: Optional[str] = None,
@@ -1709,49 +1829,67 @@ async def _list_jobs(
         days: Return jobs from past N days.
               Running/starting jobs are always included.
     """
-    async def _fetch_with(client: AsyncClient) -> list[dict]:
-        query = client.table(DB_TABLE).select("*").is_("deleted_at", "null")
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+    created_from_dt = _parse_job_created_at(created_from) if created_from else None
+    created_to_dt = _parse_job_created_at(created_to) if created_to else None
+    if created_to_dt and len(str(created_to or "").strip()) == 10:
+        created_to_dt = created_to_dt.replace(
+            hour=23,
+            minute=59,
+            second=59,
+            microsecond=999999,
+        )
+
+    async def _fetch_filter_option_rows_with(client: AsyncClient) -> list[dict]:
+        query = client.table(DB_TABLE).select(_TRAINING_JOB_FILTER_OPTION_COLUMNS)
+        query = _apply_training_job_base_scope(query, cutoff_date=cutoff_date)
         response = await query.execute()
         return response.data or []
 
-    jobs = await _fetch_with(await get_supabase_async_client())
+    async def _fetch_page_with(client: AsyncClient) -> tuple[list[dict], int]:
+        query = client.table(DB_TABLE).select(_TRAINING_JOB_LIST_COLUMNS, count="exact")
+        query = _apply_training_job_base_scope(query, cutoff_date=cutoff_date)
+        query = _apply_training_job_list_filters(
+            query,
+            owner_user_id=owner_user_id,
+            profile_instance_id=profile_instance_id,
+            search=search,
+            status=status,
+            policy_type=policy_type,
+            created_from_dt=created_from_dt,
+            created_to_dt=created_to_dt,
+        )
+        sort_column = _TRAINING_JOB_LIST_SORT_COLUMNS[sort_by]
+        query = query.order(sort_column, desc=(sort_order == "desc"))
+        if limit is not None:
+            query = query.range(offset, offset + limit - 1)
+        elif offset > 0:
+            query = query.range(offset, _TRAINING_JOB_UNBOUNDED_RANGE_END)
 
-    cutoff_date = datetime.now() - timedelta(days=days)
-    filtered = []
-    for job in jobs:
-        job_status = job.get("status")
-        if job_status in ("running", "starting"):
-            filtered.append(job)
-            continue
-        created_at = job.get("created_at")
-        if not created_at:
-            continue
-        try:
-            created = _parse_job_created_at(created_at)
-            if created.tzinfo:
-                created = created.replace(tzinfo=None)
-            if created >= cutoff_date:
-                filtered.append(job)
-        except Exception:
-            continue
+        response = await query.execute()
+        rows = response.data or []
+        total_count = getattr(response, "count", None)
+        return rows, int(total_count if total_count is not None else len(rows))
+
+    client = await get_supabase_async_client()
+    filter_option_rows = await _fetch_filter_option_rows_with(client)
+    page_rows, total = await _fetch_page_with(client)
 
     owner_directory = await resolve_user_directory_entries(
-        [str(job.get("owner_user_id") or "").strip() for job in filtered]
+        [str(job.get("owner_user_id") or "").strip() for job in filter_option_rows]
     )
     dataset_name_map = await _resolve_dataset_names(
-        [str(job.get("dataset_id") or "").strip() for job in filtered]
+        [str(job.get("dataset_id") or "").strip() for job in page_rows]
     )
 
     normalized_status = _normalize_query_text(status)
     normalized_policy_type = _normalize_query_text(policy_type)
-    created_from_dt = _parse_job_created_at(created_from) if created_from else None
-    created_to_dt = _parse_job_created_at(created_to) if created_to else None
-    if created_to_dt and len(str(created_to or "").strip()) == 10:
-        created_to_dt = created_to_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-
-    enriched_jobs: list[dict] = []
     normalized_search = _normalize_query_text(search)
-    for job in filtered:
+    normalized_owner_user_id = _normalize_filter_value(owner_user_id)
+    normalized_profile_instance_id = _normalize_filter_value(profile_instance_id)
+
+    enriched: list[dict] = []
+    for job in page_rows:
         owner_id = str(job.get("owner_user_id") or "").strip()
         dataset_id = str(job.get("dataset_id") or "").strip()
         owner_entry = owner_directory.get(owner_id)
@@ -1761,16 +1899,27 @@ async def _list_jobs(
         enriched_job["owner_name"] = owner_entry.name or None if owner_entry else None
         enriched_job["dataset_name"] = dataset_name_map.get(dataset_id) or None
 
-        enriched_jobs.append(enriched_job)
+        enriched.append(enriched_job)
 
-    def _matches(job: dict, *, skip_owner: bool = False, skip_status: bool = False, skip_policy: bool = False) -> bool:
+    def _matches(
+        job: dict,
+        *,
+        skip_owner: bool = False,
+        skip_status: bool = False,
+        skip_policy: bool = False,
+    ) -> bool:
         if normalized_search and normalized_search not in _normalize_query_text(job.get("job_name")):
             return False
-        if not skip_owner and owner_user_id and str(job.get("owner_user_id") or "").strip() != str(owner_user_id).strip():
+        job_owner_id = str(job.get("owner_user_id") or "").strip()
+        if not skip_owner and normalized_owner_user_id and job_owner_id != normalized_owner_user_id:
+            return False
+        job_profile_id = str(job.get("profile_instance_id") or "").strip()
+        if normalized_profile_instance_id and job_profile_id != normalized_profile_instance_id:
             return False
         if not skip_status and normalized_status and _normalize_query_text(job.get("status")) != normalized_status:
             return False
-        if not skip_policy and normalized_policy_type and _normalize_query_text(job.get("policy_type")) != normalized_policy_type:
+        job_policy_type = _normalize_query_text(job.get("policy_type"))
+        if not skip_policy and normalized_policy_type and job_policy_type != normalized_policy_type:
             return False
         if created_from_dt or created_to_dt:
             created_at = job.get("created_at")
@@ -1786,46 +1935,25 @@ async def _list_jobs(
                 return False
         return True
 
-    available_jobs = [job for job in enriched_jobs if _matches(job, skip_owner=True)]
-    status_available_jobs = [job for job in enriched_jobs if _matches(job, skip_status=True)]
-    policy_available_jobs = [job for job in enriched_jobs if _matches(job, skip_policy=True)]
+    available_jobs = [job for job in filter_option_rows if _matches(job, skip_owner=True)]
+    status_available_jobs = [job for job in filter_option_rows if _matches(job, skip_status=True)]
+    policy_available_jobs = [job for job in filter_option_rows if _matches(job, skip_policy=True)]
 
-    owner_options = _build_training_owner_filter_options(filtered, available_jobs, owner_directory)
+    owner_options = _build_training_owner_filter_options(
+        filter_option_rows,
+        available_jobs,
+        owner_directory,
+    )
     status_options = _build_training_value_filter_options(
-        enriched_jobs,
+        filter_option_rows,
         status_available_jobs,
         value_getter=lambda job: job.get("status"),
     )
     policy_options = _build_training_value_filter_options(
-        enriched_jobs,
+        filter_option_rows,
         policy_available_jobs,
         value_getter=lambda job: job.get("policy_type"),
     )
-    enriched = [job for job in enriched_jobs if _matches(job)]
-
-    reverse = sort_order == "desc"
-
-    def _sort_key(record: dict) -> tuple[object, str]:
-        if sort_by == "job_name":
-            primary = _normalize_query_text(record.get("job_name") or record.get("job_id"))
-        elif sort_by == "owner_name":
-            primary = _normalize_query_text(record.get("owner_name") or record.get("owner_email") or record.get("owner_user_id"))
-        elif sort_by == "policy_type":
-            primary = _normalize_query_text(record.get("policy_type"))
-        elif sort_by == "status":
-            primary = _normalize_query_text(record.get("status"))
-        elif sort_by == "updated_at":
-            primary = str(record.get("updated_at") or "")
-        else:
-            primary = str(record.get("created_at") or "")
-        return primary, str(record.get("job_id") or "")
-
-    enriched.sort(key=_sort_key, reverse=reverse)
-    total = len(enriched)
-    if offset > 0:
-        enriched = enriched[offset:]
-    if limit is not None:
-        enriched = enriched[:limit]
     return enriched, total, owner_options, status_options, policy_options
 
 
@@ -4427,6 +4555,10 @@ async def delete_vast_storage(request: VastStorageActionRequest):
 async def list_jobs(
     days: int = Query(365, ge=1, le=365),
     owner_user_id: Optional[str] = Query(None),
+    profile_instance_id: Optional[str] = Query(
+        None,
+        description="Filter by profile instance",
+    ),
     search: Optional[str] = Query(None, description="Search job name"),
     status: Optional[str] = Query(None, description="Filter by job status"),
     policy_type: Optional[str] = Query(None, description="Filter by policy type"),
@@ -4445,6 +4577,7 @@ async def list_jobs(
     jobs_data, total, owner_options, status_options, policy_options = await _list_jobs(
         days,
         owner_user_id=owner_user_id,
+        profile_instance_id=profile_instance_id,
         search=search,
         status=status,
         policy_type=policy_type,

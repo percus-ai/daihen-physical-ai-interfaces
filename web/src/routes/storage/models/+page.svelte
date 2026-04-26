@@ -29,6 +29,7 @@
   } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import TableSkeletonRows from '$lib/components/TableSkeletonRows.svelte';
   import type { ListFilterField } from '$lib/listFilters';
   import {
     DEFAULT_PAGE_SIZE,
@@ -41,6 +42,8 @@
   } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
+  import { buildTableSkeletonRows } from '$lib/tableSkeleton';
+  import { updateSelectedId, updateSelectedPageIds } from '$lib/tableSelection';
   import {
     registerRealtimeTrackConsumer,
     type RealtimeTrackConsumerHandle,
@@ -95,21 +98,15 @@
       total_count?: number;
       available_count?: number;
     }>;
-    sync_status_options?: Array<{
-      value: string;
-      label: string;
-      total_count?: number;
-      available_count?: number;
-    }>;
   };
 
   type ModelStatusTab = 'active' | 'archived';
   type ModelRowAction = '' | 'restore' | 'delete';
-  const MODEL_SORT_KEYS = ['created_at', 'name', 'owner_name', 'profile_name', 'size_bytes', 'policy_type', 'sync_status'] as const;
+  const MODEL_SORT_KEYS = ['created_at', 'name', 'owner_name', 'profile_name', 'size_bytes', 'policy_type'] as const;
   const parseModelStatusTab = (value: string | null): ModelStatusTab => (value === 'archived' ? 'archived' : 'active');
-  const parseModelSortKey = (value: string | null): 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status' =>
+  const parseModelSortKey = (value: string | null): 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' =>
     MODEL_SORT_KEYS.includes((value ?? '') as (typeof MODEL_SORT_KEYS)[number])
-      ? ((value ?? '') as 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status')
+      ? ((value ?? '') as 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type')
       : 'created_at';
   const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
@@ -130,7 +127,6 @@
   const modelOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
   const modelProfileFilter = $derived(page.url.searchParams.get('profile') || 'all');
   const modelPolicyFilter = $derived(page.url.searchParams.get('policy') || 'all');
-  const modelSyncFilter = $derived(page.url.searchParams.get('sync_status') || 'all');
   const modelSearch = $derived(page.url.searchParams.get('search') || '');
   const modelDatasetFilter = $derived(page.url.searchParams.get('dataset') || '');
   const modelCreatedFrom = $derived(page.url.searchParams.get('created_from') || '');
@@ -169,7 +165,6 @@
       const ownerUserId = modelOwnerFilter === 'all' ? undefined : modelOwnerFilter;
       const profileName = modelProfileFilter === 'all' ? undefined : modelProfileFilter;
       const policyType = modelPolicyFilter === 'all' ? undefined : modelPolicyFilter;
-      const syncStatus = modelSyncFilter === 'all' ? undefined : modelSyncFilter;
       const search = modelSearch || undefined;
       return {
         queryKey: qk.storage.models({
@@ -178,7 +173,6 @@
           profileName,
           policyType,
           datasetId: modelDatasetFilter || undefined,
-          syncStatus,
           search,
           createdFrom: modelCreatedFrom || undefined,
           createdTo: modelCreatedTo || undefined,
@@ -196,7 +190,6 @@
             profileName,
             policyType,
             datasetId: modelDatasetFilter || undefined,
-            syncStatus,
             search,
             createdFrom: modelCreatedFrom || undefined,
             createdTo: modelCreatedTo || undefined,
@@ -214,6 +207,12 @@
   const models = $derived($modelsQuery.data?.models ?? []);
   const totalModels = $derived($modelsQuery.data?.total ?? 0);
   const displayedModels = $derived(models);
+  const showModelSkeleton = $derived(
+    $modelsQuery.isLoading || ($modelsQuery.isFetching && displayedModels.length === 0)
+  );
+  const modelSkeletonRows = $derived(
+    buildTableSkeletonRows(pageSize, 0, showModelSkeleton)
+  );
   const isArchiveTab = $derived(modelStatusTab === 'archived');
   const pageDescription = $derived(
     isArchiveTab ? 'アーカイブ済みのモデルを一覧で確認できます。' : 'アクティブなモデルを一覧で確認できます。'
@@ -225,6 +224,30 @@
     isArchiveTab ? '条件に合うアーカイブ済みモデルがありません。' : '条件に合うモデルがありません。'
   );
   const modelTableColumnCount = $derived(isArchiveTab ? 8 : 9);
+  const modelActiveSkeletonCells = [
+    { tdClass: 'w-12 py-3 align-middle', barClass: 'h-4 w-4', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3 font-semibold text-slate-800', barClass: 'h-4 w-44 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-24 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-20 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-16 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3 text-center', barClass: 'h-3 w-16 max-w-full', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3 pr-3 text-right', barClass: 'h-8 w-8', barRadiusClass: 'rounded-full', wrapperClass: 'ml-auto flex w-8 justify-center' }
+  ];
+  const modelArchivedSkeletonCells = [
+    { tdClass: 'w-12 py-3 align-middle', barClass: 'h-4 w-4', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3 font-semibold text-slate-800', barClass: 'h-4 w-44 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-24 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-20 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-16 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3 pr-3 text-right', barClass: 'h-8 w-8', barRadiusClass: 'rounded-full', wrapperClass: 'ml-auto flex w-8 justify-center' }
+  ];
+  const modelSkeletonCells = $derived(
+    isArchiveTab ? modelArchivedSkeletonCells : modelActiveSkeletonCells
+  );
 
   const creatorLabel = (value?: string | null) => {
     const normalized = String(value ?? '').trim();
@@ -244,7 +267,6 @@
   const modelOwnerOptions = $derived($modelsQuery.data?.owner_options ?? []);
   const modelProfileOptions = $derived($modelsQuery.data?.profile_options ?? []);
   const modelPolicyOptions = $derived($modelsQuery.data?.policy_type_options ?? []);
-  const modelSyncOptions = $derived($modelsQuery.data?.sync_status_options ?? []);
   const withAllOption = (
     currentValue: string,
     options: Array<{ value: string; label: string; available_count?: number }>
@@ -278,13 +300,11 @@
   });
   const modelProfileSelectOptions = $derived(withAllOption(modelProfileFilter, modelProfileOptions));
   const modelPolicySelectOptions = $derived(withAllOption(modelPolicyFilter, modelPolicyOptions));
-  const modelSyncSelectOptions = $derived(withAllOption(modelSyncFilter, modelSyncOptions));
   const modelFilterDefaults = {
     search: '',
     owner: 'all',
     profile: 'all',
     policy: 'all',
-    sync_status: 'all',
     dataset: '',
     created_from: '',
     created_to: '',
@@ -297,7 +317,6 @@
     owner: modelOwnerFilter,
     profile: modelProfileFilter,
     policy: modelPolicyFilter,
-    sync_status: modelSyncFilter,
     dataset: modelDatasetFilter,
     created_from: modelCreatedFrom,
     created_to: modelCreatedTo,
@@ -333,13 +352,6 @@
       key: 'policy',
       label: 'ポリシー',
       options: modelPolicySelectOptions
-    },
-    {
-      section: '条件',
-      type: 'select',
-      key: 'sync_status',
-      label: '同期状態',
-      options: modelSyncSelectOptions
     },
     {
       section: '条件',
@@ -379,7 +391,6 @@
       modelOwnerFilter !== 'all' ||
       modelProfileFilter !== 'all' ||
       modelPolicyFilter !== 'all' ||
-      modelSyncFilter !== 'all' ||
       Boolean(modelDatasetFilter) ||
       Boolean(modelCreatedFrom) ||
       Boolean(modelCreatedTo) ||
@@ -451,7 +462,7 @@
       owner: values.owner !== 'all' ? values.owner : null,
       profile: values.profile !== 'all' ? values.profile : null,
       policy: values.policy !== 'all' ? values.policy : null,
-      sync_status: values.sync_status !== 'all' ? values.sync_status : null,
+      sync_status: null,
       search: values.search || null,
       dataset: values.dataset || null,
       created_from: values.created_from || null,
@@ -466,6 +477,7 @@
     filterDialogOpen = false;
     const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
     if (nextHref === currentHref) return;
+    clearSelection();
     await goto(nextHref, {
       replaceState: true,
       noScroll: true,
@@ -481,17 +493,6 @@
     const nextPage = clampPage(currentPage, totalModels, pageSize);
     if (nextPage !== currentPage) {
       void navigateToPage(nextPage);
-    }
-  });
-
-  $effect(() => {
-    const visibleIds = new Set(displayedModels.map((model) => model.id));
-    const nextSelectedIds = selectedIds.filter((id) => visibleIds.has(id));
-    if (
-      nextSelectedIds.length !== selectedIds.length ||
-      nextSelectedIds.some((id, index) => id !== selectedIds[index])
-    ) {
-      selectedIds = nextSelectedIds;
     }
   });
 
@@ -521,11 +522,11 @@
   });
 
   const toggleSelectAllDisplayedModels = () => {
-    if (allDisplayedModelsSelected) {
-      selectedIds = selectedIds.filter((id) => !allDisplayedModelIds.includes(id));
-      return;
-    }
-    selectedIds = Array.from(new Set([...selectedIds, ...allDisplayedModelIds]));
+    selectedIds = updateSelectedPageIds(selectedIds, allDisplayedModelIds, !allDisplayedModelsSelected);
+  };
+
+  const toggleSelectedModel = (modelId: string, selected: boolean) => {
+    selectedIds = updateSelectedId(selectedIds, modelId, selected);
   };
 
   const applyBulkResponseMessage = (response: BulkActionResponse, label: string) => {
@@ -553,8 +554,8 @@
   };
 
   const activeJobOf = (modelId: string) => activeJobsByModelId[modelId] ?? null;
-  const isSortedBy = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status') => modelSortKey === key;
-  const sortIconFor = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status') =>
+  const isSortedBy = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type') => modelSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type') =>
     !isSortedBy(key) ? CaretUpDown : modelSortOrder === 'asc' ? ArrowUp : ArrowDown;
   const NameSortIcon = $derived(sortIconFor('name'));
   const OwnerSortIcon = $derived(sortIconFor('owner_name'));
@@ -562,8 +563,7 @@
   const PolicySortIcon = $derived(sortIconFor('policy_type'));
   const SizeSortIcon = $derived(sortIconFor('size_bytes'));
   const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
-  const SyncSortIcon = $derived(sortIconFor('sync_status'));
-  const handleSortChange = async (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status') => {
+  const handleSortChange = async (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type') => {
     const nextOrder: 'asc' | 'desc' = modelSortKey === key ? (modelSortOrder === 'asc' ? 'desc' : 'asc') : 'desc';
     const nextHref = buildUrlWithQueryState(page.url, {
       sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
@@ -1355,12 +1355,7 @@
           </th>
           {#if !isArchiveTab}
             <th class="pb-3 text-center">
-              <div class="flex justify-center">
-                <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('sync_status')}>
-                  同期状態
-                  <SyncSortIcon size={14} class={sortIconClass} />
-                </button>
-              </div>
+              <div class="flex justify-center">同期状態</div>
             </th>
           {/if}
           <th class="w-14 pb-3 pr-3">
@@ -1369,8 +1364,8 @@
         </tr>
       </thead>
       <tbody class="text-slate-600">
-        {#if $modelsQuery.isLoading}
-          <tr><td class="py-3" colspan={modelTableColumnCount}>読み込み中...</td></tr>
+        {#if showModelSkeleton}
+          <TableSkeletonRows rows={modelSkeletonRows} cells={modelSkeletonCells} />
         {:else if displayedModels.length}
           {#each displayedModels as model}
             {@const activeJob = activeJobOf(model.id)}
@@ -1390,8 +1385,10 @@
                   <input
                     type="checkbox"
                     class="block h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/40"
-                    bind:group={selectedIds}
+                    checked={selectedIds.includes(model.id)}
                     value={model.id}
+                    onchange={(event) =>
+                      toggleSelectedModel(model.id, (event.currentTarget as HTMLInputElement).checked)}
                   />
                 </div>
               </td>

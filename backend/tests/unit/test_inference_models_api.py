@@ -1,9 +1,23 @@
 import asyncio
 import os
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
+
+
+def _install_lerobot_stubs() -> None:
+    lerobot_module = sys.modules.setdefault("lerobot", ModuleType("lerobot"))
+    datasets_module = sys.modules.setdefault("lerobot.datasets", ModuleType("lerobot.datasets"))
+    utils_module = sys.modules.setdefault("lerobot.datasets.utils", ModuleType("lerobot.datasets.utils"))
+
+    setattr(utils_module, "load_tasks", lambda *_args, **_kwargs: {})
+    setattr(datasets_module, "utils", utils_module)
+    setattr(lerobot_module, "datasets", datasets_module)
+
+
+_install_lerobot_stubs()
 
 import interfaces_backend.api.inference as inference_api
 from interfaces_backend.models.inference import (
@@ -43,7 +57,7 @@ def test_list_models_merges_db_and_runtime(monkeypatch):
                 ),
             ]
 
-    async def _fake_db_models():
+    async def _fake_db_models(**_kwargs):
         return [
             InferenceModelInfo(
                 model_id="model_shared",
@@ -67,14 +81,20 @@ def test_list_models_merges_db_and_runtime(monkeypatch):
             ),
         ]
 
-    monkeypatch.setattr(inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime())
+    monkeypatch.setattr(
+        inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime()
+    )
     monkeypatch.setattr(inference_api, "_list_db_models", _fake_db_models)
 
     response = asyncio.run(inference_api.list_models())
     models = {item.model_id: item for item in response.models}
     ordered_model_ids = [item.model_id for item in response.models]
 
-    assert ordered_model_ids == ["model_remote_only", "model_shared", "model_local_only"]
+    assert ordered_model_ids == [
+        "model_remote_only",
+        "model_shared",
+        "model_local_only",
+    ]
 
     assert "model_shared" in models
     assert models["model_shared"].is_local is True
@@ -95,7 +115,7 @@ def test_list_models_includes_filter_options(monkeypatch):
         def list_models(self):
             return []
 
-    async def _fake_db_models():
+    async def _fake_db_models(**_kwargs):
         return [
             InferenceModelInfo(
                 model_id="model-a",
@@ -127,14 +147,19 @@ def test_list_models_includes_filter_options(monkeypatch):
             ),
         ]
 
-    monkeypatch.setattr(inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime())
+    monkeypatch.setattr(
+        inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime()
+    )
     monkeypatch.setattr(inference_api, "_list_db_models", _fake_db_models)
 
     response = asyncio.run(inference_api.list_models())
 
     assert [item.label for item in response.owner_options] == ["Alice", "Bob"]
     assert [item.total_count for item in response.owner_options] == [1, 1]
-    assert [item.value for item in response.profile_options] == ["lab-alpha", "lab-beta"]
+    assert [item.value for item in response.profile_options] == [
+        "lab-alpha",
+        "lab-beta",
+    ]
     assert [item.total_count for item in response.profile_options] == [1, 1]
     assert [item.value for item in response.training_steps_options] == [10000, 20000]
     assert [item.total_count for item in response.training_steps_options] == [1, 1]
@@ -149,15 +174,40 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
     class _FakeQuery:
         def __init__(self, rows):
             self._rows = rows
+            self._eq_filters: list[tuple[str, object]] = []
+            self._order_key: str | None = None
+            self._order_desc = False
+            self._range: tuple[int, int] | None = None
 
         def select(self, _fields):
             return self
 
-        def eq(self, _key, _value):
+        def eq(self, key, value):
+            self._eq_filters.append((key, value))
+            return self
+
+        def order(self, key, desc=False):
+            self._order_key = key
+            self._order_desc = desc
+            return self
+
+        def range(self, start, end):
+            self._range = (start, end)
             return self
 
         async def execute(self):
-            return type("Result", (), {"data": self._rows})()
+            rows = list(self._rows)
+            for key, value in self._eq_filters:
+                rows = [row for row in rows if row.get(key) == value]
+            if self._order_key:
+                rows.sort(
+                    key=lambda row: row.get(self._order_key) or "",
+                    reverse=self._order_desc,
+                )
+            if self._range is not None:
+                start, end = self._range
+                rows = rows[start : end + 1]
+            return type("Result", (), {"data": rows})()
 
     class _FakeClient:
         def __init__(self, rows):
@@ -199,11 +249,16 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(inference_api, "get_supabase_async_client", _fake_db_client)
     monkeypatch.setattr(inference_api, "get_models_dir", lambda: models_dir)
-    monkeypatch.setattr(inference_api, "_load_task_candidates_by_model", _fake_task_candidates)
+    monkeypatch.setattr(
+        inference_api, "_load_task_candidates_by_model", _fake_task_candidates
+    )
+
     async def _fake_owner_directory(_ids):
         return {}
 
-    monkeypatch.setattr(inference_api, "resolve_user_directory_entries", _fake_owner_directory)
+    monkeypatch.setattr(
+        inference_api, "resolve_user_directory_entries", _fake_owner_directory
+    )
 
     models = asyncio.run(inference_api._list_db_models())
     mapped = {item.model_id: item for item in models}
@@ -215,6 +270,142 @@ def test_list_db_models_marks_unsynced_models(monkeypatch, tmp_path: Path):
     assert mapped["model_remote"].created_at == "2026-03-20T00:00:00Z"
     assert mapped["model_remote"].profile_name == "lab-beta"
     assert mapped["model_remote"].task_candidates == ["pick and place"]
+
+
+def test_list_db_models_applies_db_filters_order_range_and_column_projection(
+    monkeypatch, tmp_path: Path
+):
+    models_dir = tmp_path / "models"
+    queries: list["_FakeQuery"] = []
+
+    class _FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+            self.select_fields: str | None = None
+            self.eq_filters: list[tuple[str, object]] = []
+            self.orders: list[tuple[str, bool]] = []
+            self.ranges: list[tuple[int, int]] = []
+
+        def select(self, fields):
+            self.select_fields = fields
+            return self
+
+        def eq(self, key, value):
+            self.eq_filters.append((key, value))
+            return self
+
+        def order(self, key, desc=False):
+            self.orders.append((key, desc))
+            return self
+
+        def range(self, start, end):
+            self.ranges.append((start, end))
+            return self
+
+        async def execute(self):
+            rows = list(self._rows)
+            for key, value in self.eq_filters:
+                rows = [row for row in rows if row.get(key) == value]
+            for key, desc in reversed(self.orders):
+                rows.sort(key=lambda row: row.get(key) or "", reverse=desc)
+            for start, end in self.ranges:
+                rows = rows[start : end + 1]
+            return type("Result", (), {"data": rows})()
+
+    class _FakeClient:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def table(self, name):
+            assert name == "models"
+            query = _FakeQuery(self._rows)
+            queries.append(query)
+            return query
+
+    async def _fake_db_client():
+        return _FakeClient(
+            [
+                {
+                    "id": "model-new",
+                    "name": "model-new",
+                    "created_at": "2026-04-01T00:00:00Z",
+                    "owner_user_id": "user-1",
+                    "profile_name": "lab-alpha",
+                    "policy_type": "pi0",
+                    "training_steps": 1000,
+                    "batch_size": 16,
+                    "size_bytes": 1024,
+                    "source": "r2",
+                    "status": "active",
+                },
+                {
+                    "id": "model-old",
+                    "name": "model-old",
+                    "created_at": "2026-03-01T00:00:00Z",
+                    "owner_user_id": "user-1",
+                    "profile_name": "lab-alpha",
+                    "policy_type": "pi0",
+                    "training_steps": 1000,
+                    "batch_size": 16,
+                    "size_bytes": 1024,
+                    "source": "r2",
+                    "status": "active",
+                },
+                {
+                    "id": "model-other",
+                    "name": "model-other",
+                    "created_at": "2026-02-01T00:00:00Z",
+                    "owner_user_id": "user-1",
+                    "profile_name": "lab-beta",
+                    "policy_type": "pi0",
+                    "training_steps": 1000,
+                    "batch_size": 16,
+                    "size_bytes": 1024,
+                    "source": "r2",
+                    "status": "active",
+                },
+            ]
+        )
+
+    async def _fake_task_candidates(_client, _rows):
+        return {}
+
+    async def _fake_owner_directory(_ids):
+        return {}
+
+    monkeypatch.setattr(inference_api, "get_supabase_async_client", _fake_db_client)
+    monkeypatch.setattr(inference_api, "get_models_dir", lambda: models_dir)
+    monkeypatch.setattr(
+        inference_api, "_load_task_candidates_by_model", _fake_task_candidates
+    )
+    monkeypatch.setattr(
+        inference_api, "resolve_user_directory_entries", _fake_owner_directory
+    )
+
+    models = asyncio.run(
+        inference_api._list_db_models(
+            owner_user_id="user-1",
+            profile_name="lab-alpha",
+            policy_type="pi0",
+            training_steps=1000,
+            batch_size=16,
+            limit=1,
+            offset=1,
+        )
+    )
+
+    query = queries[0]
+    assert query.select_fields == inference_api._MODEL_LIST_COLUMNS
+    assert "*" not in query.select_fields
+    assert ("status", "active") in query.eq_filters
+    assert ("owner_user_id", "user-1") in query.eq_filters
+    assert ("profile_name", "lab-alpha") in query.eq_filters
+    assert ("policy_type", "pi0") in query.eq_filters
+    assert ("training_steps", 1000) in query.eq_filters
+    assert ("batch_size", 16) in query.eq_filters
+    assert query.orders == [("created_at", True)]
+    assert query.ranges == [(1, 1)]
+    assert [model.model_id for model in models] == ["model-old"]
 
 
 def test_load_task_candidates_by_model_uses_related_active_datasets():
@@ -249,7 +440,10 @@ def test_load_task_candidates_by_model_uses_related_active_datasets():
             for key, values in self._in_filters:
                 rows = [row for row in rows if row.get(key) in values]
             if self._order_key:
-                rows.sort(key=lambda row: row.get(self._order_key) or "", reverse=self._order_desc)
+                rows.sort(
+                    key=lambda row: row.get(self._order_key) or "",
+                    reverse=self._order_desc,
+                )
             return type("Result", (), {"data": rows})()
 
     class _FakeClient:
@@ -282,10 +476,22 @@ def test_load_task_candidates_by_model_uses_related_active_datasets():
                 },
             ],
             "datasets": [
-                {"id": "dataset-a", "task_detail": "pick and place", "status": "active"},
+                {
+                    "id": "dataset-a",
+                    "task_detail": "pick and place",
+                    "status": "active",
+                },
                 {"id": "dataset-b", "task_detail": "stack blocks", "status": "active"},
-                {"id": "dataset-c", "task_detail": "archived task", "status": "archived"},
-                {"id": "dataset-d", "task_detail": "should not use", "status": "active"},
+                {
+                    "id": "dataset-c",
+                    "task_detail": "archived task",
+                    "status": "archived",
+                },
+                {
+                    "id": "dataset-d",
+                    "task_detail": "should not use",
+                    "status": "active",
+                },
             ],
         }
     )
@@ -302,7 +508,9 @@ def test_load_task_candidates_by_model_uses_related_active_datasets():
     assert candidates["model-a"] == ["pick and place", "stack blocks"]
 
 
-def test_load_task_candidates_by_model_prefers_local_tasks_for_merged_dataset(monkeypatch):
+def test_load_task_candidates_by_model_prefers_local_tasks_for_merged_dataset(
+    monkeypatch,
+):
     class _FakeQuery:
         def __init__(self, rows):
             self._rows = rows
@@ -334,7 +542,10 @@ def test_load_task_candidates_by_model_prefers_local_tasks_for_merged_dataset(mo
             for key, values in self._in_filters:
                 rows = [row for row in rows if row.get(key) in values]
             if self._order_key:
-                rows.sort(key=lambda row: row.get(self._order_key) or "", reverse=self._order_desc)
+                rows.sort(
+                    key=lambda row: row.get(self._order_key) or "",
+                    reverse=self._order_desc,
+                )
             return type("Result", (), {"data": rows})()
 
     class _FakeClient:
@@ -354,7 +565,11 @@ def test_load_task_candidates_by_model_prefers_local_tasks_for_merged_dataset(mo
                     "status": "active",
                     "dataset_type": "merged",
                     "source_datasets": [
-                        {"dataset_id": "dataset-a", "name": "Dataset A", "task_detail": "fallback task"},
+                        {
+                            "dataset_id": "dataset-a",
+                            "name": "Dataset A",
+                            "task_detail": "fallback task",
+                        },
                     ],
                 },
             ],
@@ -363,7 +578,9 @@ def test_load_task_candidates_by_model_prefers_local_tasks_for_merged_dataset(mo
     monkeypatch.setattr(
         inference_api,
         "_load_local_dataset_task_candidates",
-        lambda dataset_id: ["pick cube", "place cube"] if dataset_id == "dataset-merged" else [],
+        lambda dataset_id: (
+            ["pick cube", "place cube"] if dataset_id == "dataset-merged" else []
+        ),
     )
 
     candidates = asyncio.run(
@@ -378,16 +595,23 @@ def test_load_task_candidates_by_model_prefers_local_tasks_for_merged_dataset(mo
     assert candidates["model-a"] == ["pick cube", "place cube"]
 
 
-def test_load_task_candidates_by_model_falls_back_to_source_snapshots_for_merged_dataset(monkeypatch):
+def test_load_task_candidates_by_model_falls_back_to_source_snapshots_for_merged_dataset(
+    monkeypatch,
+):
+    select_calls: list[tuple[str, str | None]] = []
+
     class _FakeQuery:
-        def __init__(self, rows):
+        def __init__(self, table_name, rows):
+            self._table_name = table_name
             self._rows = rows
+            self._select_fields: str | None = None
             self._eq_filters: list[tuple[str, object]] = []
             self._in_filters: list[tuple[str, set[object]]] = []
             self._order_key: str | None = None
             self._order_desc = False
 
-        def select(self, _fields):
+        def select(self, fields):
+            self._select_fields = fields
             return self
 
         def eq(self, key, value):
@@ -404,13 +628,17 @@ def test_load_task_candidates_by_model_falls_back_to_source_snapshots_for_merged
             return self
 
         async def execute(self):
+            select_calls.append((self._table_name, self._select_fields))
             rows = list(self._rows)
             for key, value in self._eq_filters:
                 rows = [row for row in rows if row.get(key) == value]
             for key, values in self._in_filters:
                 rows = [row for row in rows if row.get(key) in values]
             if self._order_key:
-                rows.sort(key=lambda row: row.get(self._order_key) or "", reverse=self._order_desc)
+                rows.sort(
+                    key=lambda row: row.get(self._order_key) or "",
+                    reverse=self._order_desc,
+                )
             return type("Result", (), {"data": rows})()
 
     class _FakeClient:
@@ -418,7 +646,7 @@ def test_load_task_candidates_by_model_falls_back_to_source_snapshots_for_merged
             self._rows_by_table = rows_by_table
 
         def table(self, name):
-            return _FakeQuery(self._rows_by_table.get(name, []))
+            return _FakeQuery(name, self._rows_by_table.get(name, []))
 
     client = _FakeClient(
         {
@@ -430,15 +658,29 @@ def test_load_task_candidates_by_model_falls_back_to_source_snapshots_for_merged
                     "status": "active",
                     "dataset_type": "merged",
                     "source_datasets": [
-                        {"dataset_id": "dataset-a", "name": "Dataset A", "task_detail": "pick cube"},
-                        {"dataset_id": "dataset-b", "name": "Dataset B", "task_detail": "place cube"},
-                        {"dataset_id": "dataset-c", "name": "Dataset C", "task_detail": "pick cube"},
+                        {
+                            "dataset_id": "dataset-a",
+                            "name": "Dataset A",
+                            "task_detail": "pick cube",
+                        },
+                        {
+                            "dataset_id": "dataset-b",
+                            "name": "Dataset B",
+                            "task_detail": "place cube",
+                        },
+                        {
+                            "dataset_id": "dataset-c",
+                            "name": "Dataset C",
+                            "task_detail": "pick cube",
+                        },
                     ],
                 },
             ],
         }
     )
-    monkeypatch.setattr(inference_api, "_load_local_dataset_task_candidates", lambda _dataset_id: [])
+    monkeypatch.setattr(
+        inference_api, "_load_local_dataset_task_candidates", lambda _dataset_id: []
+    )
 
     candidates = asyncio.run(
         inference_api._load_task_candidates_by_model(
@@ -450,6 +692,14 @@ def test_load_task_candidates_by_model_falls_back_to_source_snapshots_for_merged
     )
 
     assert candidates["model-a"] == ["pick cube", "place cube"]
+    dataset_selects = [
+        fields for table_name, fields in select_calls if table_name == "datasets"
+    ]
+    assert dataset_selects == [
+        inference_api._DATASET_TASK_COLUMNS,
+        inference_api._DATASET_SOURCE_SNAPSHOT_COLUMNS,
+    ]
+    assert "source_datasets" not in dataset_selects[0]
 
 
 def test_get_inference_runner_status_includes_model_sync(monkeypatch):
@@ -485,8 +735,12 @@ def test_get_inference_runner_status_includes_model_sync(monkeypatch):
                 transferred_bytes=435,
             )
 
-    monkeypatch.setattr(inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime())
-    monkeypatch.setattr(inference_api, "get_dataset_lifecycle", lambda: _FakeLifecycle())
+    monkeypatch.setattr(
+        inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime()
+    )
+    monkeypatch.setattr(
+        inference_api, "get_dataset_lifecycle", lambda: _FakeLifecycle()
+    )
 
     response = asyncio.run(inference_api.get_inference_runner_status())
     assert response.model_sync.active is True
@@ -541,7 +795,9 @@ def test_get_runtime_targets_returns_service_snapshot(monkeypatch):
 
 
 def test_start_inference_runner_returns_operation_id(monkeypatch):
-    accepted = StartupOperationAcceptedResponse(operation_id="op-infer", message="accepted")
+    accepted = StartupOperationAcceptedResponse(
+        operation_id="op-infer", message="accepted"
+    )
 
     class _FakeOperations:
         def create(self, *, user_id: str, kind: str):
@@ -554,7 +810,9 @@ def test_start_inference_runner_returns_operation_id(monkeypatch):
         return None
 
     monkeypatch.setattr(inference_api, "require_user_id", lambda: "user-1")
-    monkeypatch.setattr(inference_api, "get_startup_operations_service", lambda: _FakeOperations())
+    monkeypatch.setattr(
+        inference_api, "get_startup_operations_service", lambda: _FakeOperations()
+    )
     monkeypatch.setattr(inference_api.asyncio, "create_task", _fake_create_task)
 
     response = asyncio.run(
@@ -590,8 +848,12 @@ def test_run_inference_start_operation_passes_policy_options(monkeypatch):
         def fail(self, **_kwargs):
             raise AssertionError("fail should not be called")
 
-    monkeypatch.setattr(inference_api, "get_inference_session_manager", lambda: _FakeManager())
-    monkeypatch.setattr(inference_api, "get_startup_operations_service", lambda: _FakeOperations())
+    monkeypatch.setattr(
+        inference_api, "get_inference_session_manager", lambda: _FakeManager()
+    )
+    monkeypatch.setattr(
+        inference_api, "get_startup_operations_service", lambda: _FakeOperations()
+    )
 
     asyncio.run(
         inference_api._run_inference_start_operation(

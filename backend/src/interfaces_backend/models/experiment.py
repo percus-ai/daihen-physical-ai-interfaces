@@ -58,6 +58,11 @@ class ExperimentModel(BaseModel):
     notes: Optional[str] = Field(None, description="Notes")
     created_at: Optional[str] = Field(None, description="Creation timestamp")
     updated_at: Optional[str] = Field(None, description="Last update timestamp")
+    evaluation_summary: Optional["ExperimentEvaluationSummary"] = Field(
+        None,
+        description="Evaluation summary for list rows",
+    )
+    analysis_count: int = Field(0, description="Number of analysis blocks")
 
 
 class ExperimentListResponse(BaseModel):

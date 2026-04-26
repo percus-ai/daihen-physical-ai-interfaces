@@ -1143,11 +1143,19 @@ def test_list_jobs_passes_owner_user_id_filter(monkeypatch):
 
     monkeypatch.setattr(training, "_list_jobs", fake_list_jobs)
 
-    response = asyncio.run(training.list_jobs(days=30, owner_user_id="user-123"))
+    response = asyncio.run(
+        training.list_jobs(
+            days=30,
+            owner_user_id="user-123",
+            profile_instance_id="profile-9",
+        )
+    )
     assert response.total == 0
     assert captured["days"] == 30
     assert captured["owner_user_id"] == "user-123"
+    assert captured["kwargs"]["profile_instance_id"] == "profile-9"
     assert set(captured["kwargs"]) == {
+        "profile_instance_id",
         "search",
         "status",
         "policy_type",
@@ -1158,6 +1166,201 @@ def test_list_jobs_passes_owner_user_id_filter(monkeypatch):
         "limit",
         "offset",
     }
+
+
+def test_list_jobs_uses_lightweight_db_filters_order_and_range(monkeypatch):
+    option_rows = [
+        {
+            "job_id": "job-1",
+            "job_name": "Job alpha",
+            "status": "running",
+            "policy_type": "pi05",
+            "owner_user_id": "owner-1",
+            "profile_instance_id": "profile-1",
+            "created_at": "2026-04-05T00:00:00Z",
+        },
+        {
+            "job_id": "job-2",
+            "job_name": "Job beta",
+            "status": "completed",
+            "policy_type": "pi05",
+            "owner_user_id": "owner-2",
+            "profile_instance_id": "profile-1",
+            "created_at": "2026-04-06T00:00:00Z",
+        },
+        {
+            "job_id": "job-3",
+            "job_name": "Other",
+            "status": "failed",
+            "policy_type": "pi0",
+            "owner_user_id": "owner-1",
+            "profile_instance_id": "profile-1",
+            "created_at": "2026-04-07T00:00:00Z",
+        },
+    ]
+    page_rows = [
+        {
+            "job_id": "job-1",
+            "job_name": "Job alpha",
+            "status": "running",
+            "policy_type": "pi05",
+            "owner_user_id": "owner-1",
+            "profile_instance_id": "profile-1",
+            "dataset_id": "dataset-1",
+            "created_at": "2026-04-05T00:00:00Z",
+            "updated_at": "2026-04-05T01:00:00Z",
+        }
+    ]
+    calls: dict[str, list] = {"selects": [], "executed": []}
+
+    class _Query:
+        def __init__(self):
+            self.columns = ""
+            self.count = None
+            self.operations: list[tuple] = []
+            self.order_call = None
+            self.range_call = None
+
+        def select(self, columns: str, **kwargs):
+            self.columns = columns
+            self.count = kwargs.get("count")
+            calls["selects"].append(columns)
+            return self
+
+        def is_(self, key: str, value: str):
+            self.operations.append(("is", key, value))
+            return self
+
+        def or_(self, filters: str):
+            self.operations.append(("or", filters))
+            return self
+
+        def eq(self, key: str, value: str):
+            self.operations.append(("eq", key, value))
+            return self
+
+        def ilike(self, key: str, value: str):
+            self.operations.append(("ilike", key, value))
+            return self
+
+        def gte(self, key: str, value: str):
+            self.operations.append(("gte", key, value))
+            return self
+
+        def lte(self, key: str, value: str):
+            self.operations.append(("lte", key, value))
+            return self
+
+        def order(self, key: str, desc=False):
+            self.order_call = (key, desc)
+            return self
+
+        def range(self, start: int, end: int):
+            self.range_call = (start, end)
+            return self
+
+        async def execute(self):
+            calls["executed"].append(self)
+            if self.count == "exact":
+                return types.SimpleNamespace(data=page_rows, count=7)
+            return types.SimpleNamespace(data=option_rows)
+
+    class _Client:
+        def table(self, _name: str):
+            return _Query()
+
+    async def fake_get_supabase_async_client():
+        return _Client()
+
+    async def fake_resolve_user_directory_entries(user_ids):
+        calls["owner_ids"] = list(user_ids)
+        return {
+            "owner-1": types.SimpleNamespace(name="Alice", email="alice@example.test"),
+            "owner-2": types.SimpleNamespace(name="Bob", email="bob@example.test"),
+        }
+
+    async def fake_resolve_dataset_names(dataset_ids):
+        calls["dataset_ids"] = list(dataset_ids)
+        return {"dataset-1": "Dataset One"}
+
+    monkeypatch.setattr(
+        training,
+        "get_supabase_async_client",
+        fake_get_supabase_async_client,
+    )
+    monkeypatch.setattr(
+        training,
+        "resolve_user_directory_entries",
+        fake_resolve_user_directory_entries,
+    )
+    monkeypatch.setattr(training, "_resolve_dataset_names", fake_resolve_dataset_names)
+
+    jobs, total, owner_options, status_options, policy_options = asyncio.run(
+        training._list_jobs(
+            days=30,
+            owner_user_id="owner-1",
+            profile_instance_id="profile-1",
+            search="Job",
+            status="running",
+            policy_type="pi05",
+            created_from="2026-04-01",
+            created_to="2026-04-10",
+            sort_by="updated_at",
+            sort_order="asc",
+            limit=10,
+            offset=20,
+        )
+    )
+
+    assert total == 7
+    assert jobs[0]["owner_name"] == "Alice"
+    assert jobs[0]["dataset_name"] == "Dataset One"
+    assert calls["selects"] == [
+        training._TRAINING_JOB_FILTER_OPTION_COLUMNS,
+        training._TRAINING_JOB_LIST_COLUMNS,
+    ]
+
+    heavy_columns = {"profile_snapshot", "training_config", "summary", "failure_reason"}
+    for selected in calls["selects"]:
+        assert heavy_columns.isdisjoint(set(selected.split(",")))
+
+    option_query, page_query = calls["executed"]
+    assert option_query.order_call is None
+    assert option_query.range_call is None
+    assert ("eq", "owner_user_id", "owner-1") not in option_query.operations
+
+    assert ("is", "deleted_at", "null") in page_query.operations
+    assert any(
+        operation[0] == "or"
+        and "status.in.(running,starting)" in operation[1]
+        and "created_at.gte." in operation[1]
+        for operation in page_query.operations
+    )
+    assert ("eq", "owner_user_id", "owner-1") in page_query.operations
+    assert ("eq", "profile_instance_id", "profile-1") in page_query.operations
+    assert ("eq", "status", "running") in page_query.operations
+    assert ("eq", "policy_type", "pi05") in page_query.operations
+    assert ("ilike", "job_name", "%Job%") in page_query.operations
+    assert ("gte", "created_at", "2026-04-01T00:00:00Z") in page_query.operations
+    assert ("lte", "created_at", "2026-04-10T23:59:59.999999Z") in page_query.operations
+    assert page_query.order_call == ("updated_at", False)
+    assert page_query.range_call == (20, 29)
+
+    owner_counts = {
+        option.user_id: (option.total_count, option.available_count)
+        for option in owner_options
+    }
+    assert owner_counts == {"owner-1": (2, 1), "owner-2": (1, 0)}
+    assert {option.value: option.available_count for option in status_options} == {
+        "completed": 0,
+        "failed": 0,
+        "running": 1,
+    }
+    assert {option.value: option.available_count for option in policy_options} == {
+        "pi0": 0,
+        "pi05": 1,
+    }
+    assert calls["dataset_ids"] == ["dataset-1"]
 
 
 def test_parse_job_created_at_accepts_five_digit_fraction():
@@ -1188,7 +1391,10 @@ def test_list_jobs_includes_recent_vast_jobs_with_five_digit_fraction(monkeypatc
         def is_(self, *_args, **_kwargs):
             return self
 
-        def eq(self, *_args, **_kwargs):
+        def or_(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
             return self
 
         async def execute(self):
@@ -1239,14 +1445,30 @@ def test_list_jobs_status_filter_uses_query_parameter(monkeypatch):
     ]
 
     class _Query:
+        def __init__(self):
+            self._eq_filters: list[tuple[str, object]] = []
+
         def select(self, *_args, **_kwargs):
             return self
 
         def is_(self, *_args, **_kwargs):
             return self
 
+        def or_(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, key, value):
+            self._eq_filters.append((key, value))
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
         async def execute(self):
-            return types.SimpleNamespace(data=rows)
+            filtered = list(rows)
+            for key, value in self._eq_filters:
+                filtered = [row for row in filtered if row.get(key) == value]
+            return types.SimpleNamespace(data=filtered, count=len(filtered))
 
     class _Client:
         def table(self, _name: str):

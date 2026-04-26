@@ -218,6 +218,20 @@ def _parse_filter_datetime(value: str | None) -> datetime | None:
         return None
 
 
+def _normalize_datetime_filter_start(value: str | None) -> str | None:
+    parsed = _parse_filter_datetime(value)
+    return parsed.isoformat() if parsed else None
+
+
+def _normalize_datetime_filter_end(value: str | None) -> str | None:
+    parsed = _parse_filter_datetime(value)
+    if parsed is None:
+        return None
+    if len(str(value or "").strip()) == 10:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed.isoformat()
+
+
 def _matches_datetime_range(value: Any, start: datetime | None, end: datetime | None) -> bool:
     if start is None and end is None:
         return True
@@ -357,7 +371,7 @@ async def _fetch_recording_row(recording_id: str) -> dict:
     rows = (
         await client.table("datasets")
         .select(
-            "id,name,task_detail,profile_name,profile_snapshot,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status,content_hash"
+            "id,name,task_detail,profile_name,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status,content_hash"
         )
         .eq("id", recording_id)
         .limit(1)
@@ -981,9 +995,29 @@ async def get_session_upload_status(session_id: str):
 RecordingListSortBy = Literal["created_at", "dataset_name", "owner_name", "profile_name", "episode_count", "size_bytes", "upload_status"]
 SortOrder = Literal["asc", "desc"]
 
-
-def _normalize_query_text(value: Any) -> str:
-    return str(value or "").strip().lower()
+_RECORDING_LIST_COLUMNS = (
+    "id,name,task_detail,profile_name,episode_count,target_total_episodes,"
+    "episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status,"
+    "owner_user_id,content_hash"
+)
+_RECORDING_FILTER_OPTION_COLUMNS = (
+    "id,name,profile_name,episode_count,size_bytes,created_at,dataset_type,"
+    "status,owner_user_id,content_hash"
+)
+_RECORDING_DB_SORT_COLUMNS: dict[str, str] = {
+    "created_at": "created_at",
+    "dataset_name": "name",
+    "profile_name": "profile_name",
+    "episode_count": "episode_count",
+    "size_bytes": "size_bytes",
+}
+_RECORDING_UPLOAD_STATUS_SORT_RANK = {
+    "idle": 0,
+    "uploaded": 1,
+    "running": 2,
+    "failed": 3,
+}
+_UNBOUNDED_RECORDING_RANGE_END = 1_000_000_000
 
 
 def _build_recording_owner_filter_options(
@@ -1025,6 +1059,235 @@ def _build_recording_owner_filter_options(
     return options
 
 
+def _apply_recording_base_filters(query):
+    return query.eq("dataset_type", "recorded").neq("status", "archived")
+
+
+def _apply_recording_db_filters(
+    query,
+    *,
+    owner_user_id: str | None = None,
+    profile_name: str | None = None,
+    search: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    size_min: int | None = None,
+    size_max: int | None = None,
+    episode_count_min: int | None = None,
+    episode_count_max: int | None = None,
+):
+    query = _apply_recording_base_filters(query)
+    normalized_owner_user_id = _normalize_optional_text(owner_user_id)
+    normalized_profile_name = _normalize_optional_text(profile_name)
+    normalized_search = _normalize_optional_text(search)
+    normalized_created_from = _normalize_datetime_filter_start(created_from)
+    normalized_created_to = _normalize_datetime_filter_end(created_to)
+
+    if normalized_owner_user_id:
+        query = query.eq("owner_user_id", normalized_owner_user_id)
+    if normalized_profile_name:
+        query = query.eq("profile_name", normalized_profile_name)
+    if normalized_search:
+        escaped_search = normalized_search.replace(",", "\\,")
+        query = query.ilike("name", f"%{escaped_search}%")
+    if normalized_created_from:
+        query = query.gte("created_at", normalized_created_from)
+    if normalized_created_to:
+        query = query.lte("created_at", normalized_created_to)
+    if size_min is not None:
+        query = query.gte("size_bytes", size_min)
+    if size_max is not None:
+        query = query.lte("size_bytes", size_max)
+    if episode_count_min is not None:
+        query = query.gte("episode_count", episode_count_min)
+    if episode_count_max is not None:
+        query = query.lte("episode_count", episode_count_max)
+    return query
+
+
+def _apply_recording_db_sort(query, *, sort_by: RecordingListSortBy, sort_order: SortOrder):
+    sort_column = _RECORDING_DB_SORT_COLUMNS.get(sort_by)
+    if not sort_column:
+        return query
+    descending = sort_order == "desc"
+    query = query.order(sort_column, desc=descending)
+    if sort_column != "id":
+        query = query.order("id", desc=descending)
+    return query
+
+
+def _apply_recording_db_range(query, *, limit: int | None, offset: int):
+    if limit is not None:
+        return query.range(offset, offset + limit - 1)
+    if offset > 0:
+        return query.range(offset, _UNBOUNDED_RECORDING_RANGE_END)
+    return query
+
+
+def _recording_python_sort_key(row: dict[str, Any], sort_by: RecordingListSortBy) -> tuple[object, str]:
+    if sort_by == "dataset_name":
+        primary: object = _normalize_query_text(row.get("name") or row.get("id"))
+    elif sort_by == "owner_name":
+        primary = _normalize_query_text(row.get("owner_name") or row.get("owner_email") or row.get("owner_user_id"))
+    elif sort_by == "profile_name":
+        primary = _normalize_query_text(row.get("profile_name"))
+    elif sort_by == "episode_count":
+        primary = _to_int(row.get("episode_count"), default=0)
+    elif sort_by == "size_bytes":
+        primary = _to_int(row.get("size_bytes"), default=0)
+    elif sort_by == "upload_status":
+        primary = _RECORDING_UPLOAD_STATUS_SORT_RANK.get(
+            _normalize_query_text(row.get("upload_filter_value")),
+            -1,
+        )
+    else:
+        primary = str(row.get("created_at") or "")
+    return primary, str(row.get("id") or "")
+
+
+def _attach_recording_owner_info(rows: list[dict[str, Any]], owner_directory) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        owner_user_id = str(row.get("owner_user_id") or "").strip()
+        owner_entry = owner_directory.get(owner_user_id)
+        enriched_row = dict(row)
+        enriched_row["owner_email"] = owner_entry.email or None if owner_entry else None
+        enriched_row["owner_name"] = owner_entry.name or None if owner_entry else None
+        enriched.append(enriched_row)
+    return enriched
+
+
+def _attach_recording_upload_filter_values(rows: list[dict[str, Any]], lifecycle) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        enriched_row = dict(row)
+        upload_snapshot = lifecycle.get_dataset_upload_status(str(row.get("id") or ""))
+        enriched_row["upload_filter_value"] = _normalize_upload_filter_value(
+            upload_snapshot,
+            bool(str(row.get("content_hash") or "").strip()),
+        )
+        enriched.append(enriched_row)
+    return enriched
+
+
+def _recording_row_matches_filters(
+    row: dict[str, Any],
+    *,
+    owner_user_id: str | None = None,
+    profile_name: str | None = None,
+    upload_status: str | None = None,
+    search: str | None = None,
+    created_from_dt: datetime | None = None,
+    created_to_dt: datetime | None = None,
+    size_min: int | None = None,
+    size_max: int | None = None,
+    episode_count_min: int | None = None,
+    episode_count_max: int | None = None,
+    skip_owner: bool = False,
+    skip_profile: bool = False,
+    skip_upload: bool = False,
+) -> bool:
+    normalized_search = _normalize_query_text(search)
+    normalized_profile_name = _normalize_optional_text(profile_name)
+    normalized_upload_status = _normalize_optional_text(upload_status)
+    normalized_owner_user_id = _normalize_optional_text(owner_user_id)
+
+    if normalized_search and normalized_search not in _normalize_query_text(row.get("name")):
+        return False
+    if not skip_profile and normalized_profile_name and _normalize_optional_text(row.get("profile_name")) != normalized_profile_name:
+        return False
+    if not skip_upload and normalized_upload_status and _normalize_optional_text(row.get("upload_filter_value")) != normalized_upload_status:
+        return False
+    if not skip_owner and normalized_owner_user_id and _normalize_optional_text(row.get("owner_user_id")) != normalized_owner_user_id:
+        return False
+    if not _matches_datetime_range(row.get("created_at"), created_from_dt, created_to_dt):
+        return False
+    if not _matches_int_range(row.get("size_bytes"), size_min, size_max):
+        return False
+    if not _matches_int_range(row.get("episode_count"), episode_count_min, episode_count_max):
+        return False
+    return True
+
+
+async def _load_recording_option_rows(client, lifecycle) -> list[dict[str, Any]]:
+    rows = (
+        await _apply_recording_base_filters(
+            client.table("datasets").select(_RECORDING_FILTER_OPTION_COLUMNS)
+        ).execute()
+    ).data or []
+    return _attach_recording_upload_filter_values(rows, lifecycle)
+
+
+async def _load_recording_db_page_rows(
+    client,
+    *,
+    owner_user_id: str | None = None,
+    profile_name: str | None = None,
+    search: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    size_min: int | None = None,
+    size_max: int | None = None,
+    episode_count_min: int | None = None,
+    episode_count_max: int | None = None,
+    sort_by: RecordingListSortBy = "created_at",
+    sort_order: SortOrder = "desc",
+    limit: int | None = None,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    query = client.table("datasets").select(_RECORDING_LIST_COLUMNS, count="exact")
+    query = _apply_recording_db_filters(
+        query,
+        owner_user_id=owner_user_id,
+        profile_name=profile_name,
+        search=search,
+        created_from=created_from,
+        created_to=created_to,
+        size_min=size_min,
+        size_max=size_max,
+        episode_count_min=episode_count_min,
+        episode_count_max=episode_count_max,
+    )
+    query = _apply_recording_db_sort(query, sort_by=sort_by, sort_order=sort_order)
+    query = _apply_recording_db_range(query, limit=limit, offset=offset)
+    result = await query.execute()
+    rows = result.data or []
+    total = int(getattr(result, "count", len(rows)) or 0)
+    return rows, total
+
+
+async def _load_recording_candidate_rows(
+    client,
+    *,
+    owner_user_id: str | None = None,
+    profile_name: str | None = None,
+    search: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    size_min: int | None = None,
+    size_max: int | None = None,
+    episode_count_min: int | None = None,
+    episode_count_max: int | None = None,
+    sort_by: RecordingListSortBy = "created_at",
+    sort_order: SortOrder = "desc",
+) -> list[dict[str, Any]]:
+    query = client.table("datasets").select(_RECORDING_LIST_COLUMNS)
+    query = _apply_recording_db_filters(
+        query,
+        owner_user_id=owner_user_id,
+        profile_name=profile_name,
+        search=search,
+        created_from=created_from,
+        created_to=created_to,
+        size_min=size_min,
+        size_max=size_max,
+        episode_count_min=episode_count_min,
+        episode_count_max=episode_count_max,
+    )
+    query = _apply_recording_db_sort(query, sort_by=sort_by, sort_order=sort_order)
+    return (await query.execute()).data or []
+
+
 async def _list_recordings(
     *,
     owner_user_id: str | None = None,
@@ -1050,104 +1313,135 @@ async def _list_recordings(
 ]:
     client = await get_supabase_async_client()
     lifecycle = get_dataset_lifecycle()
-    rows = (
-        await client.table("datasets")
-        .select(
-            "id,name,task_detail,profile_name,profile_snapshot,episode_count,target_total_episodes,episode_time_s,reset_time_s,size_bytes,created_at,dataset_type,status,owner_user_id,content_hash"
-        )
-        .eq("dataset_type", "recorded")
-        .execute()
-    ).data or []
-    filtered = [row for row in rows if row.get("status") != "archived"]
+    option_rows = await _load_recording_option_rows(client, lifecycle)
     owner_directory = await resolve_user_directory_entries(
-        [str(row.get("owner_user_id") or "").strip() for row in filtered]
+        [str(row.get("owner_user_id") or "").strip() for row in option_rows]
     )
 
-    normalized_search = _normalize_query_text(search)
-    normalized_profile_name = _normalize_optional_text(profile_name)
     normalized_upload_status = _normalize_optional_text(upload_status)
     created_from_dt = _parse_filter_datetime(created_from)
     created_to_dt = _parse_filter_datetime(created_to)
     if created_to_dt and len(str(created_to or "").strip()) == 10:
         created_to_dt = created_to_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-    enriched_records: list[dict] = []
-    for row in filtered:
-        normalized_owner_user_id = str(row.get("owner_user_id") or "").strip()
-
-        owner_entry = owner_directory.get(normalized_owner_user_id)
-        enriched_row = dict(row)
-        enriched_row["owner_email"] = owner_entry.email or None if owner_entry else None
-        enriched_row["owner_name"] = owner_entry.name or None if owner_entry else None
-        upload_snapshot = lifecycle.get_dataset_upload_status(str(row.get("id") or ""))
-        enriched_row["upload_filter_value"] = _normalize_upload_filter_value(
-            upload_snapshot,
-            bool(str(row.get("content_hash") or "").strip()),
+    owner_available_records = [
+        row
+        for row in option_rows
+        if _recording_row_matches_filters(
+            row,
+            owner_user_id=owner_user_id,
+            profile_name=profile_name,
+            upload_status=upload_status,
+            search=search,
+            created_from_dt=created_from_dt,
+            created_to_dt=created_to_dt,
+            size_min=size_min,
+            size_max=size_max,
+            episode_count_min=episode_count_min,
+            episode_count_max=episode_count_max,
+            skip_owner=True,
         )
-        enriched_records.append(enriched_row)
+    ]
+    profile_available_records = [
+        row
+        for row in option_rows
+        if _recording_row_matches_filters(
+            row,
+            owner_user_id=owner_user_id,
+            profile_name=profile_name,
+            upload_status=upload_status,
+            search=search,
+            created_from_dt=created_from_dt,
+            created_to_dt=created_to_dt,
+            size_min=size_min,
+            size_max=size_max,
+            episode_count_min=episode_count_min,
+            episode_count_max=episode_count_max,
+            skip_profile=True,
+        )
+    ]
+    upload_available_records = [
+        row
+        for row in option_rows
+        if _recording_row_matches_filters(
+            row,
+            owner_user_id=owner_user_id,
+            profile_name=profile_name,
+            upload_status=upload_status,
+            search=search,
+            created_from_dt=created_from_dt,
+            created_to_dt=created_to_dt,
+            size_min=size_min,
+            size_max=size_max,
+            episode_count_min=episode_count_min,
+            episode_count_max=episode_count_max,
+            skip_upload=True,
+        )
+    ]
 
-    def _matches(record: dict, *, skip_owner: bool = False, skip_profile: bool = False, skip_upload: bool = False) -> bool:
-        if normalized_search and normalized_search not in _normalize_query_text(record.get("name")):
-            return False
-        if not skip_profile and normalized_profile_name and _normalize_optional_text(record.get("profile_name")) != normalized_profile_name:
-            return False
-        if not skip_upload and normalized_upload_status and _normalize_optional_text(record.get("upload_filter_value")) != normalized_upload_status:
-            return False
-        if not skip_owner and owner_user_id and str(record.get("owner_user_id") or "").strip() != str(owner_user_id).strip():
-            return False
-        if not _matches_datetime_range(record.get("created_at"), created_from_dt, created_to_dt):
-            return False
-        if not _matches_int_range(record.get("size_bytes"), size_min, size_max):
-            return False
-        if not _matches_int_range(record.get("episode_count"), episode_count_min, episode_count_max):
-            return False
-        return True
-
-    available_records = [record for record in enriched_records if _matches(record, skip_owner=True)]
-    owner_available_records = available_records
-    profile_available_records = [record for record in enriched_records if _matches(record, skip_profile=True)]
-    upload_available_records = [record for record in enriched_records if _matches(record, skip_upload=True)]
-
-    owner_options = _build_recording_owner_filter_options(filtered, owner_available_records, owner_directory)
+    owner_options = _build_recording_owner_filter_options(option_rows, owner_available_records, owner_directory)
     profile_options = _build_recording_value_filter_options(
-        enriched_records,
+        option_rows,
         profile_available_records,
         value_getter=lambda record: record.get("profile_name"),
     )
     upload_status_options = _build_recording_value_filter_options(
-        enriched_records,
+        option_rows,
         upload_available_records,
         value_getter=lambda record: record.get("upload_filter_value"),
         label_getter=_upload_filter_label,
     )
 
-    records = [record for record in enriched_records if _matches(record)]
-
-    reverse = sort_order == "desc"
-
-    def _sort_key(record: dict) -> tuple[object, str]:
-        if sort_by == "dataset_name":
-            primary = _normalize_query_text(record.get("name") or record.get("id"))
-        elif sort_by == "owner_name":
-            primary = _normalize_query_text(record.get("owner_name") or record.get("owner_email") or record.get("owner_user_id"))
-        elif sort_by == "profile_name":
-            primary = _normalize_query_text(record.get("profile_name"))
-        elif sort_by == "episode_count":
-            primary = int(record.get("episode_count") or 0)
-        elif sort_by == "size_bytes":
-            primary = int(record.get("size_bytes") or 0)
-        elif sort_by == "upload_status":
-            primary = 1 if str(record.get("content_hash") or "").strip() else 0
-        else:
-            primary = str(record.get("created_at") or "")
-        return primary, str(record.get("id") or "")
-
-    records.sort(key=_sort_key, reverse=reverse)
-    total = len(records)
-    if offset > 0:
+    requires_python_paging = normalized_upload_status is not None or sort_by in {"owner_name", "upload_status"}
+    if requires_python_paging:
+        records = await _load_recording_candidate_rows(
+            client,
+            owner_user_id=owner_user_id,
+            profile_name=profile_name,
+            search=search,
+            created_from=created_from,
+            created_to=created_to,
+            size_min=size_min,
+            size_max=size_max,
+            episode_count_min=episode_count_min,
+            episode_count_max=episode_count_max,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        if normalized_upload_status is not None or sort_by == "upload_status":
+            records = _attach_recording_upload_filter_values(records, lifecycle)
+        if normalized_upload_status is not None:
+            records = [
+                row
+                for row in records
+                if _normalize_optional_text(row.get("upload_filter_value")) == normalized_upload_status
+            ]
+        if sort_by == "owner_name":
+            records = _attach_recording_owner_info(records, owner_directory)
+        if sort_by in {"owner_name", "upload_status"}:
+            records.sort(key=lambda row: _recording_python_sort_key(row, sort_by), reverse=sort_order == "desc")
+        total = len(records)
         records = records[offset:]
-    if limit is not None:
-        records = records[:limit]
+        if limit is not None:
+            records = records[:limit]
+    else:
+        records, total = await _load_recording_db_page_rows(
+            client,
+            owner_user_id=owner_user_id,
+            profile_name=profile_name,
+            search=search,
+            created_from=created_from,
+            created_to=created_to,
+            size_min=size_min,
+            size_max=size_max,
+            episode_count_min=episode_count_min,
+            episode_count_max=episode_count_max,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+        )
+    records = _attach_recording_owner_info(records, owner_directory)
     return records, total, owner_options, profile_options, upload_status_options
 
 

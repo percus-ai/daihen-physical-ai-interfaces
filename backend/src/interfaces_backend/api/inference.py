@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from interfaces_backend.models.inference import (
     InferenceNumericOption,
@@ -29,10 +30,14 @@ from interfaces_backend.models.inference import (
 )
 from interfaces_backend.models.startup import StartupOperationAcceptedResponse
 from interfaces_backend.services.inference_runtime import get_inference_runtime_manager
-from interfaces_backend.services.inference_runtime_targets import get_inference_runtime_targets_service
+from interfaces_backend.services.inference_runtime_targets import (
+    get_inference_runtime_targets_service,
+)
 from interfaces_backend.services.inference_session import get_inference_session_manager
 from interfaces_backend.services.session_manager import require_user_id
-from interfaces_backend.services.startup_operations import get_startup_operations_service
+from interfaces_backend.services.startup_operations import (
+    get_startup_operations_service,
+)
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.user_directory import resolve_user_directory_entries
 from percus_ai.db import get_supabase_async_client
@@ -42,6 +47,16 @@ from lerobot.datasets.utils import load_tasks
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/inference", tags=["inference"])
+
+_MODEL_LIST_COLUMNS = (
+    "id,name,created_at,owner_user_id,profile_name,policy_type,"
+    "training_steps,batch_size,size_bytes,source,dataset_id"
+)
+_TRAINING_JOB_DATASET_COLUMNS = "model_id,dataset_id,updated_at,deleted_at"
+_DATASET_TASK_COLUMNS = "id,task_detail,status,dataset_type"
+_DATASET_SOURCE_SNAPSHOT_COLUMNS = "id,source_datasets"
+_DEFAULT_MODEL_LIST_LIMIT = 200
+_MAX_MODEL_LIST_LIMIT = 500
 
 
 async def _emit_inference_control_event(
@@ -112,24 +127,11 @@ def _load_local_dataset_task_candidates(dataset_id: str) -> list[str]:
     try:
         task_names = [str(task_name) for task_name in tasks.index.tolist()]
     except Exception as exc:
-        logger.warning("Failed to normalize local dataset tasks for %s: %s", dataset_id, exc)
+        logger.warning(
+            "Failed to normalize local dataset tasks for %s: %s", dataset_id, exc
+        )
         return []
     return _merge_task_candidates(task_names)
-
-
-def _task_candidates_from_dataset_row(row: dict) -> list[str]:
-    dataset_type = str(row.get("dataset_type") or "").strip().lower()
-    dataset_id = str(row.get("id") or "").strip()
-    if dataset_type == "merged" and dataset_id:
-        local_candidates = _load_local_dataset_task_candidates(dataset_id)
-        if local_candidates:
-            return local_candidates
-        snapshot_candidates = _task_candidates_from_source_snapshots(row.get("source_datasets"))
-        if snapshot_candidates:
-            return snapshot_candidates
-
-    task_detail = _normalize_task_detail(row.get("task_detail"))
-    return [task_detail] if task_detail is not None else []
 
 
 async def _load_task_candidates_by_model(
@@ -156,7 +158,7 @@ async def _load_task_candidates_by_model(
     try:
         job_rows = (
             await client.table("training_jobs")
-            .select("model_id,dataset_id,updated_at,deleted_at")
+            .select(_TRAINING_JOB_DATASET_COLUMNS)
             .in_("model_id", model_ids)
             .order("updated_at", desc=True)
             .execute()
@@ -192,7 +194,7 @@ async def _load_task_candidates_by_model(
     try:
         dataset_rows = (
             await client.table("datasets")
-            .select("id,task_detail,status,dataset_type,source_datasets")
+            .select(_DATASET_TASK_COLUMNS)
             .in_("id", all_dataset_ids)
             .eq("status", "active")
             .execute()
@@ -202,10 +204,40 @@ async def _load_task_candidates_by_model(
         return {model_id: [] for model_id in model_ids}
 
     task_candidates_by_dataset_id: dict[str, list[str]] = {}
+    merged_ids_needing_snapshots: list[str] = []
+    merged_task_detail_fallbacks: dict[str, list[str]] = {}
     for row in dataset_rows:
         dataset_id = str(row.get("id") or "").strip()
-        if dataset_id:
-            task_candidates_by_dataset_id[dataset_id] = _task_candidates_from_dataset_row(row)
+        if not dataset_id:
+            continue
+
+        dataset_type = str(row.get("dataset_type") or "").strip().lower()
+        if dataset_type == "merged":
+            local_candidates = _load_local_dataset_task_candidates(dataset_id)
+            if local_candidates:
+                task_candidates_by_dataset_id[dataset_id] = local_candidates
+                continue
+            task_detail = _normalize_task_detail(row.get("task_detail"))
+            merged_task_detail_fallbacks[dataset_id] = (
+                [task_detail] if task_detail is not None else []
+            )
+            merged_ids_needing_snapshots.append(dataset_id)
+            continue
+
+        task_detail = _normalize_task_detail(row.get("task_detail"))
+        task_candidates_by_dataset_id[dataset_id] = (
+            [task_detail] if task_detail is not None else []
+        )
+
+    if merged_ids_needing_snapshots:
+        snapshot_candidates = await _load_merged_dataset_source_snapshot_candidates(
+            client,
+            merged_ids_needing_snapshots,
+        )
+        for dataset_id in merged_ids_needing_snapshots:
+            task_candidates_by_dataset_id[dataset_id] = snapshot_candidates.get(
+                dataset_id
+            ) or merged_task_detail_fallbacks.get(dataset_id, [])
 
     candidates_by_model: dict[str, list[str]] = {}
     for model_id in model_ids:
@@ -214,17 +246,70 @@ async def _load_task_candidates_by_model(
             for dataset_id in model_dataset_ids.get(model_id, [])
             if dataset_id in task_candidates_by_dataset_id
         ]
-        candidates_by_model[model_id] = _merge_task_candidates(*ordered_candidate_groups)
+        candidates_by_model[model_id] = _merge_task_candidates(
+            *ordered_candidate_groups
+        )
     return candidates_by_model
 
 
-async def _list_db_models() -> list[InferenceModelInfo]:
+async def _load_merged_dataset_source_snapshot_candidates(
+    client,
+    dataset_ids: Sequence[str],
+) -> dict[str, list[str]]:
+    if not dataset_ids:
+        return {}
+
+    try:
+        rows = (
+            await client.table("datasets")
+            .select(_DATASET_SOURCE_SNAPSHOT_COLUMNS)
+            .in_("id", list(dataset_ids))
+            .eq("status", "active")
+            .execute()
+        ).data or []
+    except Exception as exc:
+        logger.warning("Failed to load merged dataset source snapshots: %s", exc)
+        return {}
+
+    candidates_by_dataset_id: dict[str, list[str]] = {}
+    for row in rows:
+        dataset_id = str(row.get("id") or "").strip()
+        if not dataset_id:
+            continue
+        candidates_by_dataset_id[dataset_id] = _task_candidates_from_source_snapshots(
+            row.get("source_datasets")
+        )
+    return candidates_by_dataset_id
+
+
+async def _list_db_models(
+    *,
+    owner_user_id: str | None = None,
+    profile_name: str | None = None,
+    policy_type: str | None = None,
+    training_steps: int | None = None,
+    batch_size: int | None = None,
+    limit: int = _DEFAULT_MODEL_LIST_LIMIT,
+    offset: int = 0,
+) -> list[InferenceModelInfo]:
     try:
         client = await get_supabase_async_client()
+        query = (
+            client.table("models").select(_MODEL_LIST_COLUMNS).eq("status", "active")
+        )
+        if owner_user_id:
+            query = query.eq("owner_user_id", owner_user_id)
+        if profile_name:
+            query = query.eq("profile_name", profile_name)
+        if policy_type:
+            query = query.eq("policy_type", policy_type)
+        if training_steps is not None:
+            query = query.eq("training_steps", training_steps)
+        if batch_size is not None:
+            query = query.eq("batch_size", batch_size)
         rows = (
-            await client.table("models")
-            .select("id,name,created_at,owner_user_id,profile_name,policy_type,training_steps,batch_size,size_bytes,source,status,dataset_id")
-            .eq("status", "active")
+            await query.order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
             .execute()
         ).data or []
     except Exception as exc:
@@ -246,7 +331,10 @@ async def _list_db_models() -> list[InferenceModelInfo]:
         owner_user_id = str(row.get("owner_user_id") or "").strip() or None
         owner_entry = owner_directory.get(owner_user_id or "")
         policy_type = row.get("policy_type")
-        source = str(row.get("source") or ("local" if local_exists else "r2")).strip() or "r2"
+        source = (
+            str(row.get("source") or ("local" if local_exists else "r2")).strip()
+            or "r2"
+        )
         db_models.append(
             InferenceModelInfo(
                 model_id=model_id,
@@ -255,9 +343,15 @@ async def _list_db_models() -> list[InferenceModelInfo]:
                 owner_user_id=owner_user_id,
                 owner_name=owner_entry.name or None if owner_entry else None,
                 profile_name=str(row.get("profile_name") or "").strip() or None,
-                policy_type=policy_type if isinstance(policy_type, str) and policy_type else None,
-                training_steps=int(row.get("training_steps")) if row.get("training_steps") is not None else None,
-                batch_size=int(row.get("batch_size")) if row.get("batch_size") is not None else None,
+                policy_type=policy_type
+                if isinstance(policy_type, str) and policy_type
+                else None,
+                training_steps=int(row.get("training_steps"))
+                if row.get("training_steps") is not None
+                else None,
+                batch_size=int(row.get("batch_size"))
+                if row.get("batch_size") is not None
+                else None,
                 source=source,
                 size_mb=_to_size_mb(row.get("size_bytes")),
                 is_loaded=False,
@@ -266,6 +360,28 @@ async def _list_db_models() -> list[InferenceModelInfo]:
             )
         )
     return db_models
+
+
+def _model_matches_filters(
+    model: InferenceModelInfo,
+    *,
+    owner_user_id: str | None,
+    profile_name: str | None,
+    policy_type: str | None,
+    training_steps: int | None,
+    batch_size: int | None,
+) -> bool:
+    if owner_user_id and model.owner_user_id != owner_user_id:
+        return False
+    if profile_name and model.profile_name != profile_name:
+        return False
+    if policy_type and model.policy_type != policy_type:
+        return False
+    if training_steps is not None and model.training_steps != training_steps:
+        return False
+    if batch_size is not None and model.batch_size != batch_size:
+        return False
+    return True
 
 
 def _merge_models(
@@ -306,7 +422,9 @@ def _merge_models(
     return ordered_models
 
 
-def _build_owner_options(models: Sequence[InferenceModelInfo]) -> list[InferenceOwnerOption]:
+def _build_owner_options(
+    models: Sequence[InferenceModelInfo],
+) -> list[InferenceOwnerOption]:
     counts: dict[tuple[str, str], int] = {}
     for model in models:
         user_id = str(model.owner_user_id or "").strip()
@@ -317,7 +435,9 @@ def _build_owner_options(models: Sequence[InferenceModelInfo]) -> list[Inference
         counts[key] = counts.get(key, 0) + 1
     return [
         InferenceOwnerOption(user_id=user_id, label=label, total_count=total_count)
-        for (user_id, label), total_count in sorted(counts.items(), key=lambda item: item[0][1].lower())
+        for (user_id, label), total_count in sorted(
+            counts.items(), key=lambda item: item[0][1].lower()
+        )
     ]
 
 
@@ -362,10 +482,40 @@ def _build_numeric_options(
 
 
 @router.get("/models", response_model=InferenceModelsResponse)
-async def list_models():
+async def list_models(
+    owner_user_id: str | None = None,
+    profile_name: str | None = None,
+    policy_type: str | None = None,
+    training_steps: Annotated[int | None, Query(ge=0)] = None,
+    batch_size: Annotated[int | None, Query(ge=0)] = None,
+    limit: Annotated[
+        int, Query(ge=1, le=_MAX_MODEL_LIST_LIMIT)
+    ] = _DEFAULT_MODEL_LIST_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
     runtime_models = get_inference_runtime_manager().list_models()
-    db_models = await _list_db_models()
+    db_models = await _list_db_models(
+        owner_user_id=owner_user_id,
+        profile_name=profile_name,
+        policy_type=policy_type,
+        training_steps=training_steps,
+        batch_size=batch_size,
+        limit=limit,
+        offset=offset,
+    )
     models = _merge_models(db_models, runtime_models)
+    models = [
+        model
+        for model in models
+        if _model_matches_filters(
+            model,
+            owner_user_id=owner_user_id,
+            profile_name=profile_name,
+            policy_type=policy_type,
+            training_steps=training_steps,
+            batch_size=batch_size,
+        )
+    ]
     return InferenceModelsResponse(
         models=models,
         owner_options=_build_owner_options(models),
@@ -520,7 +670,9 @@ async def stop_inference_runner(request: InferenceRunnerStopRequest):
     response = InferenceRunnerStopResponse(
         success=True,
         session_id=request.session_id,
-        message="inference worker stopped" if stopped else "inference worker already stopped",
+        message="inference worker stopped"
+        if stopped
+        else "inference worker already stopped",
     )
     await _emit_inference_control_event(
         action="runner_stop",
@@ -574,7 +726,9 @@ async def apply_inference_runner_settings(request: InferenceRunnerSettingsApplyR
             success=False,
             message=str(exc),
         )
-        raise HTTPException(status_code=500, detail=f"Failed to apply settings: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Failed to apply settings: {exc}"
+        ) from exc
 
     response = InferenceRunnerSettingsApplyResponse(
         success=True,
@@ -610,7 +764,10 @@ async def decide_inference_recording(request: InferenceRecordingDecisionRequest)
     active = manager.any_active()
     active_session_id = active.id if active else "global"
     if not request.continue_recording and request.stop_reason is None:
-        raise HTTPException(status_code=400, detail="stop_reason is required when continue_recording is false")
+        raise HTTPException(
+            status_code=400,
+            detail="stop_reason is required when continue_recording is false",
+        )
     stop_reason = request.stop_reason if not request.continue_recording else None
 
     if request.continue_recording:
@@ -708,7 +865,9 @@ async def pause_inference_runner():
             success=False,
             message=str(exc),
         )
-        raise HTTPException(status_code=500, detail=f"Failed to pause inference runner: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Failed to pause inference runner: {exc}"
+        ) from exc
     response = InferenceRunnerControlResponse(
         success=True,
         message="Inference and recording paused.",
@@ -756,11 +915,15 @@ async def resume_inference_runner():
             success=False,
             message=str(exc),
         )
-        raise HTTPException(status_code=500, detail=f"Failed to resume inference runner: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Failed to resume inference runner: {exc}"
+        ) from exc
     started = bool(result.get("started", False))
     response = InferenceRunnerControlResponse(
         success=True,
-        message="Inference and recording started." if started else "Inference and recording resumed.",
+        message="Inference and recording started."
+        if started
+        else "Inference and recording resumed.",
         paused=bool(result.get("paused", False)),
         teleop_enabled=bool(result.get("teleop_enabled", False)),
         recorder_state=str(result.get("recorder_state") or "") or None,
@@ -809,7 +972,9 @@ async def set_inference_task(request: InferenceSetTaskRequest):
             message=str(exc),
             details={"task": task},
         )
-        raise HTTPException(status_code=500, detail=f"Failed to update task: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update task: {exc}"
+        ) from exc
 
     response = InferenceSetTaskResponse(
         success=True,

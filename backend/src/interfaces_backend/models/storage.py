@@ -95,7 +95,6 @@ class DatasetListResponse(BaseModel):
     owner_options: List["OwnerFilterOption"] = Field(default_factory=list)
     profile_options: List["ValueFilterOption"] = Field(default_factory=list)
     dataset_type_options: List["ValueFilterOption"] = Field(default_factory=list)
-    sync_status_options: List["ValueFilterOption"] = Field(default_factory=list)
 
 
 class OwnerFilterOption(BaseModel):
@@ -115,8 +114,8 @@ class ValueFilterOption(BaseModel):
 
 
 StorageSortOrder = Literal["asc", "desc"]
-DatasetListSortBy = Literal["created_at", "updated_at", "name", "owner_name", "profile_name", "size_bytes", "episode_count", "sync_status"]
-ModelListSortBy = Literal["created_at", "updated_at", "name", "owner_name", "profile_name", "size_bytes", "policy_type", "sync_status"]
+DatasetListSortBy = Literal["created_at", "updated_at", "name", "owner_name", "profile_name", "size_bytes", "episode_count"]
+ModelListSortBy = Literal["created_at", "updated_at", "name", "owner_name", "profile_name", "size_bytes", "policy_type"]
 
 
 class DatasetListQuery(BaseModel):
@@ -125,7 +124,6 @@ class DatasetListQuery(BaseModel):
     owner_user_id: Optional[str] = Field(None, description="Filter by owner user id")
     status: Optional[str] = Field(None, description="Filter by dataset status")
     dataset_type: Optional[str] = Field(None, description="Filter by dataset type")
-    sync_status: Optional[str] = Field(None, description="Filter by sync status")
     search: Optional[str] = Field(None, description="Search dataset name")
     created_from: Optional[str] = Field(None, description="Filter by creation time lower bound")
     created_to: Optional[str] = Field(None, description="Filter by creation time upper bound")
@@ -273,7 +271,6 @@ class ModelListResponse(BaseModel):
     owner_options: List[OwnerFilterOption] = Field(default_factory=list)
     profile_options: List[ValueFilterOption] = Field(default_factory=list)
     policy_type_options: List[ValueFilterOption] = Field(default_factory=list)
-    sync_status_options: List[ValueFilterOption] = Field(default_factory=list)
 
 
 class ModelListQuery(BaseModel):
@@ -283,7 +280,6 @@ class ModelListQuery(BaseModel):
     status: Optional[str] = Field(None, description="Filter by model status")
     policy_type: Optional[str] = Field(None, description="Filter by policy type")
     dataset_id: Optional[str] = Field(None, description="Filter by source dataset id")
-    sync_status: Optional[str] = Field(None, description="Filter by sync status")
     search: Optional[str] = Field(None, description="Search model name")
     created_from: Optional[str] = Field(None, description="Filter by creation time lower bound")
     created_to: Optional[str] = Field(None, description="Filter by creation time upper bound")

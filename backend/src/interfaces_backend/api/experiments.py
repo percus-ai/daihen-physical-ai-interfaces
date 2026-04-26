@@ -3,7 +3,7 @@
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
@@ -33,6 +33,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
 DEFAULT_METRIC_OPTIONS = ["成功", "失敗", "部分成功"]
+_EXPERIMENT_LIST_COLUMNS = "id,model_id,profile_instance_id,name,evaluation_count,metric,metric_options,updated_at"
+_EXPERIMENT_DETAIL_COLUMNS = (
+    "id,model_id,profile_instance_id,name,purpose,evaluation_count,metric,"
+    "metric_options,result_image_files,notes,created_at,updated_at"
+)
+_EXPERIMENT_EVALUATION_COLUMNS = (
+    "id,experiment_id,trial_index,value,blueprint_id,image_files,notes,created_at"
+)
+_EXPERIMENT_ANALYSIS_COLUMNS = (
+    "id,experiment_id,block_index,name,purpose,notes,image_files,created_at,updated_at"
+)
+_MAX_EXPERIMENT_LIST_LIMIT = 500
 
 
 def _now_iso() -> str:
@@ -46,7 +58,12 @@ def _require_user_id() -> str:
         raise HTTPException(status_code=401, detail="Login required") from exc
 
 
-def _row_to_experiment(row: dict) -> ExperimentModel:
+def _row_to_experiment(
+    row: dict,
+    *,
+    evaluation_summary: ExperimentEvaluationSummary | None = None,
+    analysis_count: int = 0,
+) -> ExperimentModel:
     return ExperimentModel(
         id=row.get("id"),
         model_id=row.get("model_id"),
@@ -60,7 +77,58 @@ def _row_to_experiment(row: dict) -> ExperimentModel:
         notes=row.get("notes"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        evaluation_summary=evaluation_summary,
+        analysis_count=analysis_count,
     )
+
+
+def _build_evaluation_summary(values: list[str]) -> ExperimentEvaluationSummary:
+    total = len(values)
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    rates = {key: (count / total * 100 if total else 0) for key, count in counts.items()}
+    return ExperimentEvaluationSummary(total=total, counts=counts, rates=rates)
+
+
+async def _fetch_evaluation_summaries(
+    client,
+    experiment_ids: list[str],
+) -> dict[str, ExperimentEvaluationSummary]:
+    if not experiment_ids:
+        return {}
+    rows = (
+        await client.table("experiment_evaluations")
+        .select("experiment_id,value")
+        .in_("experiment_id", experiment_ids)
+        .execute()
+    ).data or []
+    values_by_experiment: dict[str, list[str]] = {experiment_id: [] for experiment_id in experiment_ids}
+    for row in rows:
+        experiment_id = str(row.get("experiment_id") or "").strip()
+        if experiment_id in values_by_experiment:
+            values_by_experiment[experiment_id].append(str(row.get("value") or ""))
+    return {
+        experiment_id: _build_evaluation_summary(values)
+        for experiment_id, values in values_by_experiment.items()
+    }
+
+
+async def _fetch_analysis_counts(client, experiment_ids: list[str]) -> dict[str, int]:
+    if not experiment_ids:
+        return {}
+    rows = (
+        await client.table("experiment_analyses")
+        .select("experiment_id")
+        .in_("experiment_id", experiment_ids)
+        .execute()
+    ).data or []
+    counts = {experiment_id: 0 for experiment_id in experiment_ids}
+    for row in rows:
+        experiment_id = str(row.get("experiment_id") or "").strip()
+        if experiment_id in counts:
+            counts[experiment_id] += 1
+    return counts
 
 
 def _row_to_episode_link(row: dict) -> ExperimentEvaluationEpisodeLinkModel:
@@ -88,7 +156,9 @@ def _row_to_evaluation(
     )
 
 
-async def _fetch_episode_links_map(client, experiment_id: str) -> dict[int, list[ExperimentEvaluationEpisodeLinkModel]]:
+async def _fetch_episode_links_map(
+    client, experiment_id: str
+) -> dict[int, list[ExperimentEvaluationEpisodeLinkModel]]:
     link_rows = (
         await client.table("experiment_evaluation_episode_links")
         .select("trial_index,dataset_id,episode_index,sort_order")
@@ -102,7 +172,9 @@ async def _fetch_episode_links_map(client, experiment_id: str) -> dict[int, list
         trial_index = int(link_row.get("trial_index") or 0)
         if trial_index <= 0:
             continue
-        links_by_trial.setdefault(trial_index, []).append(_row_to_episode_link(link_row))
+        links_by_trial.setdefault(trial_index, []).append(
+            _row_to_episode_link(link_row)
+        )
     return links_by_trial
 
 
@@ -117,13 +189,21 @@ async def _validate_episode_links(client, items: list) -> None:
     if not dataset_ids:
         return
     dataset_rows = (
-        await client.table("datasets").select("id,episode_count").in_("id", list(dataset_ids)).execute()
+        await client.table("datasets")
+        .select("id,episode_count")
+        .in_("id", list(dataset_ids))
+        .execute()
     ).data or []
-    rows_by_dataset_id = {str(row.get("id")): row for row in dataset_rows if row.get("id")}
+    rows_by_dataset_id = {
+        str(row.get("id")): row for row in dataset_rows if row.get("id")
+    }
     existing_ids = set(rows_by_dataset_id)
     missing = sorted(dataset_ids - existing_ids)
     if missing:
-        raise HTTPException(status_code=400, detail=f"Invalid dataset_id in episode_links: {', '.join(missing)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid dataset_id in episode_links: {', '.join(missing)}",
+        )
 
     invalid_episode_indexes: list[str] = []
     for link in all_links:
@@ -135,7 +215,9 @@ async def _validate_episode_links(client, items: list) -> None:
         except (TypeError, ValueError):
             total_episodes = 0
         if total_episodes <= 0 or link.episode_index >= total_episodes:
-            invalid_episode_indexes.append(f"{dataset_id}:{link.episode_index} (total={total_episodes})")
+            invalid_episode_indexes.append(
+                f"{dataset_id}:{link.episode_index} (total={total_episodes})"
+            )
 
     if invalid_episode_indexes:
         raise HTTPException(
@@ -153,12 +235,18 @@ async def _validate_evaluation_blueprint_ids(client, items: list) -> None:
     if not blueprint_ids:
         return
     rows = (
-        await client.table("webui_blueprints").select("id").in_("id", list(blueprint_ids)).execute()
+        await client.table("webui_blueprints")
+        .select("id")
+        .in_("id", list(blueprint_ids))
+        .execute()
     ).data or []
     existing_ids = {str(row.get("id")) for row in rows if row.get("id")}
     missing = sorted(blueprint_ids - existing_ids)
     if missing:
-        raise HTTPException(status_code=400, detail=f"Invalid blueprint_id in evaluations: {', '.join(missing)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid blueprint_id in evaluations: {', '.join(missing)}",
+        )
 
 
 def _row_to_analysis(row: dict) -> ExperimentAnalysisModel:
@@ -224,17 +312,29 @@ async def create_experiment(request: ExperimentCreateRequest):
 @router.get("", response_model=ExperimentListResponse)
 async def list_experiments(
     model_id: Optional[str] = Query(None, description="Filter by model"),
-    profile_instance_id: Optional[str] = Query(None, description="Filter by profile instance"),
+    profile_instance_id: Optional[str] = Query(
+        None, description="Filter by profile instance"
+    ),
     updated_from: Optional[str] = Query(None, description="Updated-at lower bound"),
     updated_to: Optional[str] = Query(None, description="Updated-at upper bound"),
-    evaluation_count_min: Optional[int] = Query(None, ge=0, description="Minimum evaluation count"),
-    evaluation_count_max: Optional[int] = Query(None, ge=0, description="Maximum evaluation count"),
-    limit: int = Query(100, description="Max rows"),
-    offset: int = Query(0, description="Offset"),
+    evaluation_count_min: Optional[int] = Query(
+        None, ge=0, description="Minimum evaluation count"
+    ),
+    evaluation_count_max: Optional[int] = Query(
+        None, ge=0, description="Maximum evaluation count"
+    ),
+    limit: Annotated[
+        int, Query(ge=1, le=_MAX_EXPERIMENT_LIST_LIMIT, description="Max rows")
+    ] = 100,
+    offset: Annotated[int, Query(ge=0, description="Offset")] = 0,
 ):
     """List experiments."""
     client = await get_supabase_async_client()
-    query = client.table("experiments").select("*", count="exact").order("updated_at", desc=True)
+    query = (
+        client.table("experiments")
+        .select(_EXPERIMENT_LIST_COLUMNS, count="exact")
+        .order("updated_at", desc=True)
+    )
     if model_id:
         query = query.eq("model_id", model_id)
     if profile_instance_id:
@@ -250,11 +350,20 @@ async def list_experiments(
         query = query.gte("evaluation_count", evaluation_count_min)
     if evaluation_count_max is not None:
         query = query.lte("evaluation_count", evaluation_count_max)
-    if limit > 0:
-        query = query.range(offset, offset + limit - 1)
+    query = query.range(offset, offset + limit - 1)
     response = await query.execute()
     rows = response.data or []
-    experiments = [_row_to_experiment(row) for row in rows]
+    experiment_ids = [str(row.get("id") or "").strip() for row in rows if str(row.get("id") or "").strip()]
+    evaluation_summaries = await _fetch_evaluation_summaries(client, experiment_ids)
+    analysis_counts = await _fetch_analysis_counts(client, experiment_ids)
+    experiments = [
+        _row_to_experiment(
+            row,
+            evaluation_summary=evaluation_summaries.get(str(row.get("id") or "").strip()),
+            analysis_count=analysis_counts.get(str(row.get("id") or "").strip(), 0),
+        )
+        for row in rows
+    ]
     total = int(getattr(response, "count", len(experiments)) or 0)
     return ExperimentListResponse(experiments=experiments, total=total)
 
@@ -265,7 +374,7 @@ async def get_experiment(experiment_id: str):
     client = await get_supabase_async_client()
     rows = (
         await client.table("experiments")
-        .select("*")
+        .select(_EXPERIMENT_DETAIL_COLUMNS)
         .eq("id", experiment_id)
         .execute()
     ).data or []
@@ -309,23 +418,29 @@ async def delete_experiment(experiment_id: str):
     return {"deleted": True}
 
 
-@router.get("/{experiment_id}/evaluations", response_model=ExperimentEvaluationListResponse)
+@router.get(
+    "/{experiment_id}/evaluations", response_model=ExperimentEvaluationListResponse
+)
 async def list_experiment_evaluations(experiment_id: str):
     """List evaluations for an experiment."""
     client = await get_supabase_async_client()
     rows = (
         await client.table("experiment_evaluations")
-        .select("*")
+        .select(_EXPERIMENT_EVALUATION_COLUMNS)
         .eq("experiment_id", experiment_id)
         .order("trial_index")
         .execute()
     ).data or []
     links_by_trial = await _fetch_episode_links_map(client, experiment_id)
     evaluations = [
-        _row_to_evaluation(row, links_by_trial.get(int(row.get("trial_index") or 0), []))
+        _row_to_evaluation(
+            row, links_by_trial.get(int(row.get("trial_index") or 0), [])
+        )
         for row in rows
     ]
-    return ExperimentEvaluationListResponse(evaluations=evaluations, total=len(evaluations))
+    return ExperimentEvaluationListResponse(
+        evaluations=evaluations, total=len(evaluations)
+    )
 
 
 @router.put("/{experiment_id}/evaluations")
@@ -350,7 +465,12 @@ async def replace_experiment_evaluations(
         .eq("experiment_id", experiment_id)
         .execute()
     )
-    await client.table("experiment_evaluations").delete().eq("experiment_id", experiment_id).execute()
+    await (
+        client.table("experiment_evaluations")
+        .delete()
+        .eq("experiment_id", experiment_id)
+        .execute()
+    )
 
     if items:
         evaluation_records = []
@@ -362,13 +482,17 @@ async def replace_experiment_evaluations(
                     "experiment_id": experiment_id,
                     "trial_index": idx,
                     "value": item.value or "",
-                    "blueprint_id": str(item.blueprint_id).strip() if item.blueprint_id else None,
+                    "blueprint_id": str(item.blueprint_id).strip()
+                    if item.blueprint_id
+                    else None,
                     "image_files": item.image_files,
                     "notes": item.notes,
                     "owner_user_id": user_id,
                 }
             )
-            normalized_links: list[ExperimentEvaluationEpisodeLinkInput] = item.episode_links or []
+            normalized_links: list[ExperimentEvaluationEpisodeLinkInput] = (
+                item.episode_links or []
+            )
             seen_link_keys: set[tuple[str, int]] = set()
             for link_idx, link in enumerate(normalized_links):
                 dataset_id = link.dataset_id.strip()
@@ -385,17 +509,27 @@ async def replace_experiment_evaluations(
                         "trial_index": idx,
                         "dataset_id": dataset_id,
                         "episode_index": int(link.episode_index),
-                        "sort_order": int(link.sort_order if link.sort_order is not None else link_idx),
+                        "sort_order": int(
+                            link.sort_order if link.sort_order is not None else link_idx
+                        ),
                         "owner_user_id": user_id,
                     }
                 )
-        await client.table("experiment_evaluations").insert(evaluation_records).execute()
+        await (
+            client.table("experiment_evaluations").insert(evaluation_records).execute()
+        )
         if link_records:
-            await client.table("experiment_evaluation_episode_links").insert(link_records).execute()
+            await (
+                client.table("experiment_evaluation_episode_links")
+                .insert(link_records)
+                .execute()
+            )
     return {"updated": True, "count": len(items)}
 
 
-@router.get("/{experiment_id}/evaluation_summary", response_model=ExperimentEvaluationSummary)
+@router.get(
+    "/{experiment_id}/evaluation_summary", response_model=ExperimentEvaluationSummary
+)
 async def experiment_evaluation_summary(experiment_id: str):
     """Get evaluation summary for an experiment."""
     client = await get_supabase_async_client()
@@ -405,13 +539,7 @@ async def experiment_evaluation_summary(experiment_id: str):
         .eq("experiment_id", experiment_id)
         .execute()
     ).data or []
-    total = len(rows)
-    counts: dict[str, int] = {}
-    for row in rows:
-        value = row.get("value") or ""
-        counts[value] = counts.get(value, 0) + 1
-    rates = {key: (count / total * 100.0) for key, count in counts.items()} if total else {}
-    return ExperimentEvaluationSummary(total=total, counts=counts, rates=rates)
+    return _build_evaluation_summary([str(row.get("value") or "") for row in rows])
 
 
 @router.post("/media-urls", response_model=ExperimentMediaUrlResponse)
@@ -443,7 +571,7 @@ async def list_experiment_analyses(experiment_id: str):
     client = await get_supabase_async_client()
     rows = (
         await client.table("experiment_analyses")
-        .select("*")
+        .select(_EXPERIMENT_ANALYSIS_COLUMNS)
         .eq("experiment_id", experiment_id)
         .order("block_index")
         .execute()
@@ -464,7 +592,12 @@ async def replace_experiment_analyses(
     ).data or []
     if not existing:
         raise HTTPException(status_code=404, detail="Experiment not found")
-    await client.table("experiment_analyses").delete().eq("experiment_id", experiment_id).execute()
+    await (
+        client.table("experiment_analyses")
+        .delete()
+        .eq("experiment_id", experiment_id)
+        .execute()
+    )
 
     items = request.items or []
     if items:
@@ -488,7 +621,9 @@ async def replace_experiment_analyses(
     return {"updated": True, "count": len(items)}
 
 
-@router.patch("/{experiment_id}/analyses/{block_index}", response_model=ExperimentAnalysisModel)
+@router.patch(
+    "/{experiment_id}/analyses/{block_index}", response_model=ExperimentAnalysisModel
+)
 async def update_experiment_analysis(
     experiment_id: str,
     block_index: int,
@@ -536,8 +671,12 @@ async def delete_experiment_analysis(experiment_id: str, block_index: int):
 async def upload_experiment_images(
     experiment_id: str,
     scope: str = Query("experiment", description="experiment, evaluation, or analysis"),
-    trial_index: Optional[int] = Query(None, description="Trial index for evaluation scope"),
-    block_index: Optional[int] = Query(None, description="Block index for analysis scope"),
+    trial_index: Optional[int] = Query(
+        None, description="Trial index for evaluation scope"
+    ),
+    block_index: Optional[int] = Query(
+        None, description="Block index for analysis scope"
+    ),
     files: list[UploadFile] = File(...),
 ):
     """Upload images to R2 and return keys."""
@@ -551,9 +690,13 @@ async def upload_experiment_images(
     if scope not in {"experiment", "evaluation", "analysis"}:
         raise HTTPException(status_code=400, detail="Invalid scope")
     if scope == "evaluation" and not trial_index:
-        raise HTTPException(status_code=400, detail="trial_index is required for evaluation scope")
+        raise HTTPException(
+            status_code=400, detail="trial_index is required for evaluation scope"
+        )
     if scope == "analysis" and not block_index:
-        raise HTTPException(status_code=400, detail="block_index is required for analysis scope")
+        raise HTTPException(
+            status_code=400, detail="block_index is required for analysis scope"
+        )
 
     bucket = _get_r2_bucket()
     prefix = _get_r2_version_prefix()
@@ -574,6 +717,8 @@ async def upload_experiment_images(
         try:
             s3.client.upload_fileobj(upfile.file, bucket, key)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
+            raise HTTPException(
+                status_code=500, detail=f"Upload failed: {exc}"
+            ) from exc
         uploaded.append(key)
     return {"keys": uploaded}

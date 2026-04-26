@@ -15,6 +15,7 @@
   import { api, type BulkActionResponse } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import TableSkeletonRows from '$lib/components/TableSkeletonRows.svelte';
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
   import { formatDate, formatRelativeDate } from '$lib/format';
   import type { ListFilterField } from '$lib/listFilters';
@@ -27,6 +28,8 @@
     parsePageParam,
     parsePageSizeParam
   } from '$lib/pagination';
+  import { buildTableSkeletonRows } from '$lib/tableSkeleton';
+  import { updateSelectedId, updateSelectedPageIds } from '$lib/tableSelection';
 
   type TrainingJob = {
     job_id: string;
@@ -136,6 +139,23 @@
   const jobs = $derived($jobsQuery.data?.jobs ?? []);
   const totalJobs = $derived($jobsQuery.data?.total ?? 0);
   const displayedJobs = $derived(jobs);
+  const showJobSkeleton = $derived(
+    $jobsQuery.isLoading || ($jobsQuery.isFetching && displayedJobs.length === 0)
+  );
+  const jobSkeletonRows = $derived(
+    buildTableSkeletonRows(pageSize, 0, showJobSkeleton)
+  );
+  const jobSkeletonCells = [
+    { tdClass: 'w-12 py-3 align-middle', barClass: 'h-4 w-4', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3 text-slate-800', barClass: 'h-4 w-44 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-24 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-20 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-3 w-14 max-w-full' },
+    { tdClass: 'py-3 whitespace-nowrap', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3 whitespace-nowrap', barClass: 'h-4 w-24 max-w-full' },
+    { tdClass: 'py-3 pr-3 text-right', barClass: 'h-8 w-8', barRadiusClass: 'rounded-full', wrapperClass: 'ml-auto flex w-8 justify-center' }
+  ];
   const displayDatasetName = (datasetId?: string | null) => {
     const normalized = String(datasetId ?? '').trim();
     if (!normalized) return '-';
@@ -327,13 +347,10 @@
     bulkActionMessage = `${successLabel}（${parts.join(' / ')}）`;
   };
   const toggleAllDisplayedJobs = () => {
-    const next = new Set(selectedJobIds);
-    if (allDisplayedJobsSelected) {
-      allDisplayedJobIds.forEach((id) => next.delete(id));
-    } else {
-      allDisplayedJobIds.forEach((id) => next.add(id));
-    }
-    selectedJobIds = [...next];
+    selectedJobIds = updateSelectedPageIds(selectedJobIds, allDisplayedJobIds, !allDisplayedJobsSelected);
+  };
+  const toggleSelectedJob = (jobId: string, selected: boolean) => {
+    selectedJobIds = updateSelectedId(selectedJobIds, jobId, selected);
   };
   const handleArchiveSelectedJobs = async () => {
     resetBulkMessages();
@@ -428,6 +445,7 @@
     filterDialogOpen = false;
     const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
     if (nextHref === currentHref) return;
+    clearSelection();
     await goto(nextHref, {
       replaceState: true,
       noScroll: true,
@@ -671,8 +689,8 @@
         </tr>
       </thead>
       <tbody class="text-slate-600">
-        {#if $jobsQuery.isLoading}
-          <tr><td class="py-3" colspan="9">読み込み中...</td></tr>
+        {#if showJobSkeleton}
+          <TableSkeletonRows rows={jobSkeletonRows} cells={jobSkeletonCells} />
         {:else if displayedJobs.length}
           {#each displayedJobs as job}
             {@const jobStatus = presentJobStatus(job.status)}
@@ -691,8 +709,10 @@
                   <input
                     type="checkbox"
                     class="block h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/40"
-                    bind:group={selectedJobIds}
+                    checked={selectedJobIds.includes(job.job_id)}
                     value={job.job_id}
+                    onchange={(event) =>
+                      toggleSelectedJob(job.job_id, (event.currentTarget as HTMLInputElement).checked)}
                     aria-label={`${job.job_name ?? job.job_id} を選択`}
                   />
                 </div>

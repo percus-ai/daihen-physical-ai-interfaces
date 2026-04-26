@@ -182,15 +182,21 @@ async def _fetch_emails(user_ids: list[str]) -> dict[str, str]:
     if client is None:
         return {}
 
-    emails: dict[str, str] = {}
-    for user_id in normalized_ids:
+    async def _fetch_one(user_id: str) -> tuple[str, str | None]:
         try:
             response = await client.auth.admin.get_user_by_id(user_id)
             email = str(response.user.email or "").strip()
             if email:
-                emails[user_id] = email
+                return user_id, email
         except Exception:
-            continue
+            return user_id, None
+        return user_id, None
+
+    results = await asyncio.gather(*[_fetch_one(user_id) for user_id in normalized_ids])
+    emails: dict[str, str] = {}
+    for user_id, email in results:
+        if email:
+            emails[user_id] = email
     return emails
 
 

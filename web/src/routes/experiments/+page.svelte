@@ -6,6 +6,7 @@
   import { api } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import TableSkeletonRows from '$lib/components/TableSkeletonRows.svelte';
   import type { ListFilterField } from '$lib/listFilters';
   import { qk } from '$lib/queryKeys';
   import { formatDate, formatPercent } from '$lib/format';
@@ -19,6 +20,7 @@
     parsePageParam,
     parsePageSizeParam
   } from '$lib/pagination';
+  import { buildTableSkeletonRows } from '$lib/tableSkeleton';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import FileText from 'phosphor-svelte/lib/FileText';
@@ -37,6 +39,8 @@
     name?: string;
     evaluation_count?: number;
     metric_options?: string[] | null;
+    evaluation_summary?: EvaluationSummary | null;
+    analysis_count?: number | null;
     updated_at?: string;
   };
 
@@ -47,12 +51,8 @@
 
   type EvaluationSummary = {
     total?: number;
+    counts?: Record<string, number>;
     rates?: Record<string, number>;
-  };
-
-  type AnalysisListResponse = {
-    analyses?: Array<{ id?: string }>;
-    total?: number;
   };
 
   type RateEntry = {
@@ -98,14 +98,40 @@
     }))
   );
 
-  let summaryById = $state<Record<string, EvaluationSummary>>({});
-  let analysisById = $state<Record<string, number>>({});
-  let summariesLoading = $state(false);
-  let summariesError = $state('');
-  let summaryKey = $state('');
-
   const experiments = $derived($experimentsQuery.data?.experiments ?? []);
   const totalExperiments = $derived($experimentsQuery.data?.total ?? 0);
+  const showExperimentSkeleton = $derived(
+    $experimentsQuery.isLoading || ($experimentsQuery.isFetching && experiments.length === 0)
+  );
+  const experimentSkeletonRows = $derived(
+    buildTableSkeletonRows(pageSize, 0, showExperimentSkeleton)
+  );
+  const experimentSkeletonCells = [
+    { tdClass: 'py-3', barClass: 'h-4 w-44 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-3 w-10 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-3 w-28 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-10 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-10 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-10 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3 text-right', barClass: 'h-8 w-8', barRadiusClass: 'rounded-full', wrapperClass: 'ml-auto flex w-8 justify-center' }
+  ];
+  const summaryById = $derived.by<Record<string, EvaluationSummary>>(() =>
+    Object.fromEntries(
+      experiments.map((experiment) => [
+        experiment.id,
+        experiment.evaluation_summary ?? { total: 0, counts: {}, rates: {} }
+      ])
+    )
+  );
+  const analysisById = $derived.by<Record<string, number>>(() =>
+    Object.fromEntries(
+      experiments.map((experiment) => [experiment.id, experiment.analysis_count ?? 0])
+    )
+  );
+  const summariesLoading = $derived($experimentsQuery.isLoading);
+  const summariesError = $derived('');
   const modelMap = $derived(
     new Map(($modelsQuery.data?.models ?? []).map((model) => [model.id, model]))
   );
@@ -225,14 +251,6 @@
   };
 
   $effect(() => {
-    const key = experiments.map((exp) => exp.id).join('|');
-    if (key !== summaryKey) {
-      summaryKey = key;
-      void loadSummaries();
-    }
-  });
-
-  $effect(() => {
     if ($experimentsQuery.isLoading) {
       return;
     }
@@ -241,43 +259,6 @@
       void navigateToPage(nextPage);
     }
   });
-
-  const loadSummaries = async () => {
-    if (!experiments.length) {
-      summaryById = {};
-      analysisById = {};
-      summariesError = '';
-      return;
-    }
-    summariesLoading = true;
-    summariesError = '';
-
-    const nextSummary: Record<string, EvaluationSummary> = {};
-    const nextAnalysis: Record<string, number> = {};
-    let hasError = false;
-
-    await Promise.all(
-      experiments.map(async (exp) => {
-        try {
-          const [summary, analyses] = await Promise.all([
-            api.experiments.evaluationSummary(exp.id) as Promise<EvaluationSummary>,
-            api.experiments.analyses(exp.id) as Promise<AnalysisListResponse>
-          ]);
-          nextSummary[exp.id] = summary ?? {};
-          nextAnalysis[exp.id] = analyses?.total ?? analyses?.analyses?.length ?? 0;
-        } catch {
-          hasError = true;
-        }
-      })
-    );
-
-    summaryById = nextSummary;
-    analysisById = nextAnalysis;
-    summariesLoading = false;
-    if (hasError) {
-      summariesError = '集計情報の取得に失敗しました。';
-    }
-  };
 
   const buildRateEntries = (
     options: string[] | null | undefined,
@@ -318,7 +299,6 @@
     if (typeof refetch === 'function') {
       await refetch();
     }
-    await loadSummaries();
   };
 </script>
 
@@ -381,8 +361,8 @@
         </tr>
       </thead>
       <tbody class="text-slate-600">
-        {#if $experimentsQuery.isLoading}
-          <tr><td class="py-3" colspan="9">読み込み中...</td></tr>
+        {#if showExperimentSkeleton}
+          <TableSkeletonRows rows={experimentSkeletonRows} cells={experimentSkeletonCells} />
         {:else if experimentsError}
           <tr><td class="py-3" colspan="9">実験一覧の取得に失敗しました。</td></tr>
         {:else if experiments.length}

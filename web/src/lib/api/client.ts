@@ -494,8 +494,8 @@ export type ModelSyncJobCancelResponse = {
 };
 
 export type StorageSortOrder = 'asc' | 'desc';
-export type StorageDatasetSortBy = 'created_at' | 'updated_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'episode_count' | 'sync_status';
-export type StorageModelSortBy = 'created_at' | 'updated_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type' | 'sync_status';
+export type StorageDatasetSortBy = 'created_at' | 'updated_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'episode_count';
+export type StorageModelSortBy = 'created_at' | 'updated_at' | 'name' | 'owner_name' | 'profile_name' | 'size_bytes' | 'policy_type';
 
 export type StorageDatasetListQuery = {
   includeArchived?: boolean;
@@ -503,7 +503,6 @@ export type StorageDatasetListQuery = {
   ownerUserId?: string;
   status?: string;
   datasetType?: string;
-  syncStatus?: string;
   search?: string;
   createdFrom?: string;
   createdTo?: string;
@@ -524,7 +523,6 @@ export type StorageModelListQuery = {
   status?: string;
   policyType?: string;
   datasetId?: string;
-  syncStatus?: string;
   search?: string;
   createdFrom?: string;
   createdTo?: string;
@@ -1360,7 +1358,6 @@ export const api = {
           owner_user_id: query.ownerUserId,
           status: query.status,
           dataset_type: query.datasetType,
-          sync_status: query.syncStatus,
           search: query.search,
           created_from: query.createdFrom,
           created_to: query.createdTo,
@@ -1383,7 +1380,6 @@ export const api = {
           status: query.status,
           policy_type: query.policyType,
           dataset_id: query.datasetId,
-          sync_status: query.syncStatus,
           search: query.search,
           created_from: query.createdFrom,
           created_to: query.createdTo,

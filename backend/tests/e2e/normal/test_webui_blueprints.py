@@ -44,12 +44,14 @@ class _FakeTableQuery:
         self._table_name = table_name
         self._action = "select"
         self._payload = None
+        self._columns = "*"
         self._filters: list[tuple[str, object]] = []
         self._orders: list[tuple[str, bool]] = []
         self._limit: int | None = None
 
-    def select(self, _columns: str = "*"):
+    def select(self, columns: str = "*"):
         self._action = "select"
+        self._columns = columns
         return self
 
     def insert(self, payload):
@@ -95,6 +97,16 @@ class _FakeTableQuery:
             rows = rows[: self._limit]
         return rows
 
+    def _project_row(self, row: dict) -> dict:
+        if self._columns == "*":
+            return deepcopy(row)
+        selected_fields = [
+            field.strip() for field in self._columns.split(",") if field.strip()
+        ]
+        return {
+            field: deepcopy(row[field]) for field in selected_fields if field in row
+        }
+
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
@@ -113,7 +125,18 @@ class _FakeTableQuery:
 
     async def execute(self):
         if self._action == "select":
-            return _FakeResponse([deepcopy(row) for row in self._filtered_rows()])
+            self._client.select_calls.append(
+                {
+                    "table": self._table_name,
+                    "columns": self._columns,
+                    "filters": list(self._filters),
+                    "orders": list(self._orders),
+                    "limit": self._limit,
+                }
+            )
+            return _FakeResponse(
+                [self._project_row(row) for row in self._filtered_rows()]
+            )
 
         if self._action == "insert":
             payload = self._payload
@@ -153,6 +176,7 @@ class _FakeSupabaseClient:
             "webui_blueprints": [],
             "webui_blueprint_session_bindings": [],
         }
+        self.select_calls: list[dict] = []
 
     def table(self, table_name: str) -> _FakeTableQuery:
         return _FakeTableQuery(self, table_name)
@@ -315,6 +339,80 @@ def test_webui_blueprints_list_returns_sql_derived_last_used(client, monkeypatch
     assert len(payload["blueprints"]) == 2
 
 
+def test_webui_blueprints_list_does_not_select_blueprint_payload(client, monkeypatch):
+    fake = _setup_fake_backend(monkeypatch)
+
+    created = client.post(
+        "/api/webui/blueprints",
+        json={"name": "Main", "blueprint": webui_api._default_blueprint()},
+    )
+    assert created.status_code == 200
+
+    fake.select_calls.clear()
+    listing = client.get("/api/webui/blueprints")
+    assert listing.status_code == 200
+
+    blueprint_selects = [
+        call for call in fake.select_calls if call["table"] == "webui_blueprints"
+    ]
+    binding_selects = [
+        call
+        for call in fake.select_calls
+        if call["table"] == "webui_blueprint_session_bindings"
+    ]
+    assert blueprint_selects == [
+        {
+            "table": "webui_blueprints",
+            "columns": webui_api._BLUEPRINT_SUMMARY_COLUMNS,
+            "filters": [("owner_user_id", "user-1")],
+            "orders": [("updated_at", True)],
+            "limit": None,
+        }
+    ]
+    assert all("blueprint" not in call["columns"] for call in blueprint_selects)
+    assert binding_selects[0]["columns"] == webui_api._BINDING_SUMMARY_COLUMNS
+    assert "*" not in binding_selects[0]["columns"]
+
+
+def test_webui_blueprints_resolve_bound_blueprint_selects_single_detail(
+    client, monkeypatch
+):
+    fake = _setup_fake_backend(monkeypatch)
+
+    created = client.post(
+        "/api/webui/blueprints",
+        json={"name": "Main", "blueprint": webui_api._default_blueprint()},
+    )
+    assert created.status_code == 200
+    blueprint_id = created.json()["id"]
+
+    bind = client.put(
+        "/api/webui/blueprints/session/binding",
+        json={
+            "session_kind": "recording",
+            "session_id": "sess-001",
+            "blueprint_id": blueprint_id,
+        },
+    )
+    assert bind.status_code == 200
+
+    fake.select_calls.clear()
+    resolved = client.post(
+        "/api/webui/blueprints/session/resolve",
+        json={"session_kind": "recording", "session_id": "sess-001"},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["resolved_by"] == "binding"
+
+    blueprint_selects = [
+        call for call in fake.select_calls if call["table"] == "webui_blueprints"
+    ]
+    assert len(blueprint_selects) == 1
+    assert blueprint_selects[0]["columns"] == webui_api._BLUEPRINT_DETAIL_COLUMNS
+    assert ("id", blueprint_id) in blueprint_selects[0]["filters"]
+    assert all(call["columns"] != "*" for call in fake.select_calls)
+
+
 def test_webui_blueprints_list_tie_breaks_by_updated_at_then_id(client, monkeypatch):
     fake = _setup_fake_backend(monkeypatch)
 
@@ -372,7 +470,9 @@ def test_webui_blueprints_list_tie_breaks_by_updated_at_then_id(client, monkeypa
     )
 
 
-def test_webui_blueprints_delete_rebinds_sessions_by_last_used_priority(client, monkeypatch):
+def test_webui_blueprints_delete_rebinds_sessions_by_last_used_priority(
+    client, monkeypatch
+):
     fake = _setup_fake_backend(monkeypatch)
 
     created_a = client.post(
@@ -433,12 +533,20 @@ def test_webui_blueprints_delete_rebinds_sessions_by_last_used_priority(client, 
     assert payload["replacement_blueprint_id"] == preferred_id
     assert payload["rebound_session_count"] == 2
 
-    rebound_rows = [row for row in fake.tables["webui_blueprint_session_bindings"] if row["session_id"] in {"sess-1", "sess-2"}]
+    rebound_rows = [
+        row
+        for row in fake.tables["webui_blueprint_session_bindings"]
+        if row["session_id"] in {"sess-1", "sess-2"}
+    ]
     assert all(row["blueprint_id"] == preferred_id for row in rebound_rows)
-    assert all(row["last_used_at"] != "2000-01-01T00:00:00+00:00" for row in rebound_rows)
+    assert all(
+        row["last_used_at"] != "2000-01-01T00:00:00+00:00" for row in rebound_rows
+    )
 
 
-def test_webui_blueprints_delete_creates_default_when_no_last_used_candidate(client, monkeypatch):
+def test_webui_blueprints_delete_creates_default_when_no_last_used_candidate(
+    client, monkeypatch
+):
     fake = _setup_fake_backend(monkeypatch)
 
     created_target = client.post(

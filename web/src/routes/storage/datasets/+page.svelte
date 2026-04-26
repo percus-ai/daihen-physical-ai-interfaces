@@ -31,6 +31,7 @@
   } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
+  import TableSkeletonRows from '$lib/components/TableSkeletonRows.svelte';
   import type { ListFilterField } from '$lib/listFilters';
   import {
     DEFAULT_PAGE_SIZE,
@@ -42,6 +43,8 @@
     parsePageSizeParam
   } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
+  import { buildTableSkeletonRows } from '$lib/tableSkeleton';
+  import { updateSelectedId, updateSelectedPageIds } from '$lib/tableSelection';
   import {
     registerRealtimeTrackConsumer,
     type RealtimeTrackConsumerHandle,
@@ -100,21 +103,15 @@
       total_count?: number;
       available_count?: number;
     }>;
-    sync_status_options?: Array<{
-      value: string;
-      label: string;
-      total_count?: number;
-      available_count?: number;
-    }>;
   };
 
   type DatasetStatusTab = 'active' | 'archived';
   type DatasetRowAction = '' | 'restore' | 'delete';
-  const DATASET_SORT_KEYS = ['created_at', 'name', 'owner_name', 'profile_name', 'episode_count', 'size_bytes', 'sync_status'] as const;
+  const DATASET_SORT_KEYS = ['created_at', 'name', 'owner_name', 'profile_name', 'episode_count', 'size_bytes'] as const;
   const parseDatasetStatusTab = (value: string | null): DatasetStatusTab => (value === 'archived' ? 'archived' : 'active');
-  const parseDatasetSortKey = (value: string | null): 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status' =>
+  const parseDatasetSortKey = (value: string | null): 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' =>
     DATASET_SORT_KEYS.includes((value ?? '') as (typeof DATASET_SORT_KEYS)[number])
-      ? ((value ?? '') as 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status')
+      ? ((value ?? '') as 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes')
       : 'created_at';
   const parseSortOrder = (value: string | null): 'desc' | 'asc' => (value === 'asc' ? 'asc' : 'desc');
 
@@ -151,7 +148,6 @@
   const datasetOwnerFilter = $derived(page.url.searchParams.get('owner') || 'all');
   const datasetProfileFilter = $derived(page.url.searchParams.get('profile') || 'all');
   const datasetTypeFilter = $derived(page.url.searchParams.get('dataset_type') || 'all');
-  const datasetSyncFilter = $derived(page.url.searchParams.get('sync_status') || 'all');
   const datasetSearch = $derived(page.url.searchParams.get('search') || '');
   const datasetCreatedFrom = $derived(page.url.searchParams.get('created_from') || '');
   const datasetCreatedTo = $derived(page.url.searchParams.get('created_to') || '');
@@ -181,7 +177,6 @@
       const ownerUserId = datasetOwnerFilter === 'all' ? undefined : datasetOwnerFilter;
       const profileName = datasetProfileFilter === 'all' ? undefined : datasetProfileFilter;
       const datasetType = datasetTypeFilter === 'all' ? undefined : datasetTypeFilter;
-      const syncStatus = datasetSyncFilter === 'all' ? undefined : datasetSyncFilter;
       const search = datasetSearch || undefined;
       return {
         queryKey: qk.storage.datasets({
@@ -189,7 +184,6 @@
           ownerUserId,
           profileName,
           datasetType,
-          syncStatus,
           search,
           createdFrom: datasetCreatedFrom || undefined,
           createdTo: datasetCreatedTo || undefined,
@@ -208,7 +202,6 @@
             ownerUserId,
             profileName,
             datasetType,
-            syncStatus,
             search,
             createdFrom: datasetCreatedFrom || undefined,
             createdTo: datasetCreatedTo || undefined,
@@ -228,6 +221,12 @@
   const datasets = $derived($datasetsQuery.data?.datasets ?? []);
   const totalDatasets = $derived($datasetsQuery.data?.total ?? 0);
   const displayedDatasets = $derived(datasets);
+  const showDatasetSkeleton = $derived(
+    $datasetsQuery.isLoading || ($datasetsQuery.isFetching && displayedDatasets.length === 0)
+  );
+  const datasetSkeletonRows = $derived(
+    buildTableSkeletonRows(pageSize, 0, showDatasetSkeleton)
+  );
   const isArchiveTab = $derived(datasetStatusTab === 'archived');
   const pageDescription = $derived(
     isArchiveTab ? 'アーカイブ済みのデータセットを一覧で確認できます。' : 'アクティブなデータセットを一覧で確認できます。'
@@ -239,6 +238,30 @@
     isArchiveTab ? '条件に合うアーカイブ済みデータセットがありません。' : '条件に合うデータセットがありません。'
   );
   const datasetTableColumnCount = $derived(isArchiveTab ? 8 : 9);
+  const datasetActiveSkeletonCells = [
+    { tdClass: 'w-12 py-3 align-middle', barClass: 'h-4 w-4', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3 font-semibold text-slate-800', barClass: 'h-4 w-44 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-24 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-10 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-16 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3 text-center', barClass: 'h-3 w-16 max-w-full', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3 pr-3 text-right', barClass: 'h-8 w-8', barRadiusClass: 'rounded-full', wrapperClass: 'ml-auto flex w-8 justify-center' }
+  ];
+  const datasetArchivedSkeletonCells = [
+    { tdClass: 'w-12 py-3 align-middle', barClass: 'h-4 w-4', wrapperClass: 'flex justify-center' },
+    { tdClass: 'py-3 font-semibold text-slate-800', barClass: 'h-4 w-44 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-24 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-10 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-16 max-w-full' },
+    { tdClass: 'py-3', barClass: 'h-4 w-28 max-w-full' },
+    { tdClass: 'py-3 pr-3 text-right', barClass: 'h-8 w-8', barRadiusClass: 'rounded-full', wrapperClass: 'ml-auto flex w-8 justify-center' }
+  ];
+  const datasetSkeletonCells = $derived(
+    isArchiveTab ? datasetArchivedSkeletonCells : datasetActiveSkeletonCells
+  );
 
   const creatorLabel = (value?: string | null) => {
     const normalized = String(value ?? '').trim();
@@ -279,7 +302,6 @@
   const datasetOwnerOptions = $derived($datasetsQuery.data?.owner_options ?? []);
   const datasetProfileOptions = $derived($datasetsQuery.data?.profile_options ?? []);
   const datasetTypeOptions = $derived($datasetsQuery.data?.dataset_type_options ?? []);
-  const datasetSyncOptions = $derived($datasetsQuery.data?.sync_status_options ?? []);
   const withAllOption = (
     currentValue: string,
     options: Array<{ value: string; label: string; available_count?: number }>
@@ -313,13 +335,11 @@
   });
   const datasetProfileSelectOptions = $derived(withAllOption(datasetProfileFilter, datasetProfileOptions));
   const datasetTypeSelectOptions = $derived(withAllOption(datasetTypeFilter, datasetTypeOptions));
-  const datasetSyncSelectOptions = $derived(withAllOption(datasetSyncFilter, datasetSyncOptions));
   const datasetFilterDefaults = {
     search: '',
     owner: 'all',
     profile: 'all',
     dataset_type: 'all',
-    sync_status: 'all',
     created_from: '',
     created_to: '',
     size_min: '',
@@ -333,7 +353,6 @@
     owner: datasetOwnerFilter,
     profile: datasetProfileFilter,
     dataset_type: datasetTypeFilter,
-    sync_status: datasetSyncFilter,
     created_from: datasetCreatedFrom,
     created_to: datasetCreatedTo,
     size_min: datasetSizeMin,
@@ -370,13 +389,6 @@
       key: 'dataset_type',
       label: '種別',
       options: datasetTypeSelectOptions
-    },
-    {
-      section: '条件',
-      type: 'select',
-      key: 'sync_status',
-      label: '同期状態',
-      options: datasetSyncSelectOptions
     },
     {
       section: '期間・範囲',
@@ -420,7 +432,6 @@
       datasetOwnerFilter !== 'all' ||
       datasetProfileFilter !== 'all' ||
       datasetTypeFilter !== 'all' ||
-      datasetSyncFilter !== 'all' ||
       Boolean(datasetCreatedFrom) ||
       Boolean(datasetCreatedTo) ||
       Boolean(datasetSizeMin) ||
@@ -529,7 +540,7 @@
       owner: values.owner !== 'all' ? values.owner : null,
       profile: values.profile !== 'all' ? values.profile : null,
       dataset_type: values.dataset_type !== 'all' ? values.dataset_type : null,
-      sync_status: values.sync_status !== 'all' ? values.sync_status : null,
+      sync_status: null,
       search: values.search || null,
       created_from: values.created_from || null,
       created_to: values.created_to || null,
@@ -545,6 +556,7 @@
     filterDialogOpen = false;
     const currentHref = `${page.url.pathname}${page.url.search}${page.url.hash}`;
     if (nextHref === currentHref) return;
+    clearSelection();
     await goto(nextHref, {
       replaceState: true,
       noScroll: true,
@@ -572,17 +584,6 @@
     if (currentStatusTab === previousStatusTab) return;
     previousStatusTab = currentStatusTab;
     resetViewState();
-  });
-
-  $effect(() => {
-    const visibleIds = new Set(displayedDatasets.map((dataset) => dataset.id));
-    const nextSelectedIds = selectedIds.filter((id) => visibleIds.has(id));
-    if (
-      nextSelectedIds.length !== selectedIds.length ||
-      nextSelectedIds.some((id, index) => id !== selectedIds[index])
-    ) {
-      selectedIds = nextSelectedIds;
-    }
   });
 
   $effect(() => {
@@ -830,11 +831,11 @@
   }
 
   const toggleSelectAllDisplayedDatasets = () => {
-    if (allDisplayedDatasetsSelected) {
-      selectedIds = selectedIds.filter((id) => !allDisplayedDatasetIds.includes(id));
-      return;
-    }
-    selectedIds = Array.from(new Set([...selectedIds, ...allDisplayedDatasetIds]));
+    selectedIds = updateSelectedPageIds(selectedIds, allDisplayedDatasetIds, !allDisplayedDatasetsSelected);
+  };
+
+  const toggleSelectedDataset = (datasetId: string, selected: boolean) => {
+    selectedIds = updateSelectedId(selectedIds, datasetId, selected);
   };
 
   const openViewer = (datasetId: string) => {
@@ -906,8 +907,8 @@
     mergeDialogOpen = true;
   };
 
-  const isSortedBy = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status') => datasetSortKey === key;
-  const sortIconFor = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status') =>
+  const isSortedBy = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes') => datasetSortKey === key;
+  const sortIconFor = (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes') =>
     !isSortedBy(key) ? CaretUpDown : datasetSortOrder === 'asc' ? ArrowUp : ArrowDown;
   const NameSortIcon = $derived(sortIconFor('name'));
   const OwnerSortIcon = $derived(sortIconFor('owner_name'));
@@ -915,8 +916,7 @@
   const EpisodeSortIcon = $derived(sortIconFor('episode_count'));
   const SizeSortIcon = $derived(sortIconFor('size_bytes'));
   const CreatedAtSortIcon = $derived(sortIconFor('created_at'));
-  const SyncSortIcon = $derived(sortIconFor('sync_status'));
-  const handleSortChange = async (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes' | 'sync_status') => {
+  const handleSortChange = async (key: 'created_at' | 'name' | 'owner_name' | 'profile_name' | 'episode_count' | 'size_bytes') => {
     const nextOrder: 'asc' | 'desc' = datasetSortKey === key ? (datasetSortOrder === 'asc' ? 'desc' : 'asc') : 'desc';
     const nextHref = buildUrlWithQueryState(page.url, {
       sort: key !== 'created_at' || nextOrder !== 'desc' ? key : null,
@@ -1532,12 +1532,7 @@
           </th>
           {#if !isArchiveTab}
             <th class="pb-3 text-center">
-              <div class="flex justify-center">
-                <button class={sortableHeaderButtonClass} type="button" onclick={() => void handleSortChange('sync_status')}>
-                  同期状態
-                  <SyncSortIcon size={14} class={sortIconClass} />
-                </button>
-              </div>
+              <div class="flex justify-center">同期状態</div>
             </th>
           {/if}
           <th class="w-14 pb-3 pr-3">
@@ -1546,8 +1541,8 @@
         </tr>
       </thead>
       <tbody class="text-slate-600">
-        {#if $datasetsQuery.isLoading}
-          <tr><td class="py-3" colspan={datasetTableColumnCount}>読み込み中...</td></tr>
+        {#if showDatasetSkeleton}
+          <TableSkeletonRows rows={datasetSkeletonRows} cells={datasetSkeletonCells} />
         {:else if displayedDatasets.length}
           {#each displayedDatasets as dataset}
             {@const activeJob = activeJobOf(dataset.id)}
@@ -1567,8 +1562,10 @@
                   <input
                     type="checkbox"
                     class="block h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/40"
-                    bind:group={selectedIds}
+                    checked={selectedIds.includes(dataset.id)}
                     value={dataset.id}
+                    onchange={(event) =>
+                      toggleSelectedDataset(dataset.id, (event.currentTarget as HTMLInputElement).checked)}
                   />
                 </div>
               </td>
