@@ -1407,7 +1407,7 @@
                   <div class="flex justify-center">
                     {#if syncStatus.kind === 'progress' && activeJob}
                       <button
-                        class="text-xs font-semibold text-brand hover:underline"
+                        class="text-xs font-semibold text-brand underline underline-offset-2 transition-colors hover:text-brand-hover hover:decoration-brand-hover"
                         type="button"
                         onclick={() => openModelSyncModal(activeJob.job_id)}
                       >
@@ -1415,7 +1415,7 @@
                       </button>
                     {:else if !isModelLocal(model) && !isArchiveTab}
                       <button
-                        class="text-xs font-semibold text-brand hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
+                        class="text-xs font-semibold text-brand underline underline-offset-2 transition-colors hover:text-brand-hover hover:decoration-brand-hover disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline disabled:hover:text-slate-400"
                         type="button"
                         disabled={isSyncButtonDisabled(model)}
                         onclick={() => void handleSyncModel(model)}

@@ -1071,7 +1071,7 @@
               <td class="py-3">
                 {#if recording.continuable}
                   <a
-                    class="text-brand underline"
+                    class="text-brand underline underline-offset-2 transition-colors hover:text-brand-hover hover:decoration-brand-hover"
                     href={`/record/new?continue_from_dataset_id=${encodeURIComponent(recording.recording_id)}`}
                   >
                     {recording.dataset_name ?? recording.recording_id}
@@ -1089,7 +1089,7 @@
                 <div class="flex flex-col items-center gap-1">
                   {#if uploadCellStatus.kind === 'progress'}
                     <button
-                      class="text-xs font-semibold text-brand hover:underline"
+                      class="text-xs font-semibold text-brand underline underline-offset-2 transition-colors hover:text-brand-hover hover:decoration-brand-hover"
                       type="button"
                       onclick={() => openUploadProgressModal(recording.recording_id)}
                     >

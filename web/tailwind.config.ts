@@ -12,6 +12,7 @@ export default {
         steel: '#1f232d',
         fog: '#f6f7fb',
         brand: '#5b7cfa',
+        'brand-hover': '#4968ea',
         aurora: '#30d5c8'
       },
       boxShadow: {

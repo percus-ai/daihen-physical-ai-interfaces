@@ -376,7 +376,7 @@
                       {#snippet child({ props })}
                         <a
                           {...props}
-                          class="text-xs font-semibold text-brand underline underline-offset-2"
+                          class="text-xs font-semibold text-brand underline underline-offset-2 transition-colors hover:text-brand-hover hover:decoration-brand-hover"
                           href={`/storage/models/${exp.model_id}`}
                         >
                           開く
