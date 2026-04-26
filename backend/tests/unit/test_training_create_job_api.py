@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -108,6 +110,81 @@ def test_job_create_request_allows_pretrained_initialization_with_base_model_pat
     assert request.policy.initialization == "pretrained"
     assert request.policy.pretrained_path is None
     assert request.policy.base_model_path == "nvidia/GR00T-N1.5-3B"
+
+
+def test_job_info_derives_profile_name_from_dataset_profile_snapshot():
+    from interfaces_backend.models.training import JobInfo
+
+    now = datetime.now(timezone.utc)
+
+    job = JobInfo(
+        job_id="job-1",
+        job_name="job-1",
+        instance_id="",
+        status="starting",
+        dataset_id="dataset-1",
+        profile_snapshot={"profile_name": "so101_single_teleop"},
+        mode="train",
+        created_at=now,
+        updated_at=now,
+    )
+
+    assert job.profile_name == "so101_single_teleop"
+    assert job.profile_snapshot == {"profile_name": "so101_single_teleop"}
+
+
+def test_resolve_profile_info_uses_dataset_profile_with_owner_filter(monkeypatch):
+    import interfaces_backend.api.training as training_api
+
+    calls: dict[str, Any] = {}
+
+    class _FakeQuery:
+        def __init__(self) -> None:
+            self.filters: list[tuple[str, str]] = []
+
+        def select(self, fields: str):
+            calls["select"] = fields
+            return self
+
+        def eq(self, field: str, value: str):
+            self.filters.append((field, value))
+            return self
+
+        async def execute(self):
+            calls["filters"] = list(self.filters)
+            return SimpleNamespace(
+                data=[
+                    {
+                        "profile_instance_id": None,
+                        "profile_name": "so101_single_teleop",
+                        "profile_snapshot": None,
+                    }
+                ]
+            )
+
+    class _FakeClient:
+        def table(self, table_name: str):
+            calls["table"] = table_name
+            return _FakeQuery()
+
+    async def fake_service_client():
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        training_api,
+        "get_supabase_service_client_required",
+        fake_service_client,
+    )
+
+    profile_instance_id, profile_snapshot = asyncio.run(
+        training_api._resolve_profile_info("dataset-1", owner_user_id="user-1")
+    )
+
+    assert profile_instance_id is None
+    assert profile_snapshot == {"name": "so101_single_teleop"}
+    assert calls["table"] == "datasets"
+    assert calls["select"] == "profile_instance_id,profile_name,profile_snapshot"
+    assert calls["filters"] == [("id", "dataset-1"), ("owner_user_id", "user-1")]
 
 
 def test_build_pipeline_config_preserves_explicit_scratch_initialization():

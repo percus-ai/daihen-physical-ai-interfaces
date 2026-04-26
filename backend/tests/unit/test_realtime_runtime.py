@@ -308,11 +308,13 @@ def test_training_job_log_stream_emits_append_frames(monkeypatch):
             *,
             lines: int,
             log_type: str,
+            startup_wait_seconds: int,
             on_lines,
         ):
             assert _conn is fake_conn
             assert lines == 30
             assert log_type == "setup"
+            assert startup_wait_seconds == training_api._TRAINING_LOG_STREAM_STARTUP_WAIT_SECONDS
             on_lines(["setup line 1", "setup line 2"])
             on_lines(["setup line 3"])
 
@@ -405,3 +407,41 @@ def test_training_job_log_stream_returns_ip_missing_without_polling(monkeypatch)
         assert load_count == 1
 
     asyncio.run(_run())
+
+
+def test_setup_log_follow_command_waits_for_tmux_source_startup():
+    import interfaces_backend.api.training as training_api
+
+    command = training_api._build_follow_training_log_command(
+        {
+            "remote_base_dir": "/root/.physical-ai",
+            "mode": "train",
+        },
+        lines=30,
+        log_type="setup",
+        startup_wait_seconds=120,
+    )
+
+    assert "log_file=/root/.physical-ai/run/setup_env_train.log" in command
+    assert "session_name=instance_setup" in command
+    assert "[ ! -e \"$log_file\" ] && ! tmux has-session -t \"$session_name\"" in command
+    assert "tail -n 30 -F -- \"$log_file\"" in command
+
+
+def test_training_log_follow_command_waits_for_tmux_source_startup():
+    import interfaces_backend.api.training as training_api
+
+    command = training_api._build_follow_training_log_command(
+        {
+            "remote_base_dir": "/root/.physical-ai",
+            "mode": "train",
+        },
+        lines=30,
+        log_type="training",
+        startup_wait_seconds=120,
+    )
+
+    assert "log_file=/root/.physical-ai/run/training_train.log" in command
+    assert "session_name=training_run" in command
+    assert "[ ! -e \"$log_file\" ] && ! tmux has-session -t \"$session_name\"" in command
+    assert "tail -n 30 -F -- \"$log_file\"" in command

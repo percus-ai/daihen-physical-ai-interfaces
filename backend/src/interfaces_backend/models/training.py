@@ -8,6 +8,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from interfaces_backend.services.profile_snapshot import extract_profile_name
+
 
 class JobStatus(str, Enum):
     """Training job status."""
@@ -51,6 +53,7 @@ class JobInfo(BaseModel):
     dataset_id: Optional[str] = None
     dataset_name: Optional[str] = None
     profile_instance_id: Optional[str] = None
+    profile_name: Optional[str] = None
     profile_snapshot: Optional[dict] = None
     policy_type: Optional[str] = None
     failure_reason: Optional[str] = None
@@ -82,6 +85,20 @@ class JobInfo(BaseModel):
     deleted_at: Optional[datetime] = None
 
     model_config = ConfigDict(use_enum_values=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_profile_name_from_snapshot(cls, value):
+        if not isinstance(value, dict):
+            return value
+        if value.get("profile_name"):
+            return value
+        profile_name = extract_profile_name(value.get("profile_snapshot"))
+        if not profile_name:
+            return value
+        next_value = dict(value)
+        next_value["profile_name"] = profile_name
+        return next_value
 
     @field_validator(
         "created_at",

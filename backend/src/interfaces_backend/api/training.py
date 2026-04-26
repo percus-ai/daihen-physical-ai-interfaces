@@ -201,6 +201,7 @@ DB_TABLE = "training_jobs"
 _REQUIRED_VAST_ENV_VARS = ("VAST_API_KEY", "VAST_SSH_PRIVATE_KEY")
 _LIVE_JOB_STATUSES = {"queued", "starting", "deploying", "running"}
 _TRAINING_LOG_STREAM_SSH_TIMEOUT_SECONDS = 8
+_TRAINING_LOG_STREAM_STARTUP_WAIT_SECONDS = 120
 _training_log_stream_tasks: dict[tuple[str, str, TrainingJobLogType], asyncio.Task[None]] = {}
 _training_log_stream_tail_lines: dict[tuple[str, str, TrainingJobLogType], int] = {}
 
@@ -1317,12 +1318,6 @@ def _update_cleanup_status_sync(job_id: str, status: str) -> None:
     _run_async(_update_cleanup_status(job_id, status))
 
 
-def _resolve_profile_info_sync(
-    dataset_id: Optional[str],
-) -> tuple[Optional[str], Optional[dict]]:
-    return _run_async(_resolve_profile_info(dataset_id))
-
-
 async def _update_cleanup_status(job_id: str, status: str) -> None:
     job_data = await _load_job(job_id, include_deleted=True)
     if not job_data:
@@ -1333,22 +1328,32 @@ async def _update_cleanup_status(job_id: str, status: str) -> None:
 
 async def _resolve_profile_info(
     dataset_id: Optional[str],
+    *,
+    owner_user_id: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[dict]]:
     if not dataset_id:
         return None, None
 
     async def _fetch_with(client: AsyncClient) -> list[dict]:
-        return (
-            await client.table("datasets")
-            .select("profile_instance_id,profile_snapshot")
+        query = (
+            client.table("datasets")
+            .select("profile_instance_id,profile_name,profile_snapshot")
             .eq("id", dataset_id)
-            .execute()
-        ).data or []
+        )
+        normalized_owner = str(owner_user_id or "").strip()
+        if normalized_owner:
+            query = query.eq("owner_user_id", normalized_owner)
+        return (await query.execute()).data or []
 
-    rows = await _fetch_with(await get_supabase_async_client())
+    rows = await _fetch_with(await get_supabase_service_client_required())
 
     if rows:
-        return rows[0].get("profile_instance_id"), rows[0].get("profile_snapshot")
+        row = rows[0]
+        profile_snapshot = row.get("profile_snapshot")
+        if not isinstance(profile_snapshot, dict):
+            profile_name = str(row.get("profile_name") or "").strip()
+            profile_snapshot = {"name": profile_name} if profile_name else None
+        return row.get("profile_instance_id"), profile_snapshot
     return None, None
 
 
@@ -1405,7 +1410,8 @@ async def _upsert_model_for_job(job_data: dict) -> None:
     profile_snapshot = job_data.get("profile_snapshot")
     if not profile_instance_id:
         profile_instance_id, profile_snapshot = await _resolve_profile_info(
-            job_data.get("dataset_id")
+            job_data.get("dataset_id"),
+            owner_user_id=job_data.get("owner_user_id"),
         )
     if not model_id:
         logger.warning("Model upsert skipped (model_id missing)")
@@ -3362,6 +3368,7 @@ def _build_follow_training_log_command(
     *,
     lines: int,
     log_type: str,
+    startup_wait_seconds: int = _TRAINING_LOG_STREAM_STARTUP_WAIT_SECONDS,
 ) -> str:
     log_file = (
         _get_setup_log_file_path(job_data)
@@ -3369,12 +3376,20 @@ def _build_follow_training_log_command(
         else _get_training_log_file_path(job_data)
     )
     safe_lines = max(1, min(int(lines), 10000))
+    safe_startup_wait_seconds = max(0, min(int(startup_wait_seconds), 600))
     session_name = _get_training_log_tmux_session_name(log_type)
     return textwrap.dedent(
         f"""\
         set -u
         log_file={shlex.quote(log_file)}
         session_name={shlex.quote(session_name)}
+        startup_deadline=$(( $(date +%s) + {safe_startup_wait_seconds} ))
+        while [ ! -e "$log_file" ] && ! tmux has-session -t "$session_name" 2>/dev/null; do
+            if [ "$(date +%s)" -ge "$startup_deadline" ]; then
+                exit 0
+            fi
+            sleep 1
+        done
         tail -n {safe_lines} -F -- "$log_file" 2>/dev/null &
         tail_pid=$!
         trap 'kill "$tail_pid" 2>/dev/null || true' EXIT INT TERM
@@ -3394,12 +3409,14 @@ def _stream_training_log_lines_from_connection(
     *,
     lines: int,
     log_type: str,
+    startup_wait_seconds: int,
     on_lines: Callable[[list[str]], None],
 ) -> None:
     command = _build_follow_training_log_command(
         job_data,
         lines=lines,
         log_type=log_type,
+        startup_wait_seconds=startup_wait_seconds,
     )
     _stdin, stdout, _stderr = conn.client.exec_command(command)
     try:
@@ -3539,6 +3556,7 @@ async def _run_training_log_stream(
             job_data,
             lines=tail_lines,
             log_type=log_type,
+            startup_wait_seconds=_TRAINING_LOG_STREAM_STARTUP_WAIT_SECONDS,
             on_lines=publish_lines,
         )
 
@@ -6589,7 +6607,10 @@ async def create_continue_job(
         )
 
         # Save job info (status: starting)
-        profile_instance_id, profile_snapshot = await _resolve_profile_info(dataset_id)
+        profile_instance_id, profile_snapshot = await _resolve_profile_info(
+            dataset_id,
+            owner_user_id=get_current_user_id(),
+        )
         job_data = {
             "job_id": job_id,
             "job_name": job_name,
