@@ -40,6 +40,8 @@
     active?: boolean;
     session_id?: string | null;
     recording_dataset_id?: string | null;
+    recording_active?: boolean;
+    awaiting_continue_confirmation?: boolean;
   };
 
   type InferenceRunnerStatusResponse = {
@@ -48,7 +50,7 @@
 
   const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>(
     toStore(() => ({
-      queryKey: ['inference', 'runner', 'status', 'controls', sessionKind, sessionId],
+      queryKey: ['inference', 'runner', 'status'],
       queryFn: api.inference.runnerStatus,
       enabled: sessionKind === 'inference'
     }))
@@ -101,7 +103,12 @@
             ? '推論と録画の一時停止リクエストを受け付けました。'
             : '一時停止リクエストを受け付けました。'
       }
-    );
+    ).then(async (success) => {
+      if (success && sessionKind === 'inference') {
+        await $inferenceRunnerStatusQuery.refetch?.();
+      }
+      return success;
+    });
   const handleResume = async () =>
     runAction(
       '再開',
@@ -112,7 +119,12 @@
             ? '推論と録画の再開リクエストを受け付けました。'
             : '再開リクエストを受け付けました。'
       }
-    );
+    ).then(async (success) => {
+      if (success && sessionKind === 'inference') {
+        await $inferenceRunnerStatusQuery.refetch?.();
+      }
+      return success;
+    });
   const openConfirm = (options: {
     title: string;
     description: string;
@@ -138,9 +150,12 @@
   };
   const handleStart = async () => {
     if (sessionKind === 'inference') {
-      await runAction('開始', () => api.inference.resumeRunner(), {
+      const success = await runAction('開始', () => api.inference.resumeRunner(), {
         successToast: '推論と録画の開始リクエストを受け付けました。状態反映を待っています。'
       });
+      if (success) {
+        await $inferenceRunnerStatusQuery.refetch?.();
+      }
       return;
     }
     if (!sessionId) return;
@@ -339,22 +354,34 @@
     const value = (status as Record<string, unknown>)?.dataset_id;
     return typeof value === 'string' ? value : '';
   });
+  const inferenceRunnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
+  const inferenceRecordingDatasetId = $derived(String(inferenceRunnerStatus.recording_dataset_id ?? '').trim());
+  const expectedStatusDatasetId = $derived(
+    sessionKind === 'inference' ? inferenceRecordingDatasetId : sessionId
+  );
   const statusState = $derived.by(() => {
     const state = (status as Record<string, unknown>)?.state ?? (status as Record<string, unknown>)?.status ?? '';
-    if (!sessionId) return String(state);
-    if (!statusDatasetId || statusDatasetId !== sessionId) return 'inactive';
+    if (sessionKind === 'inference') {
+      if (inferenceRunnerStatus.awaiting_continue_confirmation) return 'completed';
+      if (inferenceRunnerStatus.recording_active) {
+        if (!statusDatasetId || !expectedStatusDatasetId || statusDatasetId === expectedStatusDatasetId) {
+          return String(state || 'recording');
+        }
+      }
+    }
+    if (!expectedStatusDatasetId) return String(state || 'inactive');
+    if (!statusDatasetId || statusDatasetId !== expectedStatusDatasetId) return 'inactive';
     return String(state);
   });
   const datasetId = $derived.by(() => {
     const value = (status as Record<string, unknown>)?.dataset_id;
-    return typeof value === 'string' ? value : sessionId;
+    return typeof value === 'string' && value ? value : expectedStatusDatasetId || sessionId;
   });
   const completedEpisodeCount = $derived(
     asNumber((status as Record<string, unknown>)?.episode_count ?? 0, 0)
   );
   const statusPhase = $derived(String((status as Record<string, unknown>)?.phase ?? 'wait'));
   const isFinalizing = $derived(statusPhase === 'finalizing');
-  const inferenceRunnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
   const inferenceSessionMatches = $derived.by(() => {
     if (sessionKind !== 'inference') return false;
     if (!sessionId) return false;
