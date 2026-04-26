@@ -2,7 +2,7 @@
   import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { Button, DropdownMenu } from 'bits-ui';
+  import { Button, DropdownMenu, Tooltip } from 'bits-ui';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import Archive from 'phosphor-svelte/lib/Archive';
   import ArrowDown from 'phosphor-svelte/lib/ArrowDown';
@@ -12,11 +12,18 @@
   import PencilSimple from 'phosphor-svelte/lib/PencilSimple';
   import XCircle from 'phosphor-svelte/lib/XCircle';
   import { toStore } from 'svelte/store';
-  import { api, type BulkActionResponse } from '$lib/api/client';
+  import {
+    api,
+    type BulkActionResponse,
+    type CheckpointDetailResponse,
+    type TrainingJobOperationStatusResponse,
+    type TrainingJobOperationsResponse
+  } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
   import TableSkeletonRows from '$lib/components/TableSkeletonRows.svelte';
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
+  import TrainingJobLossPreview from '$lib/components/training/TrainingJobLossPreview.svelte';
   import { formatDate, formatRelativeDate } from '$lib/format';
   import type { ListFilterField } from '$lib/listFilters';
   import {
@@ -43,6 +50,8 @@
     status?: string;
     created_at?: string;
     updated_at?: string;
+    started_at?: string | null;
+    completed_at?: string | null;
   };
 
   type JobListResponse = {
@@ -69,6 +78,22 @@
       available_count?: number;
     }>;
   };
+  type MetricPoint = { step?: number; loss?: number; ts?: string };
+  type MetricsResponse = {
+    train?: MetricPoint[];
+    val?: MetricPoint[];
+  };
+  type TrainingPreviewConfig = {
+    training?: {
+      steps?: number | null;
+      save_freq?: number | null;
+      save_checkpoint?: boolean | null;
+    } | null;
+  };
+  type TrainingJobDetailResponse = {
+    job?: TrainingJob;
+    training_config?: TrainingPreviewConfig | null;
+  };
   const JOB_SORT_KEYS = ['created_at', 'updated_at', 'job_name', 'owner_name', 'policy_type', 'status'] as const;
   const parseJobSortKey = (value: string | null): 'created_at' | 'updated_at' | 'job_name' | 'owner_name' | 'policy_type' | 'status' =>
     JOB_SORT_KEYS.includes((value ?? '') as (typeof JOB_SORT_KEYS)[number])
@@ -89,6 +114,7 @@
   let renamePending = $state(false);
   let renameError = $state('');
   let selectAllCheckbox: HTMLInputElement | null = null;
+  let lossPreviewJobId = $state('');
   const queryClient = useQueryClient();
   const jobSortKey = $derived(parseJobSortKey(page.url.searchParams.get('sort')));
   const jobSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
@@ -133,6 +159,49 @@
           limit: pageSize,
           offset: (currentPage - 1) * pageSize
         })
+    }))
+  );
+  const lossPreviewQuery = createQuery<MetricsResponse>(
+    toStore(() => ({
+      queryKey: ['training', 'job', lossPreviewJobId, 'metrics-preview'],
+      queryFn: () => api.training.metrics(lossPreviewJobId, 2000, false) as Promise<MetricsResponse>,
+      enabled: Boolean(lossPreviewJobId),
+      staleTime: 15_000
+    }))
+  );
+  const lossPreviewDetailQuery = createQuery<TrainingJobDetailResponse>(
+    toStore(() => ({
+      queryKey: ['training', 'job', lossPreviewJobId, 'detail-preview'],
+      queryFn: () => api.training.job(lossPreviewJobId) as Promise<TrainingJobDetailResponse>,
+      enabled: Boolean(lossPreviewJobId),
+      staleTime: 30_000
+    }))
+  );
+  const lossPreviewCheckpointDetailQuery = createQuery<CheckpointDetailResponse | null>(
+    toStore(() => {
+      const checkpointJobName = String($lossPreviewDetailQuery.data?.job?.job_name ?? '').trim();
+      return {
+        queryKey: ['training', 'checkpoint-detail-preview', checkpointJobName],
+        queryFn: async () => {
+          if (!checkpointJobName) return null;
+          try {
+            return await api.training.checkpointDetail(checkpointJobName);
+          } catch {
+            return null;
+          }
+        },
+        enabled: Boolean(lossPreviewJobId && checkpointJobName),
+        retry: false,
+        staleTime: 30_000
+      };
+    })
+  );
+  const lossPreviewOperationsQuery = createQuery<TrainingJobOperationsResponse>(
+    toStore(() => ({
+      queryKey: ['training', 'job', lossPreviewJobId, 'operations-preview'],
+      queryFn: () => api.training.jobOperations(lossPreviewJobId),
+      enabled: Boolean(lossPreviewJobId),
+      staleTime: 5_000
     }))
   );
 
@@ -189,6 +258,95 @@
     if (presentation.tone === 'muted') return 'text-slate-500';
     return 'text-slate-600';
   };
+  const isRunningJobStatus = (status?: string | null) =>
+    String(status ?? '').trim().toLowerCase() === 'running';
+  const activateLossPreview = (jobId: string) => {
+    lossPreviewJobId = jobId;
+  };
+  const asPositiveNumber = (value: unknown): number | null => {
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+  };
+  const lossPreviewMetrics = $derived($lossPreviewQuery.data ?? null);
+  const lossPreviewDetail = $derived($lossPreviewDetailQuery.data ?? null);
+  const lossPreviewConfig = $derived(lossPreviewDetail?.training_config ?? null);
+  const lossPreviewTrainingConfig = $derived(lossPreviewConfig?.training ?? null);
+  const lossPreviewTrainSeries = $derived(
+    (lossPreviewMetrics?.train ?? [])
+      .filter((point: MetricPoint) => typeof point.step === 'number' && typeof point.loss === 'number')
+      .map((point: MetricPoint) => ({
+        step: point.step as number,
+        loss: point.loss as number,
+        ts: typeof point.ts === 'string' ? point.ts : null
+      }))
+  );
+  const lossPreviewValSeries = $derived(
+    (lossPreviewMetrics?.val ?? [])
+      .filter((point: MetricPoint) => typeof point.step === 'number' && typeof point.loss === 'number')
+      .map((point: MetricPoint) => ({
+        step: point.step as number,
+        loss: point.loss as number,
+        ts: typeof point.ts === 'string' ? point.ts : null
+      }))
+  );
+  const lossPreviewTotalSteps = $derived(asPositiveNumber(lossPreviewTrainingConfig?.steps));
+  const lossPreviewSaveFreq = $derived(asPositiveNumber(lossPreviewTrainingConfig?.save_freq));
+  const lossPreviewSaveCheckpoint = $derived(lossPreviewTrainingConfig?.save_checkpoint !== false);
+  const parseCheckpointStep = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+    const parsed = Number(String(value ?? '').trim());
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return Math.floor(parsed);
+  };
+  const getLatestOperationByKind = (
+    operations: TrainingJobOperationStatusResponse[] | undefined,
+    kind: 'checkpoint_upload' | 'rescue_cpu'
+  ): TrainingJobOperationStatusResponse | null => {
+    return (
+      (operations ?? [])
+        .filter((item) => item.kind === kind)
+        .sort((left, right) => String(right.updated_at ?? '').localeCompare(String(left.updated_at ?? '')))[0] ??
+      null
+    );
+  };
+  const lossPreviewCheckpointDetail = $derived($lossPreviewCheckpointDetailQuery.data ?? null);
+  const lossPreviewOperations = $derived($lossPreviewOperationsQuery.data?.operations ?? []);
+  const lossPreviewCheckpointOperation = $derived(
+    getLatestOperationByKind(lossPreviewOperations, 'checkpoint_upload')
+  );
+  const lossPreviewUploadedCheckpointSteps = $derived.by<number[]>(() => {
+    const steps = new Set<number>();
+    for (const step of lossPreviewCheckpointDetail?.available_steps ?? []) {
+      const parsed = parseCheckpointStep(step);
+      if (parsed !== null) steps.add(parsed);
+    }
+    if (lossPreviewCheckpointOperation?.state === 'completed') {
+      const resultStep = parseCheckpointStep(lossPreviewCheckpointOperation.result?.step);
+      if (resultStep !== null) steps.add(resultStep);
+    }
+    return [...steps].sort((left, right) => left - right);
+  });
+  const lossPreviewActiveCheckpointUploadStep = $derived.by<number | null>(() => {
+    if (
+      lossPreviewCheckpointOperation?.state !== 'queued' &&
+      lossPreviewCheckpointOperation?.state !== 'running'
+    ) {
+      return null;
+    }
+    return (
+      parseCheckpointStep(lossPreviewCheckpointOperation?.detail?.step) ??
+      parseCheckpointStep(lossPreviewCheckpointOperation?.detail?.checkpoint_name) ??
+      parseCheckpointStep(lossPreviewCheckpointOperation?.result?.step)
+    );
+  });
+  const lossPreviewStartedAt = $derived(lossPreviewDetail?.job?.started_at ?? null);
+  const lossPreviewUpdatedAt = $derived(lossPreviewDetail?.job?.updated_at ?? null);
+  const lossPreviewLoading = $derived(Boolean($lossPreviewQuery.isFetching || $lossPreviewDetailQuery.isFetching));
+  const lossPreviewError = $derived(
+    $lossPreviewQuery.error instanceof Error ? $lossPreviewQuery.error.message : ''
+  );
   const jobOwnerOptions = $derived($jobsQuery.data?.owner_options ?? []);
   const jobStatusOptions = $derived($jobsQuery.data?.status_options ?? []);
   const jobPolicyOptions = $derived($jobsQuery.data?.policy_options ?? []);
@@ -730,9 +888,49 @@
               </td>
               <td class="py-3">{job.policy_type ?? '-'}</td>
               <td class="py-3">
-                <span class={`text-xs font-semibold ${jobStatusClass(job.status)}`}>
-                  {jobStatus.label}
-                </span>
+                {#if isRunningJobStatus(job.status)}
+                  <Tooltip.Root>
+                    <Tooltip.Trigger type={null}>
+                      {#snippet child({ props })}
+                        <button
+                          {...props}
+                          class={`cursor-help bg-transparent p-0 text-xs font-semibold underline decoration-dotted underline-offset-2 transition-colors hover:text-sky-700 ${jobStatusClass(job.status)}`}
+                          type="button"
+                          onclick={(event) => event.stopPropagation()}
+                          onpointerenter={() => activateLossPreview(job.job_id)}
+                          onfocus={() => activateLossPreview(job.job_id)}
+                        >
+                          {jobStatus.label}
+                        </button>
+                      {/snippet}
+                    </Tooltip.Trigger>
+                    <Tooltip.Portal>
+                      <Tooltip.Content
+                        class="z-50 rounded-xl border border-slate-200/80 bg-white/95 p-3 text-slate-700 shadow-xl backdrop-blur"
+                        sideOffset={8}
+                      >
+                        <TrainingJobLossPreview
+                          trainSeries={lossPreviewJobId === job.job_id ? lossPreviewTrainSeries : []}
+                          valSeries={lossPreviewJobId === job.job_id ? lossPreviewValSeries : []}
+                          totalSteps={lossPreviewJobId === job.job_id ? lossPreviewTotalSteps : null}
+                          saveFreq={lossPreviewJobId === job.job_id ? lossPreviewSaveFreq : null}
+                          saveCheckpoint={lossPreviewJobId === job.job_id ? lossPreviewSaveCheckpoint : true}
+                          uploadedCheckpointSteps={lossPreviewJobId === job.job_id ? lossPreviewUploadedCheckpointSteps : []}
+                          activeCheckpointUploadStep={lossPreviewJobId === job.job_id ? lossPreviewActiveCheckpointUploadStep : null}
+                          startedAt={lossPreviewJobId === job.job_id ? lossPreviewStartedAt ?? job.started_at : job.started_at}
+                          updatedAt={lossPreviewJobId === job.job_id ? lossPreviewUpdatedAt ?? job.updated_at : job.updated_at}
+                          {nowMs}
+                          loading={lossPreviewJobId === job.job_id ? lossPreviewLoading : true}
+                          error={lossPreviewJobId === job.job_id ? lossPreviewError : ''}
+                        />
+                      </Tooltip.Content>
+                    </Tooltip.Portal>
+                  </Tooltip.Root>
+                {:else}
+                  <span class={`text-xs font-semibold ${jobStatusClass(job.status)}`}>
+                    {jobStatus.label}
+                  </span>
+                {/if}
               </td>
               <td class="py-3 whitespace-nowrap">{formatDate(job.created_at)}</td>
               <td class="py-3 whitespace-nowrap" title={formatDate(job.updated_at)}>

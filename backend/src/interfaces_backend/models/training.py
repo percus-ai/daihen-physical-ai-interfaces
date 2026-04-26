@@ -640,6 +640,12 @@ class TrainingJobOperationStatusResponse(BaseModel):
     finished_at: Optional[str] = None
 
 
+class TrainingJobOperationsResponse(BaseModel):
+    """Response for job operation snapshots."""
+
+    operations: list[TrainingJobOperationStatusResponse] = Field(default_factory=list)
+
+
 class InstanceStatusResponse(BaseModel):
     """Response for instance status check."""
 

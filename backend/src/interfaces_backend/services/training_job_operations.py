@@ -136,6 +136,11 @@ class TrainingJobOperationsService:
                 raise HTTPException(status_code=404, detail=f"Training operation not found: {operation_id}")
             return record.to_response()
 
+    def list_for_job(self, *, user_id: str, job_id: str) -> list[TrainingJobOperationStatusResponse]:
+        with self._lock:
+            self._cleanup_locked()
+            return self._job_operations_payload_locked(user_id=user_id, job_id=job_id).operations
+
     def update_from_event(self, *, operation_id: str, event: TrainingJobOperationEvent) -> None:
         if isinstance(event, TrainingJobOperationCompletedEvent):
             self.complete(

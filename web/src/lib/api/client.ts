@@ -884,6 +884,10 @@ export type TrainingJobOperationStatusResponse = {
   finished_at?: string | null;
 };
 
+export type TrainingJobOperationsResponse = {
+  operations?: TrainingJobOperationStatusResponse[];
+};
+
 let refreshPromise: Promise<boolean> | null = null;
 
 function withJsonHeaders(options: RequestInit = {}): RequestInit {
@@ -1628,9 +1632,11 @@ export const api = {
       }),
     downloadLogs: (jobId: string, logType: string) =>
       fetchText(`/api/training/jobs/${jobId}/logs/download?log_type=${logType}`),
-    metrics: (jobId: string, limit: number = 2000) =>
-      fetchApi(`/api/training/jobs/${jobId}/metrics?limit=${limit}`),
+    metrics: (jobId: string, limit: number = 2000, publishRealtime = true) =>
+      fetchApi(`/api/training/jobs/${jobId}/metrics?limit=${limit}&publish_realtime=${publishRealtime}`),
     progress: (jobId: string) => fetchApi(`/api/training/jobs/${jobId}/progress`),
+    jobOperations: (jobId: string) =>
+      fetchApi<TrainingJobOperationsResponse>(`/api/training/jobs/${jobId}/operations`),
     remoteCheckpoints: (jobId: string) =>
       fetchApi<RemoteCheckpointListResponse>(`/api/training/jobs/${jobId}/checkpoints/remote`),
     rescanRemoteCheckpoints: (jobId: string) =>

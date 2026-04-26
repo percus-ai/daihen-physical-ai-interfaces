@@ -56,6 +56,7 @@ from interfaces_backend.models.training import (
     TrainingJobOperationEvent,
     TrainingJobOperationEventEmitter,
     TrainingJobOperationProgressEvent,
+    TrainingJobOperationsResponse,
     TrainingJobOperationStatusResponse,
     TrainingJobLogControlRealtimeDetail,
     TrainingJobLogsRealtimeDetail,
@@ -4931,6 +4932,7 @@ async def get_job_metrics(
     job_id: str,
     response: Response,
     limit: int = Query(1000, ge=1, le=10000),
+    publish_realtime: bool = Query(True),
 ):
     """Get training/validation loss series for a job."""
     job_data = await _load_job(job_id, include_deleted=True)
@@ -4958,7 +4960,7 @@ async def get_job_metrics(
 
     result = JobMetricsResponse(job_id=job_id, train=train, val=val)
     owner_user_id = str(job_data.get("owner_user_id") or "").strip()
-    if owner_user_id:
+    if publish_realtime and owner_user_id:
         metrics_publisher = get_training_job_metrics_publisher_service()
         metrics_publisher.publish_snapshot(user_id=owner_user_id, job_id=job_id, snapshot=result)
         if not from_archive and _is_live_job_status(job_data):
@@ -5373,6 +5375,20 @@ async def start_rescue_cpu_operation(job_id: str):
         worker=worker,
     )
     return accepted
+
+
+@router.get(
+    "/jobs/{job_id}/operations",
+    response_model=TrainingJobOperationsResponse,
+)
+async def list_training_job_operations(job_id: str):
+    job_data = await _load_job(job_id, include_deleted=True)
+    if not job_data:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    user_id = get_current_user_id()
+    operations = get_training_job_operations_service()
+    return TrainingJobOperationsResponse(operations=operations.list_for_job(user_id=user_id, job_id=job_id))
 
 
 @router.get(
