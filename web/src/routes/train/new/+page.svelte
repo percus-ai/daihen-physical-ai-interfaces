@@ -179,6 +179,8 @@
   let provisionOperationId = $state('');
   let createOperationContributor: RealtimeTrackConsumerHandle | null = null;
   let lastCreateEventKey = '';
+  let lastAppliedProvisionOperationId = '';
+  let lastAppliedProvisionUpdatedAtMs = 0;
   let lastConfigApplied = $state(false);
 
   let selectedDataset = $state('');
@@ -510,6 +512,7 @@
     setup_env: '環境構築',
     start_training: '学習開始',
     job_created: 'ジョブ作成',
+    cleanup: '後片付け',
     completed: '完了',
     failed: 'エラー'
   };
@@ -524,7 +527,8 @@
     deploy_files: 78,
     setup_env: 90,
     start_training: 97,
-    job_created: 100,
+    job_created: 40,
+    cleanup: 98,
     completed: 100,
     failed: 100
   };
@@ -683,10 +687,48 @@
     ].slice(-12);
   };
 
+  const formatProvisionFailure = (snapshot: TrainingProvisionOperationStatusResponse) => {
+    const message = String(snapshot.message ?? '').trim();
+    const reason = String(snapshot.failure_reason ?? '').trim();
+    if (message && reason && !message.includes(reason)) {
+      return `${message}\n${reason}`;
+    }
+    return reason || message || '学習ジョブの作成に失敗しました。';
+  };
+
+  const provisionSnapshotUpdatedAtMs = (snapshot: TrainingProvisionOperationStatusResponse) => {
+    const raw = String(snapshot.updated_at ?? '').trim();
+    if (!raw) return 0;
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const shouldApplyProvisionSnapshot = (snapshot: TrainingProvisionOperationStatusResponse) => {
+    const operationId = String(snapshot.operation_id ?? '').trim();
+    if (operationId && operationId !== lastAppliedProvisionOperationId) {
+      lastAppliedProvisionOperationId = operationId;
+      lastAppliedProvisionUpdatedAtMs = 0;
+      lastCreateEventKey = '';
+    }
+
+    const updatedAtMs = provisionSnapshotUpdatedAtMs(snapshot);
+    if (updatedAtMs > 0 && lastAppliedProvisionUpdatedAtMs > 0 && updatedAtMs < lastAppliedProvisionUpdatedAtMs) {
+      return false;
+    }
+    if (updatedAtMs > 0) {
+      lastAppliedProvisionUpdatedAtMs = Math.max(lastAppliedProvisionUpdatedAtMs, updatedAtMs);
+    }
+    return true;
+  };
+
   const applyProvisionSnapshot = async (snapshot: TrainingProvisionOperationStatusResponse) => {
+    if (!shouldApplyProvisionSnapshot(snapshot)) {
+      return;
+    }
+
     const step = snapshot.step || 'queued';
     const label = progressLabelMap[step] ?? step;
-    const message = snapshot.message || label;
+    const message = snapshot.state === 'failed' ? formatProvisionFailure(snapshot) : snapshot.message || label;
     createStage = label;
     createMessage = message;
     createProgressPercent = progressPercentMap[step] ?? 0;
@@ -694,23 +736,23 @@
 
     appendCreateEvent(step, message, `${snapshot.state}:${step}:${message}`);
 
+    if (snapshot.state === 'failed') {
+      createStatus = 'error';
+      submitError = formatProvisionFailure(snapshot);
+      submitting = false;
+      return;
+    }
+
     if (snapshot.job_id) {
       closeCreateStream();
-      createStatus = 'complete';
       submitting = false;
       await goto(`/train/jobs/${snapshot.job_id}`);
       return;
     }
 
-    if (snapshot.state === 'failed') {
-      createStatus = 'error';
-      submitError = snapshot.message || snapshot.failure_reason || '学習ジョブの作成に失敗しました。';
-      submitting = false;
-      return;
-    }
-
     if (snapshot.state === 'completed') {
-      createStatus = 'complete';
+      createStatus = 'error';
+      submitError = '学習ジョブIDを取得できませんでした。';
       submitting = false;
       return;
     }
@@ -751,6 +793,9 @@
     createStage = '開始';
     createMessage = '';
     createEvents = [];
+    lastCreateEventKey = '';
+    lastAppliedProvisionOperationId = '';
+    lastAppliedProvisionUpdatedAtMs = 0;
     try {
       closeCreateStream();
       const accepted = await api.training.startProvisionOperation(payload);
@@ -770,6 +815,8 @@
       if (!submitting) {
         closeCreateStream();
         provisionOperationId = '';
+        lastAppliedProvisionOperationId = '';
+        lastAppliedProvisionUpdatedAtMs = 0;
       }
       return;
     }
@@ -1169,7 +1216,7 @@
           <p class="mt-2 font-semibold text-slate-800">{jobName.trim() || generatedJobName}</p>
         </div>
         {#if submitError}
-          <p class="text-sm text-rose-600">{submitError}</p>
+          <p class="whitespace-pre-wrap text-sm text-rose-600">{submitError}</p>
         {/if}
         <Button.Root class="btn-primary" type="button" onclick={submit} disabled={submitting}>
           {submitting ? '作成中...' : '学習を開始'}

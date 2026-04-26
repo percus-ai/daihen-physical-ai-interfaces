@@ -212,8 +212,8 @@ class TrainingJobLogStreamResponse(BaseModel):
     state: str
 
 
-class TrainingJobLogAppendRealtimeDetail(BaseModel):
-    """Append payload for training.job.logs."""
+class TrainingJobLogsRealtimeDetail(BaseModel):
+    """Authoritative recent log lines for training.job.logs."""
 
     job_id: str
     log_type: TrainingJobLogType

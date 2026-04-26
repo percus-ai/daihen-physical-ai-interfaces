@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, Literal, Optional
+from typing import Awaitable, Callable, Literal, Optional, cast
 
 from verda import VerdaClient
 from fastapi import (
@@ -57,8 +57,8 @@ from interfaces_backend.models.training import (
     TrainingJobOperationEventEmitter,
     TrainingJobOperationProgressEvent,
     TrainingJobOperationStatusResponse,
-    TrainingJobLogAppendRealtimeDetail,
     TrainingJobLogControlRealtimeDetail,
+    TrainingJobLogsRealtimeDetail,
     TrainingJobLogStreamRequest,
     TrainingJobLogStreamResponse,
     TrainingJobLogType,
@@ -3099,6 +3099,11 @@ def _job_allows_live_log_source(job_data: dict) -> bool:
     return _job_has_ssh_target(job_data) and status in _LIVE_JOB_STATUSES
 
 
+def _is_live_job_status(job_data: dict) -> bool:
+    status = str(job_data.get("status") or "").strip().lower()
+    return status in _LIVE_JOB_STATUSES
+
+
 def _get_log_file_name(job_data: dict, log_type: str) -> str:
     mode = job_data.get("mode", "train")
     if log_type == "setup":
@@ -3265,7 +3270,7 @@ def _publish_training_log_control(
     )
 
 
-def _publish_training_log_lines(
+def _publish_training_log_snapshot(
     *,
     user_id: str,
     job_id: str,
@@ -3279,11 +3284,34 @@ def _publish_training_log_lines(
         kind="training.job.logs",
         key=_training_log_track_key(job_id, log_type),
     ).replace(
-        TrainingJobLogAppendRealtimeDetail(
+        TrainingJobLogsRealtimeDetail(
             job_id=job_id,
             log_type=log_type,
             lines=lines,
         ).model_dump(mode="json")
+    )
+
+
+def _publish_training_log_lines(
+    *,
+    user_id: str,
+    job_id: str,
+    log_type: TrainingJobLogType,
+    lines: list[str],
+) -> None:
+    if not lines:
+        return
+    registry = get_training_job_event_stream_registry()
+    registry.append_log_lines(
+        job_id=job_id,
+        log_type=log_type,
+        lines=lines,
+    )
+    _publish_training_log_snapshot(
+        user_id=user_id,
+        job_id=job_id,
+        log_type=log_type,
+        lines=registry.get_log_lines(job_id=job_id, log_type=log_type, limit=200),
     )
 
 
@@ -4584,10 +4612,23 @@ async def get_job_logs(
     lines: int = Query(100, ge=1, le=10000),
     log_type: str = Query("training", pattern="^(training|setup)$"),
 ):
-    """Get job logs from remote instance."""
+    """Get job logs without opening SSH for active jobs."""
     job_data = await _load_job(job_id)
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    if _is_live_job_status(job_data):
+        active_lines = get_training_job_event_stream_registry().get_log_lines(
+            job_id=job_id,
+            log_type=cast(TrainingJobLogType, log_type),
+            limit=lines,
+        )
+        return JobLogsResponse(
+            job_id=job_id,
+            logs="\n".join(active_lines),
+            lines=lines,
+            source="active",
+        )
 
     remote_allowed = _job_allows_live_log_source(job_data)
 
@@ -4635,6 +4676,17 @@ async def start_job_log_stream(job_id: str, request: TrainingJobLogStreamRequest
             control_type="connected",
             status="streaming",
             message="ログストリームに接続しました。",
+        )
+        snapshot_lines = get_training_job_event_stream_registry().get_log_lines(
+            job_id=job_id,
+            log_type=request.log_type,
+            limit=200,
+        )
+        _publish_training_log_snapshot(
+            user_id=user_id,
+            job_id=job_id,
+            log_type=request.log_type,
+            lines=snapshot_lines,
         )
     else:
         _publish_training_log_control(
@@ -5568,6 +5620,7 @@ async def check_all_jobs_status():
 def _training_progress_to_provision_operation_event(
     event: TrainingJobProgressEvent,
 ) -> TrainingProvisionOperationEvent:
+    persisted_job_id = event.job_id if event.type == "job_created" else None
     if event.type == "complete":
         return TrainingProvisionOperationCompletedEvent(
             message=event.message or None,
@@ -5580,14 +5633,13 @@ def _training_progress_to_provision_operation_event(
             message=event.message or event.error or None,
             error=error,
             instance_id=event.instance_id,
-            job_id=event.job_id,
         )
     return TrainingProvisionOperationProgressEvent(
         type=event.type,
         message=event.message or None,
         error=event.error,
         instance_id=event.instance_id,
-        job_id=event.job_id,
+        job_id=persisted_job_id,
     )
 
 
@@ -5671,26 +5723,51 @@ async def _run_training_provision_operation(
             else f" 作成中インスタンスの削除に失敗しました: {detail}"
         )
 
+    def build_failure_message(failure_reason: str, cleanup_note: str) -> str:
+        reason = str(failure_reason or "").strip()
+        suffix = str(cleanup_note or "").strip()
+        message = "学習インスタンス作成に失敗しました。"
+        if reason:
+            message = f"{message} {reason}"
+        if suffix:
+            message = f"{message} {suffix}"
+        return message.strip()
+
     try:
         result = await loop.run_in_executor(_executor, worker)
         result_job_id = str(result.get("job_id") or latest["job_id"] or "").strip()
         if result_job_id:
             await _publish_training_job_core_snapshot(result_job_id)
     except HTTPException as exc:
+        failure_reason = str(exc.detail)
+        logger.exception(
+            "Training provision operation failed: operation_id=%s job_id=%s provider=%s detail=%s",
+            operation_id,
+            job_id,
+            provider,
+            failure_reason,
+        )
         cleanup_note = await cleanup_failed_instance()
         active_streams.close(job_id=job_id)
         await operations.fail(
             operation_id=operation_id,
-            message=f"学習インスタンス作成に失敗しました。{cleanup_note}".strip(),
-            failure_reason=str(exc.detail),
+            message=build_failure_message(failure_reason, cleanup_note),
+            failure_reason=failure_reason,
         )
     except Exception as exc:
+        failure_reason = str(exc)
+        logger.exception(
+            "Training provision operation failed: operation_id=%s job_id=%s provider=%s",
+            operation_id,
+            job_id,
+            provider,
+        )
         cleanup_note = await cleanup_failed_instance()
         active_streams.close(job_id=job_id)
         await operations.fail(
             operation_id=operation_id,
-            message=f"学習インスタンス作成に失敗しました。{cleanup_note}".strip(),
-            failure_reason=str(exc),
+            message=build_failure_message(failure_reason, cleanup_note),
+            failure_reason=failure_reason,
         )
 
 

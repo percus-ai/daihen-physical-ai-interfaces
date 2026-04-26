@@ -379,7 +379,7 @@ def test_run_training_provision_operation_cleans_up_instance_after_job_created(m
     assert fail_calls == [
         {
             "operation_id": "op-1",
-            "message": "学習インスタンス作成に失敗しました。 作成中インスタンスは削除しました。",
+            "message": "学習インスタンス作成に失敗しました。 ssh failed 作成中インスタンスは削除しました。",
             "failure_reason": "ssh failed",
         }
     ]
@@ -402,7 +402,13 @@ def test_training_progress_to_provision_operation_event_maps_terminal_events():
     failed = training_api._training_progress_to_provision_operation_event(
         progress_event("error", error="boom", instance_id="inst-2")
     )
-    progress = training_api._training_progress_to_provision_operation_event(
+    early_progress = training_api._training_progress_to_provision_operation_event(
+        progress_event("validating", job_id="job-early", instance_id="inst-early")
+    )
+    job_created = training_api._training_progress_to_provision_operation_event(
+        progress_event("job_created", job_id="job-1", instance_id="inst-1")
+    )
+    cleanup_progress = training_api._training_progress_to_provision_operation_event(
         progress_event("cleaning_up", instance_id="inst-3")
     )
 
@@ -412,9 +418,16 @@ def test_training_progress_to_provision_operation_event_maps_terminal_events():
     assert isinstance(failed, TrainingProvisionOperationFailedEvent)
     assert failed.error == "boom"
     assert failed.instance_id == "inst-2"
-    assert isinstance(progress, TrainingProvisionOperationProgressEvent)
-    assert progress.type == "cleaning_up"
-    assert progress.instance_id == "inst-3"
+    assert failed.job_id is None
+    assert isinstance(early_progress, TrainingProvisionOperationProgressEvent)
+    assert early_progress.job_id is None
+    assert early_progress.instance_id == "inst-early"
+    assert isinstance(job_created, TrainingProvisionOperationProgressEvent)
+    assert job_created.type == "job_created"
+    assert job_created.job_id == "job-1"
+    assert isinstance(cleanup_progress, TrainingProvisionOperationProgressEvent)
+    assert cleanup_progress.type == "cleaning_up"
+    assert cleanup_progress.instance_id == "inst-3"
 
 
 def test_create_continue_job_rejects_non_verda_provider():

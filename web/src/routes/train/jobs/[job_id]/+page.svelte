@@ -416,9 +416,8 @@
   const canRescueCpu = $derived(
     provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
   );
-  const hasLogSshTarget = $derived(Boolean(String(jobInfo?.ip ?? '').trim()));
   const shouldSubscribeLogStream = $derived(isRunning);
-  const shouldLoadLogSnapshot = $derived(hasLogSshTarget || isTerminal);
+  const shouldLoadLogSnapshot = $derived(isTerminal);
   const provisionStepLabels: Record<string, string> = {
     queued: '開始待ち',
     validate: '設定検証',
@@ -768,11 +767,6 @@
     return tracks;
   };
 
-  const appendLogLines = (lines: string[]) => {
-    if (!lines.length) return;
-    streamLines = [...streamLines, ...lines].slice(-200);
-  };
-
   const handleLogControlPayload = (payload: Record<string, unknown>) => {
     const type = String(payload.type ?? '').trim();
     if (!type) return;
@@ -824,7 +818,9 @@
         }
         if (Array.isArray(event.detail.lines)) {
           const payload = event.detail as { lines?: string[] };
-          appendLogLines(payload.lines ?? []);
+          logs = '';
+          logsSource = '';
+          streamLines = [...(payload.lines ?? [])].slice(-200);
           logStreamActive = true;
           if (streamStatus === 'connecting' || streamStatus === 'idle') {
             streamStatus = 'connected';
@@ -1125,6 +1121,9 @@
     realtimeContributor?.dispose();
     realtimeContributor = null;
     resetLogAppendState();
+    logs = '';
+    logsSource = '';
+    logsError = '';
     activeLogSnapshotKey = registrationKey;
     loadedLogSnapshotKey = '';
 
