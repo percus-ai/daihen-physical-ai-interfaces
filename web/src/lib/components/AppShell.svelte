@@ -10,7 +10,11 @@
   import { toStore } from 'svelte/store';
 
   import { api } from '$lib/api/client';
-  import { registerTabRealtimeContributor, setTabRealtimeRoute, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import {
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent
+  } from '$lib/realtime/trackClient';
   import { queryClient } from '$lib/queryClient';
 
   let { children }: { children?: Snippet } = $props();
@@ -80,20 +84,9 @@
       mobileOpen = false;
     }
   });
-  let profileContributor: TabRealtimeContributorHandle | null = null;
+  let profileContributor: RealtimeTrackConsumerHandle | null = null;
 
-  $effect(() => {
-    if (!browser || !authenticated) {
-      return;
-    }
-    setTabRealtimeRoute({
-      id: page.url.pathname,
-      url: `${page.url.pathname}${page.url.search}`,
-      params: page.params
-    });
-  });
-
-  const handleProfileRealtimeEvent = (event: TabRealtimeEvent) => {
+  const handleProfileRealtimeEvent = (event: RealtimeTrackEvent) => {
     if (event.op !== 'snapshot') return;
     queryClient.setQueryData(['profiles', 'active', 'status'], event.payload);
   };
@@ -110,11 +103,10 @@
     }
 
     if (profileContributor === null) {
-      profileContributor = registerTabRealtimeContributor({
+      profileContributor = registerRealtimeTrackConsumer({
         contributorId: 'app-shell.profiles.active',
-        subscriptions: [
+        tracks: [
           {
-            subscription_id: 'app-shell.profiles.active',
             kind: 'profiles.active',
             params: {}
           }
@@ -128,9 +120,8 @@
     }
 
     profileContributor.setEventHandler(handleProfileRealtimeEvent);
-    profileContributor.setSubscriptions([
+    profileContributor.setTracks([
       {
-        subscription_id: 'app-shell.profiles.active',
         kind: 'profiles.active',
         params: {}
       }

@@ -6,11 +6,15 @@
   import { toStore } from 'svelte/store';
   import {
     api,
-    type TabSessionSubscription,
     type StartupOperationAcceptedResponse,
     type StartupOperationStatusResponse
   } from '$lib/api/client';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import {
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent,
+    type RealtimeTrackSelector
+  } from '$lib/realtime/trackClient';
   import { queryClient } from '$lib/queryClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
@@ -74,8 +78,8 @@
   let startupStatus = $state<StartupOperationStatusResponse | null>(null);
   let startupStreamError = $state('');
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
-  let realtimeContributor: TabRealtimeContributorHandle | null = null;
-  let startupContributor: TabRealtimeContributorHandle | null = null;
+  let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
+  let startupContributor: RealtimeTrackConsumerHandle | null = null;
   let startupOperationId = $state('');
 
   const inferenceModels = $derived(sortInferenceModelsByRecency($inferenceModelsQuery.data?.models ?? []));
@@ -92,9 +96,9 @@
     }))
   );
 
-  const operateRealtimeSubscriptions: TabSessionSubscription[] = [
-    { subscription_id: 'operate.page.status', kind: 'operate.status', params: {} },
-    { subscription_id: 'operate.page.system-status', kind: 'system.status', params: {} }
+  const operateRealtimeTracks: RealtimeTrackSelector[] = [
+    { kind: 'operate.status', key: 'operate' },
+    { kind: 'system.status', key: 'system' }
   ];
 
   const emptyRunnerStatus: RunnerStatus = {};
@@ -336,15 +340,14 @@
     }
     const currentOperationId = startupOperationId;
     disposeStartupContributor();
-    startupContributor = registerTabRealtimeContributor({
-      subscriptions: [
+    startupContributor = registerRealtimeTrackConsumer({
+      tracks: [
         {
-          subscription_id: `operate.startup.${currentOperationId}`,
           kind: 'startup.operation',
           params: { operation_id: currentOperationId }
         }
       ],
-      onEvent: (event: TabRealtimeEvent) => {
+      onEvent: (event: RealtimeTrackEvent) => {
         if (event.op !== 'snapshot' || event.source?.kind !== 'startup.operation') return;
         if (startupOperationId !== currentOperationId) return;
         void handleStartupStatusUpdate(event.payload as StartupOperationStatusResponse);
@@ -361,9 +364,9 @@
       return;
     }
     if (realtimeContributor === null) {
-      realtimeContributor = registerTabRealtimeContributor({
-        subscriptions: operateRealtimeSubscriptions,
-        onEvent: (event: TabRealtimeEvent) => {
+      realtimeContributor = registerRealtimeTrackConsumer({
+        tracks: operateRealtimeTracks,
+        onEvent: (event: RealtimeTrackEvent) => {
           if (event.op !== 'snapshot') return;
           if (event.source?.kind === 'operate.status') {
             const payload = event.payload as OperateStatusStreamPayload;
@@ -385,7 +388,7 @@
       }
       return;
     }
-    realtimeContributor.setSubscriptions(operateRealtimeSubscriptions);
+    realtimeContributor.setTracks(operateRealtimeTracks);
   });
 
   $effect(() => {

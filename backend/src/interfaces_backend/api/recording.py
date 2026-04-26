@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from interfaces_backend.services.recorder_bridge import get_recorder_bridge
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.recording_session import get_recording_session_manager
-from interfaces_backend.services.session_manager import require_user_id
+from interfaces_backend.services.session_manager import SessionProgressCallback, require_user_id
 from interfaces_backend.services.storage_bulk_actions import (
     archive_dataset_for_bulk,
     reupload_dataset_for_bulk,
@@ -22,6 +22,7 @@ from interfaces_backend.services.startup_operations import get_startup_operation
 from interfaces_backend.services.user_directory import resolve_user_directory_entries
 from interfaces_backend.models.storage import BulkActionRequest, BulkActionResponse, BulkActionResult
 from interfaces_backend.models.startup import StartupOperationAcceptedResponse
+from interfaces_backend.models.realtime_payloads import RecordingUploadStatusResponse
 from percus_ai.db import get_supabase_async_client
 from percus_ai.storage.naming import validate_dataset_name
 from percus_ai.storage.paths import get_datasets_dir
@@ -97,19 +98,6 @@ class RecordingSessionUpdateRequest(BaseModel):
     episode_time_s: Optional[float] = Field(None, gt=0)
     reset_time_s: Optional[float] = Field(None, ge=0)
     num_episodes: Optional[int] = Field(None, ge=1)
-
-
-class RecordingUploadStatusResponse(BaseModel):
-    dataset_id: str
-    status: str = "idle"
-    phase: str = "idle"
-    progress_percent: float = 0.0
-    message: str = ""
-    files_done: int = 0
-    total_files: int = 0
-    current_file: Optional[str] = None
-    error: Optional[str] = None
-    updated_at: Optional[str] = None
 
 
 class RecordingInfo(BaseModel):
@@ -547,7 +535,7 @@ async def _create_continue_session(
     recording_id: str,
     episode_time_s: float | None = None,
     reset_time_s: float | None = None,
-    progress_callback=None,
+    progress_callback: SessionProgressCallback,
 ):
     row = await _fetch_recording_row(recording_id)
     plan = _build_continue_plan_from_row(row)
@@ -607,18 +595,16 @@ async def create_session(request: RecordingSessionCreateRequest):
 async def start_session(request: RecordingSessionStartRequest):
     require_user_id()
     mgr = get_recording_session_manager()
-    resumed = False
     if mgr.status(request.dataset_id) is None:
-        await _create_continue_session(
-            manager=mgr,
-            recording_id=request.dataset_id,
+        raise HTTPException(
+            status_code=404,
+            detail=f"Recording session is not prepared: {request.dataset_id}",
         )
-        resumed = True
 
     state = await mgr.start(request.dataset_id)
     response = RecordingSessionActionResponse(
         success=True,
-        message="Recording session resumed" if resumed else "Recording session started",
+        message="Recording session started",
         dataset_id=state.id,
         status=state.extras.get("recorder_result"),
     )
@@ -628,7 +614,6 @@ async def start_session(request: RecordingSessionStartRequest):
         session_id=state.id,
         success=True,
         message=response.message,
-        details={"resumed": resumed},
     )
     return response
 

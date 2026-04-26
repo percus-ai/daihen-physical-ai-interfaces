@@ -16,6 +16,8 @@ from interfaces_backend.models.training import (
     TrainingProvisionOperationAcceptedResponse,
     TrainingProvisionOperationStatusResponse,
 )
+from interfaces_backend.models.realtime_payloads import TrainingJobProvisionRealtimeDetail
+from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 from percus_ai.db import get_supabase_async_client
 from percus_ai.training.providers.vast import destroy_instance
 from percus_ai.training.providers.verda import VerdaProvider
@@ -103,6 +105,22 @@ class TrainingProvisionOperationsService:
             "finished_at": None,
         }
         await self._upsert(record)
+        snapshot = self._row_to_response(record)
+        detail = snapshot.model_dump(mode="json")
+        runtime = get_realtime_runtime()
+        runtime.track(
+            scope=UserID(user_id),
+            kind="training.provision-operation",
+            key=snapshot.operation_id,
+        ).replace(detail)
+        if snapshot.job_id:
+            runtime.track(
+                scope=UserID(user_id),
+                kind="training.job.provision",
+                key=snapshot.job_id,
+            ).replace(
+                TrainingJobProvisionRealtimeDetail(provision_operation=snapshot).model_dump(mode="json")
+            )
         return TrainingProvisionOperationAcceptedResponse(
             accepted=True,
             operation_id=operation_id,
@@ -123,17 +141,6 @@ class TrainingProvisionOperationsService:
 
     async def get_system(self, *, operation_id: str) -> Optional[TrainingProvisionOperationStatusResponse]:
         row = await self._load(operation_id, owner_user_id=None)
-        if row is None:
-            return None
-        return self._row_to_response(row)
-
-    async def get_for_job(
-        self,
-        *,
-        user_id: str,
-        job_id: str,
-    ) -> Optional[TrainingProvisionOperationStatusResponse]:
-        row = await self._load_by_job_id(job_id, owner_user_id=user_id)
         if row is None:
             return None
         return self._row_to_response(row)
@@ -282,14 +289,28 @@ class TrainingProvisionOperationsService:
             operation_id=operation_id,
             patch=patch,
         )
-        snapshot = await self.get_system(operation_id=operation_id)
-        if snapshot is None:
-            return None
-        await self._publish(snapshot)
-
-    async def _publish(self, snapshot: TrainingProvisionOperationStatusResponse) -> None:
-        del snapshot
-        return None
+        row = await self._load(operation_id, owner_user_id=None)
+        if row is None:
+            return
+        user_id = str(row.get("owner_user_id") or "").strip()
+        if not user_id:
+            return
+        snapshot = self._row_to_response(row)
+        detail = snapshot.model_dump(mode="json")
+        runtime = get_realtime_runtime()
+        runtime.track(
+            scope=UserID(user_id),
+            kind="training.provision-operation",
+            key=snapshot.operation_id,
+        ).replace(detail)
+        if snapshot.job_id:
+            runtime.track(
+                scope=UserID(user_id),
+                kind="training.job.provision",
+                key=snapshot.job_id,
+            ).replace(
+                TrainingJobProvisionRealtimeDetail(provision_operation=snapshot).model_dump(mode="json")
+            )
 
     @staticmethod
     async def _update_with_client(

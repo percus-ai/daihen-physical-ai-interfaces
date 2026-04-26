@@ -896,15 +896,6 @@ def _resolve_include_publishers(
     ]
 
 
-def classify_include_health_resolution(package: object, launch_name: object) -> str:
-    key = (str(package or "").strip(), str(launch_name or "").strip())
-    if key in _INCLUDE_PUBLISHER_RESOLVER_KEYS:
-        return "supported"
-    if key in _IGNORED_INCLUDE_KEYS:
-        return "ignored"
-    return "unknown"
-
-
 def extract_recorder_arm_streams(
     snapshot: dict[str, Any],
     *,

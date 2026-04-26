@@ -8,7 +8,9 @@ from typing import Protocol
 
 from interfaces_backend.models.build_management import (
     BuildErrorReportResponse,
+    BuildJobCancelResponse,
     BuildJobSummaryModel,
+    BuildRunAcceptedResponse,
     BuildsStatusSnapshotModel,
     BuildSettingActionsModel,
     BuildSettingState,
@@ -17,6 +19,9 @@ from interfaces_backend.models.build_management import (
     SharedBuildSettingsListResponse,
 )
 from interfaces_backend.models.settings import SystemSettingsModel
+from interfaces_backend.services.build_error_reports import get_build_error_reports_service
+from interfaces_backend.services.build_jobs import get_build_jobs_service
+from interfaces_backend.services.settings_service import get_system_settings_service
 from percus_ai.environment.build import BuildStore
 from percus_ai.environment.build.build_metadata import BuildStepLogModel, EnvBuildMetadataModel, SharedBuildMetadataModel
 from percus_ai.environment.config import (
@@ -39,6 +44,9 @@ class SystemSettingsReader(Protocol):
 
 class BuildJobsReader(Protocol):
     def list_active_jobs(self) -> list[BuildJobSummaryModel]: ...
+    def start_env_build(self, *, config_group: str, config_id: str, env_name: str) -> BuildRunAcceptedResponse: ...
+    def start_shared_build(self, *, package: str, variant: str) -> BuildRunAcceptedResponse: ...
+    def cancel(self, *, job_id: str) -> BuildJobCancelResponse: ...
 
 
 class BuildManagementService:
@@ -58,20 +66,16 @@ class BuildManagementService:
         self._current_platform_resolver = current_platform_resolver or detect_current_platform
         self._current_sm_resolver = current_sm_resolver or detect_current_sm
         if settings_service is None:
-            from interfaces_backend.services.settings_service import get_system_settings_service
-
             self._settings_service = get_system_settings_service()
         else:
             self._settings_service = settings_service
         if build_jobs_service is None:
-            from interfaces_backend.services.build_jobs import get_build_jobs_service
-
             self._build_jobs_service = get_build_jobs_service()
         else:
             self._build_jobs_service = build_jobs_service
+        if hasattr(self._build_jobs_service, "set_status_snapshot_provider"):
+            self._build_jobs_service.set_status_snapshot_provider(self.snapshot)
         if build_error_reports_service is None:
-            from interfaces_backend.services.build_error_reports import get_build_error_reports_service
-
             self._build_error_reports_service = get_build_error_reports_service()
         else:
             self._build_error_reports_service = build_error_reports_service
@@ -142,6 +146,19 @@ class BuildManagementService:
             envs=envs,
             shared=shared,
         )
+
+    def start_env_build(self, *, config_group: str, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
+        return self._build_jobs_service.start_env_build(
+            config_group=config_group,
+            config_id=config_id,
+            env_name=env_name,
+        )
+
+    def start_shared_build(self, *, package: str, variant: str) -> BuildRunAcceptedResponse:
+        return self._build_jobs_service.start_shared_build(package=package, variant=variant)
+
+    def cancel_job(self, *, job_id: str) -> BuildJobCancelResponse:
+        return self._build_jobs_service.cancel(job_id=job_id)
 
     def delete_env_artifact(self, *, config_group: str, config_id: str, env_name: str, build_id: str) -> None:
         self._ensure_no_active_setting_job(setting_id=f"{config_group}:{config_id}:{env_name}")

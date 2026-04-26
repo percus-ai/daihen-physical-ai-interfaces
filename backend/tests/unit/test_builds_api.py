@@ -1,5 +1,7 @@
 import interfaces_backend.api.builds as builds_api
 from interfaces_backend.models.build_management import (
+    BuildErrorReportResponse,
+    BuildJobCancelResponse,
     BuildJobSummaryModel,
     BuildSettingActionsModel,
     BuildSettingSummaryModel,
@@ -45,50 +47,6 @@ class _FakeBuildManagementService:
             ]
         )
 
-    def delete_env_artifact(self, *, config_group: str, config_id: str, env_name: str, build_id: str) -> None:
-        assert config_group == "vla_runtime"
-        assert config_id == "default"
-        assert env_name == "pi0"
-        assert build_id == "build-env-1"
-
-    def delete_shared_artifact(self, *, package: str, variant: str, build_id: str) -> None:
-        assert package == "pytorch"
-        assert variant == "thor"
-        assert build_id == "build-1"
-
-    def create_env_error_report(self, *, config_group: str, config_id: str, env_name: str, build_id: str):
-        from interfaces_backend.models.build_management import BuildErrorReportResponse
-
-        assert config_group == "vla_runtime"
-        assert config_id == "default"
-        assert env_name == "pi0"
-        assert build_id == "build-env-1"
-        return BuildErrorReportResponse(
-            report_id="report-env-1",
-            kind="env",
-            setting_id="vla_runtime:default:pi0",
-            build_id=build_id,
-            object_path="s3://daihen/v2/build-reports/env/default-pi0/report-env-1.zip",
-            uploaded_at="2026-04-16T00:00:00Z",
-        )
-
-    def create_shared_error_report(self, *, package: str, variant: str, build_id: str):
-        from interfaces_backend.models.build_management import BuildErrorReportResponse
-
-        assert package == "pytorch"
-        assert variant == "thor"
-        assert build_id == "build-1"
-        return BuildErrorReportResponse(
-            report_id="report-shared-1",
-            kind="shared",
-            setting_id="pytorch:thor",
-            build_id=build_id,
-            object_path="s3://daihen/v2/build-reports/shared/pytorch-thor/report-shared-1.zip",
-            uploaded_at="2026-04-16T00:00:00Z",
-        )
-
-
-class _FakeBuildJobsService:
     def start_env_build(self, *, config_group: str, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
         assert config_group == "vla_runtime"
         return BuildRunAcceptedResponse(
@@ -116,9 +74,7 @@ class _FakeBuildJobsService:
             )
         )
 
-    def cancel(self, *, job_id: str):
-        from interfaces_backend.models.build_management import BuildJobCancelResponse
-
+    def cancel_job(self, *, job_id: str) -> BuildJobCancelResponse:
         return BuildJobCancelResponse(
             accepted=True,
             job=BuildJobSummaryModel(
@@ -131,6 +87,44 @@ class _FakeBuildJobsService:
                 updated_at="2026-04-16T00:00:01Z",
                 message="構築の中止を要求しました。",
             ),
+        )
+
+    def delete_env_artifact(self, *, config_group: str, config_id: str, env_name: str, build_id: str) -> None:
+        assert config_group == "vla_runtime"
+        assert config_id == "default"
+        assert env_name == "pi0"
+        assert build_id == "build-env-1"
+
+    def delete_shared_artifact(self, *, package: str, variant: str, build_id: str) -> None:
+        assert package == "pytorch"
+        assert variant == "thor"
+        assert build_id == "build-1"
+
+    def create_env_error_report(self, *, config_group: str, config_id: str, env_name: str, build_id: str):
+        assert config_group == "vla_runtime"
+        assert config_id == "default"
+        assert env_name == "pi0"
+        assert build_id == "build-env-1"
+        return BuildErrorReportResponse(
+            report_id="report-env-1",
+            kind="env",
+            setting_id="vla_runtime:default:pi0",
+            build_id=build_id,
+            object_path="s3://daihen/v2/build-reports/env/default-pi0/report-env-1.zip",
+            uploaded_at="2026-04-16T00:00:00Z",
+        )
+
+    def create_shared_error_report(self, *, package: str, variant: str, build_id: str):
+        assert package == "pytorch"
+        assert variant == "thor"
+        assert build_id == "build-1"
+        return BuildErrorReportResponse(
+            report_id="report-shared-1",
+            kind="shared",
+            setting_id="pytorch:thor",
+            build_id=build_id,
+            object_path="s3://daihen/v2/build-reports/shared/pytorch-thor/report-shared-1.zip",
+            uploaded_at="2026-04-16T00:00:00Z",
         )
 
 
@@ -160,7 +154,7 @@ def test_list_shared_build_settings(client, monkeypatch):
 
 
 def test_run_env_build(client, monkeypatch):
-    monkeypatch.setattr(builds_api, "get_build_jobs_service", lambda: _FakeBuildJobsService())
+    monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
 
     response = client.post("/api/builds/envs/vla_runtime/default/pi0/run")
 
@@ -171,7 +165,7 @@ def test_run_env_build(client, monkeypatch):
 
 
 def test_run_shared_build(client, monkeypatch):
-    monkeypatch.setattr(builds_api, "get_build_jobs_service", lambda: _FakeBuildJobsService())
+    monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
 
     response = client.post("/api/builds/shared/pytorch/thor/run")
 
@@ -182,7 +176,7 @@ def test_run_shared_build(client, monkeypatch):
 
 
 def test_cancel_build_job(client, monkeypatch):
-    monkeypatch.setattr(builds_api, "get_build_jobs_service", lambda: _FakeBuildJobsService())
+    monkeypatch.setattr(builds_api, "get_build_management_service", lambda: _FakeBuildManagementService())
 
     response = client.post("/api/builds/jobs/job-env-1/cancel")
 

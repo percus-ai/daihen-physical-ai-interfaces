@@ -7,7 +7,6 @@ import json
 import socket
 import subprocess
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +30,7 @@ from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
 from interfaces_backend.services.inference_runtime import get_inference_runtime_manager
 from interfaces_backend.services.inference_session import get_inference_session_manager
 from interfaces_backend.services.recorder_bridge import get_recorder_bridge
+from interfaces_backend.services.realtime_runtime import Broadcast, get_realtime_runtime
 from interfaces_backend.services.vlabor_profiles import (
     ProfileHealthContract,
     ProfileHealthPublisherSpec,
@@ -131,7 +131,11 @@ class SystemStatusMonitor:
             if encoded == self._last_published_payload:
                 return
             self._last_published_payload = encoded
-        return None
+        get_realtime_runtime().track(
+            scope=Broadcast(),
+            kind="system.status",
+            key="system",
+        ).replace(snapshot.model_dump(mode="json"))
 
     async def _gpu_loop(self) -> None:
         while True:
@@ -161,7 +165,7 @@ class SystemStatusMonitor:
                 await self.publish_snapshot()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 with self._lock:
                     self._gpu = GpuSnapshot(level="error", gpus=[])
                     self._refresh_snapshot_locked()

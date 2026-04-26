@@ -141,9 +141,14 @@ def _isolate_env(tmp_path_factory):
 def _reset_backend_state() -> None:
     import interfaces_backend.api.calibration as calibration
     import interfaces_backend.api.recording as recording
+    import interfaces_backend.services.dataset_merge_jobs as dataset_merge_jobs
+    import interfaces_backend.services.dataset_sync_jobs as dataset_sync_jobs
     import interfaces_backend.services.inference_runtime as inference_runtime
+    import interfaces_backend.services.model_sync_jobs as model_sync_jobs
     import interfaces_backend.services.startup_operations as startup_operations
-    import interfaces_backend.services.tab_realtime as tab_realtime
+    import interfaces_backend.services.realtime_runtime as realtime_runtime
+    import interfaces_backend.services.training_job_operations as training_job_operations
+    import interfaces_backend.services.training_provision_operations as training_provision_operations
     import interfaces_backend.services.training_provision_recovery as training_provision_recovery
     import percus_ai.db as percus_db
 
@@ -158,7 +163,12 @@ def _reset_backend_state() -> None:
         inference_runtime._runtime_manager = None
 
     startup_operations.reset_startup_operations_service()
-    tab_realtime.reset_tab_realtime_registry()
+    realtime_runtime.reset_realtime_runtime()
+    dataset_merge_jobs.reset_dataset_merge_jobs_service()
+    dataset_sync_jobs.reset_dataset_sync_jobs_service()
+    model_sync_jobs.reset_model_sync_jobs_service()
+    training_job_operations.reset_training_job_operations_service()
+    training_provision_operations.reset_training_provision_operations_service()
     training_provision_recovery.reset_training_provision_recovery_service()
     percus_db.reset_supabase_async_client_cache()
 

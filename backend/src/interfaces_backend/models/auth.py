@@ -35,7 +35,7 @@ class AuthStatusResponse(BaseModel):
 
 
 class AuthTokenResponse(BaseModel):
-    """Supabase auth token response (for WebSocket clients)."""
+    """Supabase auth token response."""
 
     access_token: str = Field(..., description="Access token")
     refresh_token: str | None = Field(None, description="Refresh token (optional)")

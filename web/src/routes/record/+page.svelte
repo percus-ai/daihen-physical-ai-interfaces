@@ -15,7 +15,7 @@
   import DotsThree from 'phosphor-svelte/lib/DotsThree';
   import Eye from 'phosphor-svelte/lib/Eye';
   import XCircle from 'phosphor-svelte/lib/XCircle';
-  import { api, type BulkActionResponse, type TabSessionSubscription } from '$lib/api/client';
+  import { api, type BulkActionResponse } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
   import { formatBytes, formatDate } from '$lib/format';
@@ -29,7 +29,12 @@
     parsePageParam,
     parsePageSizeParam
   } from '$lib/pagination';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import {
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent,
+    type RealtimeTrackSelector
+  } from '$lib/realtime/trackClient';
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import DatasetUploadProgressModal from '$lib/components/storage/DatasetUploadProgressModal.svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
@@ -156,7 +161,7 @@
   let archiveBusy = $state<Record<string, boolean>>({});
   let uploadStatusMap = $state<Record<string, RecordingUploadStatus>>({});
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
-  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
   let uploadModalOpen = $state(false);
   let selectedUploadDatasetId = $state('');
 
@@ -770,9 +775,9 @@
       return;
     }
     if (realtimeContributor === null) {
-      realtimeContributor = registerTabRealtimeContributor({
-        subscriptions: [],
-        onEvent: (event: TabRealtimeEvent) => {
+      realtimeContributor = registerRealtimeTrackConsumer({
+        tracks: [],
+        onEvent: (event: RealtimeTrackEvent) => {
           if (event.op !== 'snapshot') return;
           if (event.source?.kind === 'system.status') {
             systemStatusSnapshot = event.payload as SystemStatusSnapshot;
@@ -793,20 +798,18 @@
         return;
       }
     }
-    const subscriptions: TabSessionSubscription[] = [
-      { subscription_id: 'record.page.system-status', kind: 'system.status', params: {} },
+    const tracks: RealtimeTrackSelector[] = [
       ...recordings
         .map((recording) => String(recording.recording_id || '').trim())
         .filter(Boolean)
         .map(
-          (recordingId): TabSessionSubscription => ({
-            subscription_id: `record.page.upload.${recordingId}`,
+          (recordingId): RealtimeTrackSelector => ({
             kind: 'recording.upload-status',
             params: { session_id: recordingId }
           })
         )
     ];
-    realtimeContributor.setSubscriptions(subscriptions);
+    realtimeContributor.setTracks(tracks);
   });
 
   onDestroy(() => {
@@ -1051,7 +1054,10 @@
               </td>
               <td class="py-3">
                 {#if recording.continuable}
-                  <a class="text-brand underline" href={`/record/sessions/${encodeURIComponent(recording.recording_id)}`}>
+                  <a
+                    class="text-brand underline"
+                    href={`/record/new?continue_from_dataset_id=${encodeURIComponent(recording.recording_id)}`}
+                  >
                     {recording.dataset_name ?? recording.recording_id}
                   </a>
                 {:else}

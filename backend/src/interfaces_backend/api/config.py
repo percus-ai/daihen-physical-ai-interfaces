@@ -5,6 +5,7 @@ import os
 from fastapi import APIRouter
 
 from interfaces_backend.models.config import AppConfig, ConfigResponse
+from percus_ai.storage import get_data_dir
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -12,8 +13,6 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 @router.get("", response_model=ConfigResponse)
 async def get_config():
     """Get application configuration."""
-    from percus_ai.storage import get_data_dir
-
     return ConfigResponse(
         config=AppConfig(
             data_dir=str(get_data_dir()),
@@ -22,4 +21,3 @@ async def get_config():
             wandb_token_set=bool(os.environ.get("WANDB_API_KEY")),
         )
     )
-

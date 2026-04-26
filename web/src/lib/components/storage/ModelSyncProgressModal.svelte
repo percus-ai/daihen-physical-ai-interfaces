@@ -6,10 +6,10 @@
   import { api, type ModelSyncJobStatus } from '$lib/api/client';
   import { formatBytes } from '$lib/format';
   import {
-    registerTabRealtimeContributor,
-    type TabRealtimeContributorHandle,
-    type TabRealtimeEvent
-  } from '$lib/realtime/tabSessionClient';
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent
+  } from '$lib/realtime/trackClient';
 
   type ThroughputSample = { atMs: number; transferredBytes: number };
 
@@ -26,7 +26,7 @@
   }: Props = $props();
 
   let status = $state<ModelSyncJobStatus | null>(null);
-  let contributor: TabRealtimeContributorHandle | null = null;
+  let contributor: RealtimeTrackConsumerHandle | null = null;
   let loading = $state(false);
   let loadError = $state('');
   let cancelPending = $state(false);
@@ -161,15 +161,14 @@
     void loadSnapshot();
     disconnect();
 
-    contributor = registerTabRealtimeContributor({
-      subscriptions: [
+    contributor = registerRealtimeTrackConsumer({
+      tracks: [
         {
-          subscription_id: `storage.model-sync.modal.${jobId}`,
           kind: 'storage.model-sync',
           params: { job_id: jobId }
         }
       ],
-      onEvent: (event: TabRealtimeEvent) => {
+      onEvent: (event: RealtimeTrackEvent) => {
         if (event.op !== 'snapshot' || event.source?.kind !== 'storage.model-sync') return;
         status = event.payload as ModelSyncJobStatus;
         if (status) recordThroughputSample(status);

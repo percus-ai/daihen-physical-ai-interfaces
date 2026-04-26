@@ -22,17 +22,3 @@ def test_start_vlabor_invokes_up_script_with_profile(tmp_path, monkeypatch):
 
     assert calls["cmd"] == [str(script), "so101_dual_teleop", "--domain-id", "3"]
     assert calls["cwd"] == repo_root
-
-
-def test_stop_vlabor_on_backend_startup_skips_without_docker(monkeypatch):
-    called = {"stop": False}
-
-    monkeypatch.setattr(vlabor_runtime.shutil, "which", lambda _name: None)
-
-    def fake_stop_vlabor(*, strict: bool = True):
-        called["stop"] = True
-        return vlabor_runtime.subprocess.CompletedProcess(["down"], 0, "", "")
-
-    monkeypatch.setattr(vlabor_runtime, "stop_vlabor", fake_stop_vlabor)
-    vlabor_runtime.stop_vlabor_on_backend_startup()
-    assert called["stop"] is False

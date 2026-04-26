@@ -5,8 +5,7 @@
   import { createQuery } from '@tanstack/svelte-query';
 
   import { api } from '$lib/api/client';
-  import { getBackendUrl } from '$lib/config';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerRealtimeTrackConsumer, type RealtimeTrackConsumerHandle, type RealtimeTrackEvent } from '$lib/realtime/trackClient';
   import { queryClient } from '$lib/queryClient';
 
   type VlaborProfile = {
@@ -59,6 +58,27 @@
     dashboard_url?: string;
   };
 
+  type VlaborOperationAcceptedResponse = {
+    operation_id: string;
+    action: 'restart' | 'switch_profile';
+    state: 'queued';
+    profile_name?: string;
+    previous_profile_name?: string;
+  };
+
+  type VlaborOperationStatus = {
+    operation_id: string;
+    action: 'restart' | 'switch_profile';
+    state: 'queued' | 'running' | 'completed' | 'failed';
+    profile_name?: string;
+    previous_profile_name?: string;
+    message?: string;
+    logs?: string[];
+    error?: string;
+    exit_code?: string;
+    updated_at?: string;
+  };
+
   const profilesQuery = createQuery<ProfilesResponse>({
     queryKey: ['profiles', 'list'],
     queryFn: api.profiles.list
@@ -105,7 +125,9 @@
   let restartingVlabor = $state(false);
   let restartError = $state('');
   let restartLogs = $state<string[]>([]);
-  let restartWs = $state<WebSocket | null>(null);
+  let operationId = $state('');
+  let operationStatus = $state<VlaborOperationStatus | null>(null);
+  let handledTerminalOperationId = $state('');
   let logEl: HTMLPreElement | undefined = $state();
 
   async function refetchQuery(snapshot?: { refetch?: () => Promise<unknown> }) {
@@ -114,69 +136,68 @@
     }
   }
 
-  function runVlaborWsOperation(path: string): Promise<void> {
-    if (restartWs) {
-      return Promise.reject(new Error('別のVLAbor操作が進行中です。'));
+  function realtimeTracks() {
+    const tracks = [
+      {
+        kind: 'profiles.vlabor',
+        params: {}
+      }
+    ];
+    if (operationId) {
+      tracks.push({
+        kind: 'profiles.vlabor.operation',
+        params: { operation_id: operationId }
+      });
     }
-    restartingVlabor = true;
+    return tracks;
+  }
+
+  function syncRealtimeTracks() {
+    vlaborContributor?.setTracks(realtimeTracks());
+  }
+
+  function acceptOperation(response: VlaborOperationAcceptedResponse) {
+    operationId = response.operation_id;
+    handledTerminalOperationId = '';
+    operationStatus = {
+      operation_id: response.operation_id,
+      action: response.action,
+      state: response.state,
+      profile_name: response.profile_name,
+      previous_profile_name: response.previous_profile_name,
+      logs: []
+    };
     restartError = '';
     restartLogs = [];
+    syncRealtimeTracks();
+  }
 
-    const wsUrl = getBackendUrl().replace(/^http/, 'ws') + path;
-    const ws = new WebSocket(wsUrl);
-    restartWs = ws;
-
-    return new Promise((resolve, reject) => {
-      let completed = false;
-      let operationError = '';
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === 'log') {
-            restartLogs = [...restartLogs, data.line].slice(-MAX_LOG_LINES);
-            requestAnimationFrame(() => {
-              if (logEl) logEl.scrollTop = logEl.scrollHeight;
-            });
-            return;
-          }
-          if (data.type === 'complete') {
-            completed = true;
-            const exitCode = String(data.exit_code ?? '');
-            if (exitCode !== '0') {
-              operationError = `終了コード: ${exitCode}`;
-            }
-            return;
-          }
-          if (data.type === 'error') {
-            operationError = String(data.message ?? '処理に失敗しました。');
-          }
-        } catch {
-          return;
-        }
-      };
-
-      ws.onerror = () => {
-        if (!operationError) {
-          operationError = 'WebSocket接続に失敗しました。';
-        }
-      };
-
-      ws.onclose = () => {
-        restartingVlabor = false;
-        restartWs = null;
-
-        if (!operationError && !completed) {
-          operationError = '処理が完了する前に切断されました。';
-        }
-        if (operationError) {
-          restartError = operationError;
-          reject(new Error(operationError));
-          return;
-        }
-        resolve();
-      };
-    });
+  function applyOperationStatus(status: VlaborOperationStatus) {
+    operationStatus = status;
+    restartLogs = [...(status.logs ?? [])].slice(-MAX_LOG_LINES);
+    if (restartLogs.length > 0) {
+      requestAnimationFrame(() => {
+        if (logEl) logEl.scrollTop = logEl.scrollHeight;
+      });
+    }
+    if (!['completed', 'failed'].includes(status.state)) return;
+    restartingVlabor = false;
+    switchingProfile = false;
+    if (handledTerminalOperationId === status.operation_id) return;
+    handledTerminalOperationId = status.operation_id;
+    if (status.state === 'failed') {
+      const message = status.error || status.message || 'VLAbor操作に失敗しました。';
+      restartError = message;
+      if (status.action === 'switch_profile') {
+        selectionError = message;
+      }
+    }
+    void Promise.all([
+      refetchQuery($activeProfileQuery),
+      refetchQuery($profilesQuery),
+      refetchQuery($activeStatusQuery),
+      refetchQuery($vlaborStatusQuery)
+    ]);
   }
 
   async function handleProfileChange(event: Event) {
@@ -184,54 +205,61 @@
     const profileName = target.value;
     if (!profileName) return;
     switchingProfile = true;
+    restartingVlabor = true;
     selectionError = '';
+    restartError = '';
     try {
-      const switchPath = `/api/profiles/ws/vlabor/switch-profile?profile=${encodeURIComponent(profileName)}`;
-      await runVlaborWsOperation(switchPath);
-      await refetchQuery($activeProfileQuery);
-      await refetchQuery($profilesQuery);
-      await refetchQuery($activeStatusQuery);
-      await refetchQuery($vlaborStatusQuery);
+      acceptOperation(await api.profiles.setActive({ profile_name: profileName }) as VlaborOperationAcceptedResponse);
     } catch (error) {
       console.error(error);
       selectionError = error instanceof Error ? error.message : 'プロファイル切り替えに失敗しました。';
-    } finally {
       switchingProfile = false;
+      restartingVlabor = false;
     }
   }
 
-  function handleRestartVlabor() {
-    if (restartWs) return;
+  async function handleRestartVlabor() {
+    if (restartingVlabor || switchingProfile) return;
     const selectedProfile = (activeProfileName ?? '').trim();
-    const restartPath = selectedProfile
-      ? `/api/profiles/ws/vlabor/restart?profile=${encodeURIComponent(selectedProfile)}`
-      : '/api/profiles/ws/vlabor/restart';
-    void runVlaborWsOperation(restartPath);
+    restartingVlabor = true;
+    restartError = '';
+    try {
+      acceptOperation(
+        await api.profiles.restartVlabor(selectedProfile ? { profile: selectedProfile } : {}) as VlaborOperationAcceptedResponse
+      );
+    } catch (error) {
+      console.error(error);
+      restartError = error instanceof Error ? error.message : 'VLAbor再起動に失敗しました。';
+      restartingVlabor = false;
+    }
   }
 
-  let vlaborContributor: TabRealtimeContributorHandle | null = null;
+  let vlaborContributor: RealtimeTrackConsumerHandle | null = null;
 
   onMount(() => {
     if (!browser) return;
-    vlaborContributor = registerTabRealtimeContributor({
-      subscriptions: [
-        {
-          subscription_id: 'system.profile.vlabor',
-          kind: 'profiles.vlabor',
-          params: {}
+    vlaborContributor = registerRealtimeTrackConsumer({
+      tracks: realtimeTracks(),
+      onEvent: (event: RealtimeTrackEvent) => {
+        if (event.source?.kind === 'profiles.vlabor') {
+          queryClient.setQueryData(['profiles', 'vlabor', 'status'], event.payload);
+          return;
         }
-      ],
-      onEvent: (event: TabRealtimeEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'profiles.vlabor') return;
-        queryClient.setQueryData(['profiles', 'vlabor', 'status'], event.payload);
+        if (event.source?.kind === 'profiles.vlabor.operation') {
+          applyOperationStatus(event.payload as VlaborOperationStatus);
+        }
       }
     });
+  });
+
+  $effect(() => {
+    operationId;
+    syncRealtimeTracks();
   });
 
   onDestroy(() => {
     vlaborContributor?.dispose();
     vlaborContributor = null;
-    restartWs?.close();
   });
 </script>
 
@@ -270,7 +298,7 @@
       {/if}
       <button
         class="inline-flex h-9 items-center justify-center rounded-full border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-        disabled={restartingVlabor}
+        disabled={restartingVlabor || switchingProfile}
         onclick={handleRestartVlabor}
       >
         {restartingVlabor ? '再起動中…' : 'VLAbor 再起動'}

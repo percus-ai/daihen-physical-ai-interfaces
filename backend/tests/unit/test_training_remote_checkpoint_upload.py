@@ -19,6 +19,7 @@ def _load_training_api_module():
     providers_vast_module = types.ModuleType("percus_ai.training.providers.vast")
     providers_verda_module = types.ModuleType("percus_ai.training.providers.verda")
     features_repo_module = types.ModuleType("percus_ai.training.features_repo")
+    orchestrator_module = types.ModuleType("percus_ai.training.orchestrator")
     ssh_pkg = types.ModuleType("percus_ai.training.ssh")
     ssh_client_module = types.ModuleType("percus_ai.training.ssh.client")
     ssh_executor_module = types.ModuleType("percus_ai.training.ssh.executor")
@@ -35,6 +36,15 @@ def _load_training_api_module():
     def _stub_destroy_instance(*_args, **_kwargs):
         return None
 
+    def _stub_create_job_with_progress(*_args, **_kwargs):
+        return {}
+
+    def _stub_list_volumes(*_args, **_kwargs):
+        return []
+
+    def _stub_search_offers_minimal(*_args, **_kwargs):
+        return []
+
     class _StubVerdaProvider:
         def terminate_instance(self, *_args, **_kwargs):
             return None
@@ -48,7 +58,12 @@ def _load_training_api_module():
     ssh_client_module.SSHConnection = _StubSSHConnection
     ssh_executor_module.RemoteExecutor = _StubRemoteExecutor
     ssh_executor_module.run_remote_command = _stub_run_remote_command
+    orchestrator_module.create_job_with_progress = _stub_create_job_with_progress
+    providers_vast_module.delete_volumes = _stub_destroy_instance
     providers_vast_module.destroy_instance = _stub_destroy_instance
+    providers_vast_module.get_instance = lambda *_args, **_kwargs: None
+    providers_vast_module.list_volumes = _stub_list_volumes
+    providers_vast_module.search_offers_minimal = _stub_search_offers_minimal
     providers_verda_module.VerdaProvider = _StubVerdaProvider
     features_repo_module.resolve_features_repo_config = lambda: _StubFeaturesRepoConfig(
         repo_url="https://github.com/percus-ai/physical-ai-features.git",
@@ -62,6 +77,7 @@ def _load_training_api_module():
         ("percus_ai.training.providers.vast", providers_vast_module),
         ("percus_ai.training.providers.verda", providers_verda_module),
         ("percus_ai.training.features_repo", features_repo_module),
+        ("percus_ai.training.orchestrator", orchestrator_module),
         ("percus_ai.training.ssh", ssh_pkg),
         ("percus_ai.training.ssh.client", ssh_client_module),
         ("percus_ai.training.ssh.executor", ssh_executor_module),
@@ -852,8 +868,6 @@ def test_refresh_job_ssh_target_if_needed_keeps_current_when_not_stale(monkeypat
 
 def test_refresh_job_status_from_instance_uses_vast_provider(monkeypatch):
     saved_jobs: list[dict] = []
-    providers_pkg = types.ModuleType("percus_ai.training.providers")
-    vast_module = types.ModuleType("percus_ai.training.providers.vast")
 
     class _VastInstance:
         status = None
@@ -866,9 +880,7 @@ def test_refresh_job_status_from_instance_uses_vast_provider(monkeypatch):
     async def fake_save_job(job_data: dict):
         saved_jobs.append(dict(job_data))
 
-    vast_module.get_instance = _get_instance
-    monkeypatch.setitem(sys.modules, "percus_ai.training.providers", providers_pkg)
-    monkeypatch.setitem(sys.modules, "percus_ai.training.providers.vast", vast_module)
+    monkeypatch.setattr(training, "get_instance", _get_instance)
     monkeypatch.setattr(training, "_save_job", fake_save_job)
 
     job = {
@@ -886,8 +898,6 @@ def test_refresh_job_status_from_instance_uses_vast_provider(monkeypatch):
 
 def test_refresh_job_status_from_instance_marks_vast_not_found(monkeypatch):
     saved_jobs: list[dict] = []
-    providers_pkg = types.ModuleType("percus_ai.training.providers")
-    vast_module = types.ModuleType("percus_ai.training.providers.vast")
 
     def _get_instance(_instance_id: str):
         raise RuntimeError("404 not found")
@@ -895,9 +905,7 @@ def test_refresh_job_status_from_instance_marks_vast_not_found(monkeypatch):
     async def fake_save_job(job_data: dict):
         saved_jobs.append(dict(job_data))
 
-    vast_module.get_instance = _get_instance
-    monkeypatch.setitem(sys.modules, "percus_ai.training.providers", providers_pkg)
-    monkeypatch.setitem(sys.modules, "percus_ai.training.providers.vast", vast_module)
+    monkeypatch.setattr(training, "get_instance", _get_instance)
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_refresh_job_ssh_target_if_needed", lambda job_data: asyncio.sleep(0, result=job_data))
     monkeypatch.setattr(training, "_check_remote_status", lambda _job_data: "unreachable")
@@ -919,8 +927,6 @@ def test_refresh_job_status_from_instance_marks_vast_not_found(monkeypatch):
 
 def test_refresh_job_status_from_instance_keeps_vast_running_when_provider_missing(monkeypatch):
     saved_jobs: list[dict] = []
-    providers_pkg = types.ModuleType("percus_ai.training.providers")
-    vast_module = types.ModuleType("percus_ai.training.providers.vast")
 
     def _get_instance(_instance_id: str):
         raise RuntimeError("404 not found")
@@ -928,9 +934,7 @@ def test_refresh_job_status_from_instance_keeps_vast_running_when_provider_missi
     async def fake_save_job(job_data: dict):
         saved_jobs.append(dict(job_data))
 
-    vast_module.get_instance = _get_instance
-    monkeypatch.setitem(sys.modules, "percus_ai.training.providers", providers_pkg)
-    monkeypatch.setitem(sys.modules, "percus_ai.training.providers.vast", vast_module)
+    monkeypatch.setattr(training, "get_instance", _get_instance)
     monkeypatch.setattr(training, "_save_job", fake_save_job)
     monkeypatch.setattr(training, "_check_remote_status", lambda _job_data: "running")
 
@@ -980,8 +984,6 @@ def test_refresh_job_status_from_instance_keeps_vast_running_when_recent_metrics
 
 def test_refresh_job_ssh_target_if_needed_updates_vast_port(monkeypatch):
     saved_jobs: list[dict] = []
-    providers_pkg = types.ModuleType("percus_ai.training.providers")
-    vast_module = types.ModuleType("percus_ai.training.providers.vast")
 
     class _VastInstance:
         ip = "ssh8.vast.ai"
@@ -993,9 +995,7 @@ def test_refresh_job_ssh_target_if_needed_updates_vast_port(monkeypatch):
     async def fake_save_job(job_data: dict):
         saved_jobs.append(dict(job_data))
 
-    vast_module.get_instance = _get_instance
-    monkeypatch.setitem(sys.modules, "percus_ai.training.providers", providers_pkg)
-    monkeypatch.setitem(sys.modules, "percus_ai.training.providers.vast", vast_module)
+    monkeypatch.setattr(training, "get_instance", _get_instance)
     monkeypatch.setattr(training, "_save_job", fake_save_job)
 
     job = {
@@ -1895,39 +1895,3 @@ def test_resolve_model_artifact_in_r2_from_checkpoint_raises_when_missing():
             checkpoint_job_name="pick_place_train_20260309",
             step=1000,
         )
-
-
-def test_generate_env_file_reads_features_repo_from_system_settings(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("PHYSICAL_AI_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("PERCUS_AI_REPO_URL", raising=False)
-    monkeypatch.delenv("PERCUS_AI_REPO_REF", raising=False)
-    monkeypatch.delenv("PERCUS_AI_REPO_COMMIT", raising=False)
-    monkeypatch.setattr(
-        training,
-        "resolve_features_repo_config",
-        lambda: type(
-            "_Config",
-            (),
-            {
-                "repo_url": "https://github.com/example/features.git",
-                "repo_ref": "sync/daihen-physical-ai/abc1234",
-                "repo_commit": "deadbeef",
-            },
-        )(),
-    )
-
-    content = training._generate_env_file(
-        job_id="job-1",
-        instance_id="inst-1",
-        policy_type="pi0",
-        supabase_access_token=None,
-        supabase_refresh_token=None,
-        supabase_user_id=None,
-    )
-
-    assert "PERCUS_AI_REPO_URL=https://github.com/example/features.git" in content
-    assert "PERCUS_AI_REPO_REF=sync/daihen-physical-ai/abc1234" in content
-    assert "PERCUS_AI_REPO_COMMIT=deadbeef" in content

@@ -13,18 +13,17 @@
     type RemoteCheckpointListResponse,
     type RemoteCheckpointUploadResult,
     type RescueCPUResult,
-    type TabSessionSubscription,
-    type TrainingJobCoreSubscription,
-    type TrainingJobLogsSubscription,
-    type TrainingJobMetricsSubscription,
     type TrainingJobOperationStatusResponse,
-    type TrainingJobOperationsSubscription,
-    type TrainingJobProvisionSubscription,
     type TrainingProvisionOperationStatusResponse
   } from '$lib/api/client';
   import { formatDate, formatDurationMs, formatElapsedDuration, formatUuidPreview } from '$lib/format';
   import { getGpuModelLabel } from '$lib/policies';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import {
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent,
+    type RealtimeTrackSelector
+  } from '$lib/realtime/trackClient';
   import { queryClient } from '$lib/queryClient';
   import { formatStepValue, type CheckpointMarker, type CheckpointMarkerStatus } from '$lib/training/lossChart';
   import { estimateTrainingEta } from '$lib/training/trainingEta';
@@ -725,36 +724,32 @@
 
   };
 
-  const buildRealtimeSubscriptions = (
+  const buildRealtimeTracks = (
     targetJobId: string,
     nextLogsType: 'training' | 'setup',
     nextLogLines: number
-  ): TabSessionSubscription[] => {
-    const coreSubscription: TrainingJobCoreSubscription = {
-      subscription_id: `train.job.${targetJobId}.core`,
+  ): RealtimeTrackSelector[] => {
+    const coreTrack: RealtimeTrackSelector = {
       kind: 'training.job.core',
       params: { job_id: targetJobId }
     };
-    const provisionSubscription: TrainingJobProvisionSubscription = {
-      subscription_id: `train.job.${targetJobId}.provision`,
+    const provisionTrack: RealtimeTrackSelector = {
       kind: 'training.job.provision',
       params: { job_id: targetJobId }
     };
-    const metricsSubscription: TrainingJobMetricsSubscription = {
-      subscription_id: `train.job.${targetJobId}.metrics`,
+    const metricsTrack: RealtimeTrackSelector = {
       kind: 'training.job.metrics',
       params: { job_id: targetJobId, limit: 2000 }
     };
-    const subscriptions: TabSessionSubscription[] = shouldSubscribeJobRealtime
+    const tracks: RealtimeTrackSelector[] = shouldSubscribeJobRealtime
       ? [
-          coreSubscription,
-          provisionSubscription,
-          metricsSubscription
+          coreTrack,
+          provisionTrack,
+          metricsTrack
         ]
       : [];
     if (shouldSubscribeLogStream) {
-      const logsSubscription: TrainingJobLogsSubscription = {
-        subscription_id: `train.job.${targetJobId}.logs`,
+      const logsTrack: RealtimeTrackSelector = {
         kind: 'training.job.logs',
         params: {
           job_id: targetJobId,
@@ -762,15 +757,14 @@
           tail_lines: nextLogLines
         }
       };
-      subscriptions.push(logsSubscription);
+      tracks.push(logsTrack);
     }
-    const operationsSubscription: TrainingJobOperationsSubscription = {
-      subscription_id: `train.job.${targetJobId}.operations`,
+    const operationsTrack: RealtimeTrackSelector = {
       kind: 'training.job.operations',
       params: { job_id: targetJobId }
     };
-    subscriptions.push(operationsSubscription);
-    return subscriptions;
+    tracks.push(operationsTrack);
+    return tracks;
   };
 
   const appendLogLines = (lines: string[]) => {
@@ -807,7 +801,7 @@
   const handleRealtimeEvent = (
     targetJobId: string,
     registrationKey: string,
-    event: TabRealtimeEvent
+    event: RealtimeTrackEvent
   ) => {
     const activeKey = `${jobId}:${logsType}`;
     if (registrationKey !== activeKey) {
@@ -1094,7 +1088,7 @@
     }
   });
 
-  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
 
   $effect(() => {
     if (!browser || !jobId) {
@@ -1115,8 +1109,8 @@
     loadedLogSnapshotKey = '';
 
     streamStatus = shouldSubscribeLogStream ? 'connecting' : 'idle';
-    realtimeContributor = registerTabRealtimeContributor({
-      subscriptions: buildRealtimeSubscriptions(currentJobId, currentLogsType, logLines),
+    realtimeContributor = registerRealtimeTrackConsumer({
+      tracks: buildRealtimeTracks(currentJobId, currentLogsType, logLines),
       onEvent: (event) => handleRealtimeEvent(currentJobId, registrationKey, event)
     });
     if (!realtimeContributor) {
@@ -1136,7 +1130,7 @@
     if (!realtimeContributor || !jobId) {
       return;
     }
-    realtimeContributor.setSubscriptions(buildRealtimeSubscriptions(jobId, logsType, logLines));
+    realtimeContributor.setTracks(buildRealtimeTracks(jobId, logsType, logLines));
   });
 
   $effect(() => {

@@ -8,7 +8,7 @@
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
   import { preventModalAutoFocus } from '$lib/components/modal/focus';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerRealtimeTrackConsumer, type RealtimeTrackConsumerHandle, type RealtimeTrackEvent } from '$lib/realtime/trackClient';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import { hasEditableFocus, isEditableTarget } from '$lib/recording/keyboard';
@@ -69,7 +69,7 @@
   let uploadModalOpen = $state(false);
   let uploadDatasetId = $state('');
   let uploadStatus = $state<RecordingUploadStatus | null>(null);
-  let uploadContributor: TabRealtimeContributorHandle | null = null;
+  let uploadContributor: RealtimeTrackConsumerHandle | null = null;
   let dismissedUploadDatasetId = $state('');
 
   const runAction = async (
@@ -280,7 +280,7 @@
     uploadStatus = null;
   };
 
-  const handleUploadStatusEvent = (event: TabRealtimeEvent) => {
+  const handleUploadStatusEvent = (event: RealtimeTrackEvent) => {
     if (event.op !== 'snapshot' || event.source?.kind !== 'recording.upload-status') return;
     const targetDatasetId = String(uploadDatasetId || '').trim();
     if (!targetDatasetId) return;
@@ -502,9 +502,9 @@
   $effect(() => {
     if (!browser) return;
     if (uploadContributor === null) {
-      uploadContributor = registerTabRealtimeContributor({
+      uploadContributor = registerRealtimeTrackConsumer({
         contributorId: 'recording.controls.upload-modal',
-        subscriptions: [],
+        tracks: [],
         onEvent: handleUploadStatusEvent
       });
     }
@@ -512,12 +512,11 @@
 
     const targetDatasetId = String(uploadDatasetId || '').trim();
     if (!uploadModalOpen || !targetDatasetId) {
-      uploadContributor?.setSubscriptions([]);
+      uploadContributor?.setTracks([]);
       return;
     }
-    uploadContributor?.setSubscriptions([
+    uploadContributor?.setTracks([
       {
-        subscription_id: `recording.controls.upload.${targetDatasetId}`,
         kind: 'recording.upload-status',
         params: { session_id: targetDatasetId }
       }

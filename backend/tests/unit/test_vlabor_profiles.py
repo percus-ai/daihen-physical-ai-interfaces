@@ -6,7 +6,6 @@ import yaml
 from interfaces_backend.services.vlabor_profiles import (
     build_profile_health_contract,
     build_inference_bridge_config,
-    classify_include_health_resolution,
     extract_camera_specs,
     extract_arm_namespaces,
     extract_recorder_arm_streams,
@@ -372,25 +371,6 @@ def test_build_profile_health_contract_resolves_include_topics_from_config() -> 
     assert contract.required_publishers[0].node == "/top_camera"
     assert "/top_camera/image_raw" in contract.required_publishers[0].publishes
     assert "/top_camera/image_raw/compressed" in contract.required_publishers[0].publishes
-
-
-def test_profile_include_launches_are_all_classified() -> None:
-    unknown: list[str] = []
-    for path in _profiles_dir().glob("*.yaml"):
-        snapshot = _load_profile_snapshot(path)
-        profile = snapshot["profile"]
-        for action in profile.get("actions") or []:
-            if not isinstance(action, dict) or action.get("type") != "include":
-                continue
-            resolution = classify_include_health_resolution(
-                action.get("package"),
-                action.get("launch"),
-            )
-            if resolution == "unknown":
-                unknown.append(
-                    f"{path.stem}: {action.get('package')}::{action.get('launch')}"
-                )
-    assert unknown == []
 
 
 def _profiles_dir() -> Path:

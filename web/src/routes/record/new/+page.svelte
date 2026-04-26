@@ -1,13 +1,15 @@
 <script lang="ts">
   import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { Button } from 'bits-ui';
   import {
     api,
+    type RecordingInfo,
     type StartupOperationAcceptedResponse,
     type StartupOperationStatusResponse
   } from '$lib/api/client';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerRealtimeTrackConsumer, type RealtimeTrackConsumerHandle, type RealtimeTrackEvent } from '$lib/realtime/trackClient';
 
   const DATASET_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
   const START_PHASE_LABELS: Record<string, string> = {
@@ -48,7 +50,12 @@
   let startupStatus = $state<StartupOperationStatusResponse | null>(null);
   let startupStreamError = $state('');
   let startupOperationId = $state('');
-  let startupContributor: TabRealtimeContributorHandle | null = null;
+  let continueRecording = $state<RecordingInfo | null>(null);
+  let continueLoading = $state(false);
+  let continueLoadedFor = $state('');
+  let startupContributor: RealtimeTrackConsumerHandle | null = null;
+  const continueFromDatasetId = $derived((page.url.searchParams.get('continue_from_dataset_id') ?? '').trim());
+  const isContinueMode = $derived(Boolean(continueFromDatasetId));
 
   const validateDatasetName = (value: string) => {
     const trimmed = value.trim();
@@ -101,7 +108,33 @@
     }
   };
 
+  const loadContinueRecording = async (recordingId: string) => {
+    continueLoading = true;
+    error = '';
+    try {
+      const recording = await api.recording.get(recordingId);
+      if (continueLoadedFor !== recordingId) return;
+      continueRecording = recording;
+      datasetName = recording.dataset_name || recording.recording_id;
+      task = recording.task ?? '';
+      episodeCount = Math.max(1, Number(recording.remaining_episodes || 1));
+      episodeTimeSec = Number(recording.episode_time_s || 60);
+      resetWaitSec = Number(recording.reset_time_s ?? 10);
+      if (!recording.continuable) {
+        error = recording.continue_block_reason ?? 'この録画データセットは継続できません。';
+      }
+    } catch (err) {
+      if (continueLoadedFor !== recordingId) return;
+      error = err instanceof Error ? err.message : '録画データセットを取得できませんでした。';
+    } finally {
+      if (continueLoadedFor === recordingId) {
+        continueLoading = false;
+      }
+    }
+  };
+
   const handleRegenerate = () => {
+    if (isContinueMode) return;
     datasetName = buildDefaultName();
   };
 
@@ -111,14 +144,25 @@
     startupStatus = null;
     startupStreamError = '';
 
-    const nameErrors = validateDatasetName(datasetName);
-    if (nameErrors.length) {
-      error = nameErrors[0];
-      return;
-    }
-    if (!task.trim()) {
-      error = 'タスク説明を入力してください。';
-      return;
+    if (isContinueMode) {
+      if (continueLoading) {
+        error = '録画データセットを読み込み中です。';
+        return;
+      }
+      if (!continueRecording?.continuable) {
+        error = continueRecording?.continue_block_reason ?? 'この録画データセットは継続できません。';
+        return;
+      }
+    } else {
+      const nameErrors = validateDatasetName(datasetName);
+      if (nameErrors.length) {
+        error = nameErrors[0];
+        return;
+      }
+      if (!task.trim()) {
+        error = 'タスク説明を入力してください。';
+        return;
+      }
     }
 
     const episodes = Math.floor(parseNumber(episodeCount));
@@ -140,11 +184,12 @@
     submitting = true;
     try {
       const payload = {
-        dataset_name: datasetName.trim(),
-        task: task.trim(),
+        dataset_name: (continueRecording?.dataset_name ?? datasetName).trim(),
+        task: (continueRecording?.task ?? task).trim(),
         num_episodes: episodes,
         episode_time_s: episodeTime,
-        reset_time_s: resetWait
+        reset_time_s: resetWait,
+        ...(isContinueMode ? { continue_from_dataset_id: continueFromDatasetId } : {})
       };
       const result = (await api.recording.createSession(payload)) as StartupOperationAcceptedResponse;
       if (!result?.operation_id) {
@@ -171,21 +216,29 @@
 
   $effect(() => {
     if (!browser) return;
+    if (!continueFromDatasetId) return;
+    if (continueLoadedFor === continueFromDatasetId) return;
+    continueLoadedFor = continueFromDatasetId;
+    continueRecording = null;
+    void loadContinueRecording(continueFromDatasetId);
+  });
+
+  $effect(() => {
+    if (!browser) return;
     if (!startupOperationId) {
       disposeStartupContributor();
       return;
     }
     const currentOperationId = startupOperationId;
     disposeStartupContributor();
-    startupContributor = registerTabRealtimeContributor({
-      subscriptions: [
+    startupContributor = registerRealtimeTrackConsumer({
+      tracks: [
         {
-          subscription_id: `record.new.startup.${currentOperationId}`,
           kind: 'startup.operation',
           params: { operation_id: currentOperationId }
         }
       ],
-      onEvent: (event: TabRealtimeEvent) => {
+      onEvent: (event: RealtimeTrackEvent) => {
         if (event.op !== 'snapshot' || event.source?.kind !== 'startup.operation') return;
         if (startupOperationId !== currentOperationId) return;
         void handleStartupStatusUpdate(event.payload as StartupOperationStatusResponse);
@@ -208,8 +261,14 @@
   <p class="section-title">Record</p>
   <div class="mt-2 flex flex-wrap items-end justify-between gap-4">
     <div>
-      <h1 class="text-3xl font-semibold text-slate-900">新規データセット収録</h1>
-      <p class="mt-2 text-sm text-slate-600">新しい収録データセットを作成します。開始は次の画面で行います。</p>
+      <h1 class="text-3xl font-semibold text-slate-900">
+        {isContinueMode ? '継続収録の準備' : '新規データセット収録'}
+      </h1>
+      <p class="mt-2 text-sm text-slate-600">
+        {isContinueMode
+          ? '既存データセットの継続セッションを準備します。開始は次の画面で行います。'
+          : '新しい収録データセットを作成します。開始は次の画面で行います。'}
+      </p>
     </div>
     <Button.Root class="btn-ghost" href="/record">録画一覧に戻る</Button.Root>
   </div>
@@ -220,21 +279,27 @@
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">データセット名</span>
       <div class="mt-2 flex flex-wrap gap-2">
-        <input class="input flex-1" type="text" bind:value={datasetName} required />
-        <Button.Root class="btn-ghost" type="button" onclick={handleRegenerate}>自動生成</Button.Root>
+        <input class="input flex-1" type="text" bind:value={datasetName} required disabled={isContinueMode} />
+        {#if !isContinueMode}
+          <Button.Root class="btn-ghost" type="button" onclick={handleRegenerate}>自動生成</Button.Root>
+        {/if}
       </div>
-      <p class="mt-2 text-xs text-slate-500">
-        英数字で開始し、英数字・_・- のみ使用可。64文字以内、archive/temp/_ は不可。
-      </p>
+      {#if !isContinueMode}
+        <p class="mt-2 text-xs text-slate-500">
+          英数字で開始し、英数字・_・- のみ使用可。64文字以内、archive/temp/_ は不可。
+        </p>
+      {/if}
     </label>
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">タスク説明</span>
-      <textarea class="input mt-2 min-h-[120px]" bind:value={task} required></textarea>
-      <p class="mt-2 text-xs text-slate-500">例: 物体を掴んで箱に置く / 机の上を移動</p>
+      <textarea class="input mt-2 min-h-[120px]" bind:value={task} required disabled={isContinueMode}></textarea>
+      {#if !isContinueMode}
+        <p class="mt-2 text-xs text-slate-500">例: 物体を掴んで箱に置く / 机の上を移動</p>
+      {/if}
     </label>
     <label class="text-sm font-semibold text-slate-700">
-      <span class="label">エピソード総数</span>
-      <input class="input mt-2" type="number" min="1" step="1" bind:value={episodeCount} required />
+      <span class="label">{isContinueMode ? '残りエピソード数' : 'エピソード総数'}</span>
+      <input class="input mt-2" type="number" min="1" step="1" bind:value={episodeCount} required disabled={isContinueMode} />
     </label>
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">エピソード秒数</span>
@@ -247,6 +312,9 @@
       <p class="mt-2 text-xs text-slate-500">エピソード間の待機時間（秒）</p>
     </label>
     <p class="text-xs text-slate-500">プロファイルは現在の設定が使用されます。</p>
+    {#if continueLoading}
+      <p class="text-sm text-slate-500">録画データセットを読み込み中...</p>
+    {/if}
     {#if error}
       <p class="text-sm text-rose-600">{error}</p>
     {/if}
@@ -278,8 +346,13 @@
       </div>
     {/if}
     <div class="mt-2 flex flex-wrap gap-3">
-      <Button.Root class="btn-primary" type="submit" disabled={submitting || startupActive} aria-busy={submitting || startupActive}>
-        {startupActive ? '準備中...' : '収録データセットを作成'}
+      <Button.Root
+        class="btn-primary"
+        type="submit"
+        disabled={submitting || startupActive || continueLoading || (isContinueMode && !continueRecording?.continuable)}
+        aria-busy={submitting || startupActive || continueLoading}
+      >
+        {startupActive ? '準備中...' : isContinueMode ? '継続セッションを準備' : '収録データセットを作成'}
       </Button.Root>
       <Button.Root class="btn-ghost" href="/record">キャンセル</Button.Root>
     </div>

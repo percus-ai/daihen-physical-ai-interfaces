@@ -10,6 +10,8 @@ from datetime import timedelta
 from typing import Any
 
 from percus_ai.db import get_supabase_service_client
+from interfaces_backend.models.realtime_payloads import TrainingJobProvisionRealtimeDetail
+from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 from interfaces_backend.services.training_provision_operations import (
     _ACTIVE_STATES,
     _STALE_TIMEOUT_MINUTES,
@@ -25,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 _DISABLE_RECOVERY_ENV = "PHI_DISABLE_TRAINING_PROVISION_RECOVERY"
 _RECOVERY_RETRY_SECONDS_ENV = "TRAINING_PROVISION_RECOVERY_RETRY_SECONDS"
-_PUBLISH_RETRY_COUNT_ENV = "TRAINING_PROVISION_RECOVERY_PUBLISH_RETRY_COUNT"
 
 
 async def _get_recovery_db_client():
@@ -44,19 +45,8 @@ def _recovery_retry_seconds() -> float:
     try:
         return max(float(raw), 0.0)
     except ValueError:
-        logger.warning("Invalid %s=%r; fallback to 30s", _RECOVERY_RETRY_SECONDS_ENV, raw)
+        logger.warning("Invalid %s=%r; using 30s", _RECOVERY_RETRY_SECONDS_ENV, raw)
         return 30.0
-
-
-def _publish_retry_count() -> int:
-    raw = str(os.environ.get(_PUBLISH_RETRY_COUNT_ENV) or "").strip()
-    if not raw:
-        return 3
-    try:
-        return max(int(raw), 1)
-    except ValueError:
-        logger.warning("Invalid %s=%r; fallback to 3", _PUBLISH_RETRY_COUNT_ENV, raw)
-        return 3
 
 
 class TrainingProvisionRecoveryService:
@@ -170,11 +160,23 @@ class TrainingProvisionRecoveryService:
         snapshot_row.update(patch)
         snapshot_row["updated_at"] = _utcnow_iso()
         snapshot = self._operations_service._row_to_response(snapshot_row)
-        if not await self._publish_with_retry(snapshot):
-            logger.warning(
-                "Training provision recovery could not publish operation_id=%s after retries",
-                operation_id,
-            )
+        user_id = str(snapshot_row.get("owner_user_id") or "").strip()
+        if user_id:
+            detail = snapshot.model_dump(mode="json")
+            runtime = get_realtime_runtime()
+            runtime.track(
+                scope=UserID(user_id),
+                kind="training.provision-operation",
+                key=snapshot.operation_id,
+            ).replace(detail)
+            if snapshot.job_id:
+                runtime.track(
+                    scope=UserID(user_id),
+                    kind="training.job.provision",
+                    key=snapshot.job_id,
+                ).replace(
+                    TrainingJobProvisionRealtimeDetail(provision_operation=snapshot).model_dump(mode="json")
+                )
 
         logger.warning(
             "Recovered stale training provision operation on backend startup: operation_id=%s",
@@ -210,25 +212,6 @@ class TrainingProvisionRecoveryService:
             "failure_reason": "backend_restart_cleanup",
             "finished_at": _utcnow_iso(),
         }
-
-    async def _publish_with_retry(self, snapshot) -> bool:
-        attempts = _publish_retry_count()
-        for attempt in range(1, attempts + 1):
-            try:
-                await self._operations_service._publish(snapshot)
-                return True
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception(
-                    "Training provision recovery publish failed for operation_id=%s (attempt %d/%d)",
-                    snapshot.operation_id,
-                    attempt,
-                    attempts,
-                )
-                if attempt < attempts:
-                    await asyncio.sleep(_recovery_retry_seconds())
-        return False
 
 
 _service: TrainingProvisionRecoveryService | None = None

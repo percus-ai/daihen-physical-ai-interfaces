@@ -6,7 +6,7 @@
   import { Dialog, Tabs } from 'bits-ui';
   import FunnelSimple from 'phosphor-svelte/lib/FunnelSimple';
 
-  import { api, type TabSessionSubscription } from '$lib/api/client';
+  import { api } from '$lib/api/client';
   import type {
     BuildJobSummary,
     BuildLogEvent,
@@ -17,7 +17,12 @@
   import RuntimeTab from '$lib/components/system/RuntimeTab.svelte';
   import SettingsTab from '$lib/components/system/SettingsTab.svelte';
   import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import {
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent,
+    type RealtimeTrackSelector
+  } from '$lib/realtime/trackClient';
   import {
     buildSystemTabHref,
     normalizeSystemTab,
@@ -549,23 +554,23 @@
     }
   };
 
-  const buildRealtimeSubscriptions = (tab: SystemTab): TabSessionSubscription[] => {
+  const buildRealtimeTracks = (tab: SystemTab): RealtimeTrackSelector[] => {
     if (tab === 'status') {
       return [
-        { subscription_id: 'system.page.status', kind: 'system.status', params: {} },
-        { subscription_id: 'system.page.operate', kind: 'operate.status', params: {} }
+        { kind: 'system.status', key: 'system' },
+        { kind: 'operate.status', key: 'operate' }
       ];
     }
     if (tab === 'runtime') {
       return [
-        { subscription_id: 'system.page.builds-status', kind: 'builds.status', params: {} },
-        { subscription_id: 'system.page.builds-logs', kind: 'builds.logs', params: {} }
+        { kind: 'builds.status', key: 'builds' },
+        { kind: 'builds.logs', key: 'builds' }
       ];
     }
     return [];
   };
 
-  const handleRealtimeEvent = (event: TabRealtimeEvent) => {
+  const handleRealtimeEvent = (event: RealtimeTrackEvent) => {
     if (event.source?.kind === 'builds.logs' && event.op === 'append') {
       appendBuildLogEvents(((event.payload as { events?: BuildLogEvent[] }).events ?? []) as BuildLogEvent[]);
       return;
@@ -586,7 +591,7 @@
     }
   };
 
-  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
 
   onMount(() => {
     const persistedRuntimeFilter = loadRuntimeBuildFilterStorage();
@@ -612,8 +617,8 @@
     }
 
     if (realtimeContributor === null) {
-      realtimeContributor = registerTabRealtimeContributor({
-        subscriptions: buildRealtimeSubscriptions(activeTab),
+      realtimeContributor = registerRealtimeTrackConsumer({
+        tracks: buildRealtimeTracks(activeTab),
         onEvent: handleRealtimeEvent
       });
       if (!realtimeContributor) {
@@ -623,7 +628,7 @@
     }
 
     realtimeContributor.setEventHandler(handleRealtimeEvent);
-    realtimeContributor.setSubscriptions(buildRealtimeSubscriptions(activeTab));
+    realtimeContributor.setTracks(buildRealtimeTracks(activeTab));
   });
 </script>
 

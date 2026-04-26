@@ -81,11 +81,6 @@ def start_lerobot(*, strict: bool = True) -> subprocess.CompletedProcess[str]:
     return _run_lerobot_script("up", strict=strict)
 
 
-def stop_lerobot(*, strict: bool = True) -> subprocess.CompletedProcess[str]:
-    """Stop the lerobot_ros2 Docker stack."""
-    return _run_lerobot_script("down", strict=strict)
-
-
 def get_lerobot_service_state(service: str) -> dict:
     """Return docker service state as a dict (empty on failure)."""
     compose_file = get_lerobot_compose_file()
@@ -102,15 +97,6 @@ def get_lerobot_service_state(service: str) -> dict:
         "CreatedAt": result.get("created_at"),
         "Service": result.get("service"),
     }
-
-
-def stop_lerobot_on_backend_startup(logger: logging.Logger | None = None) -> None:
-    """Best-effort shutdown of stale lerobot containers on backend startup."""
-    active_logger = logger or logging.getLogger(__name__)
-    result = stop_lerobot(strict=False)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip() or f"exit code={result.returncode}"
-        active_logger.warning("lerobot startup cleanup failed: %s", detail)
 
 
 def start_lerobot_on_backend_startup(logger: logging.Logger | None = None) -> None:

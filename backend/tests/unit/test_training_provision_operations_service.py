@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from interfaces_backend.models.training import TrainingProvisionOperationStatusResponse
+from interfaces_backend.services.realtime_runtime import get_realtime_runtime, reset_realtime_runtime
 from interfaces_backend.services.training_provision_operations import (
     TrainingProvisionOperationsService,
 )
@@ -69,9 +69,9 @@ def test_update_from_progress_maps_error_to_failed(monkeypatch):
     assert patch['finished_at']
 
 
-def test_update_publishes_snapshot(monkeypatch):
+def test_update_emits_snapshot(monkeypatch):
     service = TrainingProvisionOperationsService()
-    published: list[TrainingProvisionOperationStatusResponse] = []
+    reset_realtime_runtime()
 
     async def fake_get_supabase_async_client():
         return object()
@@ -80,34 +80,40 @@ def test_update_publishes_snapshot(monkeypatch):
         assert operation_id == "op-3"
         assert patch["state"] == "running"
 
-    async def fake_get_system(*, operation_id: str):
+    async def fake_load(operation_id: str, *, owner_user_id: str | None):
         assert operation_id == "op-3"
-        return TrainingProvisionOperationStatusResponse(
-            operation_id="op-3",
-            state="running",
-            step="wait_ip",
-            message="waiting",
-            failure_reason=None,
-            provider="vast",
-            instance_id="inst-3",
-            job_id=None,
-            created_at=None,
-            updated_at=None,
-            started_at=None,
-            finished_at=None,
-        )
-
-    async def fake_publish(snapshot: TrainingProvisionOperationStatusResponse):
-        published.append(snapshot)
+        assert owner_user_id is None
+        return {
+            "operation_id": "op-3",
+            "owner_user_id": "user-1",
+            "state": "running",
+            "step": "wait_ip",
+            "message": "waiting",
+            "failure_reason": None,
+            "provider": "vast",
+            "instance_id": "inst-3",
+            "job_id": None,
+            "created_at": None,
+            "updated_at": None,
+            "started_at": None,
+            "finished_at": None,
+        }
 
     monkeypatch.setattr(
         "interfaces_backend.services.training_provision_operations.get_supabase_async_client",
         fake_get_supabase_async_client,
     )
     monkeypatch.setattr(service, "_update_with_client", fake_update_with_client)
-    monkeypatch.setattr(service, "get_system", fake_get_system)
-    monkeypatch.setattr(service, "_publish", fake_publish)
+    monkeypatch.setattr(service, "_load", fake_load)
 
-    asyncio.run(service._update(operation_id="op-3", state="running"))
+    async def _run():
+        connection = get_realtime_runtime().open_connection(user_id="user-1", tab_id="tab-1")
+        await service._update(operation_id="op-3", state="running")
+        return await connection.next_frame(timeout_seconds=0.1)
 
-    assert [snapshot.operation_id for snapshot in published] == ["op-3"]
+    frame = asyncio.run(_run())
+
+    assert frame is not None
+    assert frame.kind == "training.provision-operation"
+    assert frame.key == "op-3"
+    assert frame.detail["state"] == "running"

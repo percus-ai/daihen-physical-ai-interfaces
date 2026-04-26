@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+import lerobot
+import percus_ai
 import psutil
 
 from interfaces_backend.models.settings import (
@@ -177,7 +179,6 @@ async def health_check():
         overall_status = "degraded"
 
     # Check LeRobot
-    import lerobot
     services.append(ServiceStatus(
         name="lerobot",
         status="running",
@@ -188,7 +189,6 @@ async def health_check():
     features_path = get_features_path()
     if features_path.exists() and str(features_path) not in sys.path:
         sys.path.insert(0, str(features_path))
-    import percus_ai
     services.append(ServiceStatus(
         name="percus_ai",
         status="running",
@@ -319,10 +319,8 @@ async def get_system_info():
     features_path = get_features_path()
     if features_path.exists() and str(features_path) not in sys.path:
         sys.path.insert(0, str(features_path))
-    import percus_ai
     percus_ai_version = getattr(percus_ai, "__version__", "installed")
 
-    import lerobot
     lerobot_version = getattr(lerobot, "__version__", "installed")
 
     # Get PyTorch version via subprocess
@@ -357,7 +355,6 @@ def _collect_gpu_info() -> GpuResponse:
     available = False
 
     # Get CUDA version from torch info (via subprocess)
-    from interfaces_backend.utils.torch_info import get_torch_info
     torch_info = get_torch_info()
     if torch_info.get("cuda_available"):
         available = True

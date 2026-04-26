@@ -18,7 +18,7 @@ from percus_ai.storage import S3Manager
 
 
 class S3Uploader(Protocol):
-    def upload_file(self, filename: str, bucket_name: str, key: str, *, callback=None) -> None: ...
+    def upload_file(self, filename: str, bucket: str, key: str) -> None: ...
 
 
 def _utcnow_iso() -> str:

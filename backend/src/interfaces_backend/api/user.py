@@ -1,9 +1,8 @@
 """User API router."""
 
 import json
-import os
+import sys
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -25,6 +24,7 @@ from interfaces_backend.models.user import (
 from interfaces_backend.models.settings import UserSettingsModel, UserSettingsUpdateRequest
 from interfaces_backend.services.settings_service import get_user_secrets_service
 from interfaces_backend.services.user_directory import get_user_directory_entry, update_user_profile
+from interfaces_backend.utils.torch_info import get_torch_info
 from percus_ai.db import get_supabase_session
 from percus_ai.storage import get_user_config_path, get_user_devices_path
 
@@ -478,7 +478,6 @@ async def validate_environment():
     warnings = []
 
     # Check Python version
-    import sys
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     python_ok = sys.version_info >= (3, 10)
     checks.append(EnvironmentCheckResult(
@@ -491,7 +490,6 @@ async def validate_environment():
         errors.append("Python 3.10 or higher is required")
 
     # Check PyTorch (via subprocess to avoid numpy conflicts)
-    from interfaces_backend.utils.torch_info import get_torch_info
     torch_info = get_torch_info()
     if torch_info.get("torch_version"):
         torch_version = torch_info["torch_version"]

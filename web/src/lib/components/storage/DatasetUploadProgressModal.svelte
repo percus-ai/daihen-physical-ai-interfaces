@@ -9,10 +9,10 @@
     shouldIgnoreIdleUploadSnapshot
   } from '$lib/recording/uploadStatus';
   import {
-    registerTabRealtimeContributor,
-    type TabRealtimeContributorHandle,
-    type TabRealtimeEvent
-  } from '$lib/realtime/tabSessionClient';
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent
+  } from '$lib/realtime/trackClient';
 
   let {
     open = $bindable(false),
@@ -22,7 +22,7 @@
     datasetId?: string;
   } = $props();
 
-  let contributor: TabRealtimeContributorHandle | null = null;
+  let contributor: RealtimeTrackConsumerHandle | null = null;
   let status = $state<RecordingUploadStatus | null>(null);
   let loading = $state(false);
   let loadError = $state('');
@@ -45,7 +45,7 @@
     }
   };
 
-  const handleRealtimeEvent = (event: TabRealtimeEvent) => {
+  const handleRealtimeEvent = (event: RealtimeTrackEvent) => {
     if (event.op !== 'snapshot' || event.source?.kind !== 'recording.upload-status') return;
     const targetDatasetId = String(datasetId || '').trim();
     if (!targetDatasetId) return;
@@ -58,9 +58,9 @@
   $effect(() => {
     if (!browser) return;
     if (contributor === null) {
-      contributor = registerTabRealtimeContributor({
+      contributor = registerRealtimeTrackConsumer({
         contributorId: 'storage.dataset-upload.progress-modal',
-        subscriptions: [],
+        tracks: [],
         onEvent: handleRealtimeEvent
       });
     }
@@ -68,7 +68,7 @@
 
     const targetDatasetId = String(datasetId || '').trim();
     if (!open || !targetDatasetId) {
-      contributor?.setSubscriptions([]);
+      contributor?.setTracks([]);
       status = null;
       loadError = '';
       loading = false;
@@ -77,9 +77,8 @@
 
     status = createPendingRecordingUploadStatus(targetDatasetId);
     void loadSnapshot(targetDatasetId);
-    contributor?.setSubscriptions([
+    contributor?.setTracks([
       {
-        subscription_id: `storage.dataset-upload.${targetDatasetId}`,
         kind: 'recording.upload-status',
         params: { session_id: targetDatasetId }
       }

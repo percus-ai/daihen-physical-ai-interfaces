@@ -1,6 +1,6 @@
 """VLAbor profile API models."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -63,3 +63,28 @@ class VlaborStatusResponse(BaseModel):
     created_at: Optional[str] = None
     container_id: Optional[str] = None
     dashboard_url: Optional[str] = None
+
+
+VlaborOperationAction = Literal["restart", "switch_profile"]
+VlaborOperationState = Literal["queued", "running", "completed", "failed"]
+
+
+class VlaborOperationAcceptedResponse(BaseModel):
+    operation_id: str
+    action: VlaborOperationAction
+    state: Literal["queued"] = "queued"
+    profile_name: Optional[str] = None
+    previous_profile_name: Optional[str] = None
+
+
+class VlaborOperationStatus(BaseModel):
+    operation_id: str
+    action: VlaborOperationAction
+    state: VlaborOperationState
+    profile_name: Optional[str] = None
+    previous_profile_name: Optional[str] = None
+    message: str = ""
+    logs: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    exit_code: Optional[str] = None
+    updated_at: str

@@ -1,13 +1,12 @@
 """Calibration API router."""
 
-import asyncio
 import json
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException
 
 from interfaces_backend.models.calibration import (
     MotorCalibrationModel,
@@ -54,7 +53,7 @@ SO101_MOTOR_IDS = {
     "gripper": 6,
 }
 
-# Active motor buses for WebSocket sessions
+# Active motor buses for calibration sessions.
 _motor_buses: Dict[str, Any] = {}
 
 
@@ -82,16 +81,6 @@ def _get_motor_bus(port: str, arm_type: str = "so101"):
         return bus
     except Exception:
         return None
-
-
-def _close_motor_bus(port: str) -> None:
-    """Close and remove a motor bus."""
-    if port in _motor_buses:
-        try:
-            _motor_buses[port].disconnect()
-        except Exception:
-            pass
-        del _motor_buses[port]
 
 
 def _read_motor_positions_batch(bus, motors: list[str]) -> Dict[str, Optional[int]]:
@@ -156,7 +145,6 @@ def _list_all_calibrations() -> list[dict]:
 
         for calib_file in arm_type_dir.glob("*.json"):
             try:
-                import json
                 with open(calib_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
@@ -190,7 +178,6 @@ def _load_calibration_file(arm_id: str, arm_type: str) -> Optional[dict]:
         return None
 
     try:
-        import json
         with open(calib_file, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
@@ -199,8 +186,6 @@ def _load_calibration_file(arm_id: str, arm_type: str) -> Optional[dict]:
 
 def _save_calibration_file(arm_id: str, arm_type: str, data: dict) -> Path:
     """Save calibration to file."""
-    import json
-
     calib_dir = CALIBRATION_ROOT / arm_type
     calib_dir.mkdir(parents=True, exist_ok=True)
 
@@ -619,189 +604,3 @@ async def list_calibration_sessions():
     ]
 
     return CalibrationSessionsResponse(sessions=sessions, total=len(sessions))
-
-
-# WebSocket for real-time motor position streaming
-@router.websocket("/arms/{session_id}/stream")
-async def motor_position_stream(websocket: WebSocket, session_id: str):
-    """Stream motor positions in real-time via WebSocket.
-
-    Client can send JSON commands:
-    - {"command": "set_rate", "rate_hz": 30} - Change streaming rate (1-100Hz)
-    - {"command": "record", "motor": "shoulder_pan", "type": "min"} - Record position
-    - {"command": "stop"} - Stop streaming and close
-
-    Server sends:
-    - {"type": "positions", "data": {"shoulder_pan": 2048, ...}, "errors": ["gripper"]}
-    - {"type": "recorded", "motor": "...", "position_type": "min", "position": 2048}
-    - {"type": "error", "message": "..."}
-    """
-    await websocket.accept()
-
-    if session_id not in _sessions:
-        await websocket.send_json({"type": "error", "message": f"Session not found: {session_id}"})
-        await websocket.close()
-        return
-
-    session = _sessions[session_id]
-    port = session.get("port")
-
-    if not port:
-        await websocket.send_json({"type": "error", "message": "No port configured for session"})
-        await websocket.close()
-        return
-
-    # Get or create motor bus
-    bus = session.get("bus") or _get_motor_bus(port, session["arm_type"])
-    if not bus:
-        await websocket.send_json({
-            "type": "error",
-            "message": "Failed to connect to motor bus. Check port and LeRobot installation."
-        })
-        await websocket.close()
-        return
-
-    session["bus"] = bus
-    session["status"] = "streaming"
-
-    # Streaming configuration
-    rate_hz = 15  # Default rate
-    min_rate = 1
-    max_rate = 100
-    running = True
-
-    async def stream_positions():
-        """Background task to stream motor positions."""
-        nonlocal running, rate_hz
-        motors = session["motors_to_calibrate"]
-
-        while running:
-            try:
-                # Read positions with error tracking
-                batch_result = _read_motor_positions_batch(bus, motors)
-
-                # Separate successful reads from errors
-                positions = {}
-                errors = []
-                for motor_name, pos in batch_result.items():
-                    if pos is not None:
-                        positions[motor_name] = pos
-                    else:
-                        errors.append(motor_name)
-
-                await websocket.send_json({
-                    "type": "positions",
-                    "data": positions,
-                    "errors": errors,
-                    "rate_hz": rate_hz,
-                })
-
-                # Sleep for rate interval
-                await asyncio.sleep(1.0 / rate_hz)
-
-            except WebSocketDisconnect:
-                running = False
-                break
-            except Exception as e:
-                try:
-                    await websocket.send_json({"type": "error", "message": str(e)})
-                except Exception:
-                    running = False
-                    break
-
-    # Start streaming task
-    stream_task = asyncio.create_task(stream_positions())
-
-    try:
-        # Handle incoming commands
-        while running:
-            try:
-                message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
-
-                command = message.get("command")
-
-                if command == "set_rate":
-                    new_rate = message.get("rate_hz", rate_hz)
-                    rate_hz = max(min_rate, min(max_rate, int(new_rate)))
-                    await websocket.send_json({
-                        "type": "rate_changed",
-                        "rate_hz": rate_hz,
-                    })
-
-                elif command == "record":
-                    motor_name = message.get("motor")
-                    position_type = message.get("type")
-
-                    if motor_name not in session["motors_to_calibrate"]:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": f"Unknown motor: {motor_name}",
-                        })
-                        continue
-
-                    if position_type not in ("min", "max", "home"):
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": f"Invalid position type: {position_type}",
-                        })
-                        continue
-
-                    # Read current position for this motor
-                    positions = _read_motor_positions(bus, [motor_name])
-                    position = positions.get(motor_name, 2048)
-
-                    # Initialize motor data if needed
-                    if motor_name not in session["motor_data"]:
-                        session["motor_data"][motor_name] = {
-                            "name": motor_name,
-                            "homing_offset": 0,
-                            "drive_mode": 0,
-                            "min_position": 0,
-                            "max_position": 4095,
-                        }
-
-                    # Record position
-                    motor_data = session["motor_data"][motor_name]
-                    if position_type == "min":
-                        motor_data["min_position"] = position
-                    elif position_type == "max":
-                        motor_data["max_position"] = position
-                    elif position_type == "home":
-                        motor_data["homing_offset"] = position
-
-                    # Update calibrated motors list
-                    if motor_name not in session["calibrated_motors"]:
-                        if motor_data.get("min_position", 0) != motor_data.get("max_position", 4095):
-                            session["calibrated_motors"].append(motor_name)
-
-                    await websocket.send_json({
-                        "type": "recorded",
-                        "motor": motor_name,
-                        "position_type": position_type,
-                        "position": position,
-                    })
-
-                elif command == "stop":
-                    running = False
-                    break
-
-            except asyncio.TimeoutError:
-                # No message received, continue streaming
-                continue
-            except WebSocketDisconnect:
-                running = False
-                break
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        running = False
-        stream_task.cancel()
-        try:
-            await stream_task
-        except asyncio.CancelledError:
-            pass
-
-        # Update session status
-        if session_id in _sessions:
-            _sessions[session_id]["status"] = "pending"

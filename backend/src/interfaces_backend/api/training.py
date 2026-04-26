@@ -1,14 +1,12 @@
 """Training jobs API router."""
 
 import asyncio
-import inspect
 import json
 import logging
 import os
 import re
 import shlex
 import stat
-import tempfile
 import textwrap
 import time
 import threading
@@ -25,20 +23,11 @@ from fastapi import (
     HTTPException,
     Query,
     Response,
-    WebSocket,
-    WebSocketDisconnect,
 )
 from fastapi.responses import PlainTextResponse
 from postgrest.exceptions import APIError
 from supabase._async.client import AsyncClient
 
-from interfaces_backend.core.request_auth import (
-    ACCESS_COOKIE_NAME,
-    REFRESH_COOKIE_NAME,
-    build_session_from_tokens,
-    is_session_expired,
-    refresh_session_from_refresh_token,
-)
 from interfaces_backend.models.training import (
     BulkActionRequest,
     BulkActionResponse,
@@ -75,8 +64,6 @@ from interfaces_backend.models.training import (
     DatasetCompatibilityCheckResponse,
     # Continue training models
     JobCreateContinueRequest,
-    EarlyStoppingConfig,
-    ValidationConfig,
     # GPU availability
     GpuAvailabilityInfo,
     GpuAvailabilityResponse,
@@ -100,7 +87,11 @@ from interfaces_backend.models.training import (
 )
 from interfaces_backend.services.profile_snapshot import extract_profile_name
 from percus_ai.storage import (
+    CheckpointIndexManager,
     CheckpointDatasetInfo as StorageCheckpointDatasetInfo,
+    ManifestManager,
+    R2SyncService,
+    get_datasets_dir,
     get_models_dir,
     get_project_root,
 )
@@ -113,9 +104,15 @@ from percus_ai.db import (
     upsert_with_owner,
 )
 from percus_ai.training.ssh.client import SSHConnection
-from percus_ai.training.ssh.executor import RemoteExecutor, run_remote_command
-from percus_ai.training.features_repo import resolve_features_repo_config
-from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
+from percus_ai.training.ssh.executor import run_remote_command
+from percus_ai.training.orchestrator import create_job_with_progress
+from percus_ai.training.providers.vast import (
+    delete_volumes,
+    destroy_instance,
+    get_instance,
+    list_volumes,
+    search_offers_minimal,
+)
 from interfaces_backend.services.training_provision_operations import (
     cleanup_provision_instance,
     get_training_provision_operations_service,
@@ -123,6 +120,7 @@ from interfaces_backend.services.training_provision_operations import (
 from interfaces_backend.services.training_job_operations import (
     get_training_job_operations_service,
 )
+from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 from interfaces_backend.services.user_directory import resolve_user_directory_entries
 
 logger = logging.getLogger(__name__)
@@ -186,258 +184,18 @@ def _build_bulk_action_response(
     )
 
 
-def _resolve_websocket_supabase_session(websocket: WebSocket) -> Optional[dict]:
-    """Resolve and refresh Supabase session for WebSocket requests."""
-    access_token = websocket.query_params.get("access_token")
-    auth_header = websocket.headers.get("authorization")
-    if auth_header:
-        parts = auth_header.split()
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            access_token = parts[1]
-    if not access_token:
-        access_token = websocket.cookies.get(ACCESS_COOKIE_NAME)
-    refresh_token = websocket.cookies.get(REFRESH_COOKIE_NAME)
-    supabase_session = build_session_from_tokens(access_token, refresh_token)
-    if not supabase_session or is_session_expired(supabase_session):
-        refreshed_session = refresh_session_from_refresh_token(refresh_token)
-        if refreshed_session:
-            supabase_session = refreshed_session
-    if not supabase_session or not supabase_session.get("user_id"):
-        return None
-    return supabase_session
-
-
 router = APIRouter(prefix="/api/training", tags=["training"])
 
-# Thread pool for WebSocket operations
+# Thread pool for blocking training operations.
 _executor = ThreadPoolExecutor(max_workers=2)
 
 DB_TABLE = "training_jobs"
 
-RUNNING_STATUSES = {"running", "starting", "deploying"}
-RUNNING_STATUSES_WITH_PENDING = {"running", "starting", "deploying", "pending"}
 _REQUIRED_VAST_ENV_VARS = ("VAST_API_KEY", "VAST_SSH_PRIVATE_KEY")
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _first_dict(*values: object) -> Optional[dict]:
-    for value in values:
-        if isinstance(value, dict):
-            return value
-    return None
-
-
-def _extract_record(payload: object) -> Optional[dict]:
-    if isinstance(payload, dict):
-        record = _first_dict(payload.get("new"), payload.get("record"))
-        if record:
-            return record
-        data = payload.get("data")
-        if isinstance(data, dict):
-            record = _first_dict(data.get("record"), data.get("new"))
-            if record:
-                return record
-        record = _first_dict(payload.get("old"), payload.get("old_record"))
-        if record:
-            return record
-        return None
-
-    for attr in ("new", "record", "old"):
-        record = getattr(payload, attr, None)
-        if isinstance(record, dict):
-            return record
-
-    data = getattr(payload, "data", None) or getattr(payload, "payload", None)
-    if isinstance(data, dict):
-        record = _first_dict(data.get("record"), data.get("new"), data.get("old"))
-        if record:
-            return record
-
-    return None
-
-
-def _extract_event_type(payload: object) -> str:
-    if isinstance(payload, dict):
-        event_type = (
-            payload.get("eventType") or payload.get("event_type") or payload.get("type")
-        )
-        if isinstance(event_type, str):
-            return event_type.upper()
-        data = payload.get("data")
-        if isinstance(data, dict):
-            event_type = (
-                data.get("eventType") or data.get("event_type") or data.get("type")
-            )
-            if isinstance(event_type, str):
-                return event_type.upper()
-
-    for attr in ("event_type", "eventType", "type"):
-        event_type = getattr(payload, attr, None)
-        if isinstance(event_type, str):
-            return event_type.upper()
-
-    return ""
-
-
-def _extract_status_update(payload: object) -> tuple[Optional[str], Optional[str]]:
-    record = _extract_record(payload)
-    job_id = record.get("job_id") if isinstance(record, dict) else None
-    status = record.get("status") if isinstance(record, dict) else None
-    if not status:
-        event_type = _extract_event_type(payload)
-        if event_type == "DELETE":
-            status = "deleted"
-    return job_id, status
-
-
-def _drain_latest_status(queue: "asyncio.Queue") -> Optional[str]:
-    latest_status = None
-    while True:
-        try:
-            update = queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
-        if isinstance(update, dict):
-            status = update.get("status")
-            if status:
-                latest_status = status
-    return latest_status
-
-
-async def _maybe_await(result: object) -> None:
-    if inspect.isawaitable(result):
-        await result
-
-
-class _TrainingJobRealtimeSubscriber:
-    def __init__(
-        self, job_id: str, loop: asyncio.AbstractEventLoop, queue: "asyncio.Queue"
-    ) -> None:
-        self.job_id = job_id
-        self.loop = loop
-        self.queue = queue
-
-
-class TrainingJobRealtimeManager:
-    def __init__(self) -> None:
-        self._client = None
-        self._channel = None
-        self._realtime = None
-        self._channel_lock = asyncio.Lock()
-        self._subscribers: dict[str, _TrainingJobRealtimeSubscriber] = {}
-        self._subscribers_lock = threading.Lock()
-
-    async def subscribe(
-        self,
-        job_id: str,
-        loop: asyncio.AbstractEventLoop,
-    ) -> tuple[str, "asyncio.Queue"]:
-        await self._ensure_channel()
-        queue: asyncio.Queue = asyncio.Queue()
-        subscriber_id = uuid.uuid4().hex
-        with self._subscribers_lock:
-            self._subscribers[subscriber_id] = _TrainingJobRealtimeSubscriber(
-                job_id, loop, queue
-            )
-        return subscriber_id, queue
-
-    def unsubscribe(self, subscriber_id: str) -> None:
-        with self._subscribers_lock:
-            self._subscribers.pop(subscriber_id, None)
-
-    async def _ensure_channel(self) -> None:
-        async with self._channel_lock:
-            if self._channel:
-                return
-
-            self._client = await get_supabase_async_client()
-            realtime = getattr(self._client, "realtime", None) or getattr(
-                self._client,
-                "realtime_client",
-                None,
-            )
-            if realtime is None:
-                raise RuntimeError(
-                    "Supabase Realtime client is not available (async client required)"
-                )
-
-            channel_factory = getattr(realtime, "channel", None) or getattr(
-                self._client, "channel", None
-            )
-            if channel_factory is None or not callable(channel_factory):
-                raise RuntimeError("Supabase Realtime channel API is not available")
-
-            channel = channel_factory(DB_TABLE)
-            on_changes = getattr(channel, "on_postgres_changes", None)
-            if on_changes is not None and callable(on_changes):
-                on_changes(
-                    event="*",
-                    schema="public",
-                    table=DB_TABLE,
-                    callback=self._handle_change,
-                )
-            else:
-                on_method = getattr(channel, "on", None)
-                if on_method is None or not callable(on_method):
-                    raise RuntimeError(
-                        "Supabase Realtime channel handler is not available"
-                    )
-                on_method(
-                    "postgres_changes",
-                    {"event": "*", "schema": "public", "table": DB_TABLE},
-                    self._handle_change,
-                )
-
-            connect = getattr(realtime, "connect", None)
-            if connect is not None and callable(connect):
-                await _maybe_await(connect())
-
-            subscribe = getattr(channel, "subscribe", None)
-            if subscribe is None or not callable(subscribe):
-                raise RuntimeError(
-                    "Supabase Realtime channel.subscribe is not available"
-                )
-
-            await _maybe_await(subscribe())
-
-            self._realtime = realtime
-            self._channel = channel
-
-    def _handle_change(self, payload: object) -> None:
-        job_id, status = _extract_status_update(payload)
-        if not job_id or not status:
-            return
-
-        with self._subscribers_lock:
-            subscribers = [
-                subscriber
-                for subscriber in self._subscribers.values()
-                if subscriber.job_id == job_id
-            ]
-
-        for subscriber in subscribers:
-            if subscriber.loop.is_closed():
-                continue
-            try:
-                subscriber.loop.call_soon_threadsafe(
-                    subscriber.queue.put_nowait,
-                    {"job_id": job_id, "status": status},
-                )
-            except Exception as exc:
-                logger.debug("Failed to enqueue training job update: %s", exc)
-
-
-_training_job_realtime_manager: Optional[TrainingJobRealtimeManager] = None
-
-
-def _get_training_job_realtime_manager() -> TrainingJobRealtimeManager:
-    global _training_job_realtime_manager
-    if _training_job_realtime_manager is None:
-        _training_job_realtime_manager = TrainingJobRealtimeManager()
-    return _training_job_realtime_manager
 
 
 # Remote scripts directory - contains setup_env.sh, run_training.sh, entry.py, etc.
@@ -450,42 +208,6 @@ REMOTE_SCRIPTS_DIR = (
     / "remote"
 )
 REPO_ROOT = REMOTE_SCRIPTS_DIR.parents[4]
-
-
-# --- SSH utilities for remote deployment ---
-# Uses SSHConnection from percus_ai.training.ssh.client for consistency with executor.py
-
-
-def _create_ssh_connection(
-    ip: str,
-    user: str,
-    private_key_path: str,
-    timeout: int = 30,
-) -> SSHConnection:
-    """Create and connect an SSHConnection to the remote host.
-
-    Args:
-        ip: Remote host IP address
-        user: SSH username
-        private_key_path: Path to SSH private key file
-        timeout: Connection timeout in seconds
-
-    Returns:
-        Connected SSHConnection instance
-    """
-    key_path = Path(private_key_path).expanduser()
-    if not key_path.exists():
-        raise RuntimeError(f"SSH鍵が見つかりません: {key_path}")
-    if not key_path.is_file():
-        raise RuntimeError(f"SSH鍵パスが不正です: {key_path}")
-    conn = SSHConnection(host=ip, user=user, private_key_path=key_path)
-    try:
-        conn.connect(timeout_sec=timeout)
-    except SystemExit as exc:
-        raise RuntimeError(str(exc)) from exc
-    except Exception as exc:
-        raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
-    return conn
 
 
 def _get_default_ssh_user() -> str:
@@ -698,146 +420,6 @@ def _load_env_file_vars() -> dict[str, str]:
         except Exception:
             continue
     return data
-
-
-def _generate_env_file(
-    job_id: str,
-    instance_id: str,
-    policy_type: Optional[str],
-    user_id: Optional[str] = None,
-    auto_delete: bool = True,
-    supabase_access_token: Optional[str] = None,
-    supabase_refresh_token: Optional[str] = None,
-    supabase_user_id: Optional[str] = None,
-) -> str:
-    """Generate .env file content with required credentials."""
-    lines = []
-    env_fallback = _load_env_file_vars()
-
-    # HuggingFace token
-    hf_token = resolve_huggingface_token_for_user(user_id) if user_id else None
-    if hf_token:
-        lines.append(f"HF_TOKEN={hf_token}")
-
-    # WandB API key
-    wandb_key = os.environ.get("WANDB_API_KEY")
-    if wandb_key:
-        lines.append(f"WANDB_API_KEY={wandb_key}")
-
-    # DataCrunch credentials
-    dc_client_id = os.environ.get("DATACRUNCH_CLIENT_ID")
-    dc_client_secret = os.environ.get("DATACRUNCH_CLIENT_SECRET")
-    if dc_client_id:
-        lines.append(f"DATACRUNCH_CLIENT_ID={dc_client_id}")
-    if dc_client_secret:
-        lines.append(f"DATACRUNCH_CLIENT_SECRET={dc_client_secret}")
-
-    # R2/S3 credentials
-    r2_endpoint = (
-        os.environ.get("R2_ENDPOINT_URL")
-        or os.environ.get("S3_ENDPOINT_URL")
-        or env_fallback.get("R2_ENDPOINT_URL")
-        or env_fallback.get("S3_ENDPOINT_URL")
-    )
-    r2_access_key = (
-        os.environ.get("R2_ACCESS_KEY_ID")
-        or os.environ.get("S3_ACCESS_KEY_ID")
-        or env_fallback.get("R2_ACCESS_KEY_ID")
-        or env_fallback.get("S3_ACCESS_KEY_ID")
-    )
-    r2_secret_key = (
-        os.environ.get("R2_SECRET_ACCESS_KEY")
-        or os.environ.get("S3_SECRET_ACCESS_KEY")
-        or env_fallback.get("R2_SECRET_ACCESS_KEY")
-        or env_fallback.get("S3_SECRET_ACCESS_KEY")
-    )
-    if r2_endpoint:
-        lines.append(f"S3_ENDPOINT_URL={r2_endpoint}")
-        lines.append(f"R2_ENDPOINT_URL={r2_endpoint}")
-    if r2_access_key:
-        lines.append(f"S3_ACCESS_KEY_ID={r2_access_key}")
-        lines.append(f"R2_ACCESS_KEY_ID={r2_access_key}")
-    if r2_secret_key:
-        lines.append(f"S3_SECRET_ACCESS_KEY={r2_secret_key}")
-        lines.append(f"R2_SECRET_ACCESS_KEY={r2_secret_key}")
-
-    # R2/S3 bucket name
-    r2_bucket = (
-        os.environ.get("R2_BUCKET")
-        or os.environ.get("S3_BUCKET")
-        or env_fallback.get("R2_BUCKET")
-        or env_fallback.get("S3_BUCKET")
-    )
-    if r2_bucket:
-        lines.append(f"R2_BUCKET={r2_bucket}")
-        lines.append(f"S3_BUCKET={r2_bucket}")
-
-    r2_version = (
-        os.environ.get("R2_VERSION")
-        or os.environ.get("S3_VERSION")
-        or env_fallback.get("R2_VERSION")
-        or env_fallback.get("S3_VERSION")
-    )
-    if r2_version:
-        lines.append(f"R2_VERSION={r2_version}")
-        lines.append(f"S3_VERSION={r2_version}")
-
-    # Use remote user's home to avoid path mismatch across SSH users
-    lines.append("PHYSICAL_AI_DATA_DIR=$HOME/.physical-ai")
-
-    features_repo = resolve_features_repo_config()
-    repo_url = str(features_repo.repo_url or "").strip()
-    if repo_url:
-        lines.append(f"PERCUS_AI_REPO_URL={repo_url}")
-    repo_ref = str(features_repo.repo_ref or "").strip()
-    if repo_ref:
-        lines.append(f"PERCUS_AI_REPO_REF={repo_ref}")
-    repo_commit = str(features_repo.repo_commit or "").strip()
-    if repo_commit:
-        lines.append(f"PERCUS_AI_REPO_COMMIT={repo_commit}")
-
-    if policy_type:
-        lines.append(f"PERCUS_AI_POLICY_TYPE={policy_type}")
-
-    # GitHub token for private repo access (physical-ai-features)
-    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if gh_token:
-        lines.append(f"GH_TOKEN={gh_token}")
-
-    # Supabase credentials for remote status updates
-    supabase_url = os.environ.get("SUPABASE_URL") or env_fallback.get("SUPABASE_URL")
-    supabase_secret_key = os.environ.get("SUPABASE_SECRET_KEY") or env_fallback.get(
-        "SUPABASE_SECRET_KEY"
-    )
-    supabase_anon_key = os.environ.get("SUPABASE_ANON_KEY") or env_fallback.get(
-        "SUPABASE_ANON_KEY"
-    )
-    if supabase_url and (supabase_secret_key or supabase_anon_key):
-        lines.append(f"SUPABASE_URL={supabase_url}")
-        if supabase_secret_key:
-            lines.append(f"SUPABASE_SECRET_KEY={supabase_secret_key}")
-        if supabase_anon_key:
-            lines.append(f"SUPABASE_ANON_KEY={supabase_anon_key}")
-    if supabase_access_token:
-        lines.append(f"SUPABASE_ACCESS_TOKEN={supabase_access_token}")
-    if supabase_refresh_token:
-        lines.append(f"SUPABASE_REFRESH_TOKEN={supabase_refresh_token}")
-    if supabase_user_id:
-        lines.append(f"SUPABASE_USER_ID={supabase_user_id}")
-
-    return "\n".join(lines) + "\n"
-
-
-def _generate_instance_info_env(
-    job_id: str, instance_id: str, auto_delete: bool = True
-) -> str:
-    """Generate instance_info.env content."""
-    lines = [
-        f"DATACRUNCH_INSTANCE_ID={instance_id}",
-        f"JOB_ID={job_id}",
-        f"AUTO_DELETE_INSTANCE={'true' if auto_delete else 'false'}",
-    ]
-    return "\n".join(lines) + "\n"
 
 
 # --- Verda/DataCrunch API utilities ---
@@ -1225,56 +807,6 @@ def _ensure_volume_active_and_detached(
     return client.volumes.get_by_id(volume_id)
 
 
-_verda_client_local = threading.local()
-
-
-def _get_thread_verda_client() -> Optional[VerdaClient]:
-    """Get thread-local Verda client."""
-    client = getattr(_verda_client_local, "client", None)
-    if client is None:
-        client = _get_verda_client()
-        _verda_client_local.client = client
-    return client
-
-
-def _perform_verda_volume_action(
-    action: str, volume_id: str, is_permanent: bool
-) -> None:
-    """Perform a Verda volume action for a single volume."""
-    client = _get_thread_verda_client()
-    if not client:
-        raise RuntimeError(
-            "Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)"
-        )
-
-    if action == "delete":
-        client.volumes.delete(volume_id, is_permanent=is_permanent)
-    elif action == "restore":
-        _restore_verda_volumes(client, [volume_id])
-    else:
-        raise ValueError(f"Unsupported action: {action}")
-
-
-def _perform_verda_volume_action_batch(
-    action: str,
-    volume_ids: list[str],
-    is_permanent: bool,
-) -> None:
-    """Perform a Verda volume action for a batch of volumes."""
-    client = _get_thread_verda_client()
-    if not client:
-        raise RuntimeError(
-            "Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)"
-        )
-
-    if action == "delete":
-        client.volumes.delete(volume_ids, is_permanent=is_permanent)
-    elif action == "restore":
-        _restore_verda_volumes(client, volume_ids)
-    else:
-        raise ValueError(f"Unsupported action: {action}")
-
-
 def _check_instance_via_api(instance_id: str) -> Optional[str]:
     """Check instance status via Verda API.
 
@@ -1315,8 +847,6 @@ def _check_instance_status(job_data: dict) -> Optional[str]:
 
     provider = _get_job_provider(job_data)
     if provider == "vast":
-        from percus_ai.training.providers.vast import get_instance
-
         try:
             instance = get_instance(instance_id)
         except Exception as exc:
@@ -1505,8 +1035,6 @@ async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
             return job_data
 
         try:
-            from percus_ai.training.providers.vast import get_instance
-
             current = await asyncio.to_thread(get_instance, instance_id)
         except Exception:
             return job_data
@@ -1706,6 +1234,17 @@ async def _save_job(job_data: dict) -> None:
         await client.table(DB_TABLE).insert(insert_record).execute()
 
     await _upsert_with(await get_supabase_async_client())
+    if owner_user_id:
+        try:
+            snapshot = await _build_job_db_snapshot(str(job_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to publish training job core snapshot for %s: %s", job_id, exc)
+            return
+        get_realtime_runtime().track(
+            scope=UserID(owner_user_id),
+            kind="training.job.core",
+            key=str(job_id),
+        ).replace(snapshot.model_dump(mode="json"))
 
 
 def _run_async(coro):
@@ -2269,13 +1808,6 @@ TMUX_TRAIN_SESSION_NAME = "training_run"
 # Timeout constants
 IP_WAIT_TIMEOUT_SEC = 900  # 15 minutes to wait for IP assignment
 SSH_WAIT_TIMEOUT_SEC = 300  # 5 minutes to wait for SSH to be ready
-INSTANCE_RUNNING_WAIT_TIMEOUT_SEC = 600  # 10 minutes to wait for instance running
-SETUP_TIMEOUT_SEC = 3600  # Max time to run setup_env.sh
-IP_POLL_INTERVAL_SEC = 15
-INSTANCE_STATUS_POLL_INTERVAL_SEC = 10
-SSH_CONNECT_ATTEMPT_TIMEOUT_SEC = 30
-SSH_CONNECT_RETRY_INTERVAL_SEC = 10
-INSTANCE_TERMINAL_STATUSES = {"offline", "error", "discontinued", "deleted"}
 
 
 def _get_setup_log_file_path(job_data: dict) -> str:
@@ -3598,8 +3130,6 @@ def _get_log_file_name(job_data: dict, log_type: str) -> str:
 
 def _get_logs_r2_sync_service() -> Optional["R2SyncService"]:
     try:
-        from percus_ai.storage import ManifestManager, R2SyncService
-
         manifest = ManifestManager()
         manifest.init_directories()
         bucket = os.getenv("R2_BUCKET", "percus-data")
@@ -3832,8 +3362,6 @@ def _terminate_job_instance(job_data: dict) -> tuple[bool, str]:
 
     provider = _get_job_provider(job_data)
     if provider == "vast":
-        from percus_ai.training.providers.vast import destroy_instance
-
         try:
             destroy_instance(instance_id)
         except Exception as exc:
@@ -4262,8 +3790,6 @@ def _build_vast_instance_candidates(
     storage_size: Optional[int],
     max_price: Optional[float],
 ) -> list[TrainingInstanceCandidate]:
-    from percus_ai.training.providers.vast import search_offers_minimal
-
     requested_mode = str(mode or "").strip().lower()
     mode_filters = [requested_mode] if requested_mode in {"spot", "ondemand"} else ["spot", "ondemand"]
 
@@ -4487,7 +4013,6 @@ def get_gpu_availability(
 
     else:
         _assert_provider_configured(provider)
-        from percus_ai.training.providers.vast import search_offers_minimal
 
         gpu_models = ["B300", "B200", "H200", "H100", "A100", "L40S", "RTX6000ADA", "RTXA6000"]
         gpu_counts = [1, 2, 4, 8]
@@ -4774,7 +4299,6 @@ async def purge_verda_storage(request: VerdaStorageActionRequest):
 async def list_vast_storage():
     """List Vast storage volumes."""
     _assert_provider_configured("vast")
-    from percus_ai.training.providers.vast import list_volumes
 
     try:
         volumes = list_volumes(type_="all")
@@ -4799,7 +4323,6 @@ async def list_vast_storage():
 async def delete_vast_storage(request: VastStorageActionRequest):
     """Delete Vast storage volumes."""
     _assert_provider_configured("vast")
-    from percus_ai.training.providers.vast import delete_volumes
 
     result = VastStorageActionResult()
     failures: list[VerdaStorageActionFailure] = []
@@ -4818,362 +4341,6 @@ async def delete_vast_storage(request: VastStorageActionRequest):
     result.success_ids = success
     result.failed = failures
     return result
-
-
-@router.websocket("/ws/gpu-availability")
-async def websocket_gpu_availability(websocket: WebSocket):
-    """Stream GPU availability check results in real-time.
-
-    Each GPU result is sent as it becomes available:
-    - {"type": "checking", "gpu_model": "H100", "message": "H100を確認中..."}
-    - {"type": "result", "gpu_model": "H100", "gpu_count": 1, "spot_available": true, ...}
-    - {"type": "complete", "message": "確認完了"}
-    - {"type": "cached", "message": "キャッシュから取得"}
-    """
-    await websocket.accept()
-
-    global _gpu_availability_cache, _gpu_availability_cache_time
-
-    try:
-        provider = websocket.query_params.get("provider", "").strip()
-        if provider not in {"verda", "vast"}:
-            await websocket.send_json({"type": "error", "error": "provider must be verda|vast"})
-            await websocket.close()
-            return
-        try:
-            _assert_provider_configured(provider)
-        except HTTPException as exc:
-            await websocket.send_json({"type": "error", "error": str(exc.detail)})
-            await websocket.close()
-            return
-        scan = websocket.query_params.get("scan", "all")
-        if scan not in {"quick", "all"}:
-            scan = "all"
-        cache_key = f"gpu_availability:{provider}:{scan}"
-        should_use_cache = True
-
-        # Check cache first
-        cache_time = _gpu_availability_cache_time.get(cache_key, 0.0)
-        if (
-            should_use_cache
-            and time.time() - cache_time < _GPU_CACHE_TTL
-            and cache_key in _gpu_availability_cache
-        ):
-            await websocket.send_json(
-                {"type": "cached", "message": "キャッシュから取得"}
-            )
-            for item in _gpu_availability_cache[cache_key]:
-                await websocket.send_json(
-                    {
-                        "type": "result",
-                        "gpu_model": item.gpu_model,
-                        "gpu_count": item.gpu_count,
-                        "spot_available": item.spot_available,
-                        "ondemand_available": item.ondemand_available,
-                    }
-                )
-            await websocket.send_json({"type": "complete", "message": "確認完了"})
-            await websocket.close()
-            return
-
-        await websocket.send_json({"type": "start", "message": "GPU空き状況を確認中..."})
-
-        loop = asyncio.get_event_loop()
-        available: list[GpuAvailabilityInfo] = []
-
-        if provider == "verda":
-            client = _get_verda_client()
-            if not client:
-                await websocket.send_json(
-                    {"type": "error", "error": "Verda認証情報が設定されていません"}
-                )
-                await websocket.close()
-                return
-
-            instance_types = await loop.run_in_executor(_executor, client.instance_types.get)
-            if scan == "all":
-                preferred_locations = await loop.run_in_executor(_executor, _get_location_codes, client)
-                configs_to_check = _build_all_configs(instance_types)
-            else:
-                preferred_locations = list(KNOWN_LOCATIONS)
-                configs_to_check = _build_quick_configs(instance_types)
-
-                for gpu_model, _, _, _ in configs_to_check:
-                    await websocket.send_json(
-                    {"type": "checking", "gpu_model": gpu_model, "message": f"{gpu_model}を確認中..."}
-                    )
-
-            spot_available_by_loc, ondemand_available_by_loc = await loop.run_in_executor(
-                _executor, _fetch_availability_sets, client, preferred_locations
-            )
-            availability_locations = _ordered_availability_locations(
-                preferred_locations,
-                spot_available_by_loc,
-                ondemand_available_by_loc,
-            )
-
-            for gpu_model, gpu_count, instance_type, spot_price in configs_to_check:
-                spot_locs = [
-                    loc
-                    for loc in availability_locations
-                    if instance_type in spot_available_by_loc.get(loc, set())
-                ]
-                ondemand_locs = [
-                    loc
-                    for loc in availability_locations
-                    if instance_type in ondemand_available_by_loc.get(loc, set())
-                ]
-                spot_available = len(spot_locs) > 0
-                ondemand_available = len(ondemand_locs) > 0
-
-                await websocket.send_json(
-                    {
-                        "type": "result",
-                        "gpu_model": gpu_model,
-                        "gpu_count": gpu_count,
-                        "spot_available": spot_available,
-                        "ondemand_available": ondemand_available,
-                    }
-                )
-
-                available.append(
-                    GpuAvailabilityInfo(
-                        gpu_model=gpu_model,
-                        gpu_count=gpu_count,
-                        instance_type=instance_type,
-                        spot_available=spot_available,
-                        ondemand_available=ondemand_available,
-                        spot_locations=spot_locs,
-                        ondemand_locations=ondemand_locs,
-                        spot_price_per_hour=spot_price,
-                    )
-                )
-
-        else:
-            from percus_ai.training.providers.vast import search_offers_minimal
-
-            gpu_models = ["B300", "B200", "H200", "H100", "A100", "L40S", "RTX6000ADA", "RTXA6000"]
-            gpu_counts = [1, 2, 4, 8]
-            if scan == "quick":
-                combos = [(m, 1) for m in gpu_models[:5]]
-            else:
-                combos = [(m, c) for m in gpu_models for c in gpu_counts]
-
-            for model, count in combos:
-                await websocket.send_json(
-                    {"type": "checking", "gpu_model": model, "message": f"{model}を確認中..."}
-                )
-                spot_offers = await loop.run_in_executor(
-                    _executor,
-                    lambda: search_offers_minimal(
-                        gpu_model=model,
-                        gpu_count=count,
-                        interruptible=True,
-                        max_price=None,
-                        limit=1,
-                    ),
-                )
-                ondemand_offers = await loop.run_in_executor(
-                    _executor,
-                    lambda: search_offers_minimal(
-                        gpu_model=model,
-                        gpu_count=count,
-                        interruptible=False,
-                        max_price=None,
-                        limit=1,
-                    ),
-                )
-                spot_price = None
-                if spot_offers:
-                    dph = spot_offers[0].get("dph") if isinstance(spot_offers[0], dict) else None
-                    try:
-                        spot_price = float(dph) if dph is not None else None
-                    except (TypeError, ValueError):
-                        spot_price = None
-
-                await websocket.send_json(
-                    {
-                        "type": "result",
-                        "gpu_model": model,
-                        "gpu_count": count,
-                        "spot_available": bool(spot_offers),
-                        "ondemand_available": bool(ondemand_offers),
-                    }
-                )
-                available.append(
-                    GpuAvailabilityInfo(
-                        gpu_model=model,
-                        gpu_count=count,
-                        instance_type=f"vast:{model}x{count}",
-                        spot_available=bool(spot_offers),
-                        ondemand_available=bool(ondemand_offers),
-                        spot_locations=[],
-                        ondemand_locations=[],
-                        spot_price_per_hour=spot_price,
-                    )
-                )
-
-        # Update cache
-        if should_use_cache:
-            _gpu_availability_cache[cache_key] = available
-            _gpu_availability_cache_time[cache_key] = time.time()
-
-        await websocket.send_json({"type": "complete", "message": "確認完了"})
-
-    except Exception as e:
-        logger.exception("WebSocket GPU availability check failed")
-        await websocket.send_json({"type": "error", "error": str(e)})
-
-    await websocket.close()
-
-
-@router.websocket("/ws/verda/storage")
-async def websocket_verda_storage(websocket: WebSocket):
-    """Run Verda storage actions with progress via WebSocket."""
-    await websocket.accept()
-
-    try:
-        request = await websocket.receive_json()
-    except Exception:
-        await websocket.send_json({"type": "error", "error": "Invalid request"})
-        await websocket.close()
-        return
-
-    action = request.get("action")
-    volume_ids = request.get("volume_ids", [])
-    if action not in ("delete", "restore", "purge"):
-        await websocket.send_json({"type": "error", "error": "Unsupported action"})
-        await websocket.close()
-        return
-
-    client = _get_verda_client()
-    if not client:
-        await websocket.send_json(
-            {
-                "type": "error",
-                "error": "Verda認証情報が設定されていません (DATACRUNCH_CLIENT_ID/SECRET)",
-            }
-        )
-        await websocket.close()
-        return
-
-    try:
-        volumes_by_id = _collect_verda_volumes(client)
-    except Exception as e:
-        logger.exception("Failed to list Verda volumes for WS action")
-        await websocket.send_json(
-            {"type": "error", "error": f"Verda APIに接続できません: {e}"}
-        )
-        await websocket.close()
-        return
-
-    required_state = "active" if action == "delete" else "deleted"
-    is_permanent = action == "purge"
-
-    skipped: list[dict] = []
-    eligible_ids: list[str] = []
-    for volume_id in volume_ids:
-        state_volume = volumes_by_id.get(volume_id)
-        if not state_volume:
-            skipped.append(
-                {
-                    "id": volume_id,
-                    "reason": "対象が見つかりません（既に削除済みの可能性）",
-                }
-            )
-            continue
-        state, _ = state_volume
-        if state != required_state:
-            skipped.append(
-                {
-                    "id": volume_id,
-                    "reason": "削除済みではありません"
-                    if required_state == "deleted"
-                    else "既に削除済みのストレージです",
-                }
-            )
-            continue
-        eligible_ids.append(volume_id)
-
-    total = len(volume_ids)
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[dict] = asyncio.Queue()
-    done_count = {"value": 0}
-    done_lock = threading.Lock()
-
-    def emit_progress(
-        volume_id: str, status: str, reason: Optional[str] = None
-    ) -> None:
-        with done_lock:
-            done_count["value"] += 1
-            current = done_count["value"]
-        payload = {
-            "type": "progress",
-            "id": volume_id,
-            "status": status,
-            "done": current,
-            "total": total,
-        }
-        if reason:
-            payload["reason"] = reason
-        loop.call_soon_threadsafe(queue.put_nowait, payload)
-
-    loop.call_soon_threadsafe(
-        queue.put_nowait,
-        {"type": "start", "total": total, "eligible": len(eligible_ids)},
-    )
-
-    for item in skipped:
-        emit_progress(item["id"], "skipped", item["reason"])
-
-    def worker() -> None:
-        result = {
-            "success_ids": [],
-            "failed": [],
-            "skipped": skipped,
-        }
-        try:
-            batch_action = "delete" if action == "purge" else action
-            chunks = _chunk_list(eligible_ids, chunk_size=5)
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {
-                    executor.submit(
-                        _perform_verda_volume_action_batch,
-                        batch_action,
-                        chunk,
-                        is_permanent,
-                    ): chunk
-                    for chunk in chunks
-                }
-                for future in as_completed(futures):
-                    chunk = futures[future]
-                    try:
-                        future.result()
-                        result["success_ids"].extend(chunk)
-                        for volume_id in chunk:
-                            emit_progress(volume_id, "success")
-                    except Exception as e:
-                        reason = str(e)
-                        for volume_id in chunk:
-                            result["failed"].append({"id": volume_id, "reason": reason})
-                            emit_progress(volume_id, "failed", reason)
-        finally:
-            loop.call_soon_threadsafe(
-                queue.put_nowait, {"type": "complete", "result": result}
-            )
-
-    threading.Thread(target=worker, daemon=True).start()
-
-    try:
-        while True:
-            message = await queue.get()
-            await websocket.send_json(message)
-            if message.get("type") == "complete":
-                break
-    except WebSocketDisconnect:
-        return
-    finally:
-        await websocket.close()
 
 
 @router.get("/jobs", response_model=JobListResponse)
@@ -5496,7 +4663,15 @@ async def get_job_metrics(
     if from_archive:
         response.headers["Cache-Control"] = "public, max-age=86400, immutable"
 
-    return JobMetricsResponse(job_id=job_id, train=train, val=val)
+    result = JobMetricsResponse(job_id=job_id, train=train, val=val)
+    owner_user_id = str(job_data.get("owner_user_id") or "").strip()
+    if owner_user_id:
+        get_realtime_runtime().track(
+            scope=UserID(owner_user_id),
+            kind="training.job.metrics",
+            key=job_id,
+        ).replace(result.model_dump(mode="json"))
+    return result
 
 
 @router.get("/jobs/{job_id}/instance-status", response_model=InstanceStatusResponse)
@@ -5578,13 +4753,6 @@ async def list_remote_job_checkpoints(job_id: str):
 async def rescan_remote_job_checkpoints(job_id: str):
     """Scan the remote instance for checkpoint candidates and persist the state."""
     return await _rescan_remote_checkpoint_candidates(job_id)
-
-
-@router.post("/jobs/{job_id}/rescue-cpu", response_model=RescueCPUResponse)
-async def rescue_job_cpu_instance(job_id: str):
-    """Start a CPU rescue instance for checkpoint extraction."""
-    result = await _rescue_cpu_job_with_progress(job_id, lambda _msg: None)
-    return RescueCPUResponse(**result)
 
 
 async def _rescue_cpu_job_with_progress(
@@ -6131,8 +5299,6 @@ async def delete_job(job_id: str, terminate_instance: bool = True):
         job_data["cleanup_status"] = "running"
         await _save_job(job_data)
         if provider == "vast":
-            from percus_ai.training.providers.vast import destroy_instance
-
             try:
                 destroy_instance(instance_id)
                 instance_deleted = True
@@ -6302,8 +5468,6 @@ async def _run_training_provision_operation(
     request_data: dict,
     supabase_session: dict,
 ) -> None:
-    from percus_ai.training.orchestrator import create_job_with_progress
-
     operations = get_training_provision_operations_service()
     loop = asyncio.get_running_loop()
     provider = str(((request_data.get("cloud") or {}).get("provider") or "")).strip().lower()
@@ -6549,14 +5713,6 @@ def _get_checkpoint_index_manager():
     global _checkpoint_index_manager
     if _checkpoint_index_manager is None:
         try:
-            import os
-
-            from percus_ai.storage import (
-                CheckpointIndexManager,
-                ManifestManager,
-                R2SyncService,
-            )
-
             manifest = ManifestManager()
             manifest.init_directories()
             bucket = os.getenv("R2_BUCKET", "percus-data")
@@ -6573,9 +5729,6 @@ def _get_checkpoint_index_manager():
 def _get_dataset_info_from_manifest(dataset_id: str) -> CheckpointDatasetInfo:
     """Extract dataset info for compatibility checking."""
     try:
-        from percus_ai.storage import ManifestManager, get_datasets_dir
-
-        manifest = ManifestManager()
         datasets_dir = get_datasets_dir()
         dataset_path = datasets_dir / dataset_id
 
@@ -7076,520 +6229,3 @@ async def create_continue_job(
         raise HTTPException(
             status_code=500, detail=f"Failed to create continue job: {e}"
         )
-
-
-# --- WebSocket Log Streaming ---
-
-
-@router.websocket("/ws/jobs/{job_id}/logs")
-async def websocket_stream_logs(websocket: WebSocket, job_id: str):
-    """WebSocket endpoint for real-time log streaming via SSH.
-
-    Connects to the remote instance via SSH and streams logs using tail -f.
-    Client receives log lines as they arrive.
-
-    Messages sent to client:
-    - {"type": "connected", "message": "SSH接続完了"}
-    - {"type": "log", "line": "..."}
-    - {"type": "status", "status": "completed|failed|stopped"}
-    - {"type": "error", "error": "..."}
-    - {"type": "heartbeat"}
-    """
-    await websocket.accept()
-    log_type = websocket.query_params.get("log_type", "training")
-    if log_type not in ("training", "setup"):
-        await websocket.send_json(
-            {"type": "error", "error": f"Invalid log_type: {log_type}"}
-        )
-        await websocket.close()
-        return
-    logger.info(f"WebSocket log stream client connected for job {job_id}")
-
-    supabase_session = _resolve_websocket_supabase_session(websocket)
-    if not supabase_session:
-        await websocket.send_json(
-            {
-                "type": "error",
-                "error": "認証情報がありません。ログインし直してください。",
-            }
-        )
-        await websocket.close()
-        return
-
-    status_subscription_id = None
-    status_queue = None
-    realtime_manager = None
-    ssh_conn: Optional[SSHConnection] = None
-    session_token = set_request_session(supabase_session)
-    try:
-        job_data = await _load_job(job_id)
-        if not job_data:
-            await websocket.send_json(
-                {"type": "error", "error": f"Job not found: {job_id}"}
-            )
-            await websocket.close()
-            return
-
-        # Check job has IP
-        ip = job_data.get("ip")
-        if not ip:
-            await websocket.send_json({"type": "error", "error": "Job has no IP address"})
-            await websocket.close()
-            return
-
-        try:
-            try:
-                realtime_manager = _get_training_job_realtime_manager()
-                status_subscription_id, status_queue = await realtime_manager.subscribe(
-                    job_id,
-                    asyncio.get_running_loop(),
-                )
-            except Exception as e:
-                await websocket.send_json(
-                    {"type": "error", "error": f"Realtime購読に失敗しました: {e}"}
-                )
-                await websocket.close()
-                return
-
-            # Connect SSH in thread pool
-            loop = asyncio.get_event_loop()
-            ssh_conn = await loop.run_in_executor(
-                _executor, lambda: _get_ssh_connection_for_job(job_data, timeout=30)
-            )
-
-            if not ssh_conn:
-                await websocket.send_json(
-                    {"type": "error", "error": "SSH接続に失敗しました"}
-                )
-                await websocket.close()
-                return
-
-            await websocket.send_json({"type": "connected", "message": "SSH接続完了"})
-
-            # Determine log file path
-            if log_type == "setup":
-                log_file = _get_setup_log_file_path(job_data)
-            else:
-                log_file = _get_training_log_file_path(job_data)
-
-            # Start tail -f in a channel
-            transport = ssh_conn.client.get_transport()
-            channel = transport.open_session()
-            channel.exec_command(f"tail -f {log_file} 2>/dev/null")
-            channel.setblocking(0)
-
-            last_heartbeat = asyncio.get_event_loop().time()
-
-            while True:
-                # Check for incoming data from SSH
-                try:
-                    if channel.recv_ready():
-                        data = channel.recv(4096)
-                        if data:
-                            lines = data.decode("utf-8", errors="replace").split("\n")
-                            for line in lines:
-                                if line.strip():
-                                    await websocket.send_json({"type": "log", "line": line})
-
-                    # Check if channel closed (process ended)
-                    if channel.exit_status_ready():
-                        await websocket.send_json(
-                            {
-                                "type": "status",
-                                "status": "stream_ended",
-                                "message": "ログストリーム終了",
-                            }
-                        )
-                        await _mark_job_completed(job_id)
-                        break
-
-                except Exception as e:
-                    logger.debug(f"SSH recv error: {e}")
-
-                # Send heartbeat every 5 seconds
-                now = asyncio.get_event_loop().time()
-                if now - last_heartbeat > 5:
-                    await websocket.send_json({"type": "heartbeat"})
-                    last_heartbeat = now
-
-                status = _drain_latest_status(status_queue) if status_queue else None
-                if status and status not in RUNNING_STATUSES:
-                    await websocket.send_json(
-                        {
-                            "type": "status",
-                            "status": status,
-                            "message": f"ジョブ状態: {status}",
-                        }
-                    )
-                    break
-
-                # Small delay to avoid busy loop
-                await asyncio.sleep(0.1)
-
-        except WebSocketDisconnect:
-            logger.info(f"WebSocket log stream client disconnected for job {job_id}")
-        except Exception as e:
-            logger.error(f"WebSocket log stream error for job {job_id}: {e}")
-            try:
-                await websocket.send_json({"type": "error", "error": str(e)})
-            except Exception:
-                pass
-        finally:
-            if ssh_conn:
-                try:
-                    ssh_conn.disconnect()
-                except Exception:
-                    pass
-            if status_subscription_id and realtime_manager:
-                realtime_manager.unsubscribe(status_subscription_id)
-    finally:
-        reset_request_session(session_token)
-
-
-@router.websocket("/ws/jobs/{job_id}/session")
-async def websocket_job_session(websocket: WebSocket, job_id: str):
-    """WebSocket endpoint for unified job session with progressive loading.
-
-    This endpoint maintains a single SSH connection for the entire session,
-    providing immediate local job info followed by SSH-dependent data.
-
-    Server -> Client messages:
-    - {"type": "job_info", "data": {...}}     # Immediate (from local JSON)
-    - {"type": "ssh_connecting"}               # SSH connection starting
-    - {"type": "ssh_connected"}                # SSH connection established
-    - {"type": "ssh_error", "error": "..."}    # SSH connection failed
-    - {"type": "remote_status", "status": "running|stopped|error|unreachable"}
-    - {"type": "progress", "step": "...", "loss": "..."}
-    - {"type": "log", "line": "..."}           # Log line (when streaming)
-    - {"type": "log_stream_started"}           # Log streaming started
-    - {"type": "log_stream_stopped"}           # Log streaming stopped
-    - {"type": "heartbeat"}                    # Every 5 seconds
-
-    Client -> Server messages:
-    - {"action": "start_logs"}                 # Start log streaming
-    - {"action": "stop_logs"}                  # Stop log streaming
-    - {"action": "refresh"}                    # Refresh status/progress
-    """
-    await websocket.accept()
-    logger.info(f"WebSocket job session connected for job {job_id}")
-
-    supabase_session = _resolve_websocket_supabase_session(websocket)
-    if not supabase_session:
-        await websocket.send_json(
-            {
-                "type": "error",
-                "error": "認証情報がありません。ログインし直してください。",
-            }
-        )
-        await websocket.close()
-        return
-
-    status_subscription_id = None
-    status_queue = None
-    realtime_manager = None
-    session_token = set_request_session(supabase_session)
-    try:
-        # Load job data immediately
-        job_data = await _load_job(job_id)
-        if not job_data:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "error": f"Job not found: {job_id}",
-                }
-            )
-            await websocket.close()
-            return
-
-        try:
-            realtime_manager = _get_training_job_realtime_manager()
-            status_subscription_id, status_queue = await realtime_manager.subscribe(
-                job_id,
-                asyncio.get_running_loop(),
-            )
-        except Exception as e:
-            await websocket.send_json(
-                {"type": "error", "error": f"Realtime購読に失敗しました: {e}"}
-            )
-            await websocket.close()
-            return
-
-        # Send job info immediately (no SSH needed)
-        await websocket.send_json(
-            {
-                "type": "job_info",
-                "data": {
-                    "job_id": job_data.get("job_id"),
-                    "job_name": job_data.get("job_name"),
-                    "status": job_data.get("status"),
-                    "mode": job_data.get("mode"),
-                    "gpu_model": job_data.get("gpu_model"),
-                    "gpus_per_instance": job_data.get("gpus_per_instance"),
-                    "ip": job_data.get("ip"),
-                    "instance_id": job_data.get("instance_id"),
-                    "created_at": job_data.get("created_at"),
-                    "started_at": job_data.get("started_at"),
-                    "failure_reason": job_data.get("failure_reason"),
-                    "termination_reason": job_data.get("termination_reason"),
-                    "cleanup_status": job_data.get("cleanup_status"),
-                    "deleted_at": job_data.get("deleted_at"),
-                },
-            }
-        )
-
-        ssh_conn: Optional[SSHConnection] = None
-        log_channel = None
-        is_streaming_logs = False
-
-        try:
-            # Check if job has IP (needed for SSH)
-            ip = job_data.get("ip")
-            if not ip:
-                await websocket.send_json(
-                    {
-                        "type": "ssh_error",
-                        "error": "Job has no IP address (instance may not be ready)",
-                    }
-                )
-                # Continue without SSH - user can still see local info
-                await _run_session_loop_no_ssh(websocket, status_queue, job_id)
-                return
-
-            # Start SSH connection
-            await websocket.send_json({"type": "ssh_connecting"})
-
-            # Connect SSH in thread pool
-            loop = asyncio.get_event_loop()
-            ssh_conn = await loop.run_in_executor(
-                _executor, lambda: _get_ssh_connection_for_job(job_data, timeout=30)
-            )
-
-            if not ssh_conn:
-                await websocket.send_json(
-                    {"type": "ssh_error", "error": "SSH接続に失敗しました"}
-                )
-                await _run_session_loop_no_ssh(websocket, status_queue, job_id)
-                return
-
-            await websocket.send_json({"type": "ssh_connected"})
-
-            # Get initial remote status and progress (pass raw paramiko client to helper functions)
-            await _send_remote_status(websocket, ssh_conn.client)
-            await _send_progress(websocket, job_id)
-
-            # Determine log file path for later use
-            log_file = _get_training_log_file_path(job_data)
-
-            last_heartbeat = asyncio.get_event_loop().time()
-            last_progress_update = asyncio.get_event_loop().time()
-
-            while True:
-                now = asyncio.get_event_loop().time()
-
-                # Handle incoming client messages (non-blocking)
-                try:
-                    # Use wait_for with short timeout to check for messages
-                    message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
-                    action = message.get("action")
-
-                    if action == "start_logs" and not is_streaming_logs:
-                        # Start log streaming using same SSH connection
-                        transport = ssh_conn.client.get_transport()
-                        if transport and transport.is_active():
-                            log_channel = transport.open_session()
-                            log_channel.exec_command(f"tail -f {log_file} 2>/dev/null")
-                            log_channel.setblocking(0)
-                            is_streaming_logs = True
-                            await websocket.send_json({"type": "log_stream_started"})
-
-                    elif action == "stop_logs" and is_streaming_logs:
-                        # Stop log streaming
-                        if log_channel:
-                            try:
-                                log_channel.close()
-                            except Exception:
-                                pass
-                            log_channel = None
-                        is_streaming_logs = False
-                        await websocket.send_json({"type": "log_stream_stopped"})
-
-                    elif action == "refresh":
-                        # Refresh status and progress
-                        await _send_remote_status(websocket, ssh_conn.client)
-                        await _send_progress(websocket, job_id)
-
-                except asyncio.TimeoutError:
-                    pass  # No message received, continue
-
-                # If streaming logs, read from channel
-                if is_streaming_logs and log_channel:
-                    try:
-                        if log_channel.recv_ready():
-                            data = log_channel.recv(4096)
-                            if data:
-                                lines = data.decode("utf-8", errors="replace").split("\n")
-                                for line in lines:
-                                    if line.strip():
-                                        await websocket.send_json(
-                                            {"type": "log", "line": line}
-                                        )
-
-                        # Check if log process ended
-                        if log_channel.exit_status_ready():
-                            is_streaming_logs = False
-                            await websocket.send_json({"type": "log_stream_stopped"})
-                            log_channel = None
-
-                    except Exception as e:
-                        logger.debug(f"Log channel read error: {e}")
-
-                # Send heartbeat every 5 seconds
-                if now - last_heartbeat > 5:
-                    await websocket.send_json({"type": "heartbeat"})
-                    last_heartbeat = now
-
-                # Update progress every 10 seconds (if not streaming logs)
-                if not is_streaming_logs and now - last_progress_update > 10:
-                    await _send_progress(websocket, job_id)
-                    last_progress_update = now
-
-                status = _drain_latest_status(status_queue) if status_queue else None
-                if status and status not in RUNNING_STATUSES:
-                    await websocket.send_json(
-                        {"type": "job_status_changed", "status": status}
-                    )
-                    break
-
-                await asyncio.sleep(0.05)
-
-        except WebSocketDisconnect:
-            logger.info(f"WebSocket job session disconnected for job {job_id}")
-        except Exception as e:
-            logger.error(f"WebSocket job session error for job {job_id}: {e}")
-            try:
-                await websocket.send_json({"type": "error", "error": str(e)})
-            except Exception:
-                pass
-        finally:
-            if log_channel:
-                try:
-                    log_channel.close()
-                except Exception:
-                    pass
-            if ssh_conn:
-                try:
-                    ssh_conn.disconnect()
-                except Exception:
-                    pass
-            if status_subscription_id and realtime_manager:
-                realtime_manager.unsubscribe(status_subscription_id)
-    finally:
-        reset_request_session(session_token)
-
-
-async def _run_session_loop_no_ssh(
-    websocket: WebSocket,
-    status_queue: "asyncio.Queue",
-    job_id: str,
-) -> None:
-    """Run session loop without SSH connection (local data only)."""
-    last_heartbeat = asyncio.get_event_loop().time()
-    last_progress_update = asyncio.get_event_loop().time()
-
-    try:
-        while True:
-            now = asyncio.get_event_loop().time()
-
-            # Handle incoming client messages
-            try:
-                message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
-                action = message.get("action")
-
-                if action == "start_logs":
-                    await websocket.send_json(
-                        {
-                            "type": "ssh_error",
-                            "error": "SSH接続がないためログを取得できません",
-                        }
-                    )
-
-            except asyncio.TimeoutError:
-                pass
-
-            # Send heartbeat every 5 seconds
-            if now - last_heartbeat > 5:
-                await websocket.send_json({"type": "heartbeat"})
-                last_heartbeat = now
-
-            if now - last_progress_update > 10:
-                await _send_progress(websocket, job_id)
-                last_progress_update = now
-
-            status = _drain_latest_status(status_queue) if status_queue else None
-            if status and status not in RUNNING_STATUSES_WITH_PENDING:
-                await websocket.send_json(
-                    {"type": "job_status_changed", "status": status}
-                )
-                break
-
-            await asyncio.sleep(0.1)
-
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket job session (no SSH) disconnected for job {job_id}")
-    except Exception as e:
-        logger.error(f"WebSocket job session (no SSH) error: {e}")
-
-
-async def _send_remote_status(websocket: WebSocket, ssh_client) -> None:
-    """Send remote process status via existing SSH connection."""
-    try:
-        loop = asyncio.get_event_loop()
-        status = await loop.run_in_executor(
-            _executor,
-            lambda: _exec_ssh_command(
-                ssh_client,
-                (
-                    f"tmux has-session -t {TMUX_TRAIN_SESSION_NAME} 2>/dev/null && echo 'running' "
-                    f"|| (tmux has-session -t {TMUX_SETUP_SESSION_NAME} 2>/dev/null && echo 'starting' || echo 'stopped')"
-                ),
-            ),
-        )
-        await websocket.send_json(
-            {"type": "remote_status", "status": status.strip() if status else "unknown"}
-        )
-    except Exception as e:
-        logger.debug(f"Failed to get remote status: {e}")
-        await websocket.send_json({"type": "remote_status", "status": "error"})
-
-
-async def _send_progress(websocket: WebSocket, job_id: str) -> None:
-    """Send training progress from Supabase metrics."""
-    try:
-        loop = asyncio.get_event_loop()
-        latest_train, latest_val = await loop.run_in_executor(
-            _executor,
-            lambda: _get_latest_metrics(job_id),
-        )
-        latest = latest_train or latest_val
-        step = latest.get("step") if latest else None
-        loss = latest.get("loss") if latest else None
-        await websocket.send_json(
-            {
-                "type": "progress",
-                "step": str(step) if step is not None else "N/A",
-                "loss": str(loss) if loss is not None else "N/A",
-                "train": latest_train,
-                "val": latest_val,
-            }
-        )
-    except Exception as e:
-        logger.debug(f"Failed to get progress: {e}")
-
-
-def _exec_ssh_command(ssh_client, command: str) -> Optional[str]:
-    """Execute SSH command and return stdout."""
-    try:
-        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=10)
-        return stdout.read().decode()
-    except Exception:
-        return None

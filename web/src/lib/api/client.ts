@@ -113,172 +113,6 @@ export type StartupOperationAcceptedResponse = {
   message?: string;
 };
 
-export type TabSessionLifecycle = {
-  visibility: 'foreground' | 'background' | 'closing';
-  reason?: string | null;
-};
-
-export type TabSessionRoute = {
-  id: string;
-  url: string;
-  params: Record<string, string>;
-};
-
-type RealtimeSubscriptionBase = {
-  subscription_id: string;
-};
-
-export type ProfilesActiveSubscription = RealtimeSubscriptionBase & {
-  kind: 'profiles.active';
-  params?: Record<string, never>;
-};
-
-export type ProfilesVlaborSubscription = RealtimeSubscriptionBase & {
-  kind: 'profiles.vlabor';
-  params?: Record<string, never>;
-};
-
-export type SystemStatusSubscription = RealtimeSubscriptionBase & {
-  kind: 'system.status';
-  params?: Record<string, never>;
-};
-
-export type OperateStatusSubscription = RealtimeSubscriptionBase & {
-  kind: 'operate.status';
-  params?: Record<string, never>;
-};
-
-export type BuildsStatusSubscription = RealtimeSubscriptionBase & {
-  kind: 'builds.status';
-  params?: Record<string, never>;
-};
-
-export type BuildsLogsSubscription = RealtimeSubscriptionBase & {
-  kind: 'builds.logs';
-  params?: Record<string, never>;
-};
-
-export type RecordingUploadStatusSubscription = RealtimeSubscriptionBase & {
-  kind: 'recording.upload-status';
-  params: {
-    session_id: string;
-  };
-};
-
-export type StartupOperationSubscription = RealtimeSubscriptionBase & {
-  kind: 'startup.operation';
-  params: {
-    operation_id: string;
-  };
-};
-
-export type TrainingProvisionOperationSubscription = RealtimeSubscriptionBase & {
-  kind: 'training.provision-operation';
-  params: {
-    operation_id: string;
-  };
-};
-
-export type TrainingJobOperationsSubscription = RealtimeSubscriptionBase & {
-  kind: 'training.job.operations';
-  params: {
-    job_id: string;
-  };
-};
-
-export type StorageModelSyncSubscription = RealtimeSubscriptionBase & {
-  kind: 'storage.model-sync';
-  params: {
-    job_id: string;
-  };
-};
-
-export type StorageDatasetSyncSubscription = RealtimeSubscriptionBase & {
-  kind: 'storage.dataset-sync';
-  params: {
-    job_id: string;
-  };
-};
-
-export type StorageDatasetMergeSubscription = RealtimeSubscriptionBase & {
-  kind: 'storage.dataset-merge';
-  params: {
-    job_id: string;
-  };
-};
-
-export type TrainingJobCoreSubscription = RealtimeSubscriptionBase & {
-  kind: 'training.job.core';
-  params: {
-    job_id: string;
-  };
-};
-
-export type TrainingJobProvisionSubscription = RealtimeSubscriptionBase & {
-  kind: 'training.job.provision';
-  params: {
-    job_id: string;
-  };
-};
-
-export type TrainingJobMetricsSubscription = RealtimeSubscriptionBase & {
-  kind: 'training.job.metrics';
-  params: {
-    job_id: string;
-    limit?: number | null;
-  };
-};
-
-export type TrainingJobLogsSubscription = RealtimeSubscriptionBase & {
-  kind: 'training.job.logs';
-  params: {
-    job_id: string;
-    log_type?: 'training' | 'setup';
-    tail_lines?: number | null;
-  };
-};
-
-export type TabSessionSubscription =
-  | ProfilesActiveSubscription
-  | ProfilesVlaborSubscription
-  | SystemStatusSubscription
-  | OperateStatusSubscription
-  | BuildsStatusSubscription
-  | BuildsLogsSubscription
-  | RecordingUploadStatusSubscription
-  | StartupOperationSubscription
-  | TrainingProvisionOperationSubscription
-  | TrainingJobOperationsSubscription
-  | StorageModelSyncSubscription
-  | StorageDatasetSyncSubscription
-  | StorageDatasetMergeSubscription
-  | TrainingJobCoreSubscription
-  | TrainingJobProvisionSubscription
-  | TrainingJobMetricsSubscription
-  | TrainingJobLogsSubscription;
-
-export type TabSessionStateRequest = {
-  revision: number;
-  lifecycle: TabSessionLifecycle;
-  route: TabSessionRoute;
-  subscriptions: TabSessionSubscription[];
-};
-
-export type TabSessionStateResponse = {
-  tab_session_id: string;
-  revision: number;
-  lifecycle: TabSessionLifecycle;
-  route: TabSessionRoute;
-  subscriptions: TabSessionSubscription[];
-};
-
-export type TabSessionStatePutResponse = {
-  tab_session_id: string;
-  revision: number;
-  applied_at: string;
-  subscription_count: number;
-};
-
 export type StartupOperationStatusResponse = {
   operation_id: string;
   kind: 'inference_start' | 'recording_create';
@@ -717,6 +551,27 @@ export type RecordingListQuery = {
   sortOrder?: StorageSortOrder;
   limit?: number;
   offset?: number;
+};
+
+export type RecordingInfo = {
+  recording_id: string;
+  dataset_name: string;
+  task?: string;
+  profile_name?: string | null;
+  owner_user_id?: string | null;
+  owner_email?: string | null;
+  owner_name?: string | null;
+  created_at?: string | null;
+  episode_count: number;
+  target_total_episodes: number;
+  remaining_episodes: number;
+  episode_time_s: number;
+  reset_time_s: number;
+  continuable: boolean;
+  continue_block_reason?: string | null;
+  size_bytes: number;
+  is_local: boolean;
+  is_uploaded: boolean;
 };
 
 export type TrainingJobListQuery = {
@@ -1373,25 +1228,8 @@ export const api = {
       fetchApi('/api/profiles/active', { method: 'PUT', body: JSON.stringify(payload) }),
     activeStatus: () => fetchApi('/api/profiles/active/status'),
     vlaborStatus: () => fetchApi('/api/profiles/vlabor/status'),
-    restartVlabor: () => fetchApi('/api/profiles/vlabor/restart', { method: 'POST' })
-  },
-  realtime: {
-    tabSessionState: (tabSessionId: string) =>
-      fetchApi<TabSessionStateResponse>(
-        `/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}/state`
-      ),
-    putTabSessionState: (tabSessionId: string, payload: TabSessionStateRequest) =>
-      fetchApi<TabSessionStatePutResponse>(
-        `/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}/state`,
-        {
-          method: 'PUT',
-          body: JSON.stringify(payload)
-        }
-      ),
-    deleteTabSession: (tabSessionId: string) =>
-      fetchText(`/api/realtime/tab-sessions/${encodeURIComponent(tabSessionId)}`, {
-        method: 'DELETE'
-      }).then(() => undefined)
+    restartVlabor: (payload: { profile?: string } = {}) =>
+      fetchApi(`/api/profiles/vlabor/restart${buildQueryString({ profile: payload.profile })}`, { method: 'POST' })
   },
   teleop: {
     createSession: (payload: {
@@ -1435,6 +1273,8 @@ export const api = {
           offset: query.offset
         })}`
       ),
+    get: (recordingId: string) =>
+      fetchApi<RecordingInfo>(`/api/recording/recordings/${encodeURIComponent(recordingId)}`),
     bulkArchive: (ids: string[]) =>
       fetchApi<BulkActionResponse>('/api/recording/recordings/bulk/archive', {
         method: 'POST',
@@ -1452,6 +1292,7 @@ export const api = {
       num_episodes: number;
       episode_time_s: number;
       reset_time_s: number;
+      continue_from_dataset_id?: string;
     }) =>
       fetchApi<StartupOperationAcceptedResponse>('/api/recording/session/create', {
         method: 'POST',

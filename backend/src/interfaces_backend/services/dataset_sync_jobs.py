@@ -28,6 +28,7 @@ from interfaces_backend.models.storage import (
     DatasetSyncJobState,
     DatasetSyncJobStatus,
 )
+from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 
 _ACTIVE_STATES: set[DatasetSyncJobState] = {"queued", "running"}
 _TERMINAL_STATES: set[DatasetSyncJobState] = {"completed", "failed", "cancelled"}
@@ -85,6 +86,7 @@ class DatasetSyncJobsService:
         dataset_id: str,
         auth_session: dict[str, Any] | None = None,
     ) -> DatasetSyncJobAcceptedResponse:
+        snapshot: DatasetSyncJobStatus
         with self._lock:
             self._cleanup_locked()
             for job in self._jobs.values():
@@ -97,7 +99,7 @@ class DatasetSyncJobsService:
 
             job_id = uuid4().hex
             now = _utcnow()
-            self._jobs[job_id] = _JobRecord(
+            record = _JobRecord(
                 job_id=job_id,
                 user_id=user_id,
                 dataset_id=dataset_id,
@@ -107,10 +109,17 @@ class DatasetSyncJobsService:
                 created_at=now,
                 updated_at=now,
             )
+            self._jobs[job_id] = record
             self._cancel_events[job_id] = threading.Event()
             self._pending.append(job_id)
             if self._pending_event is not None:
                 self._pending_event.set()
+            snapshot = record.to_response()
+        get_realtime_runtime().track(
+            scope=UserID(user_id),
+            kind="storage.dataset-sync",
+            key=snapshot.job_id,
+        ).replace(snapshot.model_dump(mode="json"))
         return DatasetSyncJobAcceptedResponse(
             accepted=True,
             job_id=job_id,
@@ -154,11 +163,8 @@ class DatasetSyncJobsService:
             self._cleanup_locked()
             return self._get_for_user_locked(user_id=user_id, job_id=job_id).to_response()
 
-    def get_cancel_event(self, *, job_id: str) -> threading.Event | None:
-        with self._lock:
-            return self._cancel_events.get(job_id)
-
     def cancel(self, *, user_id: str, job_id: str) -> DatasetSyncJobCancelResponse:
+        snapshot: DatasetSyncJobStatus | None = None
         with self._lock:
             self._cleanup_locked()
             record = self._get_for_user_locked(user_id=user_id, job_id=job_id)
@@ -183,6 +189,12 @@ class DatasetSyncJobsService:
                 record.message = "データセット同期の中断を要求しました。"
             record.updated_at = _utcnow()
             snapshot = record.to_response()
+        if snapshot is not None:
+            get_realtime_runtime().track(
+                scope=UserID(user_id),
+                kind="storage.dataset-sync",
+                key=snapshot.job_id,
+            ).replace(snapshot.model_dump(mode="json"))
         return DatasetSyncJobCancelResponse(
             job_id=snapshot.job_id,
             accepted=True,
@@ -371,12 +383,14 @@ class DatasetSyncJobsService:
         detail: dict[str, Any] | None = None,
     ) -> None:
         snapshot: DatasetSyncJobStatus | None = None
+        user_id: str | None = None
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
                 return
             if record.state in _TERMINAL_STATES:
                 return
+            user_id = record.user_id
             if state is not None:
                 record.state = state
             if progress_percent is not None:
@@ -392,8 +406,12 @@ class DatasetSyncJobsService:
             snapshot = record.to_response()
             if record.state in _TERMINAL_STATES:
                 self._cancel_events.pop(job_id, None)
-        if snapshot is not None:
-            return None
+        if snapshot is not None and user_id:
+            get_realtime_runtime().track(
+                scope=UserID(user_id),
+                kind="storage.dataset-sync",
+                key=snapshot.job_id,
+            ).replace(snapshot.model_dump(mode="json"))
 
     @staticmethod
     def _resolve_job_session(auth_session: dict[str, Any] | None) -> dict[str, Any] | None:

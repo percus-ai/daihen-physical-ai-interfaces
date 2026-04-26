@@ -7,16 +7,20 @@ from collections import deque
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import HTTPException
 
 from interfaces_backend.models.build_management import (
+    BuildLogEventModel,
+    BuildLogEventsFrameModel,
     BuildJobCancelResponse,
     BuildJobSummaryModel,
     BuildRunAcceptedResponse,
+    BuildsStatusSnapshotModel,
 )
+from interfaces_backend.services.realtime_runtime import Broadcast, get_realtime_runtime
 from percus_ai.environment.build import BuildStore, generate_build_id
 from percus_ai.environment.build.build_metadata import EnvBuildMetadataModel, SharedBuildMetadataModel
 from percus_ai.environment.config import EnvironmentConfigLoader
@@ -86,6 +90,7 @@ class BuildJobsService:
         build_store: BuildStore | None = None,
         environment_build_operation: BuildEnvironmentOperation | None = None,
         shared_build_operation: BuildSharedPackageOperation | None = None,
+        status_snapshot_provider: Callable[[], BuildsStatusSnapshotModel] | None = None,
     ) -> None:
         self._config_loader = config_loader or EnvironmentConfigLoader()
         self._build_store = build_store or BuildStore()
@@ -97,6 +102,10 @@ class BuildJobsService:
         self._cancel_events: dict[str, threading.Event] = {}
         self._log_events_by_job: dict[str, deque[dict[str, Any]]] = {}
         self._next_log_seq = 0
+        self._status_snapshot_provider = status_snapshot_provider
+
+    def set_status_snapshot_provider(self, provider: Callable[[], BuildsStatusSnapshotModel]) -> None:
+        self._status_snapshot_provider = provider
 
     def list_active_jobs(self) -> list[BuildJobSummaryModel]:
         with self._lock:
@@ -157,6 +166,13 @@ class BuildJobsService:
             loop = asyncio.get_running_loop()
             self._tasks[record.job_id] = loop.create_task(self._run_env_job(record.job_id), name=f"build-env-{setting_id}")
             response = record.to_response()
+        snapshot = self._status_snapshot()
+        if snapshot is not None:
+            get_realtime_runtime().track(
+                scope=Broadcast(),
+                kind="builds.status",
+                key="builds",
+            ).replace(snapshot.model_dump(mode="json"))
         return BuildRunAcceptedResponse(job=response)
 
     def start_shared_build(self, *, package: str, variant: str) -> BuildRunAcceptedResponse:
@@ -186,6 +202,13 @@ class BuildJobsService:
                 name=f"build-shared-{setting_id}",
             )
             response = record.to_response()
+        snapshot = self._status_snapshot()
+        if snapshot is not None:
+            get_realtime_runtime().track(
+                scope=Broadcast(),
+                kind="builds.status",
+                key="builds",
+            ).replace(snapshot.model_dump(mode="json"))
         return BuildRunAcceptedResponse(job=response)
 
     def cancel(self, *, job_id: str) -> BuildJobCancelResponse:
@@ -200,7 +223,15 @@ class BuildJobsService:
                 cancel_event.set()
             record.message = "構築の中止を要求しました。"
             record.updated_at = _utcnow()
-            return BuildJobCancelResponse(accepted=True, job=record.to_response())
+            response = record.to_response()
+        snapshot = self._status_snapshot()
+        if snapshot is not None:
+            get_realtime_runtime().track(
+                scope=Broadcast(),
+                kind="builds.status",
+                key="builds",
+            ).replace(snapshot.model_dump(mode="json"))
+        return BuildJobCancelResponse(accepted=True, job=response)
 
     async def shutdown(self) -> None:
         tasks: list[asyncio.Task[None]]
@@ -302,6 +333,7 @@ class BuildJobsService:
             await asyncio.sleep(0.5)
 
     def _update_from_metadata(self, job_id: str, metadata: EnvBuildMetadataModel | SharedBuildMetadataModel) -> None:
+        changed = False
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None or record.state not in _ACTIVE_STATES:
@@ -311,8 +343,18 @@ class BuildJobsService:
             if record.total_steps > 0:
                 record.progress_percent = min(99.0, (record.current_step_index / record.total_steps) * 100.0)
             record.updated_at = _utcnow()
+            changed = True
+        if changed:
+            snapshot = self._status_snapshot()
+            if snapshot is not None:
+                get_realtime_runtime().track(
+                    scope=Broadcast(),
+                    kind="builds.status",
+                    key="builds",
+                ).replace(snapshot.model_dump(mode="json"))
 
     def _mark_running(self, job_id: str, *, message: str) -> None:
+        changed = False
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
@@ -323,8 +365,18 @@ class BuildJobsService:
             record.updated_at = record.started_at
             record.current_step_name = "prepare"
             record.progress_percent = 0.0
+            changed = True
+        if changed:
+            snapshot = self._status_snapshot()
+            if snapshot is not None:
+                get_realtime_runtime().track(
+                    scope=Broadcast(),
+                    kind="builds.status",
+                    key="builds",
+                ).replace(snapshot.model_dump(mode="json"))
 
     def _mark_completed(self, job_id: str, *, message: str) -> None:
+        changed = False
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
@@ -336,8 +388,18 @@ class BuildJobsService:
             record.progress_percent = 100.0
             record.finished_at = _utcnow()
             record.updated_at = record.finished_at
+            changed = True
+        if changed:
+            snapshot = self._status_snapshot()
+            if snapshot is not None:
+                get_realtime_runtime().track(
+                    scope=Broadcast(),
+                    kind="builds.status",
+                    key="builds",
+                ).replace(snapshot.model_dump(mode="json"))
 
     def _mark_failed(self, job_id: str, *, error: str, message: str) -> None:
+        changed = False
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
@@ -347,9 +409,19 @@ class BuildJobsService:
             record.error = error
             record.finished_at = _utcnow()
             record.updated_at = record.finished_at
+            changed = True
+        if changed:
+            snapshot = self._status_snapshot()
+            if snapshot is not None:
+                get_realtime_runtime().track(
+                    scope=Broadcast(),
+                    kind="builds.status",
+                    key="builds",
+                ).replace(snapshot.model_dump(mode="json"))
 
     def _build_output_callback(self, job_id: str):
         def _callback(step: str, stream: str, line: str) -> None:
+            event: BuildLogEventModel | None = None
             with self._lock:
                 record = self._jobs.get(job_id)
                 if record is None:
@@ -359,21 +431,31 @@ class BuildJobsService:
                     record.job_id,
                     deque(maxlen=_LOG_BUFFER_MAX_LINES_PER_JOB),
                 )
-                buffer.append(
-                    {
-                        "seq": self._next_log_seq,
-                        "job_id": record.job_id,
-                        "build_id": record.build_id,
-                        "kind": record.kind,
-                        "setting_id": record.setting_id,
-                        "step": step,
-                        "stream": stream,
-                        "line": line,
-                        "emitted_at": _utcnow().isoformat(),
-                    }
+                event = BuildLogEventModel(
+                    seq=self._next_log_seq,
+                    job_id=record.job_id,
+                    build_id=record.build_id,
+                    kind=record.kind,  # type: ignore[arg-type]
+                    setting_id=record.setting_id,
+                    step=step,
+                    stream=stream,
+                    line=line,
+                    emitted_at=_utcnow().isoformat(),
                 )
+                buffer.append(event.model_dump(mode="json"))
+            if event is not None:
+                get_realtime_runtime().track(
+                    scope=Broadcast(),
+                    kind="builds.logs",
+                    key="builds",
+                ).replace(BuildLogEventsFrameModel(events=[event]).model_dump(mode="json"))
 
         return _callback
+
+    def _status_snapshot(self) -> BuildsStatusSnapshotModel | None:
+        if self._status_snapshot_provider is None:
+            return None
+        return self._status_snapshot_provider()
 
     def _is_cancel_requested(self, job_id: str) -> bool:
         with self._lock:

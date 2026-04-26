@@ -2,7 +2,7 @@ import { derived, get, writable, type Readable } from 'svelte/store';
 import { createQuery, type QueryClient } from '@tanstack/svelte-query';
 
 import { api, type DatasetSyncJobStatus, type DatasetViewerResponse, type DatasetViewerSignalFieldsResponse } from '$lib/api/client';
-import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+import { registerRealtimeTrackConsumer, type RealtimeTrackConsumerHandle, type RealtimeTrackEvent } from '$lib/realtime/trackClient';
 import { qk } from '$lib/queryKeys';
 
 type NotifyFn = (message: string, level?: 'info' | 'success' | 'error') => void;
@@ -162,21 +162,20 @@ export const createDatasetAvailabilityController = (opts: {
     }
   });
 
-  let contributor: TabRealtimeContributorHandle | null = null;
+  let contributor: RealtimeTrackConsumerHandle | null = null;
   const unsubStream = derived([syncJobId, enabled], (values) => values).subscribe(([$jobId, $enabled]) => {
     contributor?.dispose();
     contributor = null;
     if (!$enabled || !$jobId) return;
     const currentJobId = $jobId;
-    contributor = registerTabRealtimeContributor({
-      subscriptions: [
+    contributor = registerRealtimeTrackConsumer({
+      tracks: [
         {
-          subscription_id: `viewer.dataset-sync.${currentJobId}`,
           kind: 'storage.dataset-sync',
           params: { job_id: currentJobId }
         }
       ],
-      onEvent: (event: TabRealtimeEvent) => {
+      onEvent: (event: RealtimeTrackEvent) => {
         if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-sync') return;
         queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), event.payload as DatasetSyncJobStatus);
       }

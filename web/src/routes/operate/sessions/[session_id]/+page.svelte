@@ -6,7 +6,7 @@
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api/client';
   import { preventModalAutoFocus } from '$lib/components/modal/focus';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerRealtimeTrackConsumer, type RealtimeTrackConsumerHandle, type RealtimeTrackEvent } from '$lib/realtime/trackClient';
   import { queryClient } from '$lib/queryClient';
   import { requestInferenceUploadProgress } from '$lib/recording/inferenceUploadProgressRequests';
 
@@ -82,19 +82,18 @@
     };
   });
 
-  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
 
   onMount(() => {
     if (!browser) return;
-    realtimeContributor = registerTabRealtimeContributor({
-      subscriptions: [
+    realtimeContributor = registerRealtimeTrackConsumer({
+      tracks: [
         {
-          subscription_id: `operate.session.${sessionId}`,
           kind: 'operate.status',
           params: {}
         }
       ],
-      onEvent: (event: TabRealtimeEvent) => {
+      onEvent: (event: RealtimeTrackEvent) => {
         if (event.op !== 'snapshot' || event.source?.kind !== 'operate.status') return;
         const payload = event.payload as OperateStatusStreamPayload;
         queryClient.setQueryData(['profiles', 'vlabor', 'status'], payload.vlabor_status);

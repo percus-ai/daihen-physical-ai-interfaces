@@ -16,6 +16,8 @@ from interfaces_backend.models.training import (
     TrainingJobOperationState,
     TrainingJobOperationStatusResponse,
 )
+from interfaces_backend.models.realtime_payloads import TrainingJobOperationsRealtimeDetail
+from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 
 _ACTIVE_STATES: set[TrainingJobOperationState] = {"queued", "running"}
 _TERMINAL_STATES: set[TrainingJobOperationState] = {"completed", "failed", "cancelled"}
@@ -106,15 +108,21 @@ class TrainingJobOperationsService:
                 created_at=now,
                 updated_at=now,
             )
-            return TrainingJobOperationAcceptedResponse(
-                accepted=True,
-                operation_id=operation_id,
-                job_id=job_id,
-                kind=kind,
-                state="queued",
-                message="accepted",
-                reused=False,
-            )
+            payload = self._job_operations_payload_locked(user_id=user_id, job_id=job_id)
+        get_realtime_runtime().track(
+            scope=UserID(user_id),
+            kind="training.job.operations",
+            key=job_id,
+        ).replace(payload.model_dump(mode="json"))
+        return TrainingJobOperationAcceptedResponse(
+            accepted=True,
+            operation_id=operation_id,
+            job_id=job_id,
+            kind=kind,
+            state="queued",
+            message="accepted",
+            reused=False,
+        )
 
     def get(self, *, user_id: str, operation_id: str) -> TrainingJobOperationStatusResponse:
         with self._lock:
@@ -123,22 +131,6 @@ class TrainingJobOperationsService:
             if record is None or record.user_id != user_id:
                 raise HTTPException(status_code=404, detail=f"Training operation not found: {operation_id}")
             return record.to_response()
-
-    def list_for_job(
-        self,
-        *,
-        user_id: str,
-        job_id: str,
-    ) -> list[TrainingJobOperationStatusResponse]:
-        with self._lock:
-            self._cleanup_locked()
-            responses = [
-                record.to_response()
-                for record in self._operations.values()
-                if record.user_id == user_id and record.job_id == job_id
-            ]
-        responses.sort(key=lambda item: item.updated_at or "", reverse=True)
-        return responses
 
     def update_from_progress(self, *, operation_id: str, progress: dict[str, Any]) -> None:
         event_type = str(progress.get("type") or "").strip()
@@ -221,6 +213,9 @@ class TrainingJobOperationsService:
         started: bool = False,
         finished: bool = False,
     ) -> None:
+        payload: TrainingJobOperationsRealtimeDetail | None = None
+        target_user_id: str | None = None
+        target_job_id: str | None = None
         with self._lock:
             record = self._operations.get(operation_id)
             if record is None:
@@ -243,6 +238,25 @@ class TrainingJobOperationsService:
             if finished:
                 record.finished_at = _utcnow()
             record.updated_at = _utcnow()
+            target_user_id = record.user_id
+            target_job_id = record.job_id
+            payload = self._job_operations_payload_locked(user_id=record.user_id, job_id=record.job_id)
+
+        if payload is not None and target_user_id and target_job_id:
+            get_realtime_runtime().track(
+                scope=UserID(target_user_id),
+                kind="training.job.operations",
+                key=target_job_id,
+            ).replace(payload.model_dump(mode="json"))
+
+    def _job_operations_payload_locked(self, *, user_id: str, job_id: str) -> TrainingJobOperationsRealtimeDetail:
+        operations = [
+            record.to_response()
+            for record in self._operations.values()
+            if record.user_id == user_id and record.job_id == job_id
+        ]
+        operations.sort(key=lambda item: item.updated_at or "", reverse=True)
+        return TrainingJobOperationsRealtimeDetail(operations=operations)
 
     def _find_active_locked(
         self,

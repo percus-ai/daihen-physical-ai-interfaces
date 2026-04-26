@@ -27,6 +27,7 @@ from interfaces_backend.models.experiment import (
     ExperimentUpdateRequest,
 )
 from percus_ai.db import get_current_user_id, get_supabase_async_client
+from percus_ai.storage.s3 import S3Manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
@@ -417,7 +418,6 @@ async def experiment_evaluation_summary(experiment_id: str):
 async def get_experiment_media_urls(request: ExperimentMediaUrlRequest):
     """Generate signed URLs for experiment-related images."""
     _require_user_id()
-    from percus_ai.storage.s3 import S3Manager
 
     keys = [key for key in (request.keys or []) if key]
     if not keys:

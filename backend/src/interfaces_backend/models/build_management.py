@@ -83,6 +83,22 @@ class BuildJobSummaryModel(BaseModel):
     finished_at: str | None = None
 
 
+class BuildLogEventModel(BaseModel):
+    seq: int
+    job_id: str
+    build_id: str
+    kind: BuildSettingKind
+    setting_id: str
+    step: str
+    stream: str
+    line: str
+    emitted_at: str
+
+
+class BuildLogEventsFrameModel(BaseModel):
+    events: list[BuildLogEventModel] = Field(default_factory=list)
+
+
 class BuildRunAcceptedResponse(BaseModel):
     accepted: bool = True
     job: BuildJobSummaryModel

@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import threading
+from collections.abc import Callable
+from datetime import datetime, timezone
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from interfaces_backend.models.profile import (
     ProfileDeviceStatusArm,
     ProfileDeviceStatusCamera,
     VlaborActiveProfileResponse,
     VlaborActiveProfileStatusResponse,
+    VlaborOperationAcceptedResponse,
+    VlaborOperationAction,
+    VlaborOperationState,
+    VlaborOperationStatus,
     VlaborProfileSelectRequest,
     VlaborProfilesResponse,
     VlaborProfileSummary,
@@ -24,17 +32,16 @@ from interfaces_backend.services.vlabor_profiles import (
     list_vlabor_profiles,
     set_active_profile_spec,
 )
-from interfaces_backend.services.vlabor_runtime import (
-    VlaborCommandError,
-    restart_vlabor,
-    stream_vlabor_script,
-)
+from interfaces_backend.services.vlabor_runtime import stream_vlabor_script
+from interfaces_backend.services.realtime_runtime import Broadcast, UserID, get_realtime_runtime
 from interfaces_backend.services.system_status_monitor import get_system_status_monitor
 from interfaces_backend.utils.docker_compose import get_vlabor_compose_file
 from interfaces_backend.utils.docker_services import get_docker_service_summary
 from percus_ai.db import get_current_user_id
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
+MAX_OPERATION_LOG_LINES = 50
+_vlabor_operation_lock = threading.Lock()
 
 
 def _require_user_id() -> str:
@@ -75,31 +82,86 @@ def _get_vlabor_status() -> dict:
     }
 
 
-async def _stream_script_to_websocket(
-    websocket: WebSocket,
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _begin_vlabor_operation() -> None:
+    if not _vlabor_operation_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Another VLAbor operation is already running")
+
+
+def _end_vlabor_operation() -> None:
+    if _vlabor_operation_lock.locked():
+        _vlabor_operation_lock.release()
+
+
+def _commit_vlabor_operation(user_id: str, status: VlaborOperationStatus) -> None:
+    get_realtime_runtime().track(
+        scope=UserID(user_id),
+        kind="profiles.vlabor.operation",
+        key=status.operation_id,
+    ).replace(status.model_dump(mode="json"))
+
+
+def _vlabor_operation_status(
+    *,
+    operation_id: str,
+    action: VlaborOperationAction,
+    state: VlaborOperationState,
+    profile_name: str | None,
+    previous_profile_name: str | None = None,
+    message: str = "",
+    logs: list[str] | None = None,
+    error: str | None = None,
+    exit_code: str | None = None,
+) -> VlaborOperationStatus:
+    return VlaborOperationStatus(
+        operation_id=operation_id,
+        action=action,
+        state=state,
+        profile_name=profile_name,
+        previous_profile_name=previous_profile_name,
+        message=message,
+        logs=list(logs or [])[-MAX_OPERATION_LOG_LINES:],
+        error=error,
+        exit_code=exit_code,
+        updated_at=_now_iso(),
+    )
+
+
+async def _run_vlabor_script_events(
     *,
     script_name: str,
     args: list[str],
     timeout: int,
-) -> tuple[bool, str | None]:
+    on_event: Callable[[dict[str, str]], None],
+) -> tuple[bool, str | None, str | None]:
     queue: asyncio.Queue[dict[str, str] | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
     def _run() -> None:
-        for event in stream_vlabor_script(script_name, args, timeout=timeout):
-            loop.call_soon_threadsafe(queue.put_nowait, event)
-        loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+        try:
+            for event in stream_vlabor_script(script_name, args, timeout=timeout):
+                loop.call_soon_threadsafe(queue.put_nowait, event)
+        except Exception as exc:  # noqa: BLE001 - surface operation failure to realtime track
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                {"type": "error", "message": str(exc)},
+            )
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
 
-    loop.run_in_executor(None, _run)
+    future = loop.run_in_executor(None, _run)
 
     saw_complete = False
-    exit_code = ""
+    exit_code: str | None = None
     error_message: str | None = None
     while True:
         event = await queue.get()
         if event is None:
             break
-        await websocket.send_json(event)
+        on_event(event)
         event_type = str(event.get("type") or "").strip().lower()
         if event_type == "complete":
             saw_complete = True
@@ -107,13 +169,182 @@ async def _stream_script_to_websocket(
         elif event_type == "error":
             error_message = str(event.get("message") or "Unknown error").strip()
 
+    await future
     if error_message:
-        return False, error_message
+        return False, error_message, exit_code
     if not saw_complete:
-        return False, "VLAbor script finished without completion status"
+        return False, "VLAbor script finished without completion status", exit_code
     if exit_code != "0":
-        return False, f"exit code={exit_code or 'unknown'}"
-    return True, None
+        return False, f"exit code={exit_code or 'unknown'}", exit_code
+    return True, None, exit_code
+
+
+async def _run_vlabor_restart_operation(
+    *,
+    user_id: str,
+    operation_id: str,
+    action: VlaborOperationAction,
+    profile_name: str | None,
+    previous_profile_name: str | None = None,
+    logs: list[str] | None = None,
+    commit_terminal_success: bool = True,
+) -> tuple[bool, str | None]:
+    operation_logs = list(logs or [])
+
+    def commit(
+        state: VlaborOperationState,
+        message: str,
+        *,
+        error: str | None = None,
+        exit_code: str | None = None,
+    ) -> None:
+        _commit_vlabor_operation(
+            user_id,
+            _vlabor_operation_status(
+                operation_id=operation_id,
+                action=action,
+                state=state,
+                profile_name=profile_name,
+                previous_profile_name=previous_profile_name,
+                message=message,
+                logs=operation_logs,
+                error=error,
+                exit_code=exit_code,
+            ),
+        )
+
+    commit("running", f"Restarting VLAbor with profile: {profile_name or 'default'}")
+
+    def on_event(event: dict[str, str]) -> None:
+        event_type = str(event.get("type") or "").strip().lower()
+        if event_type == "log":
+            line = str(event.get("line") or "").strip()
+            if line:
+                operation_logs.append(line)
+                commit("running", line)
+            return
+        if event_type == "error":
+            message = str(event.get("message") or "VLAbor restart failed").strip()
+            operation_logs.append(message)
+            commit("failed", message, error=message)
+
+    args = [profile_name] if profile_name else []
+    ok, detail, exit_code = await _run_vlabor_script_events(
+        script_name="restart",
+        args=args,
+        timeout=300,
+        on_event=on_event,
+    )
+    if ok:
+        if commit_terminal_success:
+            commit("completed", "VLAbor restart completed", exit_code=exit_code)
+        else:
+            commit("running", "VLAbor rollback restart completed", exit_code=exit_code)
+        await get_vlabor_status()
+        return True, None
+
+    message = detail or "VLAbor restart failed"
+    operation_logs.append(message)
+    commit("failed", message, error=message, exit_code=exit_code)
+    await get_vlabor_status()
+    return False, message
+
+
+async def _run_vlabor_switch_operation(
+    *,
+    user_id: str,
+    operation_id: str,
+    profile_name: str,
+    previous_profile_name: str,
+) -> None:
+    logs = [f"Switching active profile: {previous_profile_name} -> {profile_name}"]
+    switched, switch_detail = await _run_vlabor_restart_operation(
+        user_id=user_id,
+        operation_id=operation_id,
+        action="switch_profile",
+        profile_name=profile_name,
+        previous_profile_name=previous_profile_name,
+        logs=logs,
+    )
+    if switched:
+        return
+
+    logs.append(
+        f"Switch failed ({switch_detail or 'unknown'}). Rolling back to profile: {previous_profile_name}"
+    )
+    _commit_vlabor_operation(
+        user_id,
+        _vlabor_operation_status(
+            operation_id=operation_id,
+            action="switch_profile",
+            state="running",
+            profile_name=profile_name,
+            previous_profile_name=previous_profile_name,
+            message="Rolling back active profile",
+            logs=logs,
+        ),
+    )
+    try:
+        await set_active_profile_spec(previous_profile_name)
+        logs.append(f"Active profile reverted to: {previous_profile_name}")
+    except Exception as exc:  # noqa: BLE001 - precise rollback detail
+        message = f"Failed to revert active profile: {exc}"
+        logs.append(message)
+        _commit_vlabor_operation(
+            user_id,
+            _vlabor_operation_status(
+                operation_id=operation_id,
+                action="switch_profile",
+                state="failed",
+                profile_name=profile_name,
+                previous_profile_name=previous_profile_name,
+                message=message,
+                logs=logs,
+                error=message,
+            ),
+        )
+        return
+
+    rollback_ok, rollback_detail = await _run_vlabor_restart_operation(
+        user_id=user_id,
+        operation_id=operation_id,
+        action="switch_profile",
+        profile_name=previous_profile_name,
+        previous_profile_name=previous_profile_name,
+        logs=logs,
+        commit_terminal_success=False,
+    )
+    message = f"Failed to switch profile to {profile_name}: {switch_detail or 'unknown'}"
+    if not rollback_ok:
+        message = f"{message}; rollback restart failed: {rollback_detail or 'unknown'}"
+    logs.append(message)
+    _commit_vlabor_operation(
+        user_id,
+        _vlabor_operation_status(
+            operation_id=operation_id,
+            action="switch_profile",
+            state="failed",
+            profile_name=profile_name,
+            previous_profile_name=previous_profile_name,
+            message=message,
+            logs=logs,
+            error=message,
+        ),
+    )
+
+
+async def _run_vlabor_restart_operation_task(**kwargs) -> None:
+    try:
+        await _run_vlabor_restart_operation(**kwargs)
+    finally:
+        _end_vlabor_operation()
+
+
+async def _run_vlabor_switch_operation_task(**kwargs) -> None:
+    try:
+        await _run_vlabor_switch_operation(**kwargs)
+    finally:
+        _end_vlabor_operation()
 
 
 @router.get("", response_model=VlaborProfilesResponse)
@@ -147,46 +378,47 @@ async def get_active_profile():
     )
 
 
-@router.put("/active", response_model=VlaborActiveProfileResponse)
-async def set_active_profile(request: VlaborProfileSelectRequest):
-    _require_user_id()
-    previous = await get_active_profile_spec()
-    active = await set_active_profile_spec(request.profile_name)
+@router.put("/active", response_model=VlaborOperationAcceptedResponse)
+async def set_active_profile(request: VlaborProfileSelectRequest, background_tasks: BackgroundTasks):
+    user_id = _require_user_id()
+    _begin_vlabor_operation()
+    requested_profile = request.profile_name.strip()
     try:
-        await asyncio.to_thread(restart_vlabor, profile=active.name, strict=True)
-    except VlaborCommandError as exc:
-        rollback_messages: list[str] = []
-        try:
-            await set_active_profile_spec(previous.name)
-            rollback_messages.append(f"active profile reverted to {previous.name}")
-        except Exception as rollback_exc:  # noqa: BLE001 - API detail
-            rollback_messages.append(f"failed to revert active profile: {rollback_exc}")
+        available = {profile.name for profile in list_vlabor_profiles()}
+        if requested_profile not in available:
+            raise HTTPException(status_code=404, detail=f"VLAbor profile not found: {requested_profile}")
 
-        try:
-            rollback_result = await asyncio.to_thread(
-                restart_vlabor,
-                profile=previous.name,
-                strict=False,
-            )
-            if rollback_result.returncode == 0:
-                rollback_messages.append("VLAbor runtime rollback succeeded")
-            else:
-                detail = (rollback_result.stderr or rollback_result.stdout).strip()
-                if not detail:
-                    detail = f"exit code={rollback_result.returncode}"
-                rollback_messages.append(f"VLAbor runtime rollback failed: {detail}")
-        except Exception as rollback_exc:  # noqa: BLE001 - API detail
-            rollback_messages.append(f"failed to run runtime rollback: {rollback_exc}")
-
-        detail = f"Failed to restart VLAbor with profile {active.name}: {exc}"
-        if rollback_messages:
-            detail = f"{detail} ({'; '.join(rollback_messages)})"
-        raise HTTPException(status_code=500, detail=detail) from exc
-
-    return VlaborActiveProfileResponse(
-        profile_name=active.name,
-        profile_snapshot=active.snapshot,
-    )
+        previous = await get_active_profile_spec()
+        active = await set_active_profile_spec(requested_profile)
+        operation_id = uuid4().hex
+        _commit_vlabor_operation(
+            user_id,
+            _vlabor_operation_status(
+                operation_id=operation_id,
+                action="switch_profile",
+                state="queued",
+                profile_name=active.name,
+                previous_profile_name=previous.name,
+                message=f"Switching active profile: {previous.name} -> {active.name}",
+                logs=[f"Switching active profile: {previous.name} -> {active.name}"],
+            ),
+        )
+        background_tasks.add_task(
+            _run_vlabor_switch_operation_task,
+            user_id=user_id,
+            operation_id=operation_id,
+            profile_name=active.name,
+            previous_profile_name=previous.name,
+        )
+        return VlaborOperationAcceptedResponse(
+            operation_id=operation_id,
+            action="switch_profile",
+            profile_name=active.name,
+            previous_profile_name=previous.name,
+        )
+    except Exception:
+        _end_vlabor_operation()
+        raise
 
 
 @router.get("/active/status", response_model=VlaborActiveProfileStatusResponse)
@@ -242,159 +474,74 @@ async def get_active_profile_status():
             )
         )
 
-    return VlaborActiveProfileStatusResponse(
+    response = VlaborActiveProfileStatusResponse(
         profile_name=active.name,
         profile_snapshot=active.snapshot,
         cameras=cameras,
         arms=arms,
         topics=topics,
     )
+    get_realtime_runtime().track(
+        scope=Broadcast(),
+        kind="profiles.active",
+        key="active",
+    ).replace(response.model_dump(mode="json"))
+    return response
 
 
 @router.get("/vlabor/status", response_model=VlaborStatusResponse)
 async def get_vlabor_status():
-    return VlaborStatusResponse(**(await asyncio.to_thread(_get_vlabor_status)))
+    response = VlaborStatusResponse(**(await asyncio.to_thread(_get_vlabor_status)))
+    get_realtime_runtime().track(
+        scope=Broadcast(),
+        kind="profiles.vlabor",
+        key="vlabor",
+    ).replace(response.model_dump(mode="json"))
+    return response
 
 
-@router.websocket("/ws/vlabor/restart")
-async def websocket_restart_vlabor(websocket: WebSocket):
-    """Stream VLAbor restart progress in real-time.
-
-    Messages:
-      {"type": "log", "line": "..."}
-      {"type": "complete", "exit_code": "0"}
-      {"type": "error", "message": "..."}
-    """
-    await websocket.accept()
+@router.post("/vlabor/restart", response_model=VlaborOperationAcceptedResponse)
+async def restart_vlabor_endpoint(
+    background_tasks: BackgroundTasks,
+    profile: str | None = Query(default=None),
+):
+    user_id = _require_user_id()
+    _begin_vlabor_operation()
     try:
-        requested_profile = str(websocket.query_params.get("profile") or "").strip()
-        profile_name = requested_profile
+        requested_profile = str(profile or "").strip()
         if requested_profile:
-            available = {profile.name for profile in list_vlabor_profiles()}
+            available = {item.name for item in list_vlabor_profiles()}
             if requested_profile not in available:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": f"VLAbor profile not found: {requested_profile}",
-                    }
-                )
-                return
+                raise HTTPException(status_code=404, detail=f"VLAbor profile not found: {requested_profile}")
+            profile_name = requested_profile
         else:
             active = await get_active_profile_spec()
             profile_name = active.name
-        await websocket.send_json(
-            {"type": "log", "line": f"Restarting VLAbor with profile: {profile_name}"}
-        )
-        args: list[str] = [profile_name] if profile_name else []
-        await _stream_script_to_websocket(
-            websocket,
-            script_name="restart",
-            args=args,
-            timeout=300,
-        )
-    except WebSocketDisconnect:
-        return
-    except Exception as exc:
-        try:
-            await websocket.send_json({"type": "error", "message": str(exc)})
-        except Exception:
-            pass
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
 
-
-@router.websocket("/ws/vlabor/switch-profile")
-async def websocket_switch_profile(websocket: WebSocket):
-    """Switch active profile and stream VLAbor restart logs."""
-    await websocket.accept()
-    try:
-        requested_profile = str(websocket.query_params.get("profile") or "").strip()
-        if not requested_profile:
-            await websocket.send_json(
-                {"type": "error", "message": "profile query parameter is required"}
-            )
-            return
-
-        available = {profile.name for profile in list_vlabor_profiles()}
-        if requested_profile not in available:
-            await websocket.send_json(
-                {"type": "error", "message": f"VLAbor profile not found: {requested_profile}"}
-            )
-            return
-
-        previous = await get_active_profile_spec()
-        await websocket.send_json(
-            {
-                "type": "log",
-                "line": f"Switching active profile: {previous.name} -> {requested_profile}",
-            }
+        operation_id = uuid4().hex
+        _commit_vlabor_operation(
+            user_id,
+            _vlabor_operation_status(
+                operation_id=operation_id,
+                action="restart",
+                state="queued",
+                profile_name=profile_name,
+                message=f"Restarting VLAbor with profile: {profile_name}",
+                logs=[],
+            ),
         )
-
-        active = await set_active_profile_spec(requested_profile)
-        await websocket.send_json(
-            {"type": "log", "line": f"Restarting VLAbor with profile: {active.name}"}
+        background_tasks.add_task(
+            _run_vlabor_restart_operation_task,
+            user_id=user_id,
+            operation_id=operation_id,
+            action="restart",
+            profile_name=profile_name,
         )
-        switched, switch_detail = await _stream_script_to_websocket(
-            websocket,
-            script_name="restart",
-            args=[active.name],
-            timeout=300,
+        return VlaborOperationAcceptedResponse(
+            operation_id=operation_id,
+            action="restart",
+            profile_name=profile_name,
         )
-        if switched:
-            return
-
-        await websocket.send_json(
-            {
-                "type": "log",
-                "line": (
-                    f"Switch failed ({switch_detail or 'unknown'}). "
-                    f"Rolling back to profile: {previous.name}"
-                ),
-            }
-        )
-        try:
-            await set_active_profile_spec(previous.name)
-            await websocket.send_json(
-                {"type": "log", "line": f"Active profile reverted to: {previous.name}"}
-            )
-        except Exception as exc:  # noqa: BLE001 - send precise API detail
-            await websocket.send_json(
-                {"type": "error", "message": f"Failed to revert active profile: {exc}"}
-            )
-            return
-
-        await websocket.send_json(
-            {"type": "log", "line": f"Restarting VLAbor with rollback profile: {previous.name}"}
-        )
-        rollback_ok, rollback_detail = await _stream_script_to_websocket(
-            websocket,
-            script_name="restart",
-            args=[previous.name],
-            timeout=300,
-        )
-        if not rollback_ok:
-            await websocket.send_json(
-                {"type": "error", "message": f"Rollback restart failed: {rollback_detail}"}
-            )
-            return
-        await websocket.send_json(
-            {
-                "type": "error",
-                "message": f"Failed to switch profile to {active.name}: {switch_detail}",
-            }
-        )
-    except WebSocketDisconnect:
-        return
-    except Exception as exc:
-        try:
-            await websocket.send_json({"type": "error", "message": str(exc)})
-        except Exception:
-            pass
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+    except Exception:
+        _end_vlabor_operation()
+        raise

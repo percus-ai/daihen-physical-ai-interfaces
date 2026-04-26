@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -225,11 +224,6 @@ async def resolve_user_directory_entries(user_ids: list[str]) -> dict[str, UserD
         user_id: _directory_cache.get(user_id, UserDirectoryEntry(user_id=user_id, name=user_id))
         for user_id in ordered_ids
     }
-
-
-async def resolve_user_emails(user_ids: list[str]) -> dict[str, str]:
-    entries = await resolve_user_directory_entries(user_ids)
-    return {user_id: entries[user_id].email for user_id in entries}
 
 
 async def get_user_directory_entry(user_id: str) -> UserDirectoryEntry:

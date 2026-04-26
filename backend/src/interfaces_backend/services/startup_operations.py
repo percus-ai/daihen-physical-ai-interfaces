@@ -17,6 +17,7 @@ from interfaces_backend.models.startup import (
     StartupOperationState,
     StartupOperationStatusResponse,
 )
+from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 _ACTIVE_STATES: set[StartupOperationState] = {"queued", "running"}
 _TERMINAL_STATES: set[StartupOperationState] = {"completed", "failed"}
 _DEFAULT_TTL_SECONDS = 1800
@@ -68,6 +69,7 @@ class StartupOperationsService:
         self._operations: dict[str, _OperationRecord] = {}
 
     def create(self, *, user_id: str, kind: StartupOperationKind) -> StartupOperationAcceptedResponse:
+        response: StartupOperationStatusResponse
         with self._lock:
             self._cleanup_locked()
             for op in self._operations.values():
@@ -77,12 +79,19 @@ class StartupOperationsService:
                         detail=f"{kind} startup is already in progress",
                     )
             operation_id = uuid4().hex
-            self._operations[operation_id] = _OperationRecord(
+            record = _OperationRecord(
                 operation_id=operation_id,
                 user_id=user_id,
                 kind=kind,
                 message="処理を開始しました。",
             )
+            self._operations[operation_id] = record
+            response = record.to_response()
+        get_realtime_runtime().track(
+            scope=UserID(user_id),
+            kind="startup.operation",
+            key=response.operation_id,
+        ).replace(response.model_dump(mode="json"))
         return StartupOperationAcceptedResponse(operation_id=operation_id, message="accepted")
 
     def get(self, *, user_id: str, operation_id: str) -> StartupOperationStatusResponse:
@@ -169,10 +178,12 @@ class StartupOperationsService:
         detail: dict[str, Any] | None = None,
     ) -> None:
         response: StartupOperationStatusResponse | None = None
+        user_id: str | None = None
         with self._lock:
             record = self._operations.get(operation_id)
             if record is None:
                 return
+            user_id = record.user_id
             if state is not None:
                 record.state = state
             if phase is not None:
@@ -190,8 +201,12 @@ class StartupOperationsService:
                 record.detail = StartupOperationDetail.model_validate(detail_payload)
             record.updated_at = _utcnow()
             response = record.to_response()
-        if response is not None:
-            return None
+        if response is not None and user_id:
+            get_realtime_runtime().track(
+                scope=UserID(user_id),
+                kind="startup.operation",
+                key=response.operation_id,
+            ).replace(response.model_dump(mode="json"))
 
     def _cleanup_locked(self) -> None:
         cutoff = _utcnow() - timedelta(seconds=self._ttl_seconds)

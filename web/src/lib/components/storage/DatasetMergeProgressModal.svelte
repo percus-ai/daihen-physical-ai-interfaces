@@ -3,7 +3,7 @@
   import { AlertDialog, Button } from 'bits-ui';
   import { goto } from '$app/navigation';
   import { preventModalAutoFocus } from '$lib/components/modal/focus';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerRealtimeTrackConsumer, type RealtimeTrackConsumerHandle, type RealtimeTrackEvent } from '$lib/realtime/trackClient';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import type { DatasetMergeJobStatus } from '$lib/api/client';
   import { formatBytes } from '$lib/format';
@@ -23,7 +23,7 @@
   }: Props = $props();
 
   let status = $state<DatasetMergeJobStatus | null>(null);
-  let contributor: TabRealtimeContributorHandle | null = null;
+  let contributor: RealtimeTrackConsumerHandle | null = null;
   let completedNotifiedForJobId = $state('');
 
   const clampPercent = (value: unknown) => {
@@ -76,15 +76,14 @@
     status = null;
     completedNotifiedForJobId = '';
 
-    contributor = registerTabRealtimeContributor({
-      subscriptions: [
+    contributor = registerRealtimeTrackConsumer({
+      tracks: [
         {
-          subscription_id: `storage.dataset-merge.${jobId}`,
           kind: 'storage.dataset-merge',
           params: { job_id: jobId }
         }
       ],
-      onEvent: (event: TabRealtimeEvent) => {
+      onEvent: (event: RealtimeTrackEvent) => {
         if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-merge') return;
         status = event.payload as DatasetMergeJobStatus;
       }

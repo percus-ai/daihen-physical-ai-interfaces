@@ -25,8 +25,7 @@
     type ArchiveBulkResponse,
     type BulkActionResponse,
     type ModelSyncJobState,
-    type ModelSyncJobStatus,
-    type TabSessionSubscription
+    type ModelSyncJobStatus
   } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
@@ -43,10 +42,11 @@
   import { qk } from '$lib/queryKeys';
   import { formatBytes, formatDate } from '$lib/format';
   import {
-    registerTabRealtimeContributor,
-    type TabRealtimeContributorHandle,
-    type TabRealtimeEvent
-  } from '$lib/realtime/tabSessionClient';
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent,
+    type RealtimeTrackSelector
+  } from '$lib/realtime/trackClient';
   import ModelSyncProgressModal from '$lib/components/storage/ModelSyncProgressModal.svelte';
   import StorageArchiveConfirmDialog from '$lib/components/storage/StorageArchiveConfirmDialog.svelte';
   import StorageRenameDialog from '$lib/components/storage/StorageRenameDialog.svelte';
@@ -140,7 +140,7 @@
   let jobsById = $state<Record<string, ModelSyncJobStatus>>({});
   let activeJobsByModelId = $state<Record<string, ModelSyncJobStatus>>({});
   let locallySyncedModelIds = $state<Record<string, boolean>>({});
-  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
   let modelSyncModalOpen = $state(false);
   let selectedJobId = $state('');
   let archiveDialogOpen = $state(false);
@@ -1066,13 +1066,12 @@
     }
   }
 
-  const activeJobSubscriptions = $derived.by(() =>
+  const activeJobTracks = $derived.by(() =>
     Object.keys(jobsById)
       .map((jobId) => jobsById[jobId])
       .filter((job) => isActiveJobState(job?.state))
       .map(
-        (job): TabSessionSubscription => ({
-          subscription_id: `storage.model-sync.${job.job_id}`,
+        (job): RealtimeTrackSelector => ({
           kind: 'storage.model-sync',
           params: { job_id: job.job_id }
         })
@@ -1101,9 +1100,9 @@
   $effect(() => {
     if (!browser) return;
     if (realtimeContributor === null) {
-      realtimeContributor = registerTabRealtimeContributor({
-        subscriptions: activeJobSubscriptions,
-        onEvent: (event: TabRealtimeEvent) => {
+      realtimeContributor = registerRealtimeTrackConsumer({
+        tracks: activeJobTracks,
+        onEvent: (event: RealtimeTrackEvent) => {
           if (event.op !== 'snapshot' || event.source?.kind !== 'storage.model-sync') return;
           applyJobSnapshot(event.payload as ModelSyncJobStatus);
         }
@@ -1113,7 +1112,7 @@
       }
       return;
     }
-    realtimeContributor.setSubscriptions(activeJobSubscriptions);
+    realtimeContributor.setTracks(activeJobTracks);
   });
 
   $effect(() => {

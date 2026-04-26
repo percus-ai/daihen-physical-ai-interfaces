@@ -10,6 +10,8 @@ from typing import Optional
 from fastapi import APIRouter
 
 from interfaces_backend.models.operate import OperateServiceStatus, OperateStatusResponse
+from interfaces_backend.models.realtime_payloads import OperateStatusRealtimeDetail
+from interfaces_backend.services.realtime_runtime import Broadcast, get_realtime_runtime
 from interfaces_backend.utils.docker_compose import (
     get_lerobot_compose_file,
     get_vlabor_compose_file,
@@ -174,4 +176,10 @@ def _collect_operate_status() -> OperateStatusResponse:
 
 @router.get("/status", response_model=OperateStatusResponse)
 async def get_operate_status():
-    return await asyncio.to_thread(_collect_operate_status)
+    snapshot = await asyncio.to_thread(_collect_operate_status)
+    get_realtime_runtime().track(
+        scope=Broadcast(),
+        kind="operate.status",
+        key="operate",
+    ).replace(OperateStatusRealtimeDetail(operate_status=snapshot).model_dump(mode="json"))
+    return snapshot

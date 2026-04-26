@@ -16,7 +16,6 @@ from interfaces_backend.models.build_management import (
     SharedBuildSettingsListResponse,
 )
 from interfaces_backend.services.build_management import get_build_management_service
-from interfaces_backend.services.build_jobs import get_build_jobs_service
 
 router = APIRouter(prefix="/api/builds", tags=["builds"])
 
@@ -36,17 +35,21 @@ EnvConfigGroup = Literal["vla_runtime", "vla_train", "lingbot_depth"]
 
 @router.post("/envs/{config_group}/{config_id}/{env_name}/run", response_model=BuildRunAcceptedResponse)
 async def run_env_build(config_group: EnvConfigGroup, config_id: str, env_name: str) -> BuildRunAcceptedResponse:
-    return get_build_jobs_service().start_env_build(config_group=config_group, config_id=config_id, env_name=env_name)
+    return get_build_management_service().start_env_build(
+        config_group=config_group,
+        config_id=config_id,
+        env_name=env_name,
+    )
 
 
 @router.post("/shared/{package}/{variant}/run", response_model=BuildRunAcceptedResponse)
 async def run_shared_build(package: str, variant: str) -> BuildRunAcceptedResponse:
-    return get_build_jobs_service().start_shared_build(package=package, variant=variant)
+    return get_build_management_service().start_shared_build(package=package, variant=variant)
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=BuildJobCancelResponse)
 async def cancel_build_job(job_id: str) -> BuildJobCancelResponse:
-    return get_build_jobs_service().cancel(job_id=job_id)
+    return get_build_management_service().cancel_job(job_id=job_id)
 
 
 @router.delete("/envs/{config_group}/{config_id}/{env_name}/artifacts/{build_id}", response_model=BuildArtifactDeleteResponse)

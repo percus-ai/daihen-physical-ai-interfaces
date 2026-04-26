@@ -16,7 +16,7 @@
   import CloudInstanceSelector from '$lib/components/training/CloudInstanceSelector.svelte';
   import { formatBytes, formatDate } from '$lib/format';
   import { getGpuModelLabel, GPU_COUNTS, POLICY_TYPES } from '$lib/policies';
-  import { registerTabRealtimeContributor, type TabRealtimeContributorHandle, type TabRealtimeEvent } from '$lib/realtime/tabSessionClient';
+  import { registerRealtimeTrackConsumer, type RealtimeTrackConsumerHandle, type RealtimeTrackEvent } from '$lib/realtime/trackClient';
   import type { TrainingProviderCapabilityResponse } from '$lib/types/training';
 
   type DatasetSummary = {
@@ -177,7 +177,7 @@
   let createEvents = $state<Array<{ type: string; message: string; timestamp: string }>>([]);
   let createProgressPercent = $state(0);
   let provisionOperationId = $state('');
-  let createOperationContributor: TabRealtimeContributorHandle | null = null;
+  let createOperationContributor: RealtimeTrackConsumerHandle | null = null;
   let lastCreateEventKey = '';
   let lastConfigApplied = $state(false);
 
@@ -786,15 +786,14 @@
         if (!browser) return;
         const currentOperationId = operationId;
         closeCreateStream();
-        createOperationContributor = registerTabRealtimeContributor({
-          subscriptions: [
+        createOperationContributor = registerRealtimeTrackConsumer({
+          tracks: [
             {
-              subscription_id: `train.new.provision.${currentOperationId}`,
               kind: 'training.provision-operation',
               params: { operation_id: currentOperationId }
             }
           ],
-          onEvent: (event: TabRealtimeEvent) => {
+          onEvent: (event: RealtimeTrackEvent) => {
             if (event.op !== 'snapshot' || event.source?.kind !== 'training.provision-operation') return;
             if (provisionOperationId !== currentOperationId) return;
             void applyProvisionSnapshot(event.payload as TrainingProvisionOperationStatusResponse);

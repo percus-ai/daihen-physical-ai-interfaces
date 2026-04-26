@@ -17,6 +17,7 @@ from interfaces_backend.models.storage import (
     DatasetMergeRequest,
     DatasetMergeResponse,
 )
+from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 _ACTIVE_STATES: set[DatasetMergeJobState] = {"queued", "running"}
 _TERMINAL_STATES: set[DatasetMergeJobState] = {"completed", "failed"}
 _DEFAULT_TTL_SECONDS = 1800
@@ -64,6 +65,7 @@ class DatasetMergeJobsService:
         self._jobs: dict[str, _JobRecord] = {}
 
     def create(self, *, user_id: str, request: DatasetMergeRequest) -> DatasetMergeJobAcceptedResponse:
+        snapshot: DatasetMergeJobStatus
         with self._lock:
             self._cleanup_locked()
             for job in self._jobs.values():
@@ -87,6 +89,12 @@ class DatasetMergeJobsService:
                 step="queued",
             )
             self._jobs[job_id] = record
+            snapshot = record.to_response()
+        get_realtime_runtime().track(
+            scope=UserID(user_id),
+            kind="storage.dataset-merge",
+            key=snapshot.job_id,
+        ).replace(snapshot.model_dump(mode="json"))
         return DatasetMergeJobAcceptedResponse(
             accepted=True,
             job_id=job_id,
@@ -119,10 +127,13 @@ class DatasetMergeJobsService:
         )
 
     def complete(self, *, job_id: str, result: DatasetMergeResponse) -> None:
+        snapshot: DatasetMergeJobStatus | None = None
+        user_id: str | None = None
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None or record.state in _TERMINAL_STATES:
                 return
+            user_id = record.user_id
             record.state = "completed"
             record.progress_percent = 100.0
             record.message = result.message
@@ -132,7 +143,13 @@ class DatasetMergeJobsService:
             record.result_episode_count = int(result.episode_count or 0)
             record.detail.step = "completed"
             record.updated_at = _utcnow()
-            record.to_response()
+            snapshot = record.to_response()
+        if snapshot is not None and user_id:
+            get_realtime_runtime().track(
+                scope=UserID(user_id),
+                kind="storage.dataset-merge",
+                key=snapshot.job_id,
+            ).replace(snapshot.model_dump(mode="json"))
 
     def update_from_progress(self, *, job_id: str, progress: dict) -> None:
         """Translate merge/upload progress callbacks into a single job snapshot."""
@@ -258,12 +275,14 @@ class DatasetMergeJobsService:
         detail: dict | None = None,
     ) -> None:
         snapshot: DatasetMergeJobStatus | None = None
+        user_id: str | None = None
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
                 return
             if record.state in _TERMINAL_STATES:
                 return
+            user_id = record.user_id
             if state is not None:
                 record.state = state
             if progress_percent is not None:
@@ -277,8 +296,12 @@ class DatasetMergeJobsService:
                 record.detail = DatasetMergeJobDetail.model_validate(payload)
             record.updated_at = _utcnow()
             snapshot = record.to_response()
-        if snapshot is not None:
-            return None
+        if snapshot is not None and user_id:
+            get_realtime_runtime().track(
+                scope=UserID(user_id),
+                kind="storage.dataset-merge",
+                key=snapshot.job_id,
+            ).replace(snapshot.model_dump(mode="json"))
 
     def _cleanup_locked(self) -> None:
         cutoff = _utcnow() - timedelta(seconds=self._ttl_seconds)
@@ -311,3 +334,9 @@ def get_dataset_merge_jobs_service() -> DatasetMergeJobsService:
         if _service is None:
             _service = DatasetMergeJobsService()
     return _service
+
+
+def reset_dataset_merge_jobs_service() -> None:
+    global _service
+    with _service_lock:
+        _service = None

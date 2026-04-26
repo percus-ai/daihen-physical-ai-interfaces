@@ -28,6 +28,7 @@ from interfaces_backend.models.storage import (
     ModelSyncJobState,
     ModelSyncJobStatus,
 )
+from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
 _ACTIVE_STATES: set[ModelSyncJobState] = {"queued", "running"}
 _TERMINAL_STATES: set[ModelSyncJobState] = {"completed", "failed", "cancelled"}
 _DEFAULT_TTL_SECONDS = 1800
@@ -84,6 +85,7 @@ class ModelSyncJobsService:
         model_id: str,
         auth_session: dict[str, Any] | None = None,
     ) -> ModelSyncJobAcceptedResponse:
+        snapshot: ModelSyncJobStatus
         with self._lock:
             self._cleanup_locked()
             for job in self._jobs.values():
@@ -99,7 +101,7 @@ class ModelSyncJobsService:
 
             job_id = uuid4().hex
             now = _utcnow()
-            self._jobs[job_id] = _JobRecord(
+            record = _JobRecord(
                 job_id=job_id,
                 user_id=user_id,
                 model_id=model_id,
@@ -109,10 +111,17 @@ class ModelSyncJobsService:
                 created_at=now,
                 updated_at=now,
             )
+            self._jobs[job_id] = record
             self._cancel_events[job_id] = threading.Event()
             self._pending.append(job_id)
             if self._pending_event is not None:
                 self._pending_event.set()
+            snapshot = record.to_response()
+        get_realtime_runtime().track(
+            scope=UserID(user_id),
+            kind="storage.model-sync",
+            key=snapshot.job_id,
+        ).replace(snapshot.model_dump(mode="json"))
         return ModelSyncJobAcceptedResponse(
             job_id=job_id,
             model_id=model_id,
@@ -155,11 +164,8 @@ class ModelSyncJobsService:
             self._cleanup_locked()
             return self._get_for_user_locked(user_id=user_id, job_id=job_id).to_response()
 
-    def get_cancel_event(self, *, job_id: str) -> threading.Event | None:
-        with self._lock:
-            return self._cancel_events.get(job_id)
-
     def cancel(self, *, user_id: str, job_id: str) -> ModelSyncJobCancelResponse:
+        snapshot: ModelSyncJobStatus | None = None
         with self._lock:
             self._cleanup_locked()
             record = self._get_for_user_locked(user_id=user_id, job_id=job_id)
@@ -184,6 +190,12 @@ class ModelSyncJobsService:
                 record.message = "モデル同期の中断を要求しました。"
             record.updated_at = _utcnow()
             snapshot = record.to_response()
+        if snapshot is not None:
+            get_realtime_runtime().track(
+                scope=UserID(user_id),
+                kind="storage.model-sync",
+                key=snapshot.job_id,
+            ).replace(snapshot.model_dump(mode="json"))
         return ModelSyncJobCancelResponse(
             job_id=snapshot.job_id,
             accepted=True,
@@ -386,12 +398,14 @@ class ModelSyncJobsService:
         detail: dict[str, Any] | None = None,
     ) -> None:
         snapshot: ModelSyncJobStatus | None = None
+        user_id: str | None = None
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
                 return
             if record.state in _TERMINAL_STATES:
                 return
+            user_id = record.user_id
             if state is not None:
                 record.state = state
             if progress_percent is not None:
@@ -407,8 +421,12 @@ class ModelSyncJobsService:
             snapshot = record.to_response()
             if record.state in _TERMINAL_STATES:
                 self._cancel_events.pop(job_id, None)
-        if snapshot is not None:
-            return None
+        if snapshot is not None and user_id:
+            get_realtime_runtime().track(
+                scope=UserID(user_id),
+                kind="storage.model-sync",
+                key=snapshot.job_id,
+            ).replace(snapshot.model_dump(mode="json"))
 
     def _cleanup_locked(self) -> None:
         cutoff = _utcnow() - timedelta(seconds=self._ttl_seconds)

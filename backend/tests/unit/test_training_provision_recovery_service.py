@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from interfaces_backend.models.training import TrainingProvisionOperationStatusResponse
+from interfaces_backend.services.realtime_runtime import get_realtime_runtime, reset_realtime_runtime
 from interfaces_backend.services.training_provision_operations import (
     TrainingProvisionOperationsService,
 )
@@ -88,28 +88,31 @@ def test_recovery_pass_marks_failed_without_instance(monkeypatch):
         }
     ]
     fake_client = _FakeClient(rows)
-    recovery, operations = _build_service(rows)
-    published: list[TrainingProvisionOperationStatusResponse] = []
-
-    async def fake_publish(snapshot: TrainingProvisionOperationStatusResponse):
-        published.append(snapshot)
+    recovery, _operations = _build_service(rows)
+    reset_realtime_runtime()
 
     monkeypatch.setattr(
         "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
         lambda: asyncio.sleep(0, result=fake_client),
     )
-    monkeypatch.setattr(operations, "_publish", fake_publish)
 
-    should_retry = asyncio.run(recovery._run_recovery_pass())
+    async def _run():
+        connection = get_realtime_runtime().open_connection(user_id="user-1", tab_id="tab-1")
+        should_retry = await recovery._run_recovery_pass()
+        frame = await connection.next_frame(timeout_seconds=0.1)
+        return should_retry, frame
+
+    should_retry, frame = asyncio.run(_run())
 
     assert should_retry is False
     assert rows[0]["state"] == "failed"
     assert rows[0]["step"] == "failed"
     assert rows[0]["failure_reason"] == "backend_restart_cleanup"
     assert "中断" in str(rows[0]["message"])
-    assert published
-    assert published[0].operation_id == "op-1"
-    assert published[0].state == "failed"
+    assert frame is not None
+    assert frame.kind == "training.provision-operation"
+    assert frame.key == "op-1"
+    assert frame.detail["state"] == "failed"
 
 
 def test_recovery_pass_deletes_instance_when_present(monkeypatch):
@@ -131,11 +134,8 @@ def test_recovery_pass_deletes_instance_when_present(monkeypatch):
         }
     ]
     fake_client = _FakeClient(rows)
-    recovery, operations = _build_service(rows)
+    recovery, _operations = _build_service(rows)
     cleanup_calls: list[tuple[str, str]] = []
-
-    async def fake_publish(_snapshot: TrainingProvisionOperationStatusResponse):
-        return None
 
     def fake_cleanup(provider: str, instance_id: str):
         cleanup_calls.append((provider, instance_id))
@@ -149,7 +149,6 @@ def test_recovery_pass_deletes_instance_when_present(monkeypatch):
         "interfaces_backend.services.training_provision_recovery.cleanup_provision_instance",
         fake_cleanup,
     )
-    monkeypatch.setattr(operations, "_publish", fake_publish)
 
     should_retry = asyncio.run(recovery._run_recovery_pass())
 
@@ -178,11 +177,8 @@ def test_recovery_pass_preserves_job_bound_instance(monkeypatch):
         }
     ]
     fake_client = _FakeClient(rows)
-    recovery, operations = _build_service(rows)
+    recovery, _operations = _build_service(rows)
     cleanup_calls: list[tuple[str, str]] = []
-
-    async def fake_publish(_snapshot: TrainingProvisionOperationStatusResponse):
-        return None
 
     def fake_cleanup(provider: str, instance_id: str):
         cleanup_calls.append((provider, instance_id))
@@ -196,7 +192,6 @@ def test_recovery_pass_preserves_job_bound_instance(monkeypatch):
         "interfaces_backend.services.training_provision_recovery.cleanup_provision_instance",
         fake_cleanup,
     )
-    monkeypatch.setattr(operations, "_publish", fake_publish)
 
     should_retry = asyncio.run(recovery._run_recovery_pass())
 
@@ -259,16 +254,13 @@ def test_recovery_pass_retries_when_cleanup_raises(monkeypatch):
         }
     ]
     fake_client = _FakeClient(rows)
-    recovery, operations = _build_service(rows)
+    recovery, _operations = _build_service(rows)
 
     async def fake_get_client():
         return fake_client
 
     def fake_cleanup(_provider: str, _instance_id: str):
         raise RuntimeError("cleanup exploded")
-
-    async def fake_publish(_snapshot: TrainingProvisionOperationStatusResponse):
-        return None
 
     monkeypatch.setattr(
         "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
@@ -278,68 +270,11 @@ def test_recovery_pass_retries_when_cleanup_raises(monkeypatch):
         "interfaces_backend.services.training_provision_recovery.cleanup_provision_instance",
         fake_cleanup,
     )
-    monkeypatch.setattr(operations, "_publish", fake_publish)
 
     should_retry = asyncio.run(recovery._run_recovery_pass())
 
     assert should_retry is True
     assert rows[0]["state"] == "running"
-
-
-def test_recovery_publish_failure_is_best_effort(monkeypatch):
-    rows = [
-        {
-            "operation_id": "op-4",
-            "owner_user_id": "user-1",
-            "state": "running",
-            "step": "setup_env",
-            "message": "環境構築",
-            "failure_reason": None,
-            "provider": "verda",
-            "instance_id": None,
-            "job_id": None,
-            "created_at": "2026-03-07T00:00:00+00:00",
-            "updated_at": "2026-03-07T00:00:00+00:00",
-            "started_at": "2026-03-07T00:00:10+00:00",
-            "finished_at": None,
-        }
-    ]
-    fake_client = _FakeClient(rows)
-    recovery, operations = _build_service(rows)
-    attempts = {"count": 0}
-    sleeps: list[float] = []
-
-    async def fake_publish(_snapshot: TrainingProvisionOperationStatusResponse):
-        attempts["count"] += 1
-        raise RuntimeError("publish failed")
-
-    async def fake_sleep(delay: float):
-        sleeps.append(delay)
-
-    async def fake_get_client():
-        return fake_client
-
-    monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._get_recovery_db_client",
-        fake_get_client,
-    )
-    monkeypatch.setattr(operations, "_publish", fake_publish)
-    monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._recovery_retry_seconds",
-        lambda: 0.0,
-    )
-    monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_recovery._publish_retry_count",
-        lambda: 2,
-    )
-    monkeypatch.setattr("interfaces_backend.services.training_provision_recovery.asyncio.sleep", fake_sleep)
-
-    should_retry = asyncio.run(recovery._run_recovery_pass())
-
-    assert should_retry is False
-    assert attempts["count"] == 2
-    assert sleeps == [0.0]
-    assert rows[0]["state"] == "failed"
 
 
 def test_recovery_disabled_flag_skips_task(monkeypatch):

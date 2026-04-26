@@ -103,7 +103,7 @@ from interfaces_backend.services.system_status_monitor import get_system_status_
 from interfaces_backend.services.training_provision_recovery import (
     get_training_provision_recovery_service,
 )
-from interfaces_backend.services.tab_realtime import get_tab_realtime_registry
+from interfaces_backend.services.realtime_runtime import get_realtime_runtime
 from interfaces_backend.core.request_auth import resolve_session_from_request, set_session_cookies
 from interfaces_backend.services.vlabor_runtime import start_vlabor_on_backend_startup
 from interfaces_backend.services.vlabor_profiles import get_active_profile_spec
@@ -147,7 +147,7 @@ async def stop_background_monitors() -> None:
     await get_system_status_monitor().shutdown()
     await get_build_jobs_service().shutdown()
     await get_training_provision_recovery_service().shutdown()
-    get_tab_realtime_registry().shutdown()
+    get_realtime_runtime().shutdown()
 
 
 def _extract_request_session_id(request: Request) -> Optional[str]:

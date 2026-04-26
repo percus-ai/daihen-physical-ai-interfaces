@@ -118,7 +118,7 @@ def test_run_create_operation_continue_uses_plan_values(monkeypatch, tmp_path: P
 
     class _FakeOperations:
         def build_progress_callback(self, _operation_id: str):
-            return None
+            return lambda _phase, _percent, _message, _detail: None
 
         def complete(self, **kwargs):
             completed.update(kwargs)
@@ -153,21 +153,18 @@ def test_run_create_operation_continue_uses_plan_values(monkeypatch, tmp_path: P
     assert captured["target_total_episodes"] == 8
     assert captured["episode_time_s"] == 45.0
     assert captured["reset_time_s"] == 7.0
+    assert callable(captured["progress_callback"])
     assert completed["target_session_id"] == "dataset-1"
 
 
-def test_start_session_resumes_from_existing_recording(monkeypatch, tmp_path: Path):
-    created: dict = {}
-
+def test_start_session_starts_prepared_session(monkeypatch):
     class _FakeManager:
-        def status(self, _dataset_id: str):
-            return None
+        @staticmethod
+        def status(_dataset_id: str):
+            return object()
 
-        async def create(self, **kwargs):
-            created.update(kwargs)
-            return type("State", (), {"id": kwargs["session_id"]})()
-
-        async def start(self, dataset_id: str):
+        @staticmethod
+        async def start(dataset_id: str):
             return type(
                 "State",
                 (),
@@ -177,48 +174,33 @@ def test_start_session_resumes_from_existing_recording(monkeypatch, tmp_path: Pa
                 },
             )()
 
-    async def fake_fetch(_recording_id: str) -> dict:
-        return _base_row()
-
     monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
     monkeypatch.setattr(recording_api, "get_recording_session_manager", lambda: _FakeManager())
-    monkeypatch.setattr(recording_api, "get_datasets_dir", lambda: tmp_path)
-    monkeypatch.setattr(recording_api, "_fetch_recording_row", fake_fetch)
-    (tmp_path / "dataset-1").mkdir(parents=True, exist_ok=True)
 
     response = asyncio.run(
         recording_api.start_session(recording_api.RecordingSessionStartRequest(dataset_id="dataset-1"))
     )
 
-    assert created["session_id"] == "dataset-1"
-    assert created["num_episodes"] == 5
     assert response.success is True
-    assert response.message == "Recording session resumed"
+    assert response.message == "Recording session started"
     assert response.dataset_id == "dataset-1"
 
 
-def test_start_session_rejects_non_continuable_recording(monkeypatch, tmp_path: Path):
+def test_start_session_rejects_unprepared_recording(monkeypatch):
     class _FakeManager:
-        def status(self, _dataset_id: str):
+        @staticmethod
+        def status(_dataset_id: str):
             return None
-
-    async def fake_fetch(_recording_id: str) -> dict:
-        row = _base_row()
-        row["target_total_episodes"] = row["episode_count"]
-        return row
 
     monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
     monkeypatch.setattr(recording_api, "get_recording_session_manager", lambda: _FakeManager())
-    monkeypatch.setattr(recording_api, "get_datasets_dir", lambda: tmp_path)
-    monkeypatch.setattr(recording_api, "_fetch_recording_row", fake_fetch)
-    (tmp_path / "dataset-1").mkdir(parents=True, exist_ok=True)
 
     try:
         asyncio.run(recording_api.start_session(recording_api.RecordingSessionStartRequest(dataset_id="dataset-1")))
         assert False, "Expected HTTPException"
     except HTTPException as exc:
-        assert exc.status_code == 400
-        assert "残りエピソードがありません" in str(exc.detail)
+        assert exc.status_code == 404
+        assert "Recording session is not prepared: dataset-1" in str(exc.detail)
 
 
 def test_stop_session_returns_404_when_session_not_tracked(monkeypatch):

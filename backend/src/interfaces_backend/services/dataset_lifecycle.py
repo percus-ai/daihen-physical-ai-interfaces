@@ -8,17 +8,19 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import yaml
 from fastapi import HTTPException
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from supabase._async.client import AsyncClient
 
 from interfaces_backend.models.inference import InferenceModelSyncStatus
+from interfaces_backend.models.realtime_payloads import RecordingUploadStatusResponse
 from interfaces_backend.services.profile_snapshot import extract_profile_name
+from interfaces_backend.services.realtime_runtime import Broadcast, get_realtime_runtime
 from percus_ai.db import get_supabase_async_client, get_supabase_service_client, upsert_with_owner
 from percus_ai.storage.paths import get_datasets_dir, get_user_config_path
 from percus_ai.storage.r2_db_sync import R2DBSyncService
@@ -91,8 +93,6 @@ class DatasetLifecycle:
                 logger.warning("Failed to read dataset info.json for %s: %s", dataset_id, exc)
         else:
             try:
-                from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
-
                 meta = LeRobotDatasetMetadata(dataset_id, root=dataset_root)
                 episode_count = int(meta.total_episodes)
             except Exception as exc:
@@ -335,19 +335,12 @@ class DatasetLifecycle:
         with self._dataset_upload_lock:
             snapshot = self._dataset_upload_status.get(dataset_id)
             if snapshot is None:
-                return {
-                    "dataset_id": dataset_id,
-                    "status": "idle",
-                    "phase": "idle",
-                    "progress_percent": 0.0,
-                    "message": "No upload activity.",
-                    "files_done": 0,
-                    "total_files": 0,
-                    "current_file": None,
-                    "error": None,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            return dict(snapshot)
+                return RecordingUploadStatusResponse(
+                    dataset_id=dataset_id,
+                    message="No upload activity.",
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                ).model_dump(mode="json")
+            return RecordingUploadStatusResponse.model_validate(snapshot).model_dump(mode="json")
 
     async def ensure_model_local(
         self,
@@ -632,7 +625,13 @@ class DatasetLifecycle:
             payload["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._dataset_upload_status[dataset_id] = payload
             snapshot = dict(payload)
-        return snapshot
+        snapshot_model = RecordingUploadStatusResponse.model_validate(snapshot)
+        get_realtime_runtime().track(
+            scope=Broadcast(),
+            kind="recording.upload-status",
+            key=dataset_id,
+        ).replace(snapshot_model.model_dump(mode="json"))
+        return snapshot_model.model_dump(mode="json")
 
 
 # -- singleton ----------------------------------------------------------------

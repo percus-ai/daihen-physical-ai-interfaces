@@ -94,29 +94,6 @@ def start_vlabor(
     return _run_vlabor_script("up", args, strict=strict)
 
 
-def stop_vlabor(*, strict: bool = True) -> subprocess.CompletedProcess[str]:
-    return _run_vlabor_script("down", strict=strict)
-
-
-def restart_vlabor(
-    *,
-    profile: str | None = None,
-    domain_id: int | None = None,
-    dev_mode: bool = False,
-    strict: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    args: list[str] = []
-    if profile:
-        profile_name = profile.strip()
-        if profile_name:
-            args.append(profile_name)
-    if domain_id is not None:
-        args.extend(["--domain-id", str(domain_id)])
-    if dev_mode:
-        args.append("--dev")
-    return _run_vlabor_script("restart", args, strict=strict, timeout=300)
-
-
 def stream_vlabor_script(
     script_name: str,
     args: Sequence[str] | None = None,
@@ -190,4 +167,3 @@ def start_vlabor_on_backend_startup(
         active_logger.warning("VLAbor startup failed: %s", detail)
     else:
         active_logger.info("VLAbor started with profile=%s", profile or "(default)")
-

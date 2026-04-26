@@ -148,10 +148,6 @@ def extract_access_token(request: Request) -> Optional[str]:
     return None
 
 
-def extract_refresh_token(request: Request) -> Optional[str]:
-    return request.cookies.get(REFRESH_COOKIE_NAME)
-
-
 def _extract_cookie_values(request: Request, name: str) -> list[str]:
     raw_cookie = request.headers.get("cookie", "")
     values: list[str] = []

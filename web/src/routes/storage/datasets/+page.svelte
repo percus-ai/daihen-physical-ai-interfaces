@@ -27,8 +27,7 @@
     type ArchiveBulkResponse,
     type BulkActionResponse,
     type DatasetSyncJobState,
-    type DatasetSyncJobStatus,
-    type TabSessionSubscription
+    type DatasetSyncJobStatus
   } from '$lib/api/client';
   import ListFilterPopover from '$lib/components/ListFilterPopover.svelte';
   import PaginationControls from '$lib/components/PaginationControls.svelte';
@@ -44,10 +43,11 @@
   } from '$lib/pagination';
   import { qk } from '$lib/queryKeys';
   import {
-    registerTabRealtimeContributor,
-    type TabRealtimeContributorHandle,
-    type TabRealtimeEvent
-  } from '$lib/realtime/tabSessionClient';
+    registerRealtimeTrackConsumer,
+    type RealtimeTrackConsumerHandle,
+    type RealtimeTrackEvent,
+    type RealtimeTrackSelector
+  } from '$lib/realtime/trackClient';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import { formatBytes, formatDate } from '$lib/format';
   import { presentDatasetSyncStatus } from '$lib/storage/transferStatus';
@@ -162,7 +162,7 @@
   let jobsById = $state<Record<string, DatasetSyncJobStatus>>({});
   let activeJobsByDatasetId = $state<Record<string, DatasetSyncJobStatus>>({});
   let locallySyncedDatasetIds = $state<Record<string, boolean>>({});
-  let realtimeContributor: TabRealtimeContributorHandle | null = null;
+  let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
   let datasetSyncModalOpen = $state(false);
   let selectedSyncJobId = $state('');
 
@@ -1194,13 +1194,12 @@
     }
   }
 
-  const activeJobSubscriptions = $derived.by(() =>
+  const activeJobTracks = $derived.by(() =>
     Object.keys(jobsById)
       .map((jobId) => jobsById[jobId])
       .filter((job) => isActiveJobState(job?.state))
       .map(
-        (job): TabSessionSubscription => ({
-          subscription_id: `storage.dataset-sync.${job.job_id}`,
+        (job): RealtimeTrackSelector => ({
           kind: 'storage.dataset-sync',
           params: { job_id: job.job_id }
         })
@@ -1229,9 +1228,9 @@
   $effect(() => {
     if (!browser) return;
     if (realtimeContributor === null) {
-      realtimeContributor = registerTabRealtimeContributor({
-        subscriptions: activeJobSubscriptions,
-        onEvent: (event: TabRealtimeEvent) => {
+      realtimeContributor = registerRealtimeTrackConsumer({
+        tracks: activeJobTracks,
+        onEvent: (event: RealtimeTrackEvent) => {
           if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-sync') return;
           applyJobSnapshot(event.payload as DatasetSyncJobStatus);
         }
@@ -1241,7 +1240,7 @@
       }
       return;
     }
-    realtimeContributor.setSubscriptions(activeJobSubscriptions);
+    realtimeContributor.setTracks(activeJobTracks);
   });
 
   $effect(() => {
