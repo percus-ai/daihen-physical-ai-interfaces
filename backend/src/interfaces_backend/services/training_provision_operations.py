@@ -18,7 +18,7 @@ from interfaces_backend.models.training import (
 )
 from interfaces_backend.models.realtime_payloads import TrainingJobProvisionRealtimeDetail
 from interfaces_backend.services.realtime_runtime import UserID, get_realtime_runtime
-from percus_ai.db import get_supabase_async_client
+from percus_ai.db import get_supabase_async_client, get_supabase_service_client_required
 from percus_ai.training.providers.vast import destroy_instance
 from percus_ai.training.providers.verda import VerdaProvider
 
@@ -242,7 +242,12 @@ class TrainingProvisionOperationsService:
             response = await query.execute()
             return response.data or []
 
-        rows = await _fetch_with(await get_supabase_async_client())
+        client = (
+            await get_supabase_async_client()
+            if owner_user_id
+            else await get_supabase_service_client_required()
+        )
+        rows = await _fetch_with(client)
         return rows[0] if rows else None
 
     async def _load_by_job_id(self, job_id: str, *, owner_user_id: str | None) -> Optional[dict[str, Any]]:
@@ -253,7 +258,12 @@ class TrainingProvisionOperationsService:
             response = await query.execute()
             return response.data or []
 
-        rows = await _fetch_with(await get_supabase_async_client())
+        client = (
+            await get_supabase_async_client()
+            if owner_user_id
+            else await get_supabase_service_client_required()
+        )
+        rows = await _fetch_with(client)
         return rows[0] if rows else None
 
     async def _upsert(self, record: dict[str, Any]) -> None:
@@ -281,11 +291,11 @@ class TrainingProvisionOperationsService:
                 return
             await client.table(TRAINING_PROVISION_OPERATION_TABLE).insert(record).execute()
 
-        await _upsert_with(await get_supabase_async_client())
+        await _upsert_with(await get_supabase_service_client_required())
 
     async def _update(self, *, operation_id: str, **patch: Any) -> None:
         await self._update_with_client(
-            await get_supabase_async_client(),
+            await get_supabase_service_client_required(),
             operation_id=operation_id,
             patch=patch,
         )

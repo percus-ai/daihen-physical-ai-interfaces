@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -46,40 +47,20 @@ def test_create_allows_same_dataset_for_different_users() -> None:
     assert first.job_id != second.job_id
 
 
-def test_run_job_refreshes_saved_session(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_job_uses_system_sync_without_request_session(monkeypatch: pytest.MonkeyPatch) -> None:
     service = DatasetSyncJobsService()
     accepted = service.create(
         user_id="user-1",
         dataset_id="dataset-a",
-        auth_session={"access_token": "expired", "refresh_token": "refresh-token", "user_id": "user-1", "expires_at": 1},
     )
-
-    captured_sessions: list[dict | None] = []
 
     class _FakeSyncService:
         async def ensure_dataset_local(self, dataset_id: str, **_kwargs):
             assert dataset_id == "dataset-a"
-            return dataset_sync_jobs.SyncResult(True, "ok")
+            return SimpleNamespace(success=True, message="ok", skipped=False, cancelled=False)
 
     monkeypatch.setattr(dataset_sync_jobs, "R2DBSyncService", lambda: _FakeSyncService())
-    monkeypatch.setattr(
-        dataset_sync_jobs,
-        "refresh_session_from_refresh_token",
-        lambda token: {"access_token": "fresh", "refresh_token": token, "user_id": "user-1", "expires_at": 9999},
-    )
-    monkeypatch.setattr(dataset_sync_jobs, "set_request_session", lambda session: captured_sessions.append(session) or object())
-    monkeypatch.setattr(dataset_sync_jobs, "reset_request_session", lambda _token: None)
 
     asyncio.run(service._run_job(accepted.job_id))
 
-    assert captured_sessions == [
-        {"access_token": "fresh", "refresh_token": "refresh-token", "user_id": "user-1", "expires_at": 9999}
-    ]
-
-
-def test_resolve_job_session_drops_expired_session_without_refresh() -> None:
-    resolved = DatasetSyncJobsService._resolve_job_session(
-        {"access_token": "expired", "user_id": "user-1", "expires_at": 1}
-    )
-
-    assert resolved is None
+    assert service.get(user_id="user-1", job_id=accepted.job_id).state == "completed"

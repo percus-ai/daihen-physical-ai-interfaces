@@ -17,15 +17,7 @@ export type RealtimeTrackSelector = {
   params?: Record<string, unknown>;
 };
 
-export type RealtimeTrackEvent = RealtimeFrame & {
-  source: {
-    kind: string;
-    key: string;
-    params?: Record<string, unknown>;
-  };
-  op: 'snapshot' | 'append' | 'control' | 'error';
-  payload: Record<string, unknown>;
-};
+export type RealtimeTrackEvent = RealtimeFrame;
 
 type ConsumerState = {
   id: string;
@@ -86,38 +78,6 @@ const matchesSelector = (selector: RealtimeTrackSelector, frame: RealtimeFrame) 
   const key = detailKeyFromSelector(selector);
   return !key || key === frame.key;
 };
-
-const eventOpForFrame = (frame: RealtimeFrame): RealtimeTrackEvent['op'] => {
-  const type = String(frame.detail.type ?? '').trim();
-  if (
-    type === 'connected' ||
-    type === 'stream_ended' ||
-    type === 'job_status' ||
-    type === 'job_deleted' ||
-    type === 'job_missing' ||
-    type === 'ip_missing'
-  ) {
-    return 'control';
-  }
-  if (frame.detail.error || frame.detail.failure_reason) {
-    return 'error';
-  }
-  if (frame.kind.endsWith('.logs') || frame.kind === 'builds.logs') {
-    return 'append';
-  }
-  return 'snapshot';
-};
-
-const toEvent = (frame: RealtimeFrame, selector: RealtimeTrackSelector): RealtimeTrackEvent => ({
-  ...frame,
-  source: {
-    kind: frame.kind,
-    key: frame.key,
-    params: selector.params
-  },
-  op: eventOpForFrame(frame),
-  payload: frame.detail
-});
 
 class RealtimeClient {
   private tabId = readTabId();
@@ -203,9 +163,9 @@ class RealtimeClient {
 
   private dispatchFrame(frame: RealtimeFrame) {
     for (const consumer of this.consumers.values()) {
-      const selector = consumer.tracks.find((track) => matchesSelector(track, frame));
-      if (!selector) continue;
-      consumer.onEvent?.(toEvent(frame, selector));
+      const matched = consumer.tracks.some((track) => matchesSelector(track, frame));
+      if (!matched) continue;
+      consumer.onEvent?.(frame);
     }
   }
 

@@ -241,12 +241,12 @@
     vlaborContributor = registerRealtimeTrackConsumer({
       tracks: realtimeTracks(),
       onEvent: (event: RealtimeTrackEvent) => {
-        if (event.source?.kind === 'profiles.vlabor') {
-          queryClient.setQueryData(['profiles', 'vlabor', 'status'], event.payload);
+        if (event.kind === 'profiles.vlabor') {
+          queryClient.setQueryData(['profiles', 'vlabor', 'status'], event.detail);
           return;
         }
-        if (event.source?.kind === 'profiles.vlabor.operation') {
-          applyOperationStatus(event.payload as VlaborOperationStatus);
+        if (event.kind === 'profiles.vlabor.operation') {
+          applyOperationStatus(event.detail as VlaborOperationStatus);
         }
       }
     });

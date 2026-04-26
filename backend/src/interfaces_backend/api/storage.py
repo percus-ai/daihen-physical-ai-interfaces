@@ -88,9 +88,9 @@ from interfaces_backend.services.user_directory import resolve_user_directory_en
 from interfaces_backend.services.vlabor_profiles import resolve_profile_spec
 from percus_ai.db import (
     get_supabase_async_client,
+    get_supabase_service_client_required,
     get_supabase_session,
-    reset_request_session,
-    set_request_session,
+    upsert_with_explicit_owner,
     upsert_with_owner,
 )
 from percus_ai.storage.hash import compute_directory_hash, compute_directory_size
@@ -1280,6 +1280,8 @@ async def list_datasets(
 async def _merge_datasets(
     request: DatasetMergeRequest,
     progress_callback: Optional[Callable[[dict], None]] = None,
+    *,
+    owner_user_id: str,
 ) -> DatasetMergeResponse:
     def report(message: dict) -> None:
         if progress_callback:
@@ -1294,13 +1296,17 @@ async def _merge_datasets(
         raise HTTPException(status_code=400, detail=f"Invalid dataset name: {'; '.join(errors)}")
 
     merged_dataset_id = generate_dataset_id()
-    client = await get_supabase_async_client()
+    client = await get_supabase_service_client_required()
 
     report({"type": "start", "step": "validate", "message": "Validating datasets"})
     source_rows = []
     for dataset_id in source_dataset_ids:
         rows = (
-            await client.table("datasets").select("*").eq("id", dataset_id).execute()
+            await client.table("datasets")
+            .select("*")
+            .eq("id", dataset_id)
+            .eq("owner_user_id", owner_user_id)
+            .execute()
         ).data or []
         if not rows:
             raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
@@ -1399,7 +1405,12 @@ async def _merge_datasets(
         "size_bytes": size_bytes,
         "content_hash": content_hash,
     }
-    await upsert_with_owner("datasets", "id", payload)
+    await upsert_with_explicit_owner(
+        "datasets",
+        "id",
+        payload,
+        owner_user_id=owner_user_id,
+    )
 
     return DatasetMergeResponse(
         success=True,
@@ -1412,17 +1423,18 @@ async def _merge_datasets(
 async def _run_dataset_merge_job(*, user_id: str, job_id: str, request: DatasetMergeRequest) -> None:
     jobs = get_dataset_merge_jobs_service()
     main_loop = asyncio.get_running_loop()
-    session = get_supabase_session()
 
     def progress_callback(progress: dict) -> None:
         jobs.update_from_progress(job_id=job_id, progress=progress)
 
     def _merge_datasets_sync() -> DatasetMergeResponse:
-        token = set_request_session(session)
-        try:
-            return asyncio.run(_merge_datasets(request, progress_callback))
-        finally:
-            reset_request_session(token)
+        return asyncio.run(
+            _merge_datasets(
+                request,
+                progress_callback,
+                owner_user_id=user_id,
+            )
+        )
 
     jobs.set_running(
         job_id=job_id,
@@ -1916,7 +1928,6 @@ async def sync_dataset(request: DatasetSyncJobCreateRequest):
     if not dataset_id:
         raise HTTPException(status_code=400, detail="Dataset ID is required")
     user_id = require_user_id()
-    auth_session = get_supabase_session()
 
     client = await get_supabase_async_client()
     rows = (
@@ -1928,7 +1939,7 @@ async def sync_dataset(request: DatasetSyncJobCreateRequest):
         raise HTTPException(status_code=400, detail="Dataset is not active")
 
     jobs = get_dataset_sync_jobs_service()
-    accepted = jobs.create(user_id=user_id, dataset_id=dataset_id, auth_session=auth_session)
+    accepted = jobs.create(user_id=user_id, dataset_id=dataset_id)
     jobs.ensure_worker()
     return accepted
 
@@ -2025,7 +2036,6 @@ async def sync_model(model_id: str):
     if not model_id:
         raise HTTPException(status_code=400, detail="Model ID is required")
     user_id = require_user_id()
-    auth_session = get_supabase_session()
 
     client = await get_supabase_async_client()
     rows = (
@@ -2037,7 +2047,7 @@ async def sync_model(model_id: str):
         raise HTTPException(status_code=400, detail="Model is not active")
 
     jobs = get_model_sync_jobs_service()
-    accepted = jobs.create(user_id=user_id, model_id=model_id, auth_session=auth_session)
+    accepted = jobs.create(user_id=user_id, model_id=model_id)
     jobs.ensure_worker()
     return accepted
 

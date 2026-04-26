@@ -348,9 +348,9 @@
         }
       ],
       onEvent: (event: RealtimeTrackEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'startup.operation') return;
+        if (event.kind !== 'startup.operation') return;
         if (startupOperationId !== currentOperationId) return;
-        void handleStartupStatusUpdate(event.payload as StartupOperationStatusResponse);
+        void handleStartupStatusUpdate(event.detail as StartupOperationStatusResponse);
       }
     });
 
@@ -367,9 +367,8 @@
       realtimeContributor = registerRealtimeTrackConsumer({
         tracks: operateRealtimeTracks,
         onEvent: (event: RealtimeTrackEvent) => {
-          if (event.op !== 'snapshot') return;
-          if (event.source?.kind === 'operate.status') {
-            const payload = event.payload as OperateStatusStreamPayload;
+          if (event.kind === 'operate.status') {
+            const payload = event.detail as OperateStatusStreamPayload;
             if (payload.inference_runner_status) {
               queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
             }
@@ -378,8 +377,8 @@
             }
             return;
           }
-          if (event.source?.kind === 'system.status') {
-            systemStatusSnapshot = event.payload as SystemStatusSnapshot;
+          if (event.kind === 'system.status') {
+            systemStatusSnapshot = event.detail as SystemStatusSnapshot;
           }
         }
       });

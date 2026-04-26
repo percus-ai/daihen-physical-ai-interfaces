@@ -1231,8 +1231,8 @@
       realtimeContributor = registerRealtimeTrackConsumer({
         tracks: activeJobTracks,
         onEvent: (event: RealtimeTrackEvent) => {
-          if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-sync') return;
-          applyJobSnapshot(event.payload as DatasetSyncJobStatus);
+          if (event.kind !== 'storage.dataset-sync') return;
+          applyJobSnapshot(event.detail as DatasetSyncJobStatus);
         }
       });
       if (!realtimeContributor) {

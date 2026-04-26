@@ -94,8 +94,8 @@
         }
       ],
       onEvent: (event: RealtimeTrackEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'operate.status') return;
-        const payload = event.payload as OperateStatusStreamPayload;
+        if (event.kind !== 'operate.status') return;
+        const payload = event.detail as OperateStatusStreamPayload;
         queryClient.setQueryData(['profiles', 'vlabor', 'status'], payload.vlabor_status);
         queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
         queryClient.setQueryData(['operate', 'status'], payload.operate_status);

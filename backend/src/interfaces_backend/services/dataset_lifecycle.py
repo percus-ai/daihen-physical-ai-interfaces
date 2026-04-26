@@ -21,7 +21,7 @@ from interfaces_backend.models.inference import InferenceModelSyncStatus
 from interfaces_backend.models.realtime_payloads import RecordingUploadStatusResponse
 from interfaces_backend.services.profile_snapshot import extract_profile_name
 from interfaces_backend.services.realtime_runtime import Broadcast, get_realtime_runtime
-from percus_ai.db import get_supabase_async_client, get_supabase_service_client, upsert_with_owner
+from percus_ai.db import get_supabase_service_client_required, upsert_with_owner
 from percus_ai.storage.paths import get_datasets_dir, get_user_config_path
 from percus_ai.storage.r2_db_sync import R2DBSyncService
 
@@ -38,10 +38,7 @@ class DatasetLifecycle:
 
     async def _get_internal_db_client(self) -> AsyncClient:
         """Return a DB client that is safe for long-running background tasks."""
-        service_client = await get_supabase_service_client()
-        if service_client is not None:
-            return service_client
-        return await get_supabase_async_client()
+        return await get_supabase_service_client_required()
 
     # -- DB operations --------------------------------------------------------
 

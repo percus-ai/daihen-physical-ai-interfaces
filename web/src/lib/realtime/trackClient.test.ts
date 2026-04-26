@@ -82,9 +82,7 @@ describe('RealtimeTrackClient', () => {
         kind: 'system.status',
         key: 'system',
         revision: 1,
-        detail: { backend: 'ok' },
-        payload: { backend: 'ok' },
-        op: 'snapshot'
+        detail: { backend: 'ok' }
       })
     );
   });
@@ -119,13 +117,14 @@ describe('RealtimeTrackClient', () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler.mock.calls[0][0]).toEqual(
       expect.objectContaining({
-        op: 'append',
-        payload: { lines: ['keep'] }
+        kind: 'training.job.logs',
+        key: 'job-1:training',
+        detail: { lines: ['keep'] }
       })
     );
   });
 
-  it('treats job log terminal control frames as control events', async () => {
+  it('passes log signal frames without adding an operation type', async () => {
     const { registerRealtimeTrackConsumer } = await import('./trackClient');
     const handler = vi.fn();
 
@@ -148,8 +147,9 @@ describe('RealtimeTrackClient', () => {
 
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({
-        op: 'control',
-        payload: { type: 'ip_missing', job_id: 'job-1', log_type: 'setup' }
+        kind: 'training.job.logs',
+        key: 'job-1:setup',
+        detail: { type: 'ip_missing', job_id: 'job-1', log_type: 'setup' }
       })
     );
   });

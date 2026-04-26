@@ -416,7 +416,9 @@
   const canRescueCpu = $derived(
     provider === 'verda' && ['completed', 'failed', 'stopped', 'terminated'].includes(status)
   );
-  const shouldSubscribeLogStream = $derived(isRunning);
+  const hasLogSshTarget = $derived(Boolean(String(jobInfo?.ip ?? '').trim()));
+  const shouldSubscribeLogStream = $derived(isRunning && hasLogSshTarget);
+  const shouldLoadLogSnapshot = $derived(hasLogSshTarget || isTerminal);
   const provisionStepLabels: Record<string, string> = {
     queued: '開始待ち',
     validate: '設定検証',
@@ -787,11 +789,6 @@
       streamStatus = 'ended';
       return;
     }
-    if (type === 'job_status') {
-      logStreamActive = false;
-      streamStatus = String(payload.status ?? 'stopped');
-      return;
-    }
     if (type === 'job_deleted' || type === 'job_missing' || type === 'ip_missing') {
       logStreamActive = false;
       streamStatus = type;
@@ -804,35 +801,31 @@
     registrationKey: string,
     event: RealtimeTrackEvent
   ) => {
-    switch (event.source?.kind) {
+    switch (event.kind) {
       case 'training.job.core':
-        if (event.op === 'snapshot') {
-          setJobDetailSnapshot(targetJobId, event.payload as JobDetailResponse);
-        }
+        setJobDetailSnapshot(targetJobId, event.detail as JobDetailResponse);
         return;
       case 'training.job.provision':
-        if (event.op === 'snapshot') {
-          const payload = event.payload as { provision_operation?: TrainingProvisionOperationStatusResponse | null };
+        {
+          const payload = event.detail as { provision_operation?: TrainingProvisionOperationStatusResponse | null };
           setProvisionOperationSnapshot(targetJobId, payload.provision_operation ?? null);
         }
         return;
       case 'training.job.metrics':
-        if (event.op === 'snapshot') {
-          setMetricsSnapshot(targetJobId, event.payload as MetricsResponse);
-        }
+        setMetricsSnapshot(targetJobId, event.detail as MetricsResponse);
         return;
       case 'training.job.operations':
-        if (event.op === 'snapshot') {
-          const payload = event.payload as { operations?: TrainingJobOperationStatusResponse[] };
+        {
+          const payload = event.detail as { operations?: TrainingJobOperationStatusResponse[] };
           trainingJobOperations = payload.operations ?? [];
         }
         return;
       case 'training.job.logs':
-        if (registrationKey !== `${jobId}:${logsType}`) {
+        if (event.key !== registrationKey || registrationKey !== `${jobId}:${logsType}`) {
           return;
         }
-        if (event.op === 'append') {
-          const payload = event.payload as { lines?: string[] };
+        if (Array.isArray(event.detail.lines)) {
+          const payload = event.detail as { lines?: string[] };
           appendLogLines(payload.lines ?? []);
           logStreamActive = true;
           if (streamStatus === 'connecting' || streamStatus === 'idle') {
@@ -841,15 +834,13 @@
           streamError = '';
           return;
         }
-        if (event.op === 'control') {
-          handleLogControlPayload(event.payload);
-          return;
-        }
-        if (event.op === 'error') {
+        if (event.detail.error || event.detail.failure_reason) {
           logStreamActive = false;
           streamStatus = 'error';
-          streamError = String(event.payload.message ?? 'ログストリーミングに失敗しました。');
+          streamError = String(event.detail.message ?? 'ログストリーミングに失敗しました。');
+          return;
         }
+        handleLogControlPayload(event.detail);
         return;
     }
   };
@@ -1177,6 +1168,9 @@
     }
 
     const snapshotKey = `${currentJobId}:${currentLogsType}`;
+    if (!shouldLoadLogSnapshot) {
+      return;
+    }
     if (loadedLogSnapshotKey === snapshotKey) {
       return;
     }

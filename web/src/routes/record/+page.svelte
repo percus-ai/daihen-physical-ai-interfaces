@@ -778,13 +778,12 @@
       realtimeContributor = registerRealtimeTrackConsumer({
         tracks: [],
         onEvent: (event: RealtimeTrackEvent) => {
-          if (event.op !== 'snapshot') return;
-          if (event.source?.kind === 'system.status') {
-            systemStatusSnapshot = event.payload as SystemStatusSnapshot;
+          if (event.kind === 'system.status') {
+            systemStatusSnapshot = event.detail as SystemStatusSnapshot;
             return;
           }
-          if (event.source?.kind === 'recording.upload-status') {
-            const payload = event.payload as RecordingUploadStatus;
+          if (event.kind === 'recording.upload-status') {
+            const payload = event.detail as RecordingUploadStatus;
             const recordingId = String(payload.dataset_id || '').trim();
             if (!recordingId) return;
             if (shouldIgnoreIdleUploadSnapshot(uploadStatusMap[recordingId] ?? null, payload, recordingId)) {

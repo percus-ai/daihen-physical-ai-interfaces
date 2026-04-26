@@ -87,8 +87,7 @@
   let profileContributor: RealtimeTrackConsumerHandle | null = null;
 
   const handleProfileRealtimeEvent = (event: RealtimeTrackEvent) => {
-    if (event.op !== 'snapshot') return;
-    queryClient.setQueryData(['profiles', 'active', 'status'], event.payload);
+    queryClient.setQueryData(['profiles', 'active', 'status'], event.detail);
   };
 
   $effect(() => {

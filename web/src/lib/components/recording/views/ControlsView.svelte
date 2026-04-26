@@ -296,11 +296,11 @@
   };
 
   const handleUploadStatusEvent = (event: RealtimeTrackEvent) => {
-    if (event.op !== 'snapshot' || event.source?.kind !== 'recording.upload-status') return;
+    if (event.kind !== 'recording.upload-status') return;
     const targetDatasetId = String(uploadDatasetId || '').trim();
     if (!targetDatasetId) return;
 
-    const nextStatus = event.payload as RecordingUploadStatus;
+    const nextStatus = event.detail as RecordingUploadStatus;
     if (String(nextStatus.dataset_id || '').trim() !== targetDatasetId) return;
     if (shouldIgnoreIdleUploadSnapshot(uploadStatus, nextStatus, targetDatasetId)) return;
     uploadStatus = nextStatus;

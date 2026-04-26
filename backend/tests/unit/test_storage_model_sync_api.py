@@ -94,6 +94,7 @@ def _install_db_client(monkeypatch: pytest.MonkeyPatch, client: _FakeStorageDbCl
         return client
 
     monkeypatch.setattr(storage_api, "get_supabase_async_client", _fake_get_supabase)
+    monkeypatch.setattr(storage_api, "require_user_id", lambda: "user-1")
 
 
 def test_sync_model_success(monkeypatch: pytest.MonkeyPatch):
@@ -101,25 +102,34 @@ def test_sync_model_success(monkeypatch: pytest.MonkeyPatch):
     fake_client.model_rows = [{"id": "model-1", "status": "active"}]
     _install_db_client(monkeypatch, fake_client)
 
-    class _FakeLifecycle:
+    class _FakeJobs:
         def __init__(self) -> None:
-            self.synced_model_id: str | None = None
+            self.created_model_id: str | None = None
+            self.worker_started = False
 
-        async def ensure_model_local(self, model_id: str):
-            self.synced_model_id = model_id
+        def create(self, *, user_id: str, model_id: str):
+            assert user_id == "user-1"
+            self.created_model_id = model_id
+            return storage_api.ModelSyncJobAcceptedResponse(
+                accepted=True,
+                job_id="job-1",
+                model_id=model_id,
+                state="queued",
+                message="accepted",
+            )
 
-        def get_model_sync_status(self):
-            return SimpleNamespace(message="モデル同期が完了しました。")
+        def ensure_worker(self):
+            self.worker_started = True
 
-    fake_lifecycle = _FakeLifecycle()
-    monkeypatch.setattr(storage_api, "get_dataset_lifecycle", lambda: fake_lifecycle)
+    fake_jobs = _FakeJobs()
+    monkeypatch.setattr(storage_api, "get_model_sync_jobs_service", lambda: fake_jobs)
 
     response = asyncio.run(storage_api.sync_model("model-1"))
-    assert fake_lifecycle.synced_model_id == "model-1"
-    assert response.result.model_id == "model-1"
-    assert response.result.success is True
-    assert response.result.skipped is False
-    assert response.result.message == "モデル同期が完了しました。"
+    assert fake_jobs.created_model_id == "model-1"
+    assert fake_jobs.worker_started is True
+    assert response.job_id == "job-1"
+    assert response.model_id == "model-1"
+    assert response.state == "queued"
 
 
 def test_sync_model_not_found(monkeypatch: pytest.MonkeyPatch):

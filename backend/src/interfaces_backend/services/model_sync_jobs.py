@@ -16,9 +16,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from interfaces_backend.core.request_auth import is_session_expired, refresh_session_from_refresh_token
 from percus_ai.storage.r2_db_sync import R2DBSyncService, StorageSyncCancelledError
-from percus_ai.db import reset_request_session, set_request_session
 
 from interfaces_backend.models.storage import (
     ModelSyncJobAcceptedResponse,
@@ -45,7 +43,6 @@ class _JobRecord:
     job_id: str
     user_id: str
     model_id: str
-    auth_session: dict[str, Any] | None = None
     state: ModelSyncJobState = "queued"
     progress_percent: float = 0.0
     message: str | None = None
@@ -83,7 +80,6 @@ class ModelSyncJobsService:
         *,
         user_id: str,
         model_id: str,
-        auth_session: dict[str, Any] | None = None,
     ) -> ModelSyncJobAcceptedResponse:
         snapshot: ModelSyncJobStatus
         with self._lock:
@@ -105,7 +101,6 @@ class ModelSyncJobsService:
                 job_id=job_id,
                 user_id=user_id,
                 model_id=model_id,
-                auth_session=dict(auth_session) if auth_session else None,
                 state="queued",
                 message="モデル同期ジョブを受け付けました。",
                 created_at=now,
@@ -247,12 +242,10 @@ class ModelSyncJobsService:
 
         sync_service = R2DBSyncService()
         progress_callback = jobs.build_progress_callback(job_id=job_id)
-        request_session = self._resolve_job_session(record.auth_session)
 
         # Mark as running (progress callback will update it further).
         jobs.set_running(job_id=job_id, progress_percent=0.0, message="モデル同期を開始しました。")
 
-        session_token = set_request_session(request_session)
         try:
             result = await sync_service.ensure_model_local(
                 record.model_id,
@@ -270,8 +263,6 @@ class ModelSyncJobsService:
                 error=str(exc),
             )
             return
-        finally:
-            reset_request_session(session_token)
 
         if result.success:
             jobs.complete(
@@ -287,19 +278,6 @@ class ModelSyncJobsService:
             message="モデル同期に失敗しました。",
             error=result.message,
         )
-
-    @staticmethod
-    def _resolve_job_session(auth_session: dict[str, Any] | None) -> dict[str, Any] | None:
-        if not auth_session:
-            return None
-        refresh_token = str(auth_session.get("refresh_token") or "").strip()
-        if refresh_token:
-            refreshed_session = refresh_session_from_refresh_token(refresh_token)
-            if refreshed_session:
-                return refreshed_session
-        if is_session_expired(auth_session):
-            return None
-        return dict(auth_session)
 
     def set_running(
         self,

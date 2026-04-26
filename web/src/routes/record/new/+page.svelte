@@ -239,9 +239,9 @@
         }
       ],
       onEvent: (event: RealtimeTrackEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'startup.operation') return;
+        if (event.kind !== 'startup.operation') return;
         if (startupOperationId !== currentOperationId) return;
-        void handleStartupStatusUpdate(event.payload as StartupOperationStatusResponse);
+        void handleStartupStatusUpdate(event.detail as StartupOperationStatusResponse);
       }
     });
 

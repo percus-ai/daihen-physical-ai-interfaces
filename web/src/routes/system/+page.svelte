@@ -571,22 +571,21 @@
   };
 
   const handleRealtimeEvent = (event: RealtimeTrackEvent) => {
-    if (event.source?.kind === 'builds.logs' && event.op === 'append') {
-      appendBuildLogEvents(((event.payload as { events?: BuildLogEvent[] }).events ?? []) as BuildLogEvent[]);
+    if (event.kind === 'builds.logs') {
+      appendBuildLogEvents(((event.detail as { events?: BuildLogEvent[] }).events ?? []) as BuildLogEvent[]);
       return;
     }
-    if (event.op !== 'snapshot') return;
-    switch (event.source?.kind) {
+    switch (event.kind) {
       case 'system.status':
-        systemStatusSnapshot = event.payload as SystemStatusSnapshot;
+        systemStatusSnapshot = event.detail as SystemStatusSnapshot;
         return;
       case 'operate.status': {
-        const payload = event.payload as OperateStatusRealtimePayload;
+        const payload = event.detail as OperateStatusRealtimePayload;
         networkStatus = payload.operate_status?.network ?? null;
         return;
       }
       case 'builds.status':
-        applyBuildsSnapshot(event.payload as BuildsStatusSnapshot);
+        applyBuildsSnapshot(event.detail as BuildsStatusSnapshot);
         return;
     }
   };

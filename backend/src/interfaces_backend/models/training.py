@@ -207,7 +207,7 @@ class TrainingJobLogAppendRealtimeDetail(BaseModel):
 class TrainingJobLogControlRealtimeDetail(BaseModel):
     """Control payload for training.job.logs."""
 
-    type: Literal["connected", "stream_ended", "job_status", "job_missing", "ip_missing"]
+    type: Literal["connected", "stream_ended", "job_missing", "ip_missing"]
     job_id: str
     log_type: TrainingJobLogType
     status: Optional[str] = None

@@ -14,7 +14,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Literal, Optional
+from typing import Awaitable, Callable, Literal, Optional
 
 from verda import VerdaClient
 from fastapi import (
@@ -103,9 +103,11 @@ from percus_ai.storage import (
 from percus_ai.db import (
     get_current_user_id,
     get_supabase_async_client,
+    get_supabase_service_client_required,
     get_supabase_session,
     reset_request_session,
     set_request_session,
+    upsert_with_explicit_owner,
     upsert_with_owner,
 )
 from percus_ai.training.ssh.client import SSHConnection
@@ -198,7 +200,6 @@ DB_TABLE = "training_jobs"
 
 _REQUIRED_VAST_ENV_VARS = ("VAST_API_KEY", "VAST_SSH_PRIVATE_KEY")
 _LIVE_JOB_STATUSES = {"queued", "starting", "deploying", "running"}
-_TRAINING_LOG_STREAM_INTERVAL_SECONDS = 2.0
 _TRAINING_LOG_STREAM_SSH_TIMEOUT_SECONDS = 8
 _training_log_stream_tasks: dict[tuple[str, str, TrainingJobLogType], asyncio.Task[None]] = {}
 _training_log_stream_tail_lines: dict[tuple[str, str, TrainingJobLogType], int] = {}
@@ -1159,14 +1160,18 @@ async def _refresh_job_ssh_target_if_needed(job_data: dict) -> dict:
     return job_data
 
 
-async def _load_job(job_id: str, include_deleted: bool = False) -> Optional[dict]:
+async def _load_job_with_client(
+    client: AsyncClient,
+    job_id: str,
+    include_deleted: bool = False,
+) -> Optional[dict]:
     """Load job from DB."""
     async def _fetch_with(client: AsyncClient) -> list[dict]:
         response = await client.table(DB_TABLE).select("*").eq("job_id", job_id).execute()
         return response.data or []
 
     try:
-        records = await _fetch_with(await get_supabase_async_client())
+        records = await _fetch_with(client)
     except Exception as exc:
         if _is_invalid_uuid_error(exc):
             return None
@@ -1178,6 +1183,22 @@ async def _load_job(job_id: str, include_deleted: bool = False) -> Optional[dict
     if not include_deleted and record.get("deleted_at"):
         return None
     return record
+
+
+async def _load_job(job_id: str, include_deleted: bool = False) -> Optional[dict]:
+    return await _load_job_with_client(
+        await get_supabase_async_client(),
+        job_id,
+        include_deleted=include_deleted,
+    )
+
+
+async def _load_job_system(job_id: str, include_deleted: bool = False) -> Optional[dict]:
+    return await _load_job_with_client(
+        await get_supabase_service_client_required(),
+        job_id,
+        include_deleted=include_deleted,
+    )
 
 
 async def _save_job(job_data: dict) -> None:
@@ -1218,6 +1239,7 @@ async def _save_job(job_data: dict) -> None:
         "summary",
         "early_stopping",
         "provision_operation_id",
+        "owner_user_id",
     }
     record = {k: job_data.get(k) for k in fixed_fields if k in job_data}
     job_id = record.get("job_id")
@@ -1229,34 +1251,20 @@ async def _save_job(job_data: dict) -> None:
         or str((get_supabase_session() or {}).get("user_id") or "").strip()
     )
 
-    async def _upsert_with(client: AsyncClient) -> None:
-        existing = (
-            await client.table(DB_TABLE).select("job_id").eq("job_id", job_id).execute()
-        ).data or []
-        if existing:
-            update_record = {
-                k: v
-                for k, v in record.items()
-                if k not in {"job_id", "owner_user_id"}
-            }
-            if update_record:
-                await client.table(DB_TABLE).update(update_record).eq("job_id", job_id).execute()
-            return
-
-        insert_record = dict(record)
-        if "owner_user_id" not in insert_record or not insert_record.get("owner_user_id"):
-            if not owner_user_id:
-                raise ValueError("owner_user_id is required for new training job insert")
-            insert_record["owner_user_id"] = owner_user_id
-        await client.table(DB_TABLE).insert(insert_record).execute()
-
-    await _upsert_with(await get_supabase_async_client())
+    if not owner_user_id:
+        raise ValueError("owner_user_id is required for training job save")
+    await upsert_with_explicit_owner(
+        DB_TABLE,
+        "job_id",
+        record,
+        owner_user_id=owner_user_id,
+    )
     await _publish_training_job_core_snapshot(str(job_id), owner_user_id=owner_user_id)
 
 
 async def _publish_training_job_core_snapshot(job_id: str, *, owner_user_id: str = "") -> None:
     try:
-        snapshot = await _build_job_db_snapshot(job_id)
+        snapshot = await _build_job_db_snapshot_system(job_id)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to publish training job core snapshot for %s: %s", job_id, exc)
         return
@@ -1799,7 +1807,10 @@ async def _list_jobs(
     return enriched, total, owner_options, status_options, policy_options
 
 
-async def _resolve_dataset_names(dataset_ids: list[str]) -> dict[str, str]:
+async def _resolve_dataset_names_with_client(
+    client: AsyncClient,
+    dataset_ids: list[str],
+) -> dict[str, str]:
     normalized_ids = [str(dataset_id).strip() for dataset_id in dataset_ids if str(dataset_id).strip()]
     if not normalized_ids:
         return {}
@@ -1813,13 +1824,27 @@ async def _resolve_dataset_names(dataset_ids: list[str]) -> dict[str, str]:
         )
         return response.data or []
 
-    rows = await _fetch_with(await get_supabase_async_client())
+    rows = await _fetch_with(client)
 
     return {
         str(row.get("id") or "").strip(): str(row.get("name") or row.get("id") or "").strip()
         for row in rows
         if str(row.get("id") or "").strip()
     }
+
+
+async def _resolve_dataset_names(dataset_ids: list[str]) -> dict[str, str]:
+    return await _resolve_dataset_names_with_client(
+        await get_supabase_async_client(),
+        dataset_ids,
+    )
+
+
+async def _resolve_dataset_names_system(dataset_ids: list[str]) -> dict[str, str]:
+    return await _resolve_dataset_names_with_client(
+        await get_supabase_service_client_required(),
+        dataset_ids,
+    )
 
 
 # --- SSH utilities for job monitoring (uses SSHConnection) ---
@@ -3077,13 +3102,12 @@ def _get_remote_logs(
         return None
 
     try:
-        if log_type == "setup":
-            log_file = _get_setup_log_file_path(job_data)
-        else:
-            log_file = _get_training_log_file_path(job_data)
-        cmd = f"tail -n {lines} {log_file} 2>/dev/null || echo '[Log file not found]'"
-        exit_code, stdout, stderr = conn.exec_command(cmd)
-        return stdout
+        return _read_remote_logs_from_connection(
+            conn,
+            job_data,
+            lines=lines,
+            log_type=log_type,
+        )
     except Exception:
         return None
     finally:
@@ -3097,6 +3121,34 @@ async def _get_remote_logs_async(
     timeout: int = 30,
 ) -> Optional[str]:
     return await asyncio.to_thread(_get_remote_logs, job_data, lines, log_type, timeout)
+
+
+def _read_remote_logs_from_connection(
+    conn: SSHConnection,
+    job_data: dict,
+    *,
+    lines: int,
+    log_type: str,
+) -> str:
+    if log_type == "setup":
+        log_file = _get_setup_log_file_path(job_data)
+    else:
+        log_file = _get_training_log_file_path(job_data)
+    safe_lines = max(1, min(int(lines), 10000))
+    cmd = (
+        f"tail -n {safe_lines} {shlex.quote(log_file)} "
+        "2>/dev/null || echo '[Log file not found]'"
+    )
+    exit_code, stdout, stderr = conn.exec_command(cmd)
+    return stdout
+
+
+async def _open_training_log_stream_connection(
+    job_data: dict,
+    *,
+    timeout: int,
+) -> Optional[SSHConnection]:
+    return await asyncio.to_thread(_get_ssh_connection_for_job, job_data, timeout)
 
 
 def _get_remote_log_file(
@@ -3115,7 +3167,7 @@ def _get_remote_log_file(
             log_file = _get_setup_log_file_path(job_data)
         else:
             log_file = _get_training_log_file_path(job_data)
-        cmd = f"cat {log_file} 2>/dev/null || echo '[Log file not found]'"
+        cmd = f"cat {shlex.quote(log_file)} 2>/dev/null || echo '[Log file not found]'"
         exit_code, stdout, stderr = conn.exec_command(cmd)
         return stdout
     except Exception:
@@ -3146,6 +3198,15 @@ def _should_try_r2_first(job_data: dict) -> bool:
     if not job_data.get("ip"):
         return True
     return False
+
+
+def _job_has_ssh_target(job_data: dict) -> bool:
+    return bool(str(job_data.get("ip") or "").strip())
+
+
+def _job_allows_live_log_source(job_data: dict) -> bool:
+    status = str(job_data.get("status") or "").strip().lower()
+    return _job_has_ssh_target(job_data) and status in _LIVE_JOB_STATUSES
 
 
 def _get_log_file_name(job_data: dict, log_type: str) -> str:
@@ -3290,27 +3351,66 @@ def _training_log_track_key(job_id: str, log_type: TrainingJobLogType) -> str:
     return f"{job_id}:{log_type}"
 
 
-def _log_lines(text: str) -> list[str]:
-    return str(text or "").splitlines()
+def _get_training_log_tmux_session_name(log_type: str) -> str:
+    if log_type == "setup":
+        return TMUX_SETUP_SESSION_NAME
+    return TMUX_TRAIN_SESSION_NAME
 
 
-def _appended_log_lines(previous_text: str, current_text: str) -> list[str]:
-    if not current_text:
-        return []
-    if not previous_text:
-        return _log_lines(current_text)
-    if current_text == previous_text:
-        return []
-    if current_text.startswith(previous_text):
-        return _log_lines(current_text[len(previous_text):])
+def _build_follow_training_log_command(
+    job_data: dict,
+    *,
+    lines: int,
+    log_type: str,
+) -> str:
+    log_file = (
+        _get_setup_log_file_path(job_data)
+        if log_type == "setup"
+        else _get_training_log_file_path(job_data)
+    )
+    safe_lines = max(1, min(int(lines), 10000))
+    session_name = _get_training_log_tmux_session_name(log_type)
+    return textwrap.dedent(
+        f"""\
+        set -u
+        log_file={shlex.quote(log_file)}
+        session_name={shlex.quote(session_name)}
+        tail -n {safe_lines} -F -- "$log_file" 2>/dev/null &
+        tail_pid=$!
+        trap 'kill "$tail_pid" 2>/dev/null || true' EXIT INT TERM
+        while tmux has-session -t "$session_name" 2>/dev/null; do
+            sleep 1
+        done
+        sleep 1
+        kill "$tail_pid" 2>/dev/null || true
+        wait "$tail_pid" 2>/dev/null || true
+        """
+    )
 
-    previous_lines = _log_lines(previous_text)
-    current_lines = _log_lines(current_text)
-    max_overlap = min(len(previous_lines), len(current_lines))
-    for size in range(max_overlap, 0, -1):
-        if previous_lines[-size:] == current_lines[:size]:
-            return current_lines[size:]
-    return current_lines
+
+def _stream_training_log_lines_from_connection(
+    conn: SSHConnection,
+    job_data: dict,
+    *,
+    lines: int,
+    log_type: str,
+    on_lines: Callable[[list[str]], None],
+) -> None:
+    command = _build_follow_training_log_command(
+        job_data,
+        lines=lines,
+        log_type=log_type,
+    )
+    _stdin, stdout, _stderr = conn.client.exec_command(command)
+    try:
+        for line in iter(stdout.readline, ""):
+            on_lines([line.rstrip("\r\n")])
+        stdout.channel.recv_exit_status()
+    finally:
+        try:
+            stdout.channel.close()
+        except Exception:
+            pass
 
 
 def _publish_training_log_control(
@@ -3318,7 +3418,7 @@ def _publish_training_log_control(
     user_id: str,
     job_id: str,
     log_type: TrainingJobLogType,
-    control_type: Literal["connected", "stream_ended", "job_status", "job_missing", "ip_missing"],
+    control_type: Literal["connected", "stream_ended", "job_missing", "ip_missing"],
     status: str | None = None,
     message: str = "",
 ) -> None:
@@ -3367,71 +3467,95 @@ async def _run_training_log_stream(
     tail_lines: int,
 ) -> None:
     stream_key = (user_id, job_id, log_type)
-    previous_text = ""
+    conn: SSHConnection | None = None
     try:
-        while True:
-            job_data = await _load_job(job_id)
-            if not job_data:
-                _publish_training_log_control(
-                    user_id=user_id,
-                    job_id=job_id,
-                    log_type=log_type,
-                    control_type="job_missing",
-                    status="missing",
-                    message="ジョブが見つかりません。",
-                )
-                return
-
-            status = str(job_data.get("status") or "").strip().lower()
-            if not str(job_data.get("ip") or "").strip():
-                _publish_training_log_control(
-                    user_id=user_id,
-                    job_id=job_id,
-                    log_type=log_type,
-                    control_type="ip_missing",
-                    status=status or None,
-                    message="ログ取得に必要なIPがまだありません。",
-                )
-                if status not in _LIVE_JOB_STATUSES:
-                    return
-                await asyncio.sleep(_TRAINING_LOG_STREAM_INTERVAL_SECONDS)
-                continue
-
-            text = await _get_remote_logs_async(
-                job_data,
-                tail_lines,
-                log_type,
-                timeout=_TRAINING_LOG_STREAM_SSH_TIMEOUT_SECONDS,
+        job_data = await _load_job_system(job_id)
+        if not job_data:
+            _publish_training_log_control(
+                user_id=user_id,
+                job_id=job_id,
+                log_type=log_type,
+                control_type="job_missing",
+                status="missing",
+                message="ジョブが見つかりません。",
             )
-            if text is not None:
-                _publish_training_log_lines(
-                    user_id=user_id,
-                    job_id=job_id,
-                    log_type=log_type,
-                    lines=_appended_log_lines(previous_text, text),
-                )
-                previous_text = text
+            return
 
-            if status not in _LIVE_JOB_STATUSES:
-                _publish_training_log_control(
-                    user_id=user_id,
-                    job_id=job_id,
-                    log_type=log_type,
-                    control_type="job_status",
-                    status=status or "stopped",
-                    message="ジョブがライブ状態ではありません。",
+        status = str(job_data.get("status") or "").strip().lower()
+        if not _job_has_ssh_target(job_data):
+            _publish_training_log_control(
+                user_id=user_id,
+                job_id=job_id,
+                log_type=log_type,
+                control_type="ip_missing",
+                status=status or None,
+                message="ログ取得に必要なIPがまだありません。",
+            )
+            return
+
+        conn = await _open_training_log_stream_connection(
+            job_data,
+            timeout=_TRAINING_LOG_STREAM_SSH_TIMEOUT_SECONDS,
+        )
+        if conn is None:
+            _publish_training_log_control(
+                user_id=user_id,
+                job_id=job_id,
+                log_type=log_type,
+                control_type="stream_ended",
+                status="ssh_unavailable",
+                message="SSH接続を確立できませんでした。",
+            )
+            return
+
+        _publish_training_log_control(
+            user_id=user_id,
+            job_id=job_id,
+            log_type=log_type,
+            control_type="connected",
+            status="streaming",
+            message="ログストリームに接続しました。",
+        )
+
+        loop = asyncio.get_running_loop()
+
+        def publish_lines(lines: list[str]) -> None:
+            next_lines = list(lines)
+            try:
+                loop.call_soon_threadsafe(
+                    lambda: _publish_training_log_lines(
+                        user_id=user_id,
+                        job_id=job_id,
+                        log_type=log_type,
+                        lines=next_lines,
+                    )
                 )
-                _publish_training_log_control(
-                    user_id=user_id,
-                    job_id=job_id,
-                    log_type=log_type,
-                    control_type="stream_ended",
-                    status=status or "stopped",
-                    message="ログストリームを終了しました。",
-                )
+            except RuntimeError:
                 return
 
-            await asyncio.sleep(_TRAINING_LOG_STREAM_INTERVAL_SECONDS)
+        await asyncio.to_thread(
+            _stream_training_log_lines_from_connection,
+            conn,
+            job_data,
+            lines=tail_lines,
+            log_type=log_type,
+            on_lines=publish_lines,
+        )
+
+        latest_job_data = await _load_job_system(job_id)
+        latest_status = (
+            str((latest_job_data or {}).get("status") or status or "stopped")
+            .strip()
+            .lower()
+        )
+        _publish_training_log_control(
+            user_id=user_id,
+            job_id=job_id,
+            log_type=log_type,
+            control_type="stream_ended",
+            status=latest_status or "stopped",
+            message="ログストリームを終了しました。",
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -3445,6 +3569,8 @@ async def _run_training_log_stream(
             message=str(exc),
         )
     finally:
+        if conn is not None:
+            conn.disconnect()
         current_task = asyncio.current_task()
         if _training_log_stream_tasks.get(stream_key) is current_task:
             _training_log_stream_tasks.pop(stream_key, None)
@@ -3459,6 +3585,14 @@ def _ensure_training_log_stream(
     tail_lines: int,
 ) -> None:
     stream_key = (user_id, job_id, log_type)
+    for existing_key, existing_task in list(_training_log_stream_tasks.items()):
+        existing_user_id, existing_job_id, existing_log_type = existing_key
+        if existing_user_id != user_id or existing_job_id != job_id:
+            continue
+        if existing_log_type == log_type or existing_task.done():
+            continue
+        existing_task.cancel()
+
     existing = _training_log_stream_tasks.get(stream_key)
     existing_tail_lines = _training_log_stream_tail_lines.get(stream_key)
     if existing is not None and not existing.done() and existing_tail_lines == tail_lines:
@@ -3475,14 +3609,6 @@ def _ensure_training_log_stream(
     if existing is not None and not existing.done():
         existing.cancel()
 
-    _publish_training_log_control(
-        user_id=user_id,
-        job_id=job_id,
-        log_type=log_type,
-        control_type="connected",
-        status="streaming",
-        message="ログストリームに接続しました。",
-    )
     _training_log_stream_tail_lines[stream_key] = tail_lines
     _training_log_stream_tasks[stream_key] = asyncio.create_task(
         _run_training_log_stream(
@@ -4694,9 +4820,12 @@ async def get_last_training_config():
     )
 
 
-async def _build_job_db_snapshot(job_id: str) -> JobDetailResponse:
-    """Build a job detail snapshot from DB-backed fields only."""
-    job_data = await _load_job(job_id)
+async def _build_job_db_snapshot_from_job_data(
+    job_id: str,
+    *,
+    job_data: Optional[dict],
+    resolve_dataset_names: Callable[[list[str]], Awaitable[dict[str, str]]],
+) -> JobDetailResponse:
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
@@ -4716,7 +4845,7 @@ async def _build_job_db_snapshot(job_id: str) -> JobDetailResponse:
             job_coerced["ssh_port"] = cloud_port
     dataset_id = str(job_coerced.get("dataset_id") or "").strip()
     if dataset_id and not str(job_coerced.get("dataset_name") or "").strip():
-        dataset_name_map = await _resolve_dataset_names([dataset_id])
+        dataset_name_map = await resolve_dataset_names([dataset_id])
         job_coerced["dataset_name"] = dataset_name_map.get(dataset_id) or None
 
     return JobDetailResponse(
@@ -4732,6 +4861,24 @@ async def _build_job_db_snapshot(job_id: str) -> JobDetailResponse:
     )
 
 
+async def _build_job_db_snapshot(job_id: str) -> JobDetailResponse:
+    """Build a request-scoped job detail snapshot from DB-backed fields only."""
+    return await _build_job_db_snapshot_from_job_data(
+        job_id,
+        job_data=await _load_job(job_id),
+        resolve_dataset_names=_resolve_dataset_names,
+    )
+
+
+async def _build_job_db_snapshot_system(job_id: str) -> JobDetailResponse:
+    """Build a system job detail snapshot for background realtime publication."""
+    return await _build_job_db_snapshot_from_job_data(
+        job_id,
+        job_data=await _load_job_system(job_id),
+        resolve_dataset_names=_resolve_dataset_names_system,
+    )
+
+
 @router.get("/jobs/{job_id}", response_model=JobDetailResponse)
 async def get_job(job_id: str):
     """Get the DB-backed initial snapshot for a job."""
@@ -4740,7 +4887,7 @@ async def get_job(job_id: str):
 
 async def get_job_core_snapshot(job_id: str) -> JobDetailResponse:
     """Get the lightweight job snapshot used by tab realtime core updates."""
-    return await _build_job_db_snapshot(job_id)
+    return await _build_job_db_snapshot_system(job_id)
 
 
 @router.get("/jobs/{job_id}/logs", response_model=JobLogsResponse)
@@ -4754,21 +4901,22 @@ async def get_job_logs(
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    instance_status = None
-    if job_data.get("status") in ("running", "starting", "deploying"):
-        instance_status = await _refresh_job_status_from_instance(job_data)
-
-    remote_allowed = True
-    if instance_status is None or _is_terminated_instance_status(instance_status):
-        remote_allowed = False
+    remote_allowed = _job_allows_live_log_source(job_data)
 
     source = "remote"
     logs = None
-    if remote_allowed:
-        logs = await _get_remote_logs_async(job_data, lines, log_type=log_type)
-    if logs is None:
+    if _should_try_r2_first(job_data):
         source = "r2"
         logs = await _get_logs_from_r2_async(job_data, lines, log_type)
+        if logs is None and remote_allowed:
+            source = "remote"
+            logs = await _get_remote_logs_async(job_data, lines, log_type=log_type)
+    else:
+        if remote_allowed:
+            logs = await _get_remote_logs_async(job_data, lines, log_type=log_type)
+        if logs is None:
+            source = "r2"
+            logs = await _get_logs_from_r2_async(job_data, lines, log_type)
     if logs is None:
         raise HTTPException(
             status_code=503, detail="Could not connect to remote instance"
@@ -4788,9 +4936,6 @@ async def start_job_log_stream(job_id: str, request: TrainingJobLogStreamRequest
     job_data = await _load_job(job_id)
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
-
-    if job_data.get("status") in ("running", "starting", "deploying"):
-        await _refresh_job_status_from_instance(job_data)
 
     _ensure_training_log_stream(
         user_id=user_id,
@@ -4832,13 +4977,7 @@ async def download_job_logs(
     if not job_data:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    instance_status = None
-    if job_data.get("status") in ("running", "starting", "deploying"):
-        instance_status = await _refresh_job_status_from_instance(job_data)
-
-    remote_allowed = True
-    if instance_status is None or _is_terminated_instance_status(instance_status):
-        remote_allowed = False
+    remote_allowed = _job_allows_live_log_source(job_data)
 
     if _should_try_r2_first(job_data):
         logs = await _get_full_logs_from_r2_async(job_data, log_type)
@@ -5737,6 +5876,19 @@ async def _run_training_provision_operation(
     provider = str(((request_data.get("cloud") or {}).get("provider") or "")).strip().lower()
     latest: dict[str, Optional[str]] = {"instance_id": None, "job_id": None}
 
+    async def update_progress(payload: dict) -> None:
+        try:
+            await operations.update_from_progress(operation_id=operation_id, progress=payload)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to persist training provision progress: operation_id=%s payload=%s",
+                operation_id,
+                payload,
+            )
+
+    def schedule_progress_update(payload: dict) -> None:
+        asyncio.create_task(update_progress(payload))
+
     def emit_progress(message: dict) -> None:
         payload = (
             message if isinstance(message, dict) else {"type": "status", "message": str(message)}
@@ -5745,10 +5897,7 @@ async def _run_training_provision_operation(
             latest["instance_id"] = str(payload.get("instance_id") or "").strip() or None
         if payload.get("job_id") is not None:
             latest["job_id"] = str(payload.get("job_id") or "").strip() or None
-        loop.call_soon_threadsafe(
-            asyncio.create_task,
-            operations.update_from_progress(operation_id=operation_id, progress=payload),
-        )
+        loop.call_soon_threadsafe(schedule_progress_update, dict(payload))
 
     def worker() -> dict:
         return training_orchestrator.create_job_with_progress(request_data, emit_progress, supabase_session)

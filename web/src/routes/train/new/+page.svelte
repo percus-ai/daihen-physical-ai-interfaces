@@ -794,9 +794,9 @@
             }
           ],
           onEvent: (event: RealtimeTrackEvent) => {
-            if (event.op !== 'snapshot' || event.source?.kind !== 'training.provision-operation') return;
+            if (event.kind !== 'training.provision-operation') return;
             if (provisionOperationId !== currentOperationId) return;
-            void applyProvisionSnapshot(event.payload as TrainingProvisionOperationStatusResponse);
+            void applyProvisionSnapshot(event.detail as TrainingProvisionOperationStatusResponse);
           }
         });
       } catch (error) {

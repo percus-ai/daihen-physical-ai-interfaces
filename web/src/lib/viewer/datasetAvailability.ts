@@ -176,8 +176,8 @@ export const createDatasetAvailabilityController = (opts: {
         }
       ],
       onEvent: (event: RealtimeTrackEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-sync') return;
-        queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), event.payload as DatasetSyncJobStatus);
+        if (event.kind !== 'storage.dataset-sync') return;
+        queryClient.setQueryData(qk.storage.datasetSyncJob(currentJobId), event.detail as DatasetSyncJobStatus);
       }
     });
   });

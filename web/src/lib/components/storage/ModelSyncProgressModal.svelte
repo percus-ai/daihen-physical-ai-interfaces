@@ -169,8 +169,8 @@
         }
       ],
       onEvent: (event: RealtimeTrackEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'storage.model-sync') return;
-        status = event.payload as ModelSyncJobStatus;
+        if (event.kind !== 'storage.model-sync') return;
+        status = event.detail as ModelSyncJobStatus;
         if (status) recordThroughputSample(status);
       }
     });

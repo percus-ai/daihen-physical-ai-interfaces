@@ -84,8 +84,8 @@
         }
       ],
       onEvent: (event: RealtimeTrackEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-merge') return;
-        status = event.payload as DatasetMergeJobStatus;
+        if (event.kind !== 'storage.dataset-merge') return;
+        status = event.detail as DatasetMergeJobStatus;
       }
     });
 

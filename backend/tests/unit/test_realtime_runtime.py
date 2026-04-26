@@ -128,7 +128,7 @@ def test_training_provision_operation_emits_operation_and_job_tracks(monkeypatch
             TrainingProvisionOperationsService,
         )
 
-        async def fake_get_supabase_async_client():
+        async def fake_get_supabase_service_client_required():
             return object()
 
         async def fake_update_with_client(_client, *, operation_id: str, patch: dict[str, object]):
@@ -159,8 +159,8 @@ def test_training_provision_operation_emits_operation_and_job_tracks(monkeypatch
         connection = runtime.open_connection(user_id="user-1", tab_id="tab-1")
         service = TrainingProvisionOperationsService()
         monkeypatch.setattr(
-            "interfaces_backend.services.training_provision_operations.get_supabase_async_client",
-            fake_get_supabase_async_client,
+            "interfaces_backend.services.training_provision_operations.get_supabase_service_client_required",
+            fake_get_supabase_service_client_required,
         )
         monkeypatch.setattr(service, "_update_with_client", fake_update_with_client)
         monkeypatch.setattr(service, "_load", fake_load)
@@ -275,25 +275,58 @@ def test_training_job_log_stream_emits_append_frames(monkeypatch):
         reset_realtime_runtime()
         training_api._training_log_stream_tasks.clear()
         training_api._training_log_stream_tail_lines.clear()
-        monkeypatch.setattr(training_api, "_TRAINING_LOG_STREAM_INTERVAL_SECONDS", 0.001)
 
         load_count = 0
-        log_texts = ["setup line 1\nsetup line 2\n", "setup line 1\nsetup line 2\nsetup line 3\n"]
+        open_count = 0
 
-        async def fake_load_job(job_id: str):
+        class FakeSSHConnection:
+            def __init__(self) -> None:
+                self.disconnect_count = 0
+
+            def disconnect(self) -> None:
+                self.disconnect_count += 1
+
+        fake_conn = FakeSSHConnection()
+
+        async def fake_load_job_system(job_id: str, include_deleted: bool = False):
             nonlocal load_count
             load_count += 1
             return {
                 "job_id": job_id,
-                "status": "running" if load_count < 3 else "completed",
+                "status": "running" if load_count < 2 else "completed",
                 "ip": "192.0.2.10",
             }
 
-        async def fake_get_remote_logs_async(_job_data, _lines, _log_type, timeout=30):
-            return log_texts[min(load_count - 1, len(log_texts) - 1)]
+        async def fake_open_training_log_stream_connection(_job_data, *, timeout: int):
+            nonlocal open_count
+            open_count += 1
+            return fake_conn
 
-        monkeypatch.setattr(training_api, "_load_job", fake_load_job)
-        monkeypatch.setattr(training_api, "_get_remote_logs_async", fake_get_remote_logs_async)
+        def fake_stream_training_log_lines_from_connection(
+            _conn,
+            _job_data,
+            *,
+            lines: int,
+            log_type: str,
+            on_lines,
+        ):
+            assert _conn is fake_conn
+            assert lines == 30
+            assert log_type == "setup"
+            on_lines(["setup line 1", "setup line 2"])
+            on_lines(["setup line 3"])
+
+        monkeypatch.setattr(training_api, "_load_job_system", fake_load_job_system)
+        monkeypatch.setattr(
+            training_api,
+            "_open_training_log_stream_connection",
+            fake_open_training_log_stream_connection,
+        )
+        monkeypatch.setattr(
+            training_api,
+            "_stream_training_log_lines_from_connection",
+            fake_stream_training_log_lines_from_connection,
+        )
 
         runtime = get_realtime_runtime()
         connection = runtime.open_connection(user_id="user-1", tab_id="tab-1")
@@ -318,6 +351,57 @@ def test_training_job_log_stream_emits_append_frames(monkeypatch):
         assert second is not None
         assert second.detail["lines"] == ["setup line 3"]
         assert ended is not None
-        assert ended.detail["type"] == "job_status"
+        assert ended.detail["type"] == "stream_ended"
+        assert ended.detail["status"] == "completed"
+        assert open_count == 1
+        assert fake_conn.disconnect_count == 1
+
+    asyncio.run(_run())
+
+
+def test_training_job_log_stream_returns_ip_missing_without_polling(monkeypatch):
+    async def _run():
+        import interfaces_backend.api.training as training_api
+
+        reset_realtime_runtime()
+        training_api._training_log_stream_tasks.clear()
+        training_api._training_log_stream_tail_lines.clear()
+
+        load_count = 0
+
+        async def fake_load_job_system(job_id: str, include_deleted: bool = False):
+            nonlocal load_count
+            load_count += 1
+            return {
+                "job_id": job_id,
+                "status": "starting",
+                "ip": None,
+            }
+
+        async def fail_open_training_log_stream_connection(_job_data, *, timeout: int):
+            raise AssertionError("log stream must not open SSH before the job has an IP")
+
+        monkeypatch.setattr(training_api, "_load_job_system", fake_load_job_system)
+        monkeypatch.setattr(
+            training_api,
+            "_open_training_log_stream_connection",
+            fail_open_training_log_stream_connection,
+        )
+
+        runtime = get_realtime_runtime()
+        connection = runtime.open_connection(user_id="user-1", tab_id="tab-1")
+        training_api._ensure_training_log_stream(
+            user_id="user-1",
+            job_id="job-1",
+            log_type="setup",
+            tail_lines=30,
+        )
+
+        frame = await connection.next_frame(timeout_seconds=0.1)
+        assert frame is not None
+        assert frame.kind == "training.job.logs"
+        assert frame.detail["type"] == "ip_missing"
+        assert await connection.next_frame(timeout_seconds=0.05) is None
+        assert load_count == 1
 
     asyncio.run(_run())

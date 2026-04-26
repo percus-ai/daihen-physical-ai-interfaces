@@ -169,8 +169,8 @@
         }
       ],
       onEvent: (event: RealtimeTrackEvent) => {
-        if (event.op !== 'snapshot' || event.source?.kind !== 'storage.dataset-sync') return;
-        status = event.payload as DatasetSyncJobStatus;
+        if (event.kind !== 'storage.dataset-sync') return;
+        status = event.detail as DatasetSyncJobStatus;
         if (status) recordThroughputSample(status);
       }
     });

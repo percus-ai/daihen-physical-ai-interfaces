@@ -516,7 +516,7 @@ def test_rescan_remote_job_checkpoints_returns_rescue_hint_when_ssh_unavailable(
 
 
 def test_get_job_omits_training_job_operations_from_detail(monkeypatch):
-    async def fake_load_job(_job_id: str):
+    async def fake_load_job(_job_id: str, include_deleted: bool = False):
         return {
             **_job(),
             "instance_id": "",

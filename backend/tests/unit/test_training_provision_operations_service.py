@@ -73,7 +73,7 @@ def test_update_emits_snapshot(monkeypatch):
     service = TrainingProvisionOperationsService()
     reset_realtime_runtime()
 
-    async def fake_get_supabase_async_client():
+    async def fake_get_supabase_service_client_required():
         return object()
 
     async def fake_update_with_client(_client, *, operation_id: str, patch: dict[str, object]):
@@ -100,8 +100,8 @@ def test_update_emits_snapshot(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "interfaces_backend.services.training_provision_operations.get_supabase_async_client",
-        fake_get_supabase_async_client,
+        "interfaces_backend.services.training_provision_operations.get_supabase_service_client_required",
+        fake_get_supabase_service_client_required,
     )
     monkeypatch.setattr(service, "_update_with_client", fake_update_with_client)
     monkeypatch.setattr(service, "_load", fake_load)
