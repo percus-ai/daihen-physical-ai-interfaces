@@ -80,8 +80,12 @@ export type RunnerStatus = {
   recording_active?: boolean;
   recorder_state?: string | null;
   awaiting_continue_confirmation?: boolean;
+  batch_size?: number;
   episode_count?: number;
   num_episodes?: number;
+  episode_time_s?: number;
+  reset_time_s?: number;
+  denoising_steps?: number | null;
 };
 
 export type InferenceRunnerStatusResponse = {

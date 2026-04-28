@@ -6,6 +6,7 @@
   import toast from 'svelte-french-toast';
   import { api } from '$lib/api/client';
   import { VIEWER_RUNTIME, type ViewerRuntimeStore } from '$lib/viewer/runtimeContext';
+  import type { InferenceRunnerStatusResponse } from '$lib/types/inference';
   import {
     subscribeRecorderStatus,
     type RecorderStatus,
@@ -24,14 +25,6 @@
   const sessionId = $derived(runtime.kind === 'ros' ? runtime.sessionId : '');
   const sessionKind = $derived(runtime.kind === 'ros' ? runtime.sessionKind : '');
 
-  type RunnerStatus = {
-    denoising_steps?: number | null;
-  };
-
-  type InferenceRunnerStatusResponse = {
-    runner_status?: RunnerStatus;
-  };
-
   type RecordingSessionStatusResponse = {
     dataset_id?: string;
     status?: Record<string, unknown>;
@@ -44,11 +37,18 @@
       enabled: sessionKind === 'inference'
     }))
   );
+  const inferenceRunnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
+  const inferenceRecordingDatasetId = $derived(String(inferenceRunnerStatus.recording_dataset_id ?? '').trim());
+  const recordingStatusSessionId = $derived(
+    sessionKind === 'inference' ? inferenceRecordingDatasetId : sessionId
+  );
   const recordingSessionStatusQuery = createQuery<RecordingSessionStatusResponse>(
     toStore(() => ({
-      queryKey: ['recording', 'session', 'status', sessionId],
-      queryFn: () => api.recording.sessionStatus(sessionId),
-      enabled: sessionKind === 'recording' && Boolean(sessionId)
+      queryKey: ['recording', 'session', 'status', recordingStatusSessionId],
+      queryFn: () => api.recording.sessionStatus(recordingStatusSessionId),
+      enabled:
+        (sessionKind === 'recording' || sessionKind === 'inference') &&
+        Boolean(recordingStatusSessionId)
     }))
   );
 
@@ -92,8 +92,8 @@
     return typeof value === 'string' ? value : '';
   });
   const statusMatches = $derived.by(() => {
-    if (!sessionId) return true;
-    return statusDatasetId === sessionId;
+    if (!recordingStatusSessionId) return sessionKind !== 'inference';
+    return statusDatasetId === recordingStatusSessionId;
   });
   const persistedStatus = $derived(($recordingSessionStatusQuery.data?.status ?? {}) as Record<string, unknown>);
   const liveStatus = $derived(statusMatches ? ((status as Record<string, unknown>) ?? {}) : {});
@@ -101,19 +101,40 @@
     ...persistedStatus,
     ...liveStatus
   }));
+  const settingsSourceReady = $derived.by(() => {
+    if (sessionKind === 'inference') {
+      return Boolean($inferenceRunnerStatusQuery.data?.runner_status);
+    }
+    if (sessionKind === 'recording') {
+      return Boolean(recorderStatus || $recordingSessionStatusQuery.data?.status);
+    }
+    return false;
+  });
 
   const currentTask = $derived.by(() => {
+    if (sessionKind === 'inference') {
+      const value = asTrimmedText(inferenceRunnerStatus.task);
+      if (value) return value;
+    }
     const value = effectiveStatus?.task;
     return typeof value === 'string' ? value : '';
   });
   const currentEpisodeTime = $derived.by(() => {
+    if (sessionKind === 'inference') {
+      const value = asNumber(inferenceRunnerStatus.episode_time_s, 0);
+      if (value > 0) return value;
+    }
     return asNumber(effectiveStatus?.episode_time_s ?? 0, 0);
   });
   const currentResetTime = $derived.by(() => {
+    if (sessionKind === 'inference') {
+      const value = asNumber(inferenceRunnerStatus.reset_time_s, -1);
+      if (value >= 0) return value;
+    }
     return asNumber(effectiveStatus?.reset_time_s ?? 0, 0);
   });
   const currentDenoisingSteps = $derived.by(() => {
-    const value = $inferenceRunnerStatusQuery.data?.runner_status?.denoising_steps;
+    const value = inferenceRunnerStatus.denoising_steps;
     if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
       return value;
     }
@@ -121,6 +142,7 @@
   });
 
   $effect(() => {
+    if (!settingsSourceReady) return;
     const signature = [
       currentTask,
       String(currentEpisodeTime),
@@ -254,7 +276,9 @@
             oninput={markDirty}
             disabled={!canApply || applyPending}
           />
-          <p class="mt-1 text-[11px] text-slate-400">現在値: {currentResetTime || '-'}s</p>
+          <p class="mt-1 text-[11px] text-slate-400">
+            現在値: {currentResetTime >= 0 ? `${currentResetTime}s` : '-'}
+          </p>
         </label>
       </div>
 
