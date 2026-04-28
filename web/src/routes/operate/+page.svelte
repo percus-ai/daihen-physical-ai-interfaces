@@ -654,6 +654,8 @@
             {:else}
               モデル未同期のため起動前に同期処理が入る可能性があります。
             {/if}
+            <br />
+            起動後、開始ボタンを押下して推論を開始できます。
           </div>
           <Button.Root
             class="btn-primary w-full"
@@ -668,7 +670,7 @@
             }
             aria-busy={inferenceStartPending}
           >
-            {startupActive ? '準備中...' : '推論を開始'}
+            {startupActive ? '準備中...' : '起動'}
           </Button.Root>
           {#if inferenceStartError}
             <p class="text-xs text-rose-600">{inferenceStartError}</p>
