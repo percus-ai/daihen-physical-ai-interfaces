@@ -132,13 +132,29 @@
       };
     };
   };
+  type InferenceRunnerStatus = {
+    active?: boolean;
+    session_id?: string | null;
+    recording_dataset_id?: string | null;
+    recording_prepared?: boolean;
+    recording_active?: boolean;
+    recorder_state?: string | null;
+  };
+  type InferenceRunnerStatusResponse = {
+    runner_status?: InferenceRunnerStatus;
+  };
   type OperateStatusStreamPayload = {
+    inference_runner_status?: InferenceRunnerStatusResponse;
     operate_status?: OperateStatusResponse;
   };
 
   const operateStatusQuery = createQuery<OperateStatusResponse>({
     queryKey: ['operate', 'status'],
     queryFn: api.operate.status
+  });
+  const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
+    queryKey: ['inference', 'runner', 'status'],
+    queryFn: api.inference.runnerStatus
   });
   const userConfigQuery = createQuery<UserConfigResponse>({
     queryKey: ['user', 'config'],
@@ -707,6 +723,32 @@
   const activeSessionState = $derived(recorderStatus?.state ?? 'unknown');
   const activeEpisodeIndex = $derived(getRecorderDisplayEpisodeNumber(recorderStatus));
   const activeEpisodeTotal = $derived(recorderStatus?.num_episodes ?? null);
+  const inferenceRunnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
+  const inferenceRecordingDatasetId = $derived(String(inferenceRunnerStatus.recording_dataset_id ?? '').trim());
+  const inferenceRecorderReserved = $derived(
+    Boolean(
+      inferenceRunnerStatus.active &&
+        (inferenceRunnerStatus.recording_prepared ||
+          inferenceRunnerStatus.recording_active ||
+          inferenceRecordingDatasetId)
+    )
+  );
+  const activeRecorderBelongsToInference = $derived(
+    Boolean(
+      String(recorderStatus?.session_kind ?? '').trim() === 'inference' ||
+        (activeSessionId && inferenceRecordingDatasetId && activeSessionId === inferenceRecordingDatasetId)
+    )
+  );
+  const inferenceRecorderInUse = $derived(Boolean(inferenceRecorderReserved || activeRecorderBelongsToInference));
+  const showNormalActiveRecording = $derived(Boolean(activeSessionId && !activeRecorderBelongsToInference));
+  const createRecordingBlocked = $derived(Boolean(showNormalActiveRecording || inferenceRecorderInUse));
+  const createRecordingBlockedReason = $derived(
+    inferenceRecorderInUse
+      ? '推論セッションが収録機能を使用中です。'
+      : showNormalActiveRecording
+        ? '収録セッションが実行中です。'
+        : ''
+  );
   const activeWorkState = $derived.by(() => {
     if (recordingStopPending || recordingStopRequested) return 'ending';
     if (['paused', 'resetting_paused'].includes(activeSessionState)) return 'waiting';
@@ -814,6 +856,9 @@
           }
           if (event.kind === 'operate.status') {
             const payload = event.detail as OperateStatusStreamPayload;
+            if (payload.inference_runner_status) {
+              queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
+            }
             if (payload.operate_status) {
               queryClient.setQueryData(['operate', 'status'], payload.operate_status);
             }
@@ -864,11 +909,26 @@
       <h1 class="text-3xl font-semibold text-slate-900">データ録画</h1>
       <p class="mt-2 text-sm text-slate-600">データセット収録の状況を表示します。</p>
     </div>
-    <Button.Root class="btn-primary" href="/record/new">新規データセットを作成</Button.Root>
+    {#if createRecordingBlocked}
+      <Button.Root class="btn-primary opacity-60" type="button" disabled title={createRecordingBlockedReason}>
+        新規データセットを作成
+      </Button.Root>
+    {:else}
+      <Button.Root class="btn-primary" href="/record/new">新規データセットを作成</Button.Root>
+    {/if}
   </div>
 </section>
 
-{#if activeSessionId}
+{#if inferenceRecorderInUse}
+  <section class="rounded-lg border border-amber-200/80 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+    <p class="font-semibold">推論セッションが収録機能を使用中です。</p>
+    <p class="mt-1">
+      通常のデータ録画は開始できません。推論に付随する録画操作は推論セッション画面で行います。
+    </p>
+  </section>
+{/if}
+
+{#if showNormalActiveRecording}
   <ActiveWorkBanner
     state={activeWorkState}
     title="データ収録"

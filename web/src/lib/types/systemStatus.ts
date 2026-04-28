@@ -43,6 +43,10 @@ export type InferenceStatusSnapshot = {
   device?: string | null;
   env_name?: string | null;
   worker_alive?: boolean;
+  recording_dataset_id?: string | null;
+  recording_prepared?: boolean;
+  recording_active?: boolean;
+  recorder_state?: string | null;
   queue_length?: number | null;
   last_error?: string | null;
 };

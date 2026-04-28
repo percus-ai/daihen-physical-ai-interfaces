@@ -53,6 +53,10 @@ class InferenceStatusSnapshot(BaseModel):
     device: str | None = None
     env_name: str | None = None
     worker_alive: bool = False
+    recording_dataset_id: str | None = None
+    recording_prepared: bool = False
+    recording_active: bool = False
+    recorder_state: str | None = None
     queue_length: int | None = None
     last_error: str | None = None
 

@@ -40,6 +40,7 @@
     active?: boolean;
     session_id?: string | null;
     recording_dataset_id?: string | null;
+    recording_prepared?: boolean;
     recording_active?: boolean;
     awaiting_continue_confirmation?: boolean;
   };

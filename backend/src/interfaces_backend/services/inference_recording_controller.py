@@ -57,6 +57,7 @@ class InferenceRecordingState:
     teleop_enabled: bool = False
     last_recorder_state: str = ""
     stop_requested: bool = False
+    started: bool = False
 
 
 class InferenceRecordingController:
@@ -155,6 +156,57 @@ class InferenceRecordingController:
         }
         return payload
 
+    def _build_state(
+        self,
+        *,
+        session: SessionState,
+        task: str | None,
+        denoising_steps: int | None,
+        num_episodes: int | None = None,
+        episode_time_s: float | None = None,
+        reset_time_s: float | None = None,
+    ) -> InferenceRecordingState | None:
+        if session.profile is None:
+            logger.warning("Skip inference recording: profile is not resolved")
+            return None
+
+        cameras = self._recorder.build_cameras(session.profile.snapshot)
+        arm_namespaces = extract_arm_namespaces(session.profile.snapshot)
+        arm_streams = extract_recorder_arm_streams(
+            session.profile.snapshot,
+            arm_namespaces=arm_namespaces,
+        )
+        if not cameras:
+            logger.warning("Skip inference recording: no recorder cameras resolved")
+            return None
+        if not arm_namespaces:
+            logger.warning("Skip inference recording: no recorder arm namespaces resolved")
+            return None
+        if not arm_streams:
+            logger.warning(
+                "Skip inference recording: arm_streams unresolved "
+                "(expected profile.lerobot.<arm>.namespace/topic/action_topic/joints)"
+            )
+            return None
+
+        batch_size = max(int(num_episodes or self._batch_size), 1)
+        dataset_id = generate_dataset_id()
+        return InferenceRecordingState(
+            inference_session_id=session.id,
+            worker_session_id=str(session.extras.get("worker_session_id") or "").strip(),
+            dataset_id=dataset_id,
+            dataset_name=f"eval-{session.id[:8]}",
+            profile_snapshot=session.profile.snapshot,
+            task=(task or "").strip(),
+            episode_time_s=max(float(episode_time_s or self._default_episode_time_s), 1.0),
+            reset_time_s=max(float(reset_time_s or self._default_reset_time_s), 0.0),
+            denoising_steps=denoising_steps,
+            batch_size=batch_size,
+            target_total_episodes=batch_size,
+            cameras=cameras,
+            arm_streams=arm_streams,
+        )
+
     @staticmethod
     def _is_finalizing_status(status: dict | None) -> bool:
         if not isinstance(status, dict):
@@ -246,46 +298,39 @@ class InferenceRecordingController:
         episode_time_s: float | None = None,
         reset_time_s: float | None = None,
     ) -> dict | None:
-        if session.profile is None:
-            logger.warning("Skip inference recording: profile is not resolved")
-            return None
-
-        cameras = self._recorder.build_cameras(session.profile.snapshot)
-        arm_namespaces = extract_arm_namespaces(session.profile.snapshot)
-        arm_streams = extract_recorder_arm_streams(
-            session.profile.snapshot,
-            arm_namespaces=arm_namespaces,
-        )
-        if not cameras:
-            logger.warning("Skip inference recording: no recorder cameras resolved")
-            return None
-        if not arm_namespaces:
-            logger.warning("Skip inference recording: no recorder arm namespaces resolved")
-            return None
-        if not arm_streams:
-            logger.warning(
-                "Skip inference recording: arm_streams unresolved "
-                "(expected profile.lerobot.<arm>.namespace/topic/action_topic/joints)"
+        with self._lock:
+            next_state = self._states.get(session.id)
+        if next_state is None:
+            next_state = self._build_state(
+                session=session,
+                task=task,
+                denoising_steps=denoising_steps,
+                num_episodes=num_episodes,
+                episode_time_s=episode_time_s,
+                reset_time_s=reset_time_s,
             )
-            return None
-
-        batch_size = max(int(num_episodes or self._batch_size), 1)
-        dataset_id = generate_dataset_id()
-        next_state = InferenceRecordingState(
-            inference_session_id=session.id,
-            worker_session_id=str(session.extras.get("worker_session_id") or "").strip(),
-            dataset_id=dataset_id,
-            dataset_name=f"eval-{session.id[:8]}",
-            profile_snapshot=session.profile.snapshot,
-            task=(task or "").strip(),
-            episode_time_s=max(float(episode_time_s or self._default_episode_time_s), 1.0),
-            reset_time_s=max(float(reset_time_s or self._default_reset_time_s), 0.0),
-            denoising_steps=denoising_steps,
-            batch_size=batch_size,
-            target_total_episodes=batch_size,
-            cameras=cameras,
-            arm_streams=arm_streams,
-        )
+            if next_state is None:
+                return None
+            self._upsert_state(next_state)
+            session.extras["dataset_id"] = next_state.dataset_id
+        else:
+            if task is not None:
+                next_state.task = task.strip()
+            if denoising_steps is not None:
+                next_state.denoising_steps = int(denoising_steps)
+            if num_episodes is not None:
+                next_state.batch_size = max(int(num_episodes), 1)
+                next_state.target_total_episodes = next_state.batch_size
+            if episode_time_s is not None:
+                next_state.episode_time_s = max(float(episode_time_s), 1.0)
+            if reset_time_s is not None:
+                next_state.reset_time_s = max(float(reset_time_s), 0.0)
+        if next_state.started:
+            return {
+                "success": True,
+                "message": "inference recording already started",
+                "dataset_id": next_state.dataset_id,
+            }
 
         await self._dashboard.set_teleop_enabled(enabled=False)
         next_state.teleop_enabled = False
@@ -296,12 +341,13 @@ class InferenceRecordingController:
             return None
 
         self._upsert_state(next_state)
+        next_state.started = True
         self._start_monitor_loop(session.id)
-        session.extras["dataset_id"] = dataset_id
-        logger.info("Started inference recording: dataset_id=%s", dataset_id)
+        session.extras["dataset_id"] = next_state.dataset_id
+        logger.info("Started inference recording: dataset_id=%s", next_state.dataset_id)
 
         await self._dataset.upsert_record(
-            dataset_id=dataset_id,
+            dataset_id=next_state.dataset_id,
             dataset_name=next_state.dataset_name,
             task=next_state.task,
             profile_snapshot=next_state.profile_snapshot,
@@ -313,10 +359,52 @@ class InferenceRecordingController:
         )
         await save_session_profile_binding(
             session_kind="recording",
-            session_id=dataset_id,
+            session_id=next_state.dataset_id,
             profile=session.profile,
         )
         return result
+
+    async def prepare(
+        self,
+        *,
+        session: SessionState,
+        task: str | None,
+        denoising_steps: int | None,
+        num_episodes: int | None = None,
+        episode_time_s: float | None = None,
+        reset_time_s: float | None = None,
+    ) -> dict | None:
+        with self._lock:
+            existing = self._states.get(session.id)
+        if existing is not None:
+            session.extras["dataset_id"] = existing.dataset_id
+            return {
+                "success": True,
+                "message": "inference recording already prepared",
+                "dataset_id": existing.dataset_id,
+                "prepared": True,
+            }
+
+        next_state = self._build_state(
+            session=session,
+            task=task,
+            denoising_steps=denoising_steps,
+            num_episodes=num_episodes,
+            episode_time_s=episode_time_s,
+            reset_time_s=reset_time_s,
+        )
+        if next_state is None:
+            return None
+
+        self._upsert_state(next_state)
+        session.extras["dataset_id"] = next_state.dataset_id
+        logger.info("Prepared inference recording: dataset_id=%s", next_state.dataset_id)
+        return {
+            "success": True,
+            "message": "inference recording prepared",
+            "dataset_id": next_state.dataset_id,
+            "prepared": True,
+        }
 
     def get_status(self, inference_session_id: str) -> dict:
         with self._lock:
@@ -324,6 +412,7 @@ class InferenceRecordingController:
         if state is None:
             return {
                 "recording_dataset_id": None,
+                "recording_prepared": False,
                 "recording_active": False,
                 "awaiting_continue_confirmation": False,
                 "batch_size": self._batch_size,
@@ -332,6 +421,21 @@ class InferenceRecordingController:
                 "episode_time_s": 0.0,
                 "reset_time_s": 0.0,
                 "denoising_steps": None,
+            }
+        if not state.started:
+            return {
+                "recording_dataset_id": state.dataset_id,
+                "recording_prepared": True,
+                "recording_active": False,
+                "recorder_state": "prepared",
+                "paused": bool(state.inference_paused or state.manual_paused),
+                "awaiting_continue_confirmation": False,
+                "batch_size": state.batch_size,
+                "episode_count": 0,
+                "num_episodes": state.batch_size,
+                "episode_time_s": state.episode_time_s,
+                "reset_time_s": state.reset_time_s,
+                "denoising_steps": state.denoising_steps,
             }
 
         status: dict | None = None
@@ -376,6 +480,7 @@ class InferenceRecordingController:
 
         return {
             "recording_dataset_id": state.dataset_id,
+            "recording_prepared": True,
             "recording_active": recording_active,
             "recorder_state": recorder_state if dataset_matches else state.last_recorder_state or None,
             "paused": paused,

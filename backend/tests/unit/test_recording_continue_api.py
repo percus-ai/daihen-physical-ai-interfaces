@@ -107,6 +107,31 @@ def test_create_session_rejects_non_continuable(monkeypatch, tmp_path: Path):
         assert "残りエピソードがありません" in str(exc.detail)
 
 
+def test_create_session_rejects_when_inference_reserved(monkeypatch):
+    class _FakeInferenceManager:
+        @staticmethod
+        def get_active_recording_status():
+            return {"recording_prepared": True, "recording_dataset_id": "dataset-inference"}
+
+    monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(recording_api, "get_inference_session_manager", lambda: _FakeInferenceManager())
+
+    request = recording_api.RecordingSessionCreateRequest(
+        dataset_name="dataset_name",
+        task="pick and place",
+        num_episodes=1,
+        episode_time_s=30.0,
+        reset_time_s=5.0,
+    )
+
+    try:
+        asyncio.run(recording_api.create_session(request))
+        assert False, "Expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "Recorder is reserved by an active inference session" in str(exc.detail)
+
+
 def test_run_create_operation_continue_uses_plan_values(monkeypatch, tmp_path: Path):
     captured: dict = {}
     completed: dict = {}
@@ -186,6 +211,23 @@ def test_start_session_starts_prepared_session(monkeypatch):
     assert response.dataset_id == "dataset-1"
 
 
+def test_start_session_rejects_when_inference_reserved(monkeypatch):
+    class _FakeInferenceManager:
+        @staticmethod
+        def get_active_recording_status():
+            return {"recording_prepared": True, "recording_dataset_id": "dataset-inference"}
+
+    monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(recording_api, "get_inference_session_manager", lambda: _FakeInferenceManager())
+
+    try:
+        asyncio.run(recording_api.start_session(recording_api.RecordingSessionStartRequest(dataset_id="dataset-1")))
+        assert False, "Expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "Recorder is reserved by an active inference session" in str(exc.detail)
+
+
 def test_start_session_rejects_unprepared_recording(monkeypatch):
     class _FakeManager:
         @staticmethod
@@ -205,6 +247,9 @@ def test_start_session_rejects_unprepared_recording(monkeypatch):
 
 def test_stop_session_returns_404_when_session_not_tracked(monkeypatch):
     class _FakeManager:
+        def status(self, _dataset_id: str):
+            return None
+
         def any_active(self):
             return None
 

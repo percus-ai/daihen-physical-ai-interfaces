@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { Button } from 'bits-ui';
+  import { createQuery } from '@tanstack/svelte-query';
   import {
     api,
     type RecordingInfo,
@@ -21,6 +22,20 @@
     done: '完了',
     error: '失敗'
   };
+  type InferenceRunnerStatus = {
+    active?: boolean;
+    recording_dataset_id?: string | null;
+    recording_prepared?: boolean;
+    recording_active?: boolean;
+  };
+  type InferenceRunnerStatusResponse = {
+    runner_status?: InferenceRunnerStatus;
+  };
+
+  const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
+    queryKey: ['inference', 'runner', 'status'],
+    queryFn: api.inference.runnerStatus
+  });
 
   const pad = (value: number) => String(value).padStart(2, '0');
   const buildDefaultName = () => {
@@ -56,6 +71,15 @@
   let startupContributor: RealtimeTrackConsumerHandle | null = null;
   const continueFromDatasetId = $derived((page.url.searchParams.get('continue_from_dataset_id') ?? '').trim());
   const isContinueMode = $derived(Boolean(continueFromDatasetId));
+  const inferenceRunnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
+  const inferenceRecorderReserved = $derived(
+    Boolean(
+      inferenceRunnerStatus.active &&
+        (inferenceRunnerStatus.recording_prepared ||
+          inferenceRunnerStatus.recording_active ||
+          String(inferenceRunnerStatus.recording_dataset_id ?? '').trim())
+    )
+  );
 
   const validateDatasetName = (value: string) => {
     const trimmed = value.trim();
@@ -143,6 +167,11 @@
     error = '';
     startupStatus = null;
     startupStreamError = '';
+
+    if (inferenceRecorderReserved) {
+      error = '推論セッションが Recorder を使用中のため、新規データセット収録は開始できません。';
+      return;
+    }
 
     if (isContinueMode) {
       if (continueLoading) {
@@ -275,6 +304,12 @@
 </section>
 
 <section class="card p-6">
+  {#if inferenceRecorderReserved}
+    <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+      <p class="font-semibold">推論セッションが収録機能を使用中です。</p>
+      <p class="mt-1">通常のデータ録画は開始できません。推論に付随する録画操作は推論セッション画面で行います。</p>
+    </div>
+  {/if}
   <form class="grid gap-4" onsubmit={handleSubmit}>
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">データセット名</span>
@@ -349,7 +384,7 @@
       <Button.Root
         class="btn-primary"
         type="submit"
-        disabled={submitting || startupActive || continueLoading || (isContinueMode && !continueRecording?.continuable)}
+        disabled={inferenceRecorderReserved || submitting || startupActive || continueLoading || (isContinueMode && !continueRecording?.continuable)}
         aria-busy={submitting || startupActive || continueLoading}
       >
         {startupActive ? '準備中...' : isContinueMode ? '継続セッションを準備' : '収録データセットを作成'}

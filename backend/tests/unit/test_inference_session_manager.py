@@ -102,9 +102,13 @@ class _FakeRecorder:
         self.stop_calls = 0
         self.wait_calls = 0
         self.status_calls = 0
+        self.ensure_running_calls = 0
 
     def build_cameras(self, _profile_snapshot: dict) -> list[dict]:
-        return []
+        return [{"name": "front", "topic": "/cam/front/compressed"}]
+
+    def ensure_running(self) -> None:
+        self.ensure_running_calls += 1
 
     def status(self) -> dict:
         self.status_calls += 1
@@ -167,30 +171,16 @@ class _FakeDataset:
             raise self.upload_exception
 
 
-class _FakeRecordingSessions:
-    def __init__(self):
-        self.unregistered: list[str] = []
-        self.registered: list[dict] = []
-
-    def unregister_external_session(self, session_id: str) -> None:
-        self.unregistered.append(session_id)
-
-    def register_external_session(self, **kwargs) -> None:
-        self.registered.append(kwargs)
-
-
 def _build_manager(
     *,
     recorder: _FakeRecorder,
     dataset: _FakeDataset,
     runtime: _FakeRuntime,
-    recording_sessions: _FakeRecordingSessions,
 ) -> InferenceSessionManager:
     manager = InferenceSessionManager(
         runtime=runtime,
         recorder=recorder,
         dataset=dataset,
-        recording_sessions=recording_sessions,
     )
     manager._sessions["session-1"] = SessionState(
         id="session-1",
@@ -199,9 +189,25 @@ def _build_manager(
         extras={
             "worker_session_id": "worker-1",
             "dataset_id": "dataset-1",
+            "recording_started": True,
         },
     )
     return manager
+
+
+def _build_profile_snapshot() -> dict:
+    return {
+        "profile": {
+            "lerobot": {
+                "left_arm": {
+                    "namespace": "left_arm",
+                    "topic": "/left_arm/joint_states",
+                    "action_topic": "/left_arm/joint_actions",
+                    "joints": [f"left_arm_joint{i}" for i in range(1, 8)],
+                }
+            }
+        }
+    }
 
 
 def test_stop_treats_recorder_timeout_as_stopped_when_already_inactive() -> None:
@@ -211,12 +217,10 @@ def test_stop_treats_recorder_timeout_as_stopped_when_already_inactive() -> None
         final_status={"state": "idle", "dataset_id": ""},
     )
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
 
     state = asyncio.run(manager.stop("session-1"))
@@ -228,7 +232,6 @@ def test_stop_treats_recorder_timeout_as_stopped_when_already_inactive() -> None
     assert dataset.updated == ["dataset-1"]
     assert dataset.marked == ["dataset-1"]
     assert dataset.uploaded == ["dataset-1"]
-    assert recording_sessions.unregistered == ["dataset-1"]
 
 
 def test_stop_keeps_dataset_unmarked_when_recorder_may_still_be_active() -> None:
@@ -238,12 +241,10 @@ def test_stop_keeps_dataset_unmarked_when_recorder_may_still_be_active() -> None
         final_status={"state": "recording", "dataset_id": "dataset-1"},
     )
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
 
     state = asyncio.run(manager.stop("session-1"))
@@ -255,19 +256,16 @@ def test_stop_keeps_dataset_unmarked_when_recorder_may_still_be_active() -> None
     assert dataset.updated == []
     assert dataset.marked == []
     assert dataset.uploaded == ["dataset-1"]
-    assert recording_sessions.unregistered == ["dataset-1"]
 
 
 def test_stop_unregisters_recording_when_auto_upload_fails() -> None:
     runtime = _FakeRuntime()
     recorder = _FakeRecorder(final_status={"state": "idle", "dataset_id": ""})
     dataset = _FakeDataset(upload_exception=RuntimeError("upload failed"))
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
 
     state = asyncio.run(manager.stop("session-1"))
@@ -275,7 +273,6 @@ def test_stop_unregisters_recording_when_auto_upload_fails() -> None:
     assert state.status == "stopped"
     assert recorder.stop_calls == 1
     assert dataset.uploaded == ["dataset-1"]
-    assert recording_sessions.unregistered == ["dataset-1"]
     assert manager.status("session-1") is None
 
 
@@ -283,12 +280,10 @@ def test_stop_resolves_recording_dataset_id_from_controller_status() -> None:
     runtime = _FakeRuntime()
     recorder = _FakeRecorder(final_status={"state": "idle", "dataset_id": ""})
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
     manager._sessions["session-1"].extras.pop("dataset_id")
 
@@ -315,7 +310,6 @@ def test_stop_resolves_recording_dataset_id_from_controller_status() -> None:
     assert state.status == "stopped"
     assert recorder.stop_calls == 1
     assert dataset.uploaded == ["dataset-from-controller"]
-    assert recording_sessions.unregistered == ["dataset-from-controller"]
     assert controller.marked == ["session-1"]
     assert controller.unregistered == ["session-1"]
 
@@ -324,12 +318,10 @@ def test_stop_cleans_recording_even_when_runtime_stop_fails() -> None:
     runtime = _FakeRuntime(stop_exception=RuntimeError("worker stop failed"))
     recorder = _FakeRecorder(final_status={"state": "idle", "dataset_id": ""})
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -339,7 +331,6 @@ def test_stop_cleans_recording_even_when_runtime_stop_fails() -> None:
     assert "worker stop failed" in str(exc_info.value.detail)
     assert recorder.stop_calls == 1
     assert dataset.uploaded == ["dataset-1"]
-    assert recording_sessions.unregistered == ["dataset-1"]
     assert manager.status("session-1") is not None
 
 
@@ -349,12 +340,10 @@ def test_stop_recording_without_active_session_finalizes_completed_dataset() -> 
         status_payload={"state": "completed", "dataset_id": "dataset-1"},
     )
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
 
     result = asyncio.run(manager.stop_recording_without_active_session("dataset-1"))
@@ -368,7 +357,6 @@ def test_stop_recording_without_active_session_finalizes_completed_dataset() -> 
     assert dataset.updated == ["dataset-1"]
     assert dataset.marked == ["dataset-1"]
     assert dataset.uploaded == ["dataset-1"]
-    assert recording_sessions.unregistered == ["dataset-1"]
 
 
 def test_stop_recording_attempts_stop_when_status_read_fails() -> None:
@@ -378,12 +366,10 @@ def test_stop_recording_attempts_stop_when_status_read_fails() -> None:
         final_status={"state": "idle", "dataset_id": ""},
     )
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
 
     result = asyncio.run(manager.stop_recording_without_active_session("dataset-1"))
@@ -398,7 +384,6 @@ def test_stop_recording_attempts_stop_when_status_read_fails() -> None:
     assert dataset.updated == ["dataset-1"]
     assert dataset.marked == ["dataset-1"]
     assert dataset.uploaded == ["dataset-1"]
-    assert recording_sessions.unregistered == ["dataset-1"]
 
 
 def test_stop_recording_without_active_session_reports_unconfirmed_stop() -> None:
@@ -408,12 +393,10 @@ def test_stop_recording_without_active_session_reports_unconfirmed_stop() -> Non
         final_status={"state": "recording", "dataset_id": "dataset-1"},
     )
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
 
     result = asyncio.run(manager.stop_recording_without_active_session("dataset-1"))
@@ -427,19 +410,16 @@ def test_stop_recording_without_active_session_reports_unconfirmed_stop() -> Non
     assert dataset.updated == []
     assert dataset.marked == []
     assert dataset.uploaded == ["dataset-1"]
-    assert recording_sessions.unregistered == ["dataset-1"]
 
 
 def test_resume_starts_recording_when_session_not_started() -> None:
     runtime = _FakeRuntime()
     recorder = _FakeRecorder()
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
     manager._sessions["session-1"].status = "created"
     manager._sessions["session-1"].extras = {
@@ -478,19 +458,16 @@ def test_resume_starts_recording_when_session_not_started() -> None:
     assert manager._sessions["session-1"].status == "running"
     assert manager._sessions["session-1"].extras["recording_started"] is True
     assert runtime.pause_calls == [("worker-1", False)]
-    assert recording_sessions.registered[0]["session_id"] == "dataset-started"
 
 
 def test_apply_active_settings_updates_pending_values_before_start() -> None:
     runtime = _FakeRuntime()
     recorder = _FakeRecorder()
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
     manager._sessions["session-1"].extras = {
         "worker_session_id": "worker-1",
@@ -524,12 +501,10 @@ def test_any_active_prefers_latest_session_with_worker_session_id() -> None:
     runtime = _FakeRuntime()
     recorder = _FakeRecorder()
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = _build_manager(
         recorder=recorder,
         dataset=dataset,
         runtime=runtime,
-        recording_sessions=recording_sessions,
     )
     manager._sessions["session-stale"] = SessionState(
         id="session-stale",
@@ -557,7 +532,7 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
         return SimpleNamespace(
             name="profile-a",
             source_path="profiles/profile-a.yaml",
-            snapshot={"profile": {"lerobot": {}}},
+            snapshot=_build_profile_snapshot(),
         )
 
     async def fake_save_session_profile_binding(**_kwargs):
@@ -566,12 +541,10 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
     runtime = _FakeRuntime()
     recorder = _FakeRecorder()
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = InferenceSessionManager(
         runtime=runtime,
         recorder=recorder,
         dataset=dataset,
-        recording_sessions=recording_sessions,
     )
 
     monkeypatch.setattr(InferenceSessionManager, "_resolve_profile", fake_resolve_profile)
@@ -639,6 +612,7 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
 
     assert dataset.ensured_models == ["model-1"]
     assert runtime.ensure_startable_calls == 1
+    assert recorder.ensure_running_calls == 1
     assert runtime.call_order == ["prepare_environment", "start"]
     assert runtime.prepare_calls == ["pi05:cpu"]
     assert runtime.start_calls[0]["model_id"] == "model-1"
@@ -647,6 +621,8 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
     assert progress_events.index("prepare_env") < progress_events.index("launch_worker")
     assert runtime.pause_calls == [("worker-1", True)]
     assert state.extras["worker_session_id"] == "worker-1"
+    assert state.extras["recording_prepared"] is True
+    assert state.extras["recording_started"] is False
 
 
 def test_create_blocks_worker_start_on_model_profile_mismatch(monkeypatch, tmp_path) -> None:
@@ -663,12 +639,10 @@ def test_create_blocks_worker_start_on_model_profile_mismatch(monkeypatch, tmp_p
     runtime = _FakeRuntime()
     recorder = _FakeRecorder()
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = InferenceSessionManager(
         runtime=runtime,
         recorder=recorder,
         dataset=dataset,
-        recording_sessions=recording_sessions,
     )
 
     monkeypatch.setattr(InferenceSessionManager, "_resolve_profile", fake_resolve_profile)
@@ -747,12 +721,10 @@ def test_create_rejects_when_worker_already_running_before_sync(monkeypatch) -> 
     runtime = _FakeRuntime(startable_error=RuntimeError("Inference worker already running"))
     recorder = _FakeRecorder()
     dataset = _FakeDataset()
-    recording_sessions = _FakeRecordingSessions()
     manager = InferenceSessionManager(
         runtime=runtime,
         recorder=recorder,
         dataset=dataset,
-        recording_sessions=recording_sessions,
     )
 
     monkeypatch.setattr(InferenceSessionManager, "_resolve_profile", fake_resolve_profile)

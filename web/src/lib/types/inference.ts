@@ -77,6 +77,7 @@ export type RunnerStatus = {
   last_error?: string;
   paused?: boolean;
   recording_dataset_id?: string | null;
+  recording_prepared?: boolean;
   recording_active?: boolean;
   recorder_state?: string | null;
   awaiting_continue_confirmation?: boolean;

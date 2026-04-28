@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from interfaces_backend.services.recorder_bridge import get_recorder_bridge
 from interfaces_backend.services.dataset_lifecycle import get_dataset_lifecycle
+from interfaces_backend.services.inference_session import get_inference_session_manager
 from interfaces_backend.services.recording_session import get_recording_session_manager
 from interfaces_backend.services.session_manager import SessionProgressCallback, require_user_id
 from interfaces_backend.services.storage_bulk_actions import (
@@ -53,6 +54,28 @@ def _recorder_error_detail(result: dict[str, Any], fallback: str) -> str:
         if detail:
             return detail
     return fallback
+
+
+def _ensure_recorder_not_reserved_by_inference() -> None:
+    status = get_inference_session_manager().get_active_recording_status()
+    if (
+        bool(status.get("recording_prepared"))
+        or bool(status.get("recording_active"))
+        or bool(str(status.get("recording_dataset_id") or "").strip())
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Recorder is reserved by an active inference session",
+        )
+
+
+def _reject_inference_owned_recorder(status: dict[str, Any]) -> None:
+    if str(status.get("session_kind") or "").strip() != "inference":
+        return
+    raise HTTPException(
+        status_code=409,
+        detail="Recorder is controlled by an active inference session",
+    )
 
 
 # -- Request / Response models ------------------------------------------------
@@ -575,6 +598,7 @@ async def _create_continue_session(
 )
 async def create_session(request: RecordingSessionCreateRequest):
     user_id = require_user_id()
+    _ensure_recorder_not_reserved_by_inference()
 
     if request.continue_from_dataset_id:
         row = await _fetch_recording_row(request.continue_from_dataset_id)
@@ -608,6 +632,7 @@ async def create_session(request: RecordingSessionCreateRequest):
 @router.post("/session/start", response_model=RecordingSessionActionResponse)
 async def start_session(request: RecordingSessionStartRequest):
     require_user_id()
+    _ensure_recorder_not_reserved_by_inference()
     mgr = get_recording_session_manager()
     if mgr.status(request.dataset_id) is None:
         raise HTTPException(
@@ -644,8 +669,12 @@ async def stop_session(request: RecordingSessionStopRequest):
             dataset_id = active.id
         else:
             raise HTTPException(status_code=404, detail="Session not found")
+    elif mgr.status(dataset_id) is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {dataset_id}")
 
-    state = await mgr.stop(dataset_id, save_current=request.save_current)
+    recorder_status = get_recorder_bridge().status()
+    _reject_inference_owned_recorder(recorder_status)
+    state = await mgr.stop(dataset_id, save_current=request.save_current, recorder_status=recorder_status)
     response = RecordingSessionActionResponse(
         success=True,
         message="Recording session stopped",
@@ -667,6 +696,7 @@ async def stop_session(request: RecordingSessionStopRequest):
 async def pause_session():
     require_user_id()
     recorder = get_recorder_bridge()
+    _reject_inference_owned_recorder(recorder.status())
     result = recorder.pause()
     if not result.get("success", False):
         raise HTTPException(status_code=500, detail=result.get("error") or "Recorder pause failed")
@@ -686,6 +716,7 @@ async def pause_session():
 async def resume_session():
     require_user_id()
     recorder = get_recorder_bridge()
+    _reject_inference_owned_recorder(recorder.status())
     result = recorder.resume()
     if not result.get("success", False):
         raise HTTPException(status_code=500, detail=result.get("error") or "Recorder resume failed")
@@ -732,6 +763,7 @@ async def update_session(request: RecordingSessionUpdateRequest):
     if target_dataset_id:
         recording_row = await _fetch_recording_row(target_dataset_id)
         status = recorder.status()
+        _reject_inference_owned_recorder(status)
         active_dataset_id = str(status.get("dataset_id") or "").strip()
         active_state = str(status.get("state") or "").strip().lower()
         is_active_target = active_dataset_id == target_dataset_id and active_state in _RECORDING_MUTABLE_STATES
@@ -758,6 +790,8 @@ async def update_session(request: RecordingSessionUpdateRequest):
                 "dataset_id": target_dataset_id,
             }
     else:
+        status = recorder.status()
+        _reject_inference_owned_recorder(status)
         result = recorder.update(payload)
         if not result.get("success", False):
             raise HTTPException(
@@ -830,6 +864,7 @@ async def retake_previous_episode():
     require_user_id()
     recorder = get_recorder_bridge()
     status = recorder.status()
+    _reject_inference_owned_recorder(status)
     dataset_id = status.get("dataset_id")
     if not dataset_id:
         raise HTTPException(status_code=400, detail="No active session")
@@ -858,6 +893,7 @@ async def retake_previous_episode():
 async def cancel_episode():
     require_user_id()
     recorder = get_recorder_bridge()
+    _reject_inference_owned_recorder(recorder.status())
     result = recorder.cancel_episode()
     if not result.get("success", False):
         raise HTTPException(status_code=500, detail=result.get("error") or "Recorder episode cancel failed")
@@ -881,6 +917,7 @@ async def cancel_episode():
 async def next_episode():
     require_user_id()
     recorder = get_recorder_bridge()
+    _reject_inference_owned_recorder(recorder.status())
     result = recorder.next_episode()
     if not result.get("success", False):
         raise HTTPException(
@@ -908,6 +945,7 @@ async def cancel_session(dataset_id: Optional[str] = None):
     require_user_id()
     mgr = get_recording_session_manager()
     recorder = get_recorder_bridge()
+    _reject_inference_owned_recorder(recorder.status())
     result: dict = {}
 
     if dataset_id:

@@ -91,6 +91,7 @@ class InferenceRunnerStatus(BaseModel):
     last_error: Optional[str] = None
     paused: bool = False
     recording_dataset_id: Optional[str] = None
+    recording_prepared: bool = False
     recording_active: bool = False
     recorder_state: Optional[str] = None
     awaiting_continue_confirmation: bool = False

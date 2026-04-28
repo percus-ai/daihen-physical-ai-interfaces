@@ -316,6 +316,10 @@ class SystemStatusMonitor:
                     env_name=self._optional_str(runtime_context.get("env_name")),
                     queue_length=runner.get("queue_length"),
                     worker_alive=gpu_host["status"] in {"running", "idle"},
+                    recording_dataset_id=self._optional_str(runner.get("recording_dataset_id")),
+                    recording_prepared=bool(runner.get("recording_prepared")),
+                    recording_active=bool(runner.get("recording_active")),
+                    recorder_state=self._optional_str(runner.get("recorder_state")),
                     last_error=runner.get("last_error") or gpu_host.get("last_error"),
                 )
                 with self._lock:
@@ -485,6 +489,9 @@ class SystemStatusMonitor:
         runtime_status = runtime_manager.get_status()
         runtime_context = runtime_manager.get_runtime_context()
         recording_status = get_inference_session_manager().get_active_recording_status()
+        runtime_paused = bool(runtime_status.runner_status.paused)
+        recording_paused = bool(recording_status.get("paused", False))
+        recording_status["paused"] = runtime_paused or recording_paused
         runner_status = runtime_status.runner_status.model_copy(update=recording_status)
         model_sync = get_dataset_lifecycle().get_model_sync_status()
         return {

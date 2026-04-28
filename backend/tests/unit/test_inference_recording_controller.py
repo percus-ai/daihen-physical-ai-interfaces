@@ -123,6 +123,93 @@ def _build_session(session_id: str = "inf-1") -> SessionState:
     )
 
 
+def test_prepare_registers_state_without_starting_recorder(monkeypatch) -> None:
+    recorder = _FakeRecorder()
+    dataset = _FakeDataset()
+    runtime = _FakeRuntime()
+    dashboard = _FakeDashboard()
+    controller = InferenceRecordingController(
+        recorder=recorder, dataset=dataset, runtime=runtime, dashboard=dashboard
+    )
+    session = _build_session()
+
+    monkeypatch.setattr(controller_module, "generate_dataset_id", lambda: "dataset-fixed")
+
+    result = asyncio.run(
+        controller.prepare(
+            session=session,
+            task="pick and place",
+            denoising_steps=8,
+            num_episodes=7,
+        )
+    )
+
+    assert result == {
+        "success": True,
+        "message": "inference recording prepared",
+        "dataset_id": "dataset-fixed",
+        "prepared": True,
+    }
+    assert session.extras["dataset_id"] == "dataset-fixed"
+    assert recorder.started_payloads == []
+    assert dataset.upsert_calls == []
+    assert dashboard.teleop_calls == []
+    status = controller.get_status("inf-1")
+    assert status["recording_dataset_id"] == "dataset-fixed"
+    assert status["recording_prepared"] is True
+    assert status["recording_active"] is False
+    assert status["recorder_state"] == "prepared"
+    assert status["num_episodes"] == 7
+
+
+def test_start_uses_prepared_state(monkeypatch) -> None:
+    recorder = _FakeRecorder()
+    dataset = _FakeDataset()
+    runtime = _FakeRuntime()
+    dashboard = _FakeDashboard()
+    controller = InferenceRecordingController(
+        recorder=recorder, dataset=dataset, runtime=runtime, dashboard=dashboard
+    )
+    session = _build_session()
+
+    async def _fake_save_session_profile_binding(**_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(controller_module, "generate_dataset_id", lambda: "dataset-fixed")
+    monkeypatch.setattr(
+        controller_module,
+        "save_session_profile_binding",
+        _fake_save_session_profile_binding,
+    )
+    monkeypatch.setattr(controller, "_start_monitor_loop", lambda _session_id: None)
+
+    asyncio.run(
+        controller.prepare(
+            session=session,
+            task="pick and place",
+            denoising_steps=8,
+            num_episodes=7,
+        )
+    )
+    result = asyncio.run(
+        controller.start(
+            session=session,
+            task="updated task",
+            denoising_steps=4,
+            num_episodes=9,
+        )
+    )
+
+    assert result is not None
+    assert recorder.started_payloads[0]["dataset_id"] == "dataset-fixed"
+    assert recorder.started_payloads[0]["task"] == "updated task"
+    assert recorder.started_payloads[0]["num_episodes"] == 9
+    assert dataset.upsert_calls[0]["target_total_episodes"] == 9
+    assert dashboard.teleop_calls == [False]
+    status = controller.get_status("inf-1")
+    assert status["recording_active"] is True
+
+
 def test_start_registers_inference_recording_state(monkeypatch) -> None:
     recorder = _FakeRecorder()
     dataset = _FakeDataset()

@@ -8,6 +8,8 @@ export type RecorderStatus = Record<string, unknown> & {
   phase?: string;
   task?: string;
   dataset_id?: string;
+  session_kind?: string | null;
+  inference_session_id?: string | null;
   episode_index?: number | null;
   episode_count?: number;
   num_episodes?: number;

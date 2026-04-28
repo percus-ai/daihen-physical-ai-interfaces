@@ -205,6 +205,14 @@
   const recorderSessionActive = $derived(
     Boolean(recorder?.session_id) && isRecorderActiveState(recorder?.state)
   );
+  const inferenceRecordingReserved = $derived(
+    Boolean(
+      inference?.session_id &&
+        (inference.recording_prepared ||
+          inference.recording_active ||
+          String(inference.recording_dataset_id ?? '').trim())
+    )
+  );
   const isRecorderStorageUnknownAlert = (alert: { source?: string; summary?: string }) =>
     alert.source === 'recorder' && alert.summary === 'recorder storage readiness is unknown';
   const recorderHasBlockingError = $derived(
@@ -230,6 +238,18 @@
         state: 'error',
         label: STATUS_STYLES.error.label,
         message: '録画を開始できません。'
+      };
+    }
+    if (inferenceRecordingReserved) {
+      return {
+        id: 'recorder',
+        title: '録画',
+        state: 'normal',
+        label: inference?.recording_active || recorderSessionActive ? STATUS_STYLES.normal.label : '待機',
+        message:
+          inference?.recording_active || recorderSessionActive
+            ? '推論に付随する録画が稼働しています。'
+            : '推論用の録画セッションを準備済みです。開始待ちです。'
       };
     }
     if (recorderSessionActive) {
