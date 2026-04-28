@@ -161,6 +161,8 @@ def test_start_registers_inference_recording_state(monkeypatch) -> None:
     status = controller.get_status("inf-1")
     assert status["recording_dataset_id"] == "dataset-fixed"
     assert status["recording_active"] is True
+    assert status["recorder_state"] == "recording"
+    assert status["paused"] is False
     assert status["awaiting_continue_confirmation"] is False
 
 
@@ -235,9 +237,53 @@ def test_get_status_marks_awaiting_continue_when_completed(monkeypatch) -> None:
 
     status = controller.get_status("inf-1")
     assert status["recording_active"] is False
+    assert status["recorder_state"] == "completed"
+    assert status["paused"] is True
     assert status["awaiting_continue_confirmation"] is True
     assert status["episode_count"] == 20
     assert status["num_episodes"] == 20
+
+
+def test_get_status_marks_manual_pause_as_paused(monkeypatch) -> None:
+    recorder = _FakeRecorder()
+    dataset = _FakeDataset()
+    runtime = _FakeRuntime()
+    dashboard = _FakeDashboard()
+    controller = InferenceRecordingController(
+        recorder=recorder, dataset=dataset, runtime=runtime, dashboard=dashboard
+    )
+    session = _build_session()
+
+    async def _fake_save_session_profile_binding(**_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(controller_module, "generate_dataset_id", lambda: "dataset-fixed")
+    monkeypatch.setattr(
+        controller_module,
+        "save_session_profile_binding",
+        _fake_save_session_profile_binding,
+    )
+    monkeypatch.setattr(controller, "_start_monitor_loop", lambda _session_id: None)
+
+    asyncio.run(
+        controller.start(
+            session=session,
+            task="pick and place",
+            denoising_steps=8,
+        )
+    )
+
+    asyncio.run(
+        controller.set_manual_pause(
+            inference_session_id="inf-1",
+            paused=True,
+        )
+    )
+
+    status = controller.get_status("inf-1")
+    assert status["recording_active"] is True
+    assert status["recorder_state"] == "paused"
+    assert status["paused"] is True
 
 
 def test_get_status_keeps_awaiting_continue_disabled_after_stop_requested(monkeypatch) -> None:

@@ -168,9 +168,11 @@ class InferenceRuntimeManager:
             runner = InferenceRunnerStatus(
                 active=runner_active,
                 session_id=self._session_id,
+                state=self._runner_state,
                 task=self._task,
                 queue_length=self._queue_length,
                 last_error=self._last_error,
+                paused=self._runner_state == "paused",
                 denoising_steps=self._denoising_steps,
             )
 

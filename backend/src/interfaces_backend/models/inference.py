@@ -85,11 +85,14 @@ class InferenceRuntimeTargetsResponse(BaseModel):
 class InferenceRunnerStatus(BaseModel):
     active: bool = False
     session_id: Optional[str] = None
+    state: Optional[str] = None
     task: Optional[str] = None
     queue_length: int = 0
     last_error: Optional[str] = None
+    paused: bool = False
     recording_dataset_id: Optional[str] = None
     recording_active: bool = False
+    recorder_state: Optional[str] = None
     awaiting_continue_confirmation: bool = False
     batch_size: int = 20
     episode_count: int = 0

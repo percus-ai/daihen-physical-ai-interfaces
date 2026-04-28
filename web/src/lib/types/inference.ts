@@ -71,10 +71,17 @@ export type InferenceRuntimeTargetsResponse = {
 export type RunnerStatus = {
   active?: boolean;
   session_id?: string;
+  state?: string | null;
   task?: string;
   queue_length?: number;
   last_error?: string;
+  paused?: boolean;
   recording_dataset_id?: string | null;
+  recording_active?: boolean;
+  recorder_state?: string | null;
+  awaiting_continue_confirmation?: boolean;
+  episode_count?: number;
+  num_episodes?: number;
 };
 
 export type InferenceRunnerStatusResponse = {

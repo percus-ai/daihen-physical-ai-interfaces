@@ -761,6 +761,52 @@ def test_get_inference_runner_status_includes_model_sync(monkeypatch):
     assert response.model_sync.progress_percent == 42.5
 
 
+def test_get_inference_runner_status_preserves_runtime_pause(monkeypatch):
+    class _FakeRuntime:
+        def get_status(self):
+            return InferenceRunnerStatusResponse(
+                runner_status=InferenceRunnerStatus(
+                    active=True,
+                    session_id="session-1",
+                    state="paused",
+                    task="pick",
+                    paused=True,
+                ),
+                gpu_host_status=GpuHostStatus(
+                    status="running",
+                    session_id="session-1",
+                    pid=123,
+                    last_error=None,
+                ),
+            )
+
+    class _FakeManager:
+        def get_active_recording_status(self):
+            return {
+                "recording_dataset_id": None,
+                "recording_active": False,
+                "awaiting_continue_confirmation": False,
+            }
+
+    class _FakeLifecycle:
+        def get_model_sync_status(self):
+            return InferenceModelSyncStatus()
+
+    monkeypatch.setattr(
+        inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime()
+    )
+    monkeypatch.setattr(
+        inference_api, "get_inference_session_manager", lambda: _FakeManager()
+    )
+    monkeypatch.setattr(
+        inference_api, "get_dataset_lifecycle", lambda: _FakeLifecycle()
+    )
+
+    response = asyncio.run(inference_api.get_inference_runner_status())
+    assert response.runner_status.state == "paused"
+    assert response.runner_status.paused is True
+
+
 def test_get_runtime_targets_returns_service_snapshot(monkeypatch):
     class _FakeRuntimeTargetsService:
         def list_targets(self, *, policy_type: str | None):

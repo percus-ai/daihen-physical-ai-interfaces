@@ -544,6 +544,9 @@ async def get_inference_runner_status():
     manager = get_inference_session_manager()
     runtime_status = get_inference_runtime_manager().get_status()
     recording_status = manager.get_active_recording_status()
+    runtime_paused = bool(runtime_status.runner_status.paused)
+    recording_paused = bool(recording_status.get("paused", False))
+    recording_status["paused"] = runtime_paused or recording_paused
     runner_status = runtime_status.runner_status.model_copy(
         update=recording_status,
     )

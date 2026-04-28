@@ -341,9 +341,17 @@ class InferenceRecordingController:
             status = None
 
         recorder_state = self._recorder_state(status)
+        is_finalizing = self._is_finalizing_status(status)
         recorder_dataset_id = self._recorder_dataset_id(status)
         dataset_matches = recorder_dataset_id == state.dataset_id
         recording_active = dataset_matches and recorder_state in _ACTIVE_RECORDER_STATES
+        paused = state.manual_paused or state.inference_paused
+        if dataset_matches:
+            paused = paused or self._desired_inference_pause_state(
+                recorder_state=recorder_state,
+                is_finalizing=is_finalizing,
+                manual_paused=state.manual_paused,
+            )
 
         episode_count = 0
         num_episodes = state.batch_size
@@ -369,6 +377,8 @@ class InferenceRecordingController:
         return {
             "recording_dataset_id": state.dataset_id,
             "recording_active": recording_active,
+            "recorder_state": recorder_state if dataset_matches else state.last_recorder_state or None,
+            "paused": paused,
             "awaiting_continue_confirmation": awaiting,
             "batch_size": state.batch_size,
             "episode_count": episode_count,

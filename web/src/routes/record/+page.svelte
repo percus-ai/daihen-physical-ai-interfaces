@@ -56,8 +56,7 @@
     shouldIgnoreIdleUploadSnapshot
   } from '$lib/recording/uploadStatus';
   import { presentRecordingUploadStatus } from '$lib/storage/transferStatus';
-  import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
-  import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
+  import ActiveWorkBanner from '$lib/components/ActiveWorkBanner.svelte';
   import { sessionViewer } from '$lib/viewer/sessionViewerStore';
   import type { SystemStatusSnapshot } from '$lib/types/systemStatus';
 
@@ -167,6 +166,9 @@
   let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
   let uploadModalOpen = $state(false);
   let selectedUploadDatasetId = $state('');
+  let recordingStopPending = $state(false);
+  let recordingStopRequested = $state(false);
+  let recordingStopError = $state('');
 
   const recordingSortKey = $derived(parseRecordingSortKey(page.url.searchParams.get('sort')));
   const recordingSortOrder = $derived(parseSortOrder(page.url.searchParams.get('order')));
@@ -676,17 +678,6 @@
     }
   };
 
-  const STATUS_LABELS: Record<string, string> = {
-    idle: '待機',
-    warming: '準備中',
-    recording: '録画中',
-    paused: '一時停止',
-    resetting: 'リセット中',
-    inactive: '停止',
-    completed: '完了',
-    failed: '失敗'
-  };
-
   let recorderStatus = $state<RecorderStatus | null>(null);
   let rosbridgeStatus = $state<RosbridgeStatus>('idle');
   let lastStatusAt = $state('');
@@ -714,12 +705,51 @@
 
   const activeSessionId = $derived(getRecorderActiveDatasetId(recorderStatus));
   const activeSessionState = $derived(recorderStatus?.state ?? 'unknown');
-  const activeSessionLabel = $derived(STATUS_LABELS[activeSessionState] ?? activeSessionState);
   const activeEpisodeIndex = $derived(getRecorderDisplayEpisodeNumber(recorderStatus));
   const activeEpisodeTotal = $derived(recorderStatus?.num_episodes ?? null);
-  const activeFrameCount = $derived(recorderStatus?.frame_count ?? null);
-  const activeEpisodeFrameCount = $derived(recorderStatus?.episode_frame_count ?? null);
-  const rawStatus = $derived(recorderStatus ? JSON.stringify(recorderStatus, null, 2) : '');
+  const activeWorkState = $derived.by(() => {
+    if (recordingStopPending || recordingStopRequested) return 'ending';
+    if (['paused', 'resetting_paused'].includes(activeSessionState)) return 'waiting';
+    return 'running';
+  });
+  const activeEpisodeLabel = $derived.by(() => {
+    if (!activeEpisodeIndex) return '';
+    return `${activeEpisodeIndex}${activeEpisodeTotal ? ` / ${activeEpisodeTotal}` : ''}`;
+  });
+  const activeWorkTask = $derived(
+    String(recorderStatus?.task ?? '').trim() || 'データセット収録が進行中です。'
+  );
+  const activeWorkMetrics = $derived([
+    { label: 'エピソード', value: activeEpisodeLabel, hidden: !activeEpisodeLabel },
+    { label: '最終更新', value: lastStatusAt || '-' }
+  ]);
+
+  const handleActiveRecordingStop = async () => {
+    const datasetId = activeSessionId;
+    if (!datasetId || recordingStopPending) return;
+    recordingStopPending = true;
+    recordingStopError = '';
+    try {
+      await api.recording.stopSession({
+        dataset_id: datasetId,
+        save_current: true
+      });
+      recordingStopRequested = true;
+      toast.success('終了リクエストを受け付けました。状態反映を待っています。');
+    } catch (err) {
+      recordingStopError = err instanceof Error ? err.message : '収録の終了に失敗しました。';
+      toast.error(recordingStopError);
+    } finally {
+      recordingStopPending = false;
+    }
+  };
+
+  $effect(() => {
+    if (!activeSessionId) {
+      recordingStopRequested = false;
+      recordingStopError = '';
+    }
+  });
 
   $effect(() => {
     if ($recordingsQuery.isLoading) {
@@ -839,37 +869,17 @@
 </section>
 
 {#if activeSessionId}
-  <ActiveSessionSection title="稼働中データセット" description="現在収録中のデータセットを表示します。">
-    <ActiveSessionCard>
-      {#if rosbridgeStatus !== 'connected'}
-        <p class="text-xs text-rose-600">rosbridge が切断されています。状態は更新されません。</p>
-      {/if}
-      <div class="flex flex-wrap items-center gap-3 text-sm text-slate-700">
-        <span class="chip">状態: {activeSessionLabel}</span>
-        <span class="chip">Dataset: {activeSessionId}</span>
-        {#if activeEpisodeIndex}
-          <span class="chip">
-            Episode: {activeEpisodeIndex}{activeEpisodeTotal ? ` / ${activeEpisodeTotal}` : ''}
-          </span>
-        {/if}
-        {#if activeFrameCount != null}
-          <span class="chip">Frames: {activeFrameCount}</span>
-        {/if}
-        {#if activeEpisodeFrameCount != null}
-          <span class="chip">Episode Frames: {activeEpisodeFrameCount}</span>
-        {/if}
-        {#if recorderStatus?.last_frame_at}
-          <span class="chip">Last: {formatDate(recorderStatus.last_frame_at)}</span>
-        {/if}
-        <span class="chip">更新: {lastStatusAt || '-'}</span>
-        <a class="btn-ghost px-3 py-1 text-xs" href={`/record/sessions/${activeSessionId}`}>収録を開く</a>
-      </div>
-      <details class="mt-3 nested-block p-3 text-xs text-slate-600">
-        <summary class="cursor-pointer text-slate-500">状態の生データ</summary>
-        <pre class="mt-2 whitespace-pre-wrap text-[11px] text-slate-700">{rawStatus || '-'}</pre>
-      </details>
-    </ActiveSessionCard>
-  </ActiveSessionSection>
+  <ActiveWorkBanner
+    state={activeWorkState}
+    title="データ収録"
+    task={activeWorkTask}
+    metrics={activeWorkMetrics}
+    primaryHref={`/record/sessions/${encodeURIComponent(activeSessionId)}`}
+    onSecondary={handleActiveRecordingStop}
+    secondaryDisabled={recordingStopPending || recordingStopRequested}
+    warning={rosbridgeStatus !== 'connected' ? '状態更新が止まっている可能性があります。' : ''}
+    error={recordingStopError}
+  />
 {/if}
 
 <section class="card p-6">

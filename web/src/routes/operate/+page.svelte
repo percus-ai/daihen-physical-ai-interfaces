@@ -17,8 +17,7 @@
   } from '$lib/realtime/trackClient';
   import { queryClient } from '$lib/queryClient';
   import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
-  import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
-  import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
+  import ActiveWorkBanner from '$lib/components/ActiveWorkBanner.svelte';
   import InferenceModelSelector from '$lib/components/InferenceModelSelector.svelte';
   import { loadRecentModelIds, recordRecentModelUsage } from '$lib/inference/modelPickerStorage';
   import { selectInitialInferenceModelId, resolveInferenceModelId, sortInferenceModelsByRecency } from '$lib/inference/modelSelection';
@@ -75,9 +74,12 @@
   let inferenceStopError = $state('');
   let inferenceStartPending = $state(false);
   let inferenceStopPending = $state(false);
+  let inferenceStopRequested = $state(false);
   let startupStatus = $state<StartupOperationStatusResponse | null>(null);
   let startupStreamError = $state('');
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
+  let runnerLastStatusAt = $state('');
+  let runnerStatusFingerprint = $state('');
   let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
   let startupContributor: RealtimeTrackConsumerHandle | null = null;
   let startupOperationId = $state('');
@@ -237,15 +239,18 @@
   };
 
   const handleInferenceStop = async () => {
+    if (inferenceStopPending || inferenceStopRequested) return;
+    const snapshot = $inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus;
+    const sessionId = String(snapshot.session_id ?? '').trim();
+    if (!sessionId) return;
     inferenceStopPending = true;
     inferenceStopError = '';
     try {
-      const runnerStatus = $inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus;
-      const sessionId = runnerStatus.session_id;
       await api.inference.runnerStop({
         session_id: sessionId,
-        recording_dataset_id: runnerStatus.recording_dataset_id ?? undefined
+        recording_dataset_id: snapshot.recording_dataset_id ?? undefined
       });
+      inferenceStopRequested = true;
       await refetchQuery($inferenceRunnerStatusQuery);
     } catch (err) {
       inferenceStopError = err instanceof Error ? err.message : '推論の停止に失敗しました。';
@@ -269,6 +274,56 @@
     return Boolean(runnerStatus.active && runnerStatus.session_id);
   });
   const runnerActive = $derived(Boolean(runnerStatus.active));
+  const runnerPaused = $derived.by(() => {
+    const state = String(runnerStatus.state ?? '').trim().toLowerCase();
+    const recorderState = String(runnerStatus.recorder_state ?? '').trim().toLowerCase();
+    return (
+      Boolean(runnerStatus.paused) ||
+      state === 'paused' ||
+      recorderState === 'paused' ||
+      recorderState === 'resetting_paused'
+    );
+  });
+  const inferenceWorkState = $derived.by(() => {
+    if (inferenceStopPending || inferenceStopRequested) return 'ending';
+    if (runnerPaused || runnerStatus.awaiting_continue_confirmation) return 'waiting';
+    return 'running';
+  });
+  const inferenceEpisodeLabel = $derived.by(() => {
+    const episodeCount = Number(runnerStatus.episode_count ?? 0);
+    const totalEpisodes = Number(runnerStatus.num_episodes ?? 0);
+    if (!Number.isFinite(totalEpisodes) || totalEpisodes <= 0) return '';
+    const completedEpisodes = Number.isFinite(episodeCount) ? Math.max(0, episodeCount) : 0;
+    const displayEpisode = runnerStatus.awaiting_continue_confirmation
+      ? completedEpisodes
+      : completedEpisodes + 1;
+    return `${Math.min(displayEpisode, totalEpisodes)} / ${totalEpisodes}`;
+  });
+  const inferenceWorkTask = $derived(
+    String(runnerStatus.task ?? '').trim() || '推論セッションが進行中です。'
+  );
+  const inferenceModelId = $derived(String(systemStatusSnapshot?.services?.inference?.model_id ?? '').trim());
+  const activeInferenceModel = $derived(
+    inferenceModels.find((item) => resolveInferenceModelId(item) === inferenceModelId) ?? null
+  );
+  const inferenceModelLabel = $derived.by(() => {
+    const modelName = String(activeInferenceModel?.name ?? '').trim();
+    if (modelName && modelName !== inferenceModelId) return modelName;
+    const policyType = String(activeInferenceModel?.policy_type ?? '').trim();
+    if (policyType) return policyType.toUpperCase();
+    if (inferenceModelId) return '取得中';
+    return '';
+  });
+  const inferenceWorkMetrics = $derived([
+    { label: 'モデル', value: inferenceModelLabel, hidden: !inferenceModelLabel },
+    { label: 'エピソード', value: inferenceEpisodeLabel, hidden: !inferenceEpisodeLabel },
+    { label: '最終更新', value: runnerLastStatusAt || '-' },
+    {
+      label: '待機',
+      value: `${runnerStatus.queue_length ?? 0}件`,
+      hidden: Number(runnerStatus.queue_length ?? 0) <= 0
+    }
+  ]);
   const startupProgressPercent = $derived(
     Math.min(100, Math.max(0, Number(startupStatus?.progress_percent ?? 0)))
   );
@@ -293,6 +348,34 @@
     );
     return parts.join(' / ') || 'CUDA';
   };
+
+  $effect(() => {
+    if (!runnerActive) {
+      inferenceStopRequested = false;
+      inferenceStopError = '';
+      runnerLastStatusAt = '';
+      runnerStatusFingerprint = '';
+    }
+  });
+
+  $effect(() => {
+    if (!runnerActive) return;
+    const nextFingerprint = JSON.stringify({
+      sessionId: runnerStatus.session_id ?? '',
+      task: runnerStatus.task ?? '',
+      episodeCount: runnerStatus.episode_count ?? 0,
+      numEpisodes: runnerStatus.num_episodes ?? 0,
+      paused: Boolean(runnerStatus.paused),
+      state: runnerStatus.state ?? '',
+      recorderState: runnerStatus.recorder_state ?? '',
+      awaitingContinue: Boolean(runnerStatus.awaiting_continue_confirmation),
+      queueLength: runnerStatus.queue_length ?? 0,
+      lastError: runnerStatus.last_error ?? ''
+    });
+    if (nextFingerprint === runnerStatusFingerprint) return;
+    runnerStatusFingerprint = nextFingerprint;
+    runnerLastStatusAt = new Date().toLocaleTimeString();
+  });
 
   $effect(() => {
     const modelId = selectedModelId;
@@ -374,6 +457,7 @@
             const payload = event.detail as OperateStatusStreamPayload;
             if (payload.inference_runner_status) {
               queryClient.setQueryData(['inference', 'runner', 'status'], payload.inference_runner_status);
+              runnerLastStatusAt = new Date().toLocaleTimeString();
             }
             if (payload.operate_status) {
               queryClient.setQueryData(['operate', 'status'], payload.operate_status);
@@ -412,51 +496,17 @@
   </div>
 </section>
 
-{#if $inferenceRunnerStatusQuery.isLoading || runnerSessionOpenable}
-  <ActiveSessionSection
-    title="稼働中セッション"
-    description="推論セッションの状況を表示します。"
-    badges={[`推論: ${runnerActive ? '稼働中' : '停止'}`]}
-  >
-    {#if $inferenceRunnerStatusQuery.isLoading}
-      <ActiveSessionCard tone="muted">
-        <p class="text-sm text-slate-600">推論セッションを読み込み中...</p>
-      </ActiveSessionCard>
-    {:else}
-      <ActiveSessionCard>
-        <div class="flex items-start justify-between gap-3">
-          <div>
-            <p class="label">セッション種別</p>
-            <p class="text-base font-semibold text-slate-900">推論</p>
-            <p class="mt-1 text-xs text-slate-500">モデル推論での実行セッション。</p>
-          </div>
-          <span class="chip">稼働中</span>
-        </div>
-        <div class="mt-3 space-y-1 text-xs text-slate-500">
-          <p>session_id: {runnerStatus.session_id ?? '-'}</p>
-          <p>task: {runnerStatus.task ?? '-'}</p>
-          <p>queue: {runnerStatus.queue_length ?? 0}</p>
-        </div>
-        <div class="mt-4 flex flex-wrap gap-2">
-          <Button.Root
-            class="btn-primary"
-            href={`/operate/sessions/${encodeURIComponent(runnerStatus.session_id ?? '')}?kind=inference`}
-          >
-            セッションを開く
-          </Button.Root>
-          <Button.Root class="btn-ghost" type="button" onclick={handleInferenceStop} disabled={inferenceStopPending}>
-            停止
-          </Button.Root>
-        </div>
-        {#if runnerStatus.last_error}
-          <p class="mt-2 text-xs text-rose-600">{runnerStatus.last_error}</p>
-        {/if}
-        {#if inferenceStopError}
-          <p class="mt-2 text-xs text-rose-600">{inferenceStopError}</p>
-        {/if}
-      </ActiveSessionCard>
-    {/if}
-  </ActiveSessionSection>
+{#if runnerSessionOpenable}
+  <ActiveWorkBanner
+    state={inferenceWorkState}
+    title="モデル推論"
+    task={inferenceWorkTask}
+    metrics={inferenceWorkMetrics}
+    primaryHref={`/operate/sessions/${encodeURIComponent(runnerStatus.session_id ?? '')}?kind=inference`}
+    onSecondary={handleInferenceStop}
+    secondaryDisabled={inferenceStopPending || inferenceStopRequested}
+    error={inferenceStopError || runnerStatus.last_error || ''}
+  />
 {/if}
 
 <section class="card overflow-hidden">

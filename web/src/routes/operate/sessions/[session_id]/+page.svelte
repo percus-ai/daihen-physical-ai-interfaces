@@ -19,8 +19,10 @@
     state?: string;
     task?: string;
     last_error?: string;
+    paused?: boolean;
     recording_dataset_id?: string | null;
     recording_active?: boolean;
+    recorder_state?: string | null;
     awaiting_continue_confirmation?: boolean;
     batch_size?: number;
     episode_count?: number;
@@ -152,6 +154,8 @@
     resolvedKind === 'inference'
       ? runnerStatus.state
         ? runnerStatus.state
+        : runnerStatus.paused
+          ? 'paused'
         : runnerStatus.active
           ? 'running'
           : runnerStatus.last_error
