@@ -242,7 +242,10 @@
     try {
       const runnerStatus = $inferenceRunnerStatusQuery.data?.runner_status ?? emptyRunnerStatus;
       const sessionId = runnerStatus.session_id;
-      await api.inference.runnerStop({ session_id: sessionId });
+      await api.inference.runnerStop({
+        session_id: sessionId,
+        recording_dataset_id: runnerStatus.recording_dataset_id ?? undefined
+      });
       await refetchQuery($inferenceRunnerStatusQuery);
     } catch (err) {
       inferenceStopError = err instanceof Error ? err.message : '推論の停止に失敗しました。';

@@ -41,7 +41,15 @@
   import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
   import DatasetUploadProgressModal from '$lib/components/storage/DatasetUploadProgressModal.svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
-  import { getRecorderDisplayEpisodeNumber } from '$lib/recording/recorderStatus';
+  import {
+    RECORDER_STATUS_THROTTLE_MS,
+    RECORDER_STATUS_TOPIC,
+    getRecorderActiveDatasetId,
+    getRecorderDisplayEpisodeNumber,
+    parseRecorderPayload,
+    type RecorderStatus,
+    type RosbridgeStatus
+  } from '$lib/recording/recorderStatus';
   import {
     createPendingRecordingUploadStatus,
     shouldIgnoreIdleUploadSnapshot
@@ -112,17 +120,6 @@
     current_file?: string | null;
     error?: string | null;
     updated_at?: string | null;
-  };
-
-  type RecorderStatus = {
-    state?: string;
-    dataset_id?: string;
-    task?: string;
-    episode_index?: number | null;
-    num_episodes?: number;
-    frame_count?: number;
-    episode_frame_count?: number;
-    last_frame_at?: string | null;
   };
 
   type OperateStatusResponse = {
@@ -675,8 +672,6 @@
     }
   };
 
-  const STATUS_TOPIC = '/lerobot_recorder/status';
-  const STATUS_THROTTLE_MS = 66;
   const STATUS_LABELS: Record<string, string> = {
     idle: '待機',
     warming: '準備中',
@@ -689,30 +684,19 @@
   };
 
   let recorderStatus = $state<RecorderStatus | null>(null);
-  let rosbridgeStatus = $state<'idle' | 'connecting' | 'connected' | 'disconnected' | 'error'>('idle');
+  let rosbridgeStatus = $state<RosbridgeStatus>('idle');
   let lastStatusAt = $state('');
-
-  const parseRecorderPayload = (msg: Record<string, unknown>): RecorderStatus => {
-    if (typeof msg.data === 'string') {
-      try {
-        return JSON.parse(msg.data) as RecorderStatus;
-      } catch {
-        return { state: 'unknown' };
-      }
-    }
-    return msg as RecorderStatus;
-  };
 
   $effect(() => {
     if (typeof window === 'undefined') return;
     const client = getRosbridgeClient();
     const unsubscribe = client.subscribe(
-      STATUS_TOPIC,
+      RECORDER_STATUS_TOPIC,
       (message) => {
         recorderStatus = parseRecorderPayload(message);
         lastStatusAt = new Date().toLocaleTimeString();
       },
-      { throttle_rate: STATUS_THROTTLE_MS }
+      { throttle_rate: RECORDER_STATUS_THROTTLE_MS }
     );
     const offStatus = client.onStatusChange((next) => {
       rosbridgeStatus = next;
@@ -724,7 +708,7 @@
     };
   });
 
-  const activeSessionId = $derived(recorderStatus?.dataset_id ?? '');
+  const activeSessionId = $derived(getRecorderActiveDatasetId(recorderStatus));
   const activeSessionState = $derived(recorderStatus?.state ?? 'unknown');
   const activeSessionLabel = $derived(STATUS_LABELS[activeSessionState] ?? activeSessionState);
   const activeEpisodeIndex = $derived(getRecorderDisplayEpisodeNumber(recorderStatus));

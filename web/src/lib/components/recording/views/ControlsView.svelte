@@ -191,7 +191,11 @@
     });
   };
   const handleStop = async () => {
-    const targetDatasetId = String(datasetId || sessionId || '').trim();
+    const targetDatasetId = String(
+      sessionKind === 'inference'
+        ? inferenceRecordingDatasetId || statusDatasetId || datasetId || ''
+        : datasetId || sessionId || ''
+    ).trim();
     openConfirm({
       title: sessionKind === 'inference' ? '推論セッションを終了しますか？' : 'データセット収録を終了しますか？',
       description:
@@ -209,7 +213,8 @@
             sessionKind === 'inference'
               ? api.inference.decideRecording({
                   continue_recording: false,
-                  stop_reason: 'manual_stop'
+                  stop_reason: 'manual_stop',
+                  recording_dataset_id: targetDatasetId || undefined
                 })
               : api.recording.stopSession({
                   dataset_id: datasetId,
@@ -223,6 +228,9 @@
           disposeUploadContributor();
           uploadModalOpen = false;
           return false;
+        }
+        if (sessionKind === 'inference') {
+          await $inferenceRunnerStatusQuery.refetch?.();
         }
         return true;
       }
@@ -362,6 +370,7 @@
   const statusState = $derived.by(() => {
     const state = (status as Record<string, unknown>)?.state ?? (status as Record<string, unknown>)?.status ?? '';
     if (sessionKind === 'inference') {
+      if (!inferenceRunnerStatus.active && !inferenceRecordingDatasetId) return 'inactive';
       if (inferenceRunnerStatus.awaiting_continue_confirmation) return 'completed';
       if (inferenceRunnerStatus.recording_active) {
         if (!statusDatasetId || !expectedStatusDatasetId || statusDatasetId === expectedStatusDatasetId) {
@@ -374,6 +383,9 @@
     return String(state);
   });
   const datasetId = $derived.by(() => {
+    if (sessionKind === 'inference' && !inferenceRunnerStatus.active && !inferenceRecordingDatasetId) {
+      return '';
+    }
     const value = (status as Record<string, unknown>)?.dataset_id;
     return typeof value === 'string' && value ? value : expectedStatusDatasetId || sessionId;
   });

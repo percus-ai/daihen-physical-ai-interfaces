@@ -1,5 +1,6 @@
 <script lang="ts">
   import { formatDate } from '$lib/format';
+  import { isRecorderActiveState } from '$lib/recording/recorderStatus';
   import type { HealthLevel, SystemStatusSnapshot } from '$lib/types/systemStatus';
 
   type OperateNetworkStatus = {
@@ -165,6 +166,9 @@
     recorder?.last_error === 'recorder storage readiness is unknown' &&
       recorder?.dependencies?.storage_ready == null
   );
+  const recorderSessionActive = $derived(
+    Boolean(recorder?.session_id) && isRecorderActiveState(recorder?.state)
+  );
   const isRecorderStorageUnknownAlert = (alert: { source?: string; summary?: string }) =>
     alert.source === 'recorder' && alert.summary === 'recorder storage readiness is unknown';
   const recorderHasBlockingError = $derived(
@@ -192,7 +196,7 @@
         message: '録画を開始できません。'
       };
     }
-    if (recorder?.session_id) {
+    if (recorderSessionActive) {
       return {
         id: 'recorder',
         title: '録画',

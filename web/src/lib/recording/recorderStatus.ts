@@ -19,11 +19,20 @@ export type RecorderStatus = Record<string, unknown> & {
   episode_remaining_s?: number;
   reset_elapsed_s?: number;
   reset_remaining_s?: number;
+  last_frame_at?: string | null;
   last_error?: string;
 };
 
 export const RECORDER_STATUS_TOPIC = '/lerobot_recorder/status';
 export const RECORDER_STATUS_THROTTLE_MS = 66;
+const RECORDER_ACTIVE_STATES = ['warming', 'recording', 'paused', 'resetting', 'resetting_paused'] as const;
+
+export type RecorderActiveState = (typeof RECORDER_ACTIVE_STATES)[number];
+
+const normalizeRecorderState = (value: unknown) => String(value ?? '').trim().toLowerCase();
+
+export const isRecorderActiveState = (state: unknown): state is RecorderActiveState =>
+  RECORDER_ACTIVE_STATES.includes(normalizeRecorderState(state) as RecorderActiveState);
 
 export const parseRecorderPayload = (msg: Record<string, unknown>): RecorderStatus => {
   if (typeof msg.data === 'string') {
@@ -34,6 +43,15 @@ export const parseRecorderPayload = (msg: Record<string, unknown>): RecorderStat
     }
   }
   return msg as RecorderStatus;
+};
+
+export const getRecorderActiveDatasetId = (
+  status: RecorderStatus | Record<string, unknown> | null | undefined
+): string => {
+  const payload = (status ?? {}) as Record<string, unknown>;
+  if (!isRecorderActiveState(payload.state ?? payload.status)) return '';
+  const datasetId = payload.dataset_id;
+  return typeof datasetId === 'string' ? datasetId.trim() : '';
 };
 
 const asFiniteNumber = (value: unknown): number | null => {

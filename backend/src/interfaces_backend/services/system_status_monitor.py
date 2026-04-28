@@ -268,11 +268,16 @@ class SystemStatusMonitor:
             if not last_error:
                 last_error = f"recorder state is {state}"
 
+        active_dataset_id = (
+            dataset_id
+            if state in {"recording", "warming", "paused", "resetting", "resetting_paused"}
+            else None
+        )
         return RecorderStatusSnapshot(
             level=level,
             state=state,
             process_alive=True,
-            session_id=dataset_id,
+            session_id=active_dataset_id,
             active_profile=active_profile_name,
             dataset_id=dataset_id,
             output_path=str(recorder_status.get("output_path") or "") or None,

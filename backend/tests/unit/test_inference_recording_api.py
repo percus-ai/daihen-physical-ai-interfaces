@@ -129,6 +129,39 @@ def test_decide_inference_recording_stop_stops_active_session(monkeypatch) -> No
     assert response.stop_reason == "batch_declined"
 
 
+def test_decide_inference_recording_stop_cleans_dataset_when_no_active_session(monkeypatch) -> None:
+    calls: dict[str, str | None] = {}
+
+    class _FakeManager:
+        def any_active(self):
+            return None
+
+        async def stop_recording_without_active_session(self, recording_dataset_id: str | None):
+            calls["recording_dataset_id"] = recording_dataset_id
+            return {
+                "recording_dataset_id": recording_dataset_id,
+                "recording_stopped": True,
+            }
+
+    monkeypatch.setattr(inference_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(inference_api, "get_inference_session_manager", lambda: _FakeManager())
+
+    response = asyncio.run(
+        inference_api.decide_inference_recording(
+            inference_api.InferenceRecordingDecisionRequest(
+                continue_recording=False,
+                stop_reason="manual_stop",
+                recording_dataset_id="dataset-1",
+            )
+        )
+    )
+
+    assert response.success is True
+    assert calls["recording_dataset_id"] == "dataset-1"
+    assert response.recording_dataset_id == "dataset-1"
+    assert response.stop_reason == "manual_stop"
+
+
 def test_decide_inference_recording_stop_requires_reason(monkeypatch) -> None:
     class _FakeManager:
         def any_active(self):

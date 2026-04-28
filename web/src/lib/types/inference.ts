@@ -74,6 +74,7 @@ export type RunnerStatus = {
   task?: string;
   queue_length?: number;
   last_error?: string;
+  recording_dataset_id?: string | null;
 };
 
 export type InferenceRunnerStatusResponse = {

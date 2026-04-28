@@ -168,7 +168,11 @@
       await api.inference.decideRecording(
         continueRecording
           ? { continue_recording: true }
-          : { continue_recording: false, stop_reason: 'batch_declined' }
+          : {
+              continue_recording: false,
+              stop_reason: 'batch_declined',
+              recording_dataset_id: targetDatasetId || undefined
+            }
       );
       if (!continueRecording && targetDatasetId) {
         requestInferenceUploadProgress({

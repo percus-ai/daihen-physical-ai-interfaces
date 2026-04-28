@@ -193,6 +193,21 @@ class InferenceSessionManager(BaseSessionManager):
             return ""
         return str(status.get("dataset_id") or "").strip()
 
+    def _recording_dataset_id_for_state(self, state: SessionState) -> str:
+        dataset_id = str(state.extras.get("dataset_id") or "").strip()
+        if dataset_id:
+            return dataset_id
+        try:
+            recording_status = self._recording_controller.get_status(state.id)
+        except Exception:
+            logger.warning(
+                "Failed to resolve inference recording status during stop: session_id=%s",
+                state.id,
+                exc_info=True,
+            )
+            return ""
+        return str(recording_status.get("recording_dataset_id") or "").strip()
+
     @classmethod
     def _is_recorder_active_for_dataset(
         cls,
@@ -465,28 +480,30 @@ class InferenceSessionManager(BaseSessionManager):
             await self._start_recording_for_state(state)
         return await super().start(session_id, **kwargs)
 
-    async def stop(self, session_id: str, **kwargs: Any) -> SessionState:
-        state = self._get_or_raise(session_id)
-        worker_sid = state.extras.get("worker_session_id")
-        self._recording_controller.mark_stop_requested(session_id)
-
-        # Stop worker
+    async def _stop_recording_for_dataset(self, dataset_id: str) -> bool:
+        recording_stopped = False
+        recorder_result: dict[str, Any] | None = None
         try:
-            stopped = self._runtime.stop(session_id=worker_sid or kwargs.get("session_id"))
-        except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stop inference worker: {exc}"
-            ) from exc
-
-        state.extras["stopped"] = stopped
-
-        # Stop simultaneous recording and upload
-        dataset_id = state.extras.get("dataset_id")
-        if dataset_id:
-            recording_stopped = False
-            recorder_result: dict[str, Any] | None = None
+            recorder_status = self._recorder.status()
+        except Exception:
+            logger.warning(
+                "Failed to read recorder status before stopping inference recording: dataset_id=%s",
+                dataset_id,
+                exc_info=True,
+            )
+            recorder_status = None
+        if (
+            self._recorder_dataset_id(recorder_status) == dataset_id
+            and self._recorder_state(recorder_status) == "completed"
+        ):
+            logger.info("Inference recording already finalized: dataset_id=%s", dataset_id)
+            recording_stopped = True
+            recorder_result = {
+                "success": True,
+                "message": "Recorder already finalized",
+                "status": recorder_status,
+            }
+        else:
             try:
                 recorder_result = self._recorder.stop(save_current=True)
                 if recorder_result.get("success", False):
@@ -538,26 +555,86 @@ class InferenceSessionManager(BaseSessionManager):
                     )
             except Exception:
                 logger.warning("Failed to stop inference recording", exc_info=True)
-            if recording_stopped:
-                try:
-                    await self._dataset.update_stats(dataset_id)
-                except Exception:
-                    logger.warning(
-                        "Failed to refresh dataset stats: dataset_id=%s",
-                        dataset_id,
-                        exc_info=True,
-                    )
-                try:
-                    await self._dataset.mark_active(dataset_id)
-                except Exception:
-                    logger.warning(
-                        "Failed to mark dataset active: dataset_id=%s",
-                        dataset_id,
-                        exc_info=True,
-                    )
+        if recording_stopped:
+            try:
+                await self._dataset.update_stats(dataset_id)
+            except Exception:
+                logger.warning(
+                    "Failed to refresh dataset stats: dataset_id=%s",
+                    dataset_id,
+                    exc_info=True,
+                )
+            try:
+                await self._dataset.mark_active(dataset_id)
+            except Exception:
+                logger.warning(
+                    "Failed to mark dataset active: dataset_id=%s",
+                    dataset_id,
+                    exc_info=True,
+                )
+        try:
             await self._dataset.auto_upload(dataset_id)
-            self._recording_sessions.unregister_external_session(str(dataset_id))
-        self._recording_controller.unregister(session_id)
+        except Exception:
+            logger.warning(
+                "Failed to auto-upload inference recording: dataset_id=%s",
+                dataset_id,
+                exc_info=True,
+            )
+        return recording_stopped
+
+    async def stop_recording_without_active_session(self, dataset_id: str | None) -> dict[str, Any]:
+        resolved_dataset_id = str(dataset_id or "").strip()
+        if not resolved_dataset_id:
+            return {"recording_dataset_id": None, "recording_stopped": False}
+        recording_stopped = False
+        try:
+            recording_stopped = await self._stop_recording_for_dataset(resolved_dataset_id)
+        finally:
+            self._recording_sessions.unregister_external_session(resolved_dataset_id)
+        return {
+            "recording_dataset_id": resolved_dataset_id,
+            "recording_stopped": recording_stopped,
+        }
+
+    async def stop(self, session_id: str, **kwargs: Any) -> SessionState:
+        state = self._get_or_raise(session_id)
+        worker_sid = state.extras.get("worker_session_id")
+        dataset_id = self._recording_dataset_id_for_state(state)
+        if dataset_id:
+            state.extras["dataset_id"] = dataset_id
+        self._recording_controller.mark_stop_requested(session_id)
+
+        # Stop worker
+        stopped = False
+        stop_error: HTTPException | None = None
+        try:
+            stopped = self._runtime.stop(session_id=worker_sid or kwargs.get("session_id"))
+        except RuntimeError as exc:
+            stop_error = HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            stop_error = HTTPException(
+                status_code=500, detail=f"Failed to stop inference worker: {exc}"
+            )
+
+        state.extras["stopped"] = stopped
+
+        # Stop simultaneous recording and upload
+        try:
+            if dataset_id:
+                try:
+                    await self._stop_recording_for_dataset(dataset_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to complete inference recording cleanup: dataset_id=%s",
+                        dataset_id,
+                        exc_info=True,
+                    )
+        finally:
+            if dataset_id:
+                self._recording_sessions.unregister_external_session(str(dataset_id))
+            self._recording_controller.unregister(session_id)
+        if stop_error is not None:
+            raise stop_error
         return await super().stop(session_id, **kwargs)
 
     def get_active_recording_status(self) -> dict:

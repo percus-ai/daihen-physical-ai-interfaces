@@ -28,7 +28,12 @@ def _silence_inference_session_logger(monkeypatch):
 
 
 class _FakeRuntime:
-    def __init__(self, *, startable_error: RuntimeError | None = None):
+    def __init__(
+        self,
+        *,
+        startable_error: RuntimeError | None = None,
+        stop_exception: Exception | None = None,
+    ):
         self.call_order: list[str] = []
         self.ensure_startable_calls = 0
         self.prepare_calls: list[str] = []
@@ -38,6 +43,7 @@ class _FakeRuntime:
         self.task_calls: list[tuple[str, str]] = []
         self.policy_calls: list[tuple[str, int | None]] = []
         self.startable_error = startable_error
+        self.stop_exception = stop_exception
 
     def ensure_startable(self) -> None:
         self.ensure_startable_calls += 1
@@ -63,6 +69,8 @@ class _FakeRuntime:
 
     def stop(self, session_id: str | None = None) -> bool:
         self.stop_calls.append(session_id)
+        if self.stop_exception is not None:
+            raise self.stop_exception
         return True
 
     def set_paused(self, session_id: str, *, paused: bool) -> int:
@@ -79,14 +87,30 @@ class _FakeRuntime:
 
 
 class _FakeRecorder:
-    def __init__(self, *, stop_exception: Exception | None = None, final_status: dict | None = None):
+    def __init__(
+        self,
+        *,
+        stop_exception: Exception | None = None,
+        final_status: dict | None = None,
+        status_payload: dict | None = None,
+        status_exception: Exception | None = None,
+    ):
         self.stop_exception = stop_exception
         self.final_status = final_status
+        self.status_payload = status_payload
+        self.status_exception = status_exception
         self.stop_calls = 0
         self.wait_calls = 0
+        self.status_calls = 0
 
     def build_cameras(self, _profile_snapshot: dict) -> list[dict]:
         return []
+
+    def status(self) -> dict:
+        self.status_calls += 1
+        if self.status_exception is not None:
+            raise self.status_exception
+        return self.status_payload or {}
 
     def stop(self, *, save_current: bool = True) -> dict:
         _ = save_current
@@ -107,11 +131,12 @@ class _FakeRecorder:
 
 
 class _FakeDataset:
-    def __init__(self):
+    def __init__(self, *, upload_exception: Exception | None = None):
         self.ensured_models: list[str] = []
         self.updated: list[str] = []
         self.marked: list[str] = []
         self.uploaded: list[str] = []
+        self.upload_exception = upload_exception
 
     async def ensure_model_local(self, model_id: str, sync_status_callback=None) -> None:
         self.ensured_models.append(model_id)
@@ -138,6 +163,8 @@ class _FakeDataset:
 
     async def auto_upload(self, dataset_id: str) -> None:
         self.uploaded.append(dataset_id)
+        if self.upload_exception is not None:
+            raise self.upload_exception
 
 
 class _FakeRecordingSessions:
@@ -223,6 +250,178 @@ def test_stop_keeps_dataset_unmarked_when_recorder_may_still_be_active() -> None
 
     assert state.status == "stopped"
     assert runtime.stop_calls == ["worker-1"]
+    assert recorder.stop_calls == 1
+    assert recorder.wait_calls == 1
+    assert dataset.updated == []
+    assert dataset.marked == []
+    assert dataset.uploaded == ["dataset-1"]
+    assert recording_sessions.unregistered == ["dataset-1"]
+
+
+def test_stop_unregisters_recording_when_auto_upload_fails() -> None:
+    runtime = _FakeRuntime()
+    recorder = _FakeRecorder(final_status={"state": "idle", "dataset_id": ""})
+    dataset = _FakeDataset(upload_exception=RuntimeError("upload failed"))
+    recording_sessions = _FakeRecordingSessions()
+    manager = _build_manager(
+        recorder=recorder,
+        dataset=dataset,
+        runtime=runtime,
+        recording_sessions=recording_sessions,
+    )
+
+    state = asyncio.run(manager.stop("session-1"))
+
+    assert state.status == "stopped"
+    assert recorder.stop_calls == 1
+    assert dataset.uploaded == ["dataset-1"]
+    assert recording_sessions.unregistered == ["dataset-1"]
+    assert manager.status("session-1") is None
+
+
+def test_stop_resolves_recording_dataset_id_from_controller_status() -> None:
+    runtime = _FakeRuntime()
+    recorder = _FakeRecorder(final_status={"state": "idle", "dataset_id": ""})
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = _build_manager(
+        recorder=recorder,
+        dataset=dataset,
+        runtime=runtime,
+        recording_sessions=recording_sessions,
+    )
+    manager._sessions["session-1"].extras.pop("dataset_id")
+
+    class _FakeRecordingController:
+        def __init__(self):
+            self.marked: list[str] = []
+            self.unregistered: list[str] = []
+
+        def get_status(self, session_id: str) -> dict:
+            assert session_id == "session-1"
+            return {"recording_dataset_id": "dataset-from-controller"}
+
+        def mark_stop_requested(self, session_id: str) -> None:
+            self.marked.append(session_id)
+
+        def unregister(self, session_id: str) -> None:
+            self.unregistered.append(session_id)
+
+    controller = _FakeRecordingController()
+    manager._recording_controller = controller
+
+    state = asyncio.run(manager.stop("session-1"))
+
+    assert state.status == "stopped"
+    assert recorder.stop_calls == 1
+    assert dataset.uploaded == ["dataset-from-controller"]
+    assert recording_sessions.unregistered == ["dataset-from-controller"]
+    assert controller.marked == ["session-1"]
+    assert controller.unregistered == ["session-1"]
+
+
+def test_stop_cleans_recording_even_when_runtime_stop_fails() -> None:
+    runtime = _FakeRuntime(stop_exception=RuntimeError("worker stop failed"))
+    recorder = _FakeRecorder(final_status={"state": "idle", "dataset_id": ""})
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = _build_manager(
+        recorder=recorder,
+        dataset=dataset,
+        runtime=runtime,
+        recording_sessions=recording_sessions,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(manager.stop("session-1"))
+
+    assert exc_info.value.status_code == 400
+    assert "worker stop failed" in str(exc_info.value.detail)
+    assert recorder.stop_calls == 1
+    assert dataset.uploaded == ["dataset-1"]
+    assert recording_sessions.unregistered == ["dataset-1"]
+    assert manager.status("session-1") is not None
+
+
+def test_stop_recording_without_active_session_finalizes_completed_dataset() -> None:
+    runtime = _FakeRuntime()
+    recorder = _FakeRecorder(
+        status_payload={"state": "completed", "dataset_id": "dataset-1"},
+    )
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = _build_manager(
+        recorder=recorder,
+        dataset=dataset,
+        runtime=runtime,
+        recording_sessions=recording_sessions,
+    )
+
+    result = asyncio.run(manager.stop_recording_without_active_session("dataset-1"))
+
+    assert result == {
+        "recording_dataset_id": "dataset-1",
+        "recording_stopped": True,
+    }
+    assert recorder.status_calls == 1
+    assert recorder.stop_calls == 0
+    assert dataset.updated == ["dataset-1"]
+    assert dataset.marked == ["dataset-1"]
+    assert dataset.uploaded == ["dataset-1"]
+    assert recording_sessions.unregistered == ["dataset-1"]
+
+
+def test_stop_recording_attempts_stop_when_status_read_fails() -> None:
+    runtime = _FakeRuntime()
+    recorder = _FakeRecorder(
+        status_exception=RuntimeError("status unavailable"),
+        final_status={"state": "idle", "dataset_id": ""},
+    )
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = _build_manager(
+        recorder=recorder,
+        dataset=dataset,
+        runtime=runtime,
+        recording_sessions=recording_sessions,
+    )
+
+    result = asyncio.run(manager.stop_recording_without_active_session("dataset-1"))
+
+    assert result == {
+        "recording_dataset_id": "dataset-1",
+        "recording_stopped": True,
+    }
+    assert recorder.status_calls == 1
+    assert recorder.stop_calls == 1
+    assert recorder.wait_calls == 1
+    assert dataset.updated == ["dataset-1"]
+    assert dataset.marked == ["dataset-1"]
+    assert dataset.uploaded == ["dataset-1"]
+    assert recording_sessions.unregistered == ["dataset-1"]
+
+
+def test_stop_recording_without_active_session_reports_unconfirmed_stop() -> None:
+    runtime = _FakeRuntime()
+    recorder = _FakeRecorder(
+        stop_exception=HTTPException(status_code=503, detail="Recorder request timed out: /api/session/stop"),
+        final_status={"state": "recording", "dataset_id": "dataset-1"},
+    )
+    dataset = _FakeDataset()
+    recording_sessions = _FakeRecordingSessions()
+    manager = _build_manager(
+        recorder=recorder,
+        dataset=dataset,
+        runtime=runtime,
+        recording_sessions=recording_sessions,
+    )
+
+    result = asyncio.run(manager.stop_recording_without_active_session("dataset-1"))
+
+    assert result == {
+        "recording_dataset_id": "dataset-1",
+        "recording_stopped": False,
+    }
     assert recorder.stop_calls == 1
     assert recorder.wait_calls == 1
     assert dataset.updated == []

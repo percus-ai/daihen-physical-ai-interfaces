@@ -659,6 +659,8 @@ async def stop_inference_runner(request: InferenceRunnerStopRequest):
         state = await mgr.stop(active.id)
         stopped = state.extras.get("stopped", False)
     else:
+        if request.recording_dataset_id:
+            await mgr.stop_recording_without_active_session(request.recording_dataset_id)
         # Fallback: stop runtime directly (e.g., after server restart)
         runtime = get_inference_runtime_manager()
         try:
@@ -823,12 +825,18 @@ async def decide_inference_recording(request: InferenceRecordingDecisionRequest)
         )
         return response
 
+    stopped_recording_dataset_id = None
     if active:
         await manager.stop(active.id)
+    else:
+        cleanup = await manager.stop_recording_without_active_session(
+            request.recording_dataset_id
+        )
+        stopped_recording_dataset_id = cleanup.get("recording_dataset_id")
     response = InferenceRecordingDecisionResponse(
         success=True,
         message="Inference and recording stopped.",
-        recording_dataset_id=None,
+        recording_dataset_id=stopped_recording_dataset_id,
         awaiting_continue_confirmation=False,
         stop_reason=stop_reason,
     )

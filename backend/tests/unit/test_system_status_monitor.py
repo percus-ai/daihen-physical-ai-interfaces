@@ -146,3 +146,26 @@ def test_evaluate_recorder_health_keeps_recording_storage_unknown_healthy() -> N
     assert snapshot.level == "healthy"
     assert snapshot.dependencies.storage_ready is None
     assert snapshot.last_error is None
+
+
+def test_evaluate_recorder_health_keeps_completed_dataset_non_active() -> None:
+    monitor = SystemStatusMonitor()
+
+    snapshot = monitor._evaluate_recorder_health(
+        recorder_status={
+            "state": "completed",
+            "dataset_id": "dataset-1",
+            "write_ok": None,
+            "disk_ok": None,
+        },
+        ros2_state=monitor._ros2_contract_state.__class__(
+            cameras_ready=True,
+            robot_ready=True,
+        ),
+        active_profile_name="so101_single_teleop",
+    )
+
+    assert snapshot.level == "healthy"
+    assert snapshot.dataset_id == "dataset-1"
+    assert snapshot.session_id is None
+    assert snapshot.last_error is None

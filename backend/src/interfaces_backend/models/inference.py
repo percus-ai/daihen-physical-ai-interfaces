@@ -155,6 +155,7 @@ class InferenceRunnerStartRequest(BaseModel):
 
 class InferenceRunnerStopRequest(BaseModel):
     session_id: Optional[str] = None
+    recording_dataset_id: Optional[str] = None
 
 
 class InferenceRunnerStopResponse(BaseModel):
@@ -182,6 +183,7 @@ class InferenceRunnerSettingsApplyResponse(BaseModel):
 class InferenceRecordingDecisionRequest(BaseModel):
     continue_recording: bool
     stop_reason: Optional[Literal["manual_stop", "batch_declined"]] = None
+    recording_dataset_id: Optional[str] = None
 
 
 class InferenceRecordingDecisionResponse(BaseModel):
