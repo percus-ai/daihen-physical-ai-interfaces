@@ -38,7 +38,8 @@
     type RealtimeTrackEvent,
     type RealtimeTrackSelector
   } from '$lib/realtime/trackClient';
-  import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
+  import { queryClient } from '$lib/queryClient';
+  import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
   import DatasetUploadProgressModal from '$lib/components/storage/DatasetUploadProgressModal.svelte';
   import { getRosbridgeClient } from '$lib/recording/rosbridge';
   import {
@@ -131,6 +132,9 @@
         rosbridge?: { status?: string };
       };
     };
+  };
+  type OperateStatusStreamPayload = {
+    operate_status?: OperateStatusResponse;
   };
 
   const operateStatusQuery = createQuery<OperateStatusResponse>({
@@ -778,6 +782,13 @@
             systemStatusSnapshot = event.detail as SystemStatusSnapshot;
             return;
           }
+          if (event.kind === 'operate.status') {
+            const payload = event.detail as OperateStatusStreamPayload;
+            if (payload.operate_status) {
+              queryClient.setQueryData(['operate', 'status'], payload.operate_status);
+            }
+            return;
+          }
           if (event.kind === 'recording.upload-status') {
             const payload = event.detail as RecordingUploadStatus;
             const recordingId = String(payload.dataset_id || '').trim();
@@ -794,6 +805,8 @@
       }
     }
     const tracks: RealtimeTrackSelector[] = [
+      { kind: 'system.status', key: 'system' },
+      { kind: 'operate.status', key: 'operate' },
       ...recordings
         .map((recording) => String(recording.recording_id || '').trim())
         .filter(Boolean)
@@ -1208,4 +1221,8 @@
 
 <DatasetUploadProgressModal bind:open={uploadModalOpen} datasetId={selectedUploadDatasetId} />
 
-<OperateStatusCards snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />
+<SystemStatusTab
+  snapshot={systemStatusSnapshot}
+  network={$operateStatusQuery.data?.network ?? null}
+  showGpuDetails={false}
+/>

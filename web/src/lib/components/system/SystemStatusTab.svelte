@@ -15,10 +15,12 @@
 
   let {
     snapshot = null,
-    network = null
+    network = null,
+    showGpuDetails = true
   }: {
     snapshot?: SystemStatusSnapshot | null;
     network?: OperateNetworkStatus | null;
+    showGpuDetails?: boolean;
   } = $props();
 
   const effectiveSnapshot = $derived(snapshot);
@@ -129,6 +131,40 @@
       default:
         return 'border-slate-200 bg-slate-100 text-slate-600';
     }
+  };
+  const asFiniteNumber = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const clampPercent = (value: unknown) => {
+    const parsed = asFiniteNumber(value);
+    if (parsed == null) return null;
+    return Math.min(100, Math.max(0, parsed));
+  };
+  const percentLabel = (value: number | null) => (value == null ? '-' : `${value.toFixed(0)}%`);
+  const barStyle = (value: number | null) => `width: ${value ?? 0}%;`;
+  const memoryUsagePercent = (usedMb: unknown, totalMb: unknown) => {
+    const used = asFiniteNumber(usedMb);
+    const total = asFiniteNumber(totalMb);
+    if (used == null || total == null || total <= 0) return null;
+    return clampPercent((used / total) * 100);
+  };
+  const memoryLabel = (usedMb: unknown, totalMb: unknown) => {
+    const used = asFiniteNumber(usedMb);
+    const total = asFiniteNumber(totalMb);
+    if (used == null || total == null || total <= 0) return '-';
+    return `${Math.round(used)} / ${Math.round(total)} MB`;
+  };
+  const temperaturePercent = (temperatureC: unknown) => {
+    const temperature = asFiniteNumber(temperatureC);
+    if (temperature == null) return null;
+    return clampPercent(temperature);
+  };
+  const temperatureLabel = (temperatureC: unknown) => {
+    const temperature = asFiniteNumber(temperatureC);
+    if (temperature == null) return '-';
+    return `${temperature.toFixed(0)} C`;
   };
 
   const isProblemState = (value?: string | null) =>
@@ -466,8 +502,7 @@
   <div class="card p-6">
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <p class="section-title">状態</p>
-        <h2 class="mt-2 text-xl font-semibold text-slate-900">運用状態</h2>
+        <h2 class="text-xl font-semibold text-slate-900">運用状態</h2>
         <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-600">{operationalStatus.message}</p>
       </div>
       <div class="flex flex-col items-start gap-2 sm:items-end">
@@ -530,39 +565,75 @@
     {/if}
   </div>
 
-  <div class="card p-6">
-    <div class="flex items-center justify-between gap-4">
-      <div>
-        <p class="section-title">GPU</p>
-        <h2 class="mt-2 text-xl font-semibold text-slate-900">一覧</h2>
+  {#if showGpuDetails}
+    <div class="card p-6">
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <h2 class="text-xl font-semibold text-slate-900">GPU モニタリング</h2>
+        </div>
+        <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(effectiveSnapshot?.gpu?.level)}`}>
+          {renderStatusLabel(effectiveSnapshot?.gpu?.level)}
+        </span>
       </div>
-      <span class={`rounded-full border px-3 py-1 text-xs font-semibold ${renderLevelClass(effectiveSnapshot?.gpu?.level)}`}>
-        {renderStatusLabel(effectiveSnapshot?.gpu?.level)}
-      </span>
-    </div>
 
-    <div class="mt-5 space-y-3">
-      {#if gpuDevices.length}
-        {#each gpuDevices as device}
-          <div class="nested-block p-4">
-            <div class="flex items-start justify-between gap-3">
-              <div>
-                <p class="text-base font-semibold text-slate-900">{device.name}</p>
-                <p class="mt-1 text-xs text-slate-500">GPU #{device.index}</p>
+      <div class="mt-5 space-y-3">
+        {#if gpuDevices.length}
+          {#each gpuDevices as device}
+            {@const memoryPercent = memoryUsagePercent(device.memory_used_mb, device.memory_total_mb)}
+            {@const utilizationPercent = clampPercent(device.utilization_gpu_pct)}
+            {@const heatPercent = temperaturePercent(device.temperature_c)}
+            <div class="nested-block p-4">
+              <div class="grid items-center gap-4 lg:grid-cols-[minmax(12rem,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                <div class="min-w-0">
+                  <p class="truncate text-base font-semibold text-slate-900">{device.name}</p>
+                  <p class="mt-1 text-xs text-slate-500">GPU #{device.index}</p>
+                </div>
+
+                <div class="min-w-0">
+                  <div class="flex items-center justify-between gap-3 text-xs">
+                    <span class="font-semibold text-slate-500">メモリ</span>
+                    <span class="shrink-0 tabular-nums text-slate-700">{memoryLabel(device.memory_used_mb, device.memory_total_mb)}</span>
+                  </div>
+                  <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-200/80">
+                    <div
+                      class="h-full rounded-full bg-sky-500 transition-[width] duration-300"
+                      style={barStyle(memoryPercent)}
+                    ></div>
+                  </div>
+                </div>
+
+                <div class="min-w-0">
+                  <div class="flex items-center justify-between gap-3 text-xs">
+                    <span class="font-semibold text-slate-500">使用率</span>
+                    <span class="shrink-0 tabular-nums text-slate-700">{percentLabel(utilizationPercent)}</span>
+                  </div>
+                  <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-200/80">
+                    <div
+                      class="h-full rounded-full bg-emerald-500 transition-[width] duration-300"
+                      style={barStyle(utilizationPercent)}
+                    ></div>
+                  </div>
+                </div>
+
+                <div class="min-w-0">
+                  <div class="flex items-center justify-between gap-3 text-xs">
+                    <span class="font-semibold text-slate-500">温度</span>
+                    <span class="shrink-0 tabular-nums text-slate-700">{temperatureLabel(device.temperature_c)}</span>
+                  </div>
+                  <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-200/80">
+                    <div
+                      class="h-full rounded-full bg-amber-500 transition-[width] duration-300"
+                      style={barStyle(heatPercent)}
+                    ></div>
+                  </div>
+                </div>
               </div>
-              <span class="chip">{device.utilization_gpu_pct ?? 0}%</span>
             </div>
-            <div class="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
-              <p>memory total: {device.memory_total_mb ?? '-'} MB</p>
-              <p>memory used: {device.memory_used_mb ?? '-'} MB</p>
-              <p>utilization: {device.utilization_gpu_pct ?? '-'}%</p>
-              <p>temperature: {device.temperature_c ?? '-'} C</p>
-            </div>
-          </div>
-        {/each}
-      {:else}
-        <p class="text-sm text-slate-500">GPU 情報を取得できていません。</p>
-      {/if}
+          {/each}
+        {:else}
+          <p class="text-sm text-slate-500">GPU 情報を取得できていません。</p>
+        {/if}
+      </div>
     </div>
-  </div>
+  {/if}
 </section>

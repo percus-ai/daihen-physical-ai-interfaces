@@ -16,7 +16,7 @@
     type RealtimeTrackSelector
   } from '$lib/realtime/trackClient';
   import { queryClient } from '$lib/queryClient';
-  import OperateStatusCards from '$lib/components/OperateStatusCards.svelte';
+  import SystemStatusTab from '$lib/components/system/SystemStatusTab.svelte';
   import ActiveSessionSection from '$lib/components/ActiveSessionSection.svelte';
   import ActiveSessionCard from '$lib/components/ActiveSessionCard.svelte';
   import InferenceModelSelector from '$lib/components/InferenceModelSelector.svelte';
@@ -692,4 +692,4 @@
   {/if}
 </section>
 
-<OperateStatusCards snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />
+<SystemStatusTab snapshot={systemStatusSnapshot} network={$operateStatusQuery.data?.network ?? null} />
