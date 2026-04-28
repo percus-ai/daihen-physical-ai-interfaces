@@ -40,6 +40,17 @@
     inference_runner_status?: InferenceRunnerStatusResponse;
     operate_status?: OperateStatusResponse;
   };
+  type RecordingSessionStatusResponse = {
+    dataset_id?: string | null;
+    status?: {
+      state?: string;
+      dataset_id?: string | null;
+      task?: string | null;
+      episode_count?: number | null;
+      num_episodes?: number | null;
+      recording_started?: boolean;
+    };
+  };
 
   const inferenceModelsQuery = createQuery<InferenceModelsResponse>({
     queryKey: ['inference', 'models'],
@@ -49,6 +60,10 @@
   const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
     queryKey: ['inference', 'runner', 'status'],
     queryFn: api.inference.runnerStatus
+  });
+  const activeRecordingSessionQuery = createQuery<RecordingSessionStatusResponse>({
+    queryKey: ['recording', 'session', 'active'],
+    queryFn: api.recording.activeSessionStatus
   });
 
   const operateStatusQuery = createQuery<OperateStatusResponse>({
@@ -164,6 +179,10 @@
       inferenceStartError = '実行先候補を選択してください。';
       return;
     }
+    if (recordingSessionReserved) {
+      inferenceStartError = recordingSessionConflictMessage;
+      return;
+    }
     startupStatus = null;
     startupStreamError = '';
     inferenceStartPending = true;
@@ -274,6 +293,29 @@
     return Boolean(runnerStatus.active && runnerStatus.session_id);
   });
   const runnerActive = $derived(Boolean(runnerStatus.active));
+  const activeRecordingSession = $derived($activeRecordingSessionQuery.data?.status ?? {});
+  const activeRecordingSessionId = $derived(
+    String(
+      $activeRecordingSessionQuery.data?.dataset_id ??
+        activeRecordingSession.dataset_id ??
+        ''
+    ).trim()
+  );
+  const activeRecordingSessionState = $derived(String(activeRecordingSession.state ?? '').trim().toLowerCase());
+  const recordingSessionReserved = $derived(
+    Boolean(activeRecordingSessionId && activeRecordingSessionState !== 'inactive')
+  );
+  const recordingSessionConflictMessage = $derived(
+    activeRecordingSessionState === 'created'
+      ? '収録セッションが開始待ちです。推論を起動する前に、収録セッションを開始して終了するか破棄してください。'
+      : '収録セッションが実行中です。推論を起動する前に収録セッションを終了してください。'
+  );
+  const inferenceLaunchBlocked = $derived(Boolean(runnerActive || recordingSessionReserved));
+  const recordingSessionNoticeTitle = $derived(
+    activeRecordingSessionState === 'created'
+      ? '収録セッションが開始待ちです。'
+      : '収録セッションが稼働中です。'
+  );
   const runnerPaused = $derived.by(() => {
     const state = String(runnerStatus.state ?? '').trim().toLowerCase();
     const recorderState = String(runnerStatus.recorder_state ?? '').trim().toLowerCase();
@@ -509,6 +551,15 @@
   />
 {/if}
 
+{#if recordingSessionReserved}
+  <section class="rounded-lg border border-amber-200/80 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+    <p class="font-semibold">{recordingSessionNoticeTitle}</p>
+    <p class="mt-1">
+      推論セッションは起動できません。収録セッションの操作はデータ録画ページで行います。
+    </p>
+  </section>
+{/if}
+
 <section class="card overflow-hidden">
   <div class="border-b border-slate-200/80 bg-[linear-gradient(140deg,rgba(91,124,250,0.14),rgba(255,184,107,0.10),rgba(255,255,255,0.98))] px-6 py-6">
     <div class="flex flex-wrap items-start justify-between gap-4">
@@ -637,7 +688,7 @@
         batchSizeOptions={$inferenceModelsQuery.data?.batch_size_options ?? []}
         selectedModelId={selectedModelId}
         loading={$inferenceModelsQuery.isLoading}
-        disabled={runnerActive || inferenceStartPending || startupActive}
+        disabled={inferenceLaunchBlocked || inferenceStartPending || startupActive}
         onSelect={(modelId) => {
           selectedModelId = modelId;
         }}
@@ -666,7 +717,7 @@
               startupActive ||
               !selectedModelId ||
               !runtimeTargets.length ||
-              runnerActive
+              inferenceLaunchBlocked
             }
             aria-busy={inferenceStartPending}
           >

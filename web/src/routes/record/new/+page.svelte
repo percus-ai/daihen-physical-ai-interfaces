@@ -31,10 +31,21 @@
   type InferenceRunnerStatusResponse = {
     runner_status?: InferenceRunnerStatus;
   };
+  type RecordingSessionStatusResponse = {
+    dataset_id?: string | null;
+    status?: {
+      state?: string;
+      dataset_id?: string | null;
+    };
+  };
 
   const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
     queryKey: ['inference', 'runner', 'status'],
     queryFn: api.inference.runnerStatus
+  });
+  const activeRecordingSessionQuery = createQuery<RecordingSessionStatusResponse>({
+    queryKey: ['recording', 'session', 'active'],
+    queryFn: api.recording.activeSessionStatus
   });
 
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -77,8 +88,21 @@
       inferenceRunnerStatus.active &&
         (inferenceRunnerStatus.recording_prepared ||
           inferenceRunnerStatus.recording_active ||
-          String(inferenceRunnerStatus.recording_dataset_id ?? '').trim())
+      String(inferenceRunnerStatus.recording_dataset_id ?? '').trim())
     )
+  );
+  const activeRecordingSessionId = $derived(
+    String(
+      $activeRecordingSessionQuery.data?.dataset_id ??
+        $activeRecordingSessionQuery.data?.status?.dataset_id ??
+        ''
+    ).trim()
+  );
+  const activeRecordingSessionState = $derived(
+    String($activeRecordingSessionQuery.data?.status?.state ?? '').trim().toLowerCase()
+  );
+  const recordingSessionReserved = $derived(
+    Boolean(activeRecordingSessionId && activeRecordingSessionState !== 'inactive')
   );
 
   const validateDatasetName = (value: string) => {
@@ -169,7 +193,11 @@
     startupStreamError = '';
 
     if (inferenceRecorderReserved) {
-      error = '推論セッションが Recorder を使用中のため、新規データセット収録は開始できません。';
+      error = '推論セッションが収録機能を使用中のため、新規データセット収録は開始できません。';
+      return;
+    }
+    if (recordingSessionReserved) {
+      error = '開始待ちまたは実行中の収録セッションがあるため、新規データセット収録は開始できません。';
       return;
     }
 
@@ -310,6 +338,17 @@
       <p class="mt-1">通常のデータ録画は開始できません。推論に付随する録画操作は推論セッション画面で行います。</p>
     </div>
   {/if}
+  {#if recordingSessionReserved}
+    <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+      <p class="font-semibold">収録セッションが開始待ちです。</p>
+      <p class="mt-1">
+        新しい収録データセットは作成できません。既存の収録セッションを開いて開始または破棄してください。
+      </p>
+      <Button.Root class="btn-ghost mt-3" href={`/record/sessions/${encodeURIComponent(activeRecordingSessionId)}`}>
+        収録セッションを開く
+      </Button.Root>
+    </div>
+  {/if}
   <form class="grid gap-4" onsubmit={handleSubmit}>
     <label class="text-sm font-semibold text-slate-700">
       <span class="label">データセット名</span>
@@ -384,7 +423,7 @@
       <Button.Root
         class="btn-primary"
         type="submit"
-        disabled={inferenceRecorderReserved || submitting || startupActive || continueLoading || (isContinueMode && !continueRecording?.continuable)}
+        disabled={inferenceRecorderReserved || recordingSessionReserved || submitting || startupActive || continueLoading || (isContinueMode && !continueRecording?.continuable)}
         aria-busy={submitting || startupActive || continueLoading}
       >
         {startupActive ? '準備中...' : isContinueMode ? '継続セッションを準備' : '収録データセットを作成'}

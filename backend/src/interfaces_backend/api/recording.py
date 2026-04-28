@@ -78,6 +78,16 @@ def _reject_inference_owned_recorder(status: dict[str, Any]) -> None:
     )
 
 
+def _ensure_no_active_recording_session() -> None:
+    active = get_recording_session_manager().any_active()
+    if active is None:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=f"Recording session is already prepared or active: {active.id}",
+    )
+
+
 # -- Request / Response models ------------------------------------------------
 
 
@@ -454,6 +464,7 @@ def _build_recording_session_snapshot(
     snapshot.update(
         {
             "state": str(session_state.status or snapshot["state"]).strip() or snapshot["state"],
+            "recording_started": bool(session_state.extras.get("recording_started")),
             "task": str(
                 session_state.extras.get("task")
                 or recorder_payload.get("task")
@@ -599,6 +610,7 @@ async def _create_continue_session(
 async def create_session(request: RecordingSessionCreateRequest):
     user_id = require_user_id()
     _ensure_recorder_not_reserved_by_inference()
+    _ensure_no_active_recording_session()
 
     if request.continue_from_dataset_id:
         row = await _fetch_recording_row(request.continue_from_dataset_id)
@@ -634,6 +646,12 @@ async def start_session(request: RecordingSessionStartRequest):
     require_user_id()
     _ensure_recorder_not_reserved_by_inference()
     mgr = get_recording_session_manager()
+    active = mgr.any_active()
+    if active is not None and active.id != request.dataset_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Another recording session is already prepared or active: {active.id}",
+        )
     if mgr.status(request.dataset_id) is None:
         raise HTTPException(
             status_code=404,
@@ -945,18 +963,20 @@ async def cancel_session(dataset_id: Optional[str] = None):
     require_user_id()
     mgr = get_recording_session_manager()
     recorder = get_recorder_bridge()
-    _reject_inference_owned_recorder(recorder.status())
     result: dict = {}
 
     if dataset_id:
         session = mgr.status(dataset_id)
         if session:
+            if session.extras.get("recording_started"):
+                _reject_inference_owned_recorder(recorder.status())
             state = await mgr.stop(dataset_id, save_current=False, cancel=True)
             result = state.extras.get("recorder_result", {})
         else:
             # Not tracked — check recorder directly
             try:
                 rec_status = recorder.status()
+                _reject_inference_owned_recorder(rec_status)
                 active_id = rec_status.get("dataset_id")
                 active_state = rec_status.get("state")
                 if active_id == dataset_id and active_state not in ("idle", "completed"):
@@ -971,6 +991,7 @@ async def cancel_session(dataset_id: Optional[str] = None):
         client = await get_supabase_async_client()
         await client.table("datasets").update({"status": "archived"}).eq("id", dataset_id).execute()
     else:
+        _reject_inference_owned_recorder(recorder.status())
         result = recorder.stop(save_current=False)
         if not result.get("success", False):
             raise HTTPException(status_code=500, detail=result.get("error") or "Recorder cancel failed")
@@ -996,7 +1017,12 @@ async def get_session_status(session_id: str):
     require_user_id()
     recorder = get_recorder_bridge()
     manager = get_recording_session_manager()
-    status = recorder.status()
+    status: dict[str, Any] = {}
+    try:
+        status = recorder.status()
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
     active_id = str(status.get("dataset_id") or "").strip()
     session_state = manager.status(session_id)
     recording_row: dict[str, Any] | None = None
@@ -1014,6 +1040,48 @@ async def get_session_status(session_id: str):
     if active_id and active_id == session_id:
         return RecordingSessionStatusResponse(dataset_id=active_id, status={**snapshot, **status})
     return RecordingSessionStatusResponse(dataset_id=session_id, status=snapshot)
+
+
+@router.get("/session/active", response_model=RecordingSessionStatusResponse)
+async def get_active_session_status():
+    require_user_id()
+    manager = get_recording_session_manager()
+    session_state = manager.any_active()
+    if session_state is None:
+        return RecordingSessionStatusResponse(
+            dataset_id=None,
+            status={
+                "state": "inactive",
+                "dataset_id": None,
+                "active_dataset_id": None,
+            },
+        )
+
+    recorder_status: dict[str, Any] = {}
+    try:
+        recorder_status = get_recorder_bridge().status()
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+    active_id = str(recorder_status.get("dataset_id") or "").strip()
+    recording_row: dict[str, Any] | None = None
+    try:
+        recording_row = await _fetch_recording_row(session_state.id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+    snapshot = _build_recording_session_snapshot(
+        session_id=session_state.id,
+        active_dataset_id=active_id,
+        session_state=session_state,
+        recording_row=recording_row,
+    )
+    if active_id and active_id == session_state.id:
+        return RecordingSessionStatusResponse(
+            dataset_id=session_state.id,
+            status={**snapshot, **recorder_status},
+        )
+    return RecordingSessionStatusResponse(dataset_id=session_state.id, status=snapshot)
 
 
 @router.get(

@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+from fastapi import HTTPException
+
 os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
 
 
@@ -31,8 +33,8 @@ def _install_lerobot_stubs() -> None:
 
 _install_lerobot_stubs()
 
-import interfaces_backend.api.inference as inference_api
-from interfaces_backend.models.inference import (
+import interfaces_backend.api.inference as inference_api  # noqa: E402
+from interfaces_backend.models.inference import (  # noqa: E402
     GpuHostStatus,
     InferenceModelInfo,
     InferenceModelSyncStatus,
@@ -41,8 +43,8 @@ from interfaces_backend.models.inference import (
     InferenceRunnerStatus,
     InferenceRunnerStatusResponse,
     InferenceRunnerStartRequest,
-)
-from interfaces_backend.models.startup import StartupOperationAcceptedResponse
+)  # noqa: E402
+from interfaces_backend.models.startup import StartupOperationAcceptedResponse  # noqa: E402
 
 
 def test_list_models_merges_db_and_runtime(monkeypatch):
@@ -95,7 +97,7 @@ def test_list_models_merges_db_and_runtime(monkeypatch):
 
     monkeypatch.setattr(
         inference_api, "get_inference_runtime_manager", lambda: _FakeRuntime()
-    )
+)
     monkeypatch.setattr(inference_api, "_list_db_models", _fake_db_models)
 
     response = asyncio.run(inference_api.list_models())
@@ -857,6 +859,11 @@ def test_start_inference_runner_returns_operation_id(monkeypatch):
         operation_id="op-infer", message="accepted"
     )
 
+    class _FakeRecordingManager:
+        @staticmethod
+        def any_active():
+            return None
+
     class _FakeOperations:
         def create(self, *, user_id: str, kind: str):
             assert user_id == "user-1"
@@ -870,6 +877,9 @@ def test_start_inference_runner_returns_operation_id(monkeypatch):
     monkeypatch.setattr(inference_api, "require_user_id", lambda: "user-1")
     monkeypatch.setattr(
         inference_api, "get_startup_operations_service", lambda: _FakeOperations()
+    )
+    monkeypatch.setattr(
+        inference_api, "get_recording_session_manager", lambda: _FakeRecordingManager()
     )
     monkeypatch.setattr(inference_api.asyncio, "create_task", _fake_create_task)
 
@@ -887,9 +897,42 @@ def test_start_inference_runner_returns_operation_id(monkeypatch):
     assert response.operation_id == "op-infer"
 
 
+def test_start_inference_runner_rejects_when_recording_session_active(monkeypatch):
+    class _FakeRecordingManager:
+        @staticmethod
+        def any_active():
+            return SimpleNamespace(id="dataset-recording")
+
+    monkeypatch.setattr(inference_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(
+        inference_api, "get_recording_session_manager", lambda: _FakeRecordingManager()
+    )
+
+    try:
+        asyncio.run(
+            inference_api.start_inference_runner(
+                InferenceRunnerStartRequest(
+                    model_id="model-a",
+                    runtime_target_id="cpu",
+                    task="pick",
+                    num_episodes=12,
+                )
+            )
+        )
+        assert False, "Expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "Recording session is already prepared or active: dataset-recording" in str(exc.detail)
+
+
 def test_run_inference_start_operation_passes_policy_options(monkeypatch):
     created_kwargs: dict[str, object] = {}
     completed: dict[str, object] = {}
+
+    class _FakeRecordingManager:
+        @staticmethod
+        def any_active():
+            return None
 
     class _FakeManager:
         async def create(self, **kwargs):
@@ -912,6 +955,9 @@ def test_run_inference_start_operation_passes_policy_options(monkeypatch):
     monkeypatch.setattr(
         inference_api, "get_startup_operations_service", lambda: _FakeOperations()
     )
+    monkeypatch.setattr(
+        inference_api, "get_recording_session_manager", lambda: _FakeRecordingManager()
+    )
 
     asyncio.run(
         inference_api._run_inference_start_operation(
@@ -933,3 +979,52 @@ def test_run_inference_start_operation_passes_policy_options(monkeypatch):
     assert created_kwargs["num_episodes"] == 12
     assert created_kwargs["policy_options"] == {"pi0": {"denoising_steps": 12}}
     assert completed["target_session_id"] == "worker-session-1"
+
+
+def test_run_inference_start_operation_fails_when_recording_session_active(monkeypatch):
+    failed: dict[str, object] = {}
+
+    class _FakeRecordingManager:
+        @staticmethod
+        def any_active():
+            return SimpleNamespace(id="dataset-recording")
+
+    class _FakeManager:
+        async def create(self, **_kwargs):
+            raise AssertionError("manager.create should not be called")
+
+    class _FakeOperations:
+        def build_progress_callback(self, _operation_id: str):
+            return lambda *_args, **_kwargs: None
+
+        def complete(self, **_kwargs):
+            raise AssertionError("complete should not be called")
+
+        def fail(self, **kwargs):
+            failed.update(kwargs)
+
+    monkeypatch.setattr(
+        inference_api, "get_recording_session_manager", lambda: _FakeRecordingManager()
+    )
+    monkeypatch.setattr(
+        inference_api, "get_inference_session_manager", lambda: _FakeManager()
+    )
+    monkeypatch.setattr(
+        inference_api, "get_startup_operations_service", lambda: _FakeOperations()
+    )
+
+    asyncio.run(
+        inference_api._run_inference_start_operation(
+            "op-1",
+            user_id="user-1",
+            model_id="model-a",
+            runtime_target_id="cpu",
+            profile=None,
+            task="pick",
+            num_episodes=12,
+            policy_options=None,
+        )
+    )
+
+    assert failed["operation_id"] == "op-1"
+    assert "Recording session is already prepared or active: dataset-recording" in str(failed["error"])

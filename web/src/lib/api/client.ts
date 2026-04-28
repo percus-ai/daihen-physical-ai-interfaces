@@ -1314,6 +1314,8 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(payload)
       }),
+    activeSessionStatus: () =>
+      fetchApi('/api/recording/session/active'),
     pauseSession: () =>
       fetchApi('/api/recording/session/pause', {
         method: 'POST'

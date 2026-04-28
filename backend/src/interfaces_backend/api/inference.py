@@ -34,6 +34,7 @@ from interfaces_backend.services.inference_runtime_targets import (
     get_inference_runtime_targets_service,
 )
 from interfaces_backend.services.inference_session import get_inference_session_manager
+from interfaces_backend.services.recording_session import get_recording_session_manager
 from interfaces_backend.services.session_manager import require_user_id
 from interfaces_backend.services.startup_operations import (
     get_startup_operations_service,
@@ -70,6 +71,16 @@ async def _emit_inference_control_event(
     details: dict[str, object] | None = None,
 ) -> None:
     return None
+
+
+def _ensure_no_active_recording_session() -> None:
+    active = get_recording_session_manager().any_active()
+    if active is None:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=f"Recording session is already prepared or active: {active.id}",
+    )
 
 
 def _to_size_mb(size_bytes: object) -> float:
@@ -578,6 +589,7 @@ async def _run_inference_start_operation(
     progress_callback = operations.build_progress_callback(operation_id)
     manager = get_inference_session_manager()
     try:
+        _ensure_no_active_recording_session()
         state = await manager.create(
             user_id=user_id,
             model_id=model_id,
@@ -615,6 +627,7 @@ async def _run_inference_start_operation(
 )
 async def start_inference_runner(request: InferenceRunnerStartRequest):
     user_id = require_user_id()
+    _ensure_no_active_recording_session()
     operation = get_startup_operations_service().create(
         user_id=user_id,
         kind="inference_start",

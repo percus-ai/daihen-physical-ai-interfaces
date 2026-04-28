@@ -143,6 +143,15 @@
   type InferenceRunnerStatusResponse = {
     runner_status?: InferenceRunnerStatus;
   };
+  type RecordingSessionSnapshot = RecorderStatus & {
+    active_dataset_id?: string | null;
+    recording_started?: boolean;
+    episode_count?: number;
+  };
+  type RecordingSessionStatusResponse = {
+    dataset_id?: string | null;
+    status?: RecordingSessionSnapshot;
+  };
   type OperateStatusStreamPayload = {
     inference_runner_status?: InferenceRunnerStatusResponse;
     operate_status?: OperateStatusResponse;
@@ -155,6 +164,10 @@
   const inferenceRunnerStatusQuery = createQuery<InferenceRunnerStatusResponse>({
     queryKey: ['inference', 'runner', 'status'],
     queryFn: api.inference.runnerStatus
+  });
+  const activeRecordingSessionQuery = createQuery<RecordingSessionStatusResponse>({
+    queryKey: ['recording', 'session', 'active'],
+    queryFn: api.recording.activeSessionStatus
   });
   const userConfigQuery = createQuery<UserConfigResponse>({
     queryKey: ['user', 'config'],
@@ -723,6 +736,25 @@
   const activeSessionState = $derived(recorderStatus?.state ?? 'unknown');
   const activeEpisodeIndex = $derived(getRecorderDisplayEpisodeNumber(recorderStatus));
   const activeEpisodeTotal = $derived(recorderStatus?.num_episodes ?? null);
+  const activeRecordingSession = $derived(
+    ($activeRecordingSessionQuery.data?.status ?? {}) as RecordingSessionSnapshot
+  );
+  const preparedSessionId = $derived(
+    String(
+      $activeRecordingSessionQuery.data?.dataset_id ??
+        activeRecordingSession.dataset_id ??
+        ''
+    ).trim()
+  );
+  const preparedSessionState = $derived(String(activeRecordingSession.state ?? '').trim().toLowerCase());
+  const preparedSessionVisible = $derived(
+    Boolean(
+      preparedSessionId &&
+        !activeSessionId &&
+        !activeRecordingSession.recording_started &&
+        preparedSessionState !== 'inactive'
+    )
+  );
   const inferenceRunnerStatus = $derived($inferenceRunnerStatusQuery.data?.runner_status ?? {});
   const inferenceRecordingDatasetId = $derived(String(inferenceRunnerStatus.recording_dataset_id ?? '').trim());
   const inferenceRecorderReserved = $derived(
@@ -740,46 +772,81 @@
     )
   );
   const inferenceRecorderInUse = $derived(Boolean(inferenceRecorderReserved || activeRecorderBelongsToInference));
-  const showNormalActiveRecording = $derived(Boolean(activeSessionId && !activeRecorderBelongsToInference));
+  const normalRecordingSessionId = $derived(activeSessionId || preparedSessionId);
+  const showNormalActiveRecording = $derived(
+    Boolean(
+      !inferenceRecorderInUse &&
+        ((activeSessionId && !activeRecorderBelongsToInference) || preparedSessionVisible)
+    )
+  );
   const createRecordingBlocked = $derived(Boolean(showNormalActiveRecording || inferenceRecorderInUse));
   const createRecordingBlockedReason = $derived(
     inferenceRecorderInUse
       ? '推論セッションが収録機能を使用中です。'
-      : showNormalActiveRecording
-        ? '収録セッションが実行中です。'
+      : preparedSessionVisible
+        ? '収録セッションが開始待ちです。'
+        : showNormalActiveRecording
+          ? '収録セッションが実行中です。'
+          : ''
+  );
+  const preparedEpisodeLabel = $derived.by(() => {
+    const total = Number(activeRecordingSession.num_episodes ?? 0);
+    if (!Number.isFinite(total) || total <= 0) return '';
+    const count = Number(activeRecordingSession.episode_count ?? 0);
+    return `${Number.isFinite(count) ? Math.max(0, count) : 0} / ${total}`;
+  });
+  const activeRecordingStateLabel = $derived(
+    preparedSessionVisible
+      ? '開始待ち'
+      : ['paused', 'resetting_paused'].includes(activeSessionState)
+        ? '一時停止'
         : ''
   );
   const activeWorkState = $derived.by(() => {
     if (recordingStopPending || recordingStopRequested) return 'ending';
+    if (preparedSessionVisible) return 'waiting';
     if (['paused', 'resetting_paused'].includes(activeSessionState)) return 'waiting';
     return 'running';
   });
   const activeEpisodeLabel = $derived.by(() => {
+    if (preparedSessionVisible) return preparedEpisodeLabel;
     if (!activeEpisodeIndex) return '';
     return `${activeEpisodeIndex}${activeEpisodeTotal ? ` / ${activeEpisodeTotal}` : ''}`;
   });
   const activeWorkTask = $derived(
-    String(recorderStatus?.task ?? '').trim() || 'データセット収録が進行中です。'
+    (preparedSessionVisible
+      ? String(activeRecordingSession.task ?? '').trim()
+      : String(recorderStatus?.task ?? '').trim()) ||
+      (preparedSessionVisible ? '収録セッションを開始待ちです。' : 'データセット収録が進行中です。')
   );
   const activeWorkMetrics = $derived([
+    { label: '状態', value: activeRecordingStateLabel, hidden: !activeRecordingStateLabel },
     { label: 'エピソード', value: activeEpisodeLabel, hidden: !activeEpisodeLabel },
-    { label: '最終更新', value: lastStatusAt || '-' }
+    { label: '最終更新', value: preparedSessionVisible ? '-' : lastStatusAt || '-' }
   ]);
 
   const handleActiveRecordingStop = async () => {
-    const datasetId = activeSessionId;
+    const datasetId = normalRecordingSessionId;
     if (!datasetId || recordingStopPending) return;
     recordingStopPending = true;
     recordingStopError = '';
     try {
-      await api.recording.stopSession({
-        dataset_id: datasetId,
-        save_current: true
-      });
-      recordingStopRequested = true;
-      toast.success('終了リクエストを受け付けました。状態反映を待っています。');
+      if (preparedSessionVisible) {
+        await api.recording.cancelSession(datasetId);
+        await $activeRecordingSessionQuery.refetch?.();
+        await $recordingsQuery.refetch?.();
+        toast.success('開始待ちの収録セッションを破棄しました。');
+      } else {
+        await api.recording.stopSession({
+          dataset_id: datasetId,
+          save_current: true
+        });
+        recordingStopRequested = true;
+        await $activeRecordingSessionQuery.refetch?.();
+        toast.success('終了リクエストを受け付けました。状態反映を待っています。');
+      }
     } catch (err) {
-      recordingStopError = err instanceof Error ? err.message : '収録の終了に失敗しました。';
+      recordingStopError = err instanceof Error ? err.message : '収録セッションの操作に失敗しました。';
       toast.error(recordingStopError);
     } finally {
       recordingStopPending = false;
@@ -787,7 +854,7 @@
   };
 
   $effect(() => {
-    if (!activeSessionId) {
+    if (!normalRecordingSessionId) {
       recordingStopRequested = false;
       recordingStopError = '';
     }
@@ -934,10 +1001,11 @@
     title="データ収録"
     task={activeWorkTask}
     metrics={activeWorkMetrics}
-    primaryHref={`/record/sessions/${encodeURIComponent(activeSessionId)}`}
+    primaryHref={`/record/sessions/${encodeURIComponent(normalRecordingSessionId)}`}
     onSecondary={handleActiveRecordingStop}
+    secondaryLabel={preparedSessionVisible ? '破棄' : '終了'}
     secondaryDisabled={recordingStopPending || recordingStopRequested}
-    warning={rosbridgeStatus !== 'connected' ? '状態更新が止まっている可能性があります。' : ''}
+    warning={preparedSessionVisible || rosbridgeStatus === 'connected' ? '' : '状態更新が止まっている可能性があります。'}
     error={recordingStopError}
   />
 {/if}

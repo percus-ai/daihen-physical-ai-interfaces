@@ -132,6 +132,31 @@ def test_create_session_rejects_when_inference_reserved(monkeypatch):
         assert "Recorder is reserved by an active inference session" in str(exc.detail)
 
 
+def test_create_session_rejects_when_recording_session_prepared(monkeypatch):
+    class _FakeManager:
+        @staticmethod
+        def any_active():
+            return type("State", (), {"id": "dataset-prepared"})()
+
+    monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(recording_api, "get_recording_session_manager", lambda: _FakeManager())
+
+    request = recording_api.RecordingSessionCreateRequest(
+        dataset_name="dataset_name",
+        task="pick and place",
+        num_episodes=1,
+        episode_time_s=30.0,
+        reset_time_s=5.0,
+    )
+
+    try:
+        asyncio.run(recording_api.create_session(request))
+        assert False, "Expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "Recording session is already prepared or active: dataset-prepared" in str(exc.detail)
+
+
 def test_run_create_operation_continue_uses_plan_values(monkeypatch, tmp_path: Path):
     captured: dict = {}
     completed: dict = {}
@@ -185,6 +210,10 @@ def test_run_create_operation_continue_uses_plan_values(monkeypatch, tmp_path: P
 def test_start_session_starts_prepared_session(monkeypatch):
     class _FakeManager:
         @staticmethod
+        def any_active():
+            return type("State", (), {"id": "dataset-1"})()
+
+        @staticmethod
         def status(_dataset_id: str):
             return object()
 
@@ -230,6 +259,10 @@ def test_start_session_rejects_when_inference_reserved(monkeypatch):
 
 def test_start_session_rejects_unprepared_recording(monkeypatch):
     class _FakeManager:
+        @staticmethod
+        def any_active():
+            return None
+
         @staticmethod
         def status(_dataset_id: str):
             return None
@@ -306,6 +339,9 @@ class _FakeRecordingManager:
         self._session_state = session_state
 
     def status(self, _dataset_id: str):
+        return self._session_state
+
+    def any_active(self):
         return self._session_state
 
 
@@ -532,4 +568,54 @@ def test_get_session_status_returns_pending_settings_when_recorder_inactive(monk
     assert response.status["task"] == "assemble parts"
     assert response.status["episode_time_s"] == 75.0
     assert response.status["reset_time_s"] == 8.0
+    assert response.status["num_episodes"] == 12
+
+
+def test_get_active_session_status_returns_prepared_session(monkeypatch):
+    recorder = _FakeRecorderForUpdate(dataset_id="", state="idle")
+    session_state = type(
+        "State",
+        (),
+        {
+            "id": "dataset-pending",
+            "status": "created",
+            "extras": {
+                "task": "assemble parts",
+                "target_total_episodes": 12,
+                "recorder_payload": {
+                    "task": "assemble parts",
+                    "num_episodes": 12,
+                    "episode_time_s": 75.0,
+                    "reset_time_s": 8.0,
+                    "metadata": {
+                        "target_total_episodes": 12,
+                        "episode_time_s": 75.0,
+                        "reset_time_s": 8.0,
+                    },
+                },
+            },
+        },
+    )()
+
+    async def _fake_fetch(_recording_id: str) -> dict:
+        row = _base_row()
+        row["id"] = "dataset-pending"
+        row["target_total_episodes"] = 12
+        return row
+
+    monkeypatch.setattr(recording_api, "require_user_id", lambda: "user-1")
+    monkeypatch.setattr(recording_api, "get_recorder_bridge", lambda: recorder)
+    monkeypatch.setattr(
+        recording_api,
+        "get_recording_session_manager",
+        lambda: _FakeRecordingManager(session_state=session_state),
+    )
+    monkeypatch.setattr(recording_api, "_fetch_recording_row", _fake_fetch)
+
+    response = asyncio.run(recording_api.get_active_session_status())
+
+    assert response.dataset_id == "dataset-pending"
+    assert response.status["state"] == "created"
+    assert response.status["recording_started"] is False
+    assert response.status["task"] == "assemble parts"
     assert response.status["num_episodes"] == 12
