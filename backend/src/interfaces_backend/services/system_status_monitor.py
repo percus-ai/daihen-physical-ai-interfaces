@@ -254,9 +254,6 @@ class SystemStatusMonitor:
             degraded_reasons.append(ros2_state.optional_issue_summary)
         if state == "recording" and not recorder_status.get("last_frame_at"):
             degraded_reasons.append("recording session has no recent frame timestamp")
-        if state == "recording" and storage_ready is None:
-            degraded_reasons.append("recorder storage readiness is unknown")
-
         if last_error:
             level = "error"
         elif dependency_errors:

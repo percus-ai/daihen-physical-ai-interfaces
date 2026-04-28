@@ -125,7 +125,7 @@ def test_evaluate_recorder_health_keeps_idle_storage_unknown_healthy() -> None:
     assert snapshot.last_error is None
 
 
-def test_evaluate_recorder_health_marks_recording_storage_unknown_degraded() -> None:
+def test_evaluate_recorder_health_keeps_recording_storage_unknown_healthy() -> None:
     monitor = SystemStatusMonitor()
 
     snapshot = monitor._evaluate_recorder_health(
@@ -143,6 +143,6 @@ def test_evaluate_recorder_health_marks_recording_storage_unknown_degraded() -> 
         active_profile_name="so101_single_teleop",
     )
 
-    assert snapshot.level == "degraded"
+    assert snapshot.level == "healthy"
     assert snapshot.dependencies.storage_ready is None
-    assert snapshot.last_error == "recorder storage readiness is unknown"
+    assert snapshot.last_error is None
