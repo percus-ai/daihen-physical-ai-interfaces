@@ -23,12 +23,6 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _mask_token(token: str) -> str:
-    if len(token) <= 10:
-        return "*" * len(token)
-    return f"{token[:6]}...{token[-4:]}"
-
-
 class SystemSettingsService:
     """Machine-scoped settings persistence."""
 
@@ -110,7 +104,7 @@ class UserSecretsService:
         updated_at = record.get("updated_at")
         return HuggingFaceSecretStatusModel(
             has_token=bool(token),
-            token_preview=_mask_token(token) if token else None,
+            token=token or None,
             updated_at=updated_at,
         )
 

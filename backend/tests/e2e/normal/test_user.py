@@ -61,7 +61,7 @@ def test_user_settings(client):
         assert payload["user_id"] == "user-1"
         assert payload["profile"]["username"] == "tanaka.tarou"
         assert payload["huggingface"]["has_token"] is True
-        assert payload["huggingface"]["token_preview"] == "hf_123...cdef"
+        assert payload["huggingface"]["token"] == "hf_1234567890abcdef"
 
         resp = client.put(
             "/api/user/settings",
@@ -69,5 +69,6 @@ def test_user_settings(client):
         )
         assert resp.status_code == 200
         assert resp.json()["huggingface"]["has_token"] is False
+        assert resp.json()["huggingface"]["token"] is None
     finally:
         clear_supabase_session()

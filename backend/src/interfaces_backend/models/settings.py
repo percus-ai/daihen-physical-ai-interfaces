@@ -56,10 +56,10 @@ class FeaturesRepoSuggestionsResponse(BaseModel):
 
 
 class HuggingFaceSecretStatusModel(BaseModel):
-    """Masked HF token state for one user."""
+    """HF token state for one user."""
 
     has_token: bool = Field(False, description="Whether HF token is configured")
-    token_preview: str | None = Field(None, description="Masked HF token preview")
+    token: str | None = Field(None, description="Stored HF token for current authenticated user")
     updated_at: str | None = Field(None, description="Last update timestamp")
 
 

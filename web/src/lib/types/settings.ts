@@ -25,7 +25,7 @@ export type SystemSettings = {
 
 export type HuggingFaceSecretStatus = {
   has_token: boolean;
-  token_preview?: string | null;
+  token?: string | null;
   updated_at?: string | null;
 };
 
