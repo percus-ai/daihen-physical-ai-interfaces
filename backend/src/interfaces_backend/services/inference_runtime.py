@@ -334,6 +334,7 @@ class InferenceRuntimeManager:
         model_id: str,
         runtime_target_id: Optional[str],
         task: Optional[str],
+        huggingface_token: Optional[str] = None,
         policy_options: Optional[dict[str, Any]] = None,
         joint_names: Optional[list[str]] = None,
         camera_key_aliases: Optional[dict[str, str]] = None,
@@ -435,6 +436,10 @@ class InferenceRuntimeManager:
         event_log_path.touch(exist_ok=True)
         worker_log = open(log_path, "a", encoding="utf-8")
         worker_env = os.environ.copy()
+        normalized_huggingface_token = str(huggingface_token or "").strip()
+        if normalized_huggingface_token:
+            worker_env["HF_TOKEN"] = normalized_huggingface_token
+            worker_env["HUGGINGFACE_HUB_TOKEN"] = normalized_huggingface_token
         worker_proc = subprocess.Popen(
             worker_cmd,
             cwd=repo_root,

@@ -10,8 +10,20 @@ os.environ.setdefault("COMM_EXPORTER_MODE", "noop")
 def _install_lerobot_stubs() -> None:
     lerobot_module = sys.modules.setdefault("lerobot", ModuleType("lerobot"))
     datasets_module = sys.modules.setdefault("lerobot.datasets", ModuleType("lerobot.datasets"))
+    aggregate_module = sys.modules.setdefault(
+        "lerobot.datasets.aggregate",
+        ModuleType("lerobot.datasets.aggregate"),
+    )
+    lerobot_dataset_module = sys.modules.setdefault(
+        "lerobot.datasets.lerobot_dataset",
+        ModuleType("lerobot.datasets.lerobot_dataset"),
+    )
     utils_module = sys.modules.setdefault("lerobot.datasets.utils", ModuleType("lerobot.datasets.utils"))
 
+    setattr(aggregate_module, "aggregate_datasets", lambda *_args, **_kwargs: None)
+    setattr(datasets_module, "aggregate", aggregate_module)
+    setattr(lerobot_dataset_module, "LeRobotDatasetMetadata", object)
+    setattr(datasets_module, "lerobot_dataset", lerobot_dataset_module)
     setattr(utils_module, "load_tasks", lambda *_args, **_kwargs: {})
     setattr(datasets_module, "utils", utils_module)
     setattr(lerobot_module, "datasets", datasets_module)
@@ -858,6 +870,7 @@ def test_run_inference_start_operation_passes_policy_options(monkeypatch):
     asyncio.run(
         inference_api._run_inference_start_operation(
             "op-1",
+            user_id="user-1",
             model_id="model-a",
             runtime_target_id="cuda:default:groot:build-1",
             profile="lab-alpha",
@@ -868,6 +881,7 @@ def test_run_inference_start_operation_passes_policy_options(monkeypatch):
     )
 
     assert created_kwargs["model_id"] == "model-a"
+    assert created_kwargs["user_id"] == "user-1"
     assert created_kwargs["runtime_target_id"] == "cuda:default:groot:build-1"
     assert created_kwargs["profile"] == "lab-alpha"
     assert created_kwargs["num_episodes"] == 12

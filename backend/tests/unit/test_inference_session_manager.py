@@ -405,6 +405,11 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
     monkeypatch.setattr(inference_session, "get_models_dir", lambda: tmp_path)
     monkeypatch.setattr(
         inference_session,
+        "resolve_huggingface_token_for_user",
+        lambda user_id: "hf_user_token" if user_id == "user-1" else None,
+    )
+    monkeypatch.setattr(
+        inference_session,
         "validate_inference_model_profile_compatibility",
         lambda **_kwargs: InferenceModelProfileCompatibility(
             policy_type="pi05",
@@ -427,6 +432,7 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
             session_id="session-1",
             model_id="model-1",
             runtime_target_id="cpu",
+            user_id="user-1",
             task="pick-and-place",
             progress_callback=progress_callback,
         )
@@ -438,6 +444,7 @@ def test_create_prepares_environment_before_worker_start(monkeypatch, tmp_path) 
     assert runtime.prepare_calls == ["pi05:cpu"]
     assert runtime.start_calls[0]["model_id"] == "model-1"
     assert runtime.start_calls[0]["runtime_target_id"] == "cpu"
+    assert runtime.start_calls[0]["huggingface_token"] == "hf_user_token"
     assert progress_events.index("prepare_env") < progress_events.index("launch_worker")
     assert runtime.pause_calls == [("worker-1", True)]
     assert state.extras["worker_session_id"] == "worker-1"

@@ -563,6 +563,7 @@ async def get_inference_runner_diagnostics():
 async def _run_inference_start_operation(
     operation_id: str,
     *,
+    user_id: str,
     model_id: str,
     runtime_target_id: str | None,
     profile: str | None,
@@ -575,6 +576,7 @@ async def _run_inference_start_operation(
     manager = get_inference_session_manager()
     try:
         state = await manager.create(
+            user_id=user_id,
             model_id=model_id,
             runtime_target_id=runtime_target_id,
             profile=profile,
@@ -617,6 +619,7 @@ async def start_inference_runner(request: InferenceRunnerStartRequest):
     asyncio.create_task(
         _run_inference_start_operation(
             operation.operation_id,
+            user_id=user_id,
             model_id=request.model_id,
             runtime_target_id=request.runtime_target_id,
             profile=request.profile,

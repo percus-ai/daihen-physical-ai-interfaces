@@ -89,3 +89,52 @@ def test_start_times_out_only_on_worker_control_socket(monkeypatch, tmp_path):
 
     assert str(exc_info.value) == "Timed out waiting for worker control socket"
     assert manager.get_status().runner_status.last_error == "Timed out waiting for worker control socket"
+
+
+def test_start_injects_huggingface_token_into_worker_env(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    models_dir = tmp_path / "models"
+    repo_root.mkdir()
+    models_dir.mkdir()
+
+    model_dir = models_dir / "model-1"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"type": "act"}),
+        encoding="utf-8",
+    )
+
+    popen_kwargs: dict[str, object] = {}
+
+    def fake_popen(*args, **kwargs):
+        _ = args
+        popen_kwargs.update(kwargs)
+        return _FakeProc()
+
+    manager = InferenceRuntimeManager()
+
+    monkeypatch.setattr(inference_runtime, "get_project_root", lambda: repo_root)
+    monkeypatch.setattr(inference_runtime, "get_models_dir", lambda: models_dir)
+    monkeypatch.setattr(inference_runtime.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(inference_runtime, "_STARTUP_TIMEOUT_S", 0.0)
+    monkeypatch.setattr(manager, "_connect_ctrl_socket_locked", lambda: None)
+    monkeypatch.setattr(manager, "_start_event_listener_locked", lambda: None)
+    monkeypatch.setattr(
+        manager,
+        "_send_ctrl_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("not ready")),
+    )
+    monkeypatch.setattr(manager, "_runtime_targets_service", _FakeRuntimeTargetsService())
+
+    with pytest.raises(RuntimeError):
+        manager.start(
+            model_id="model-1",
+            runtime_target_id="cpu",
+            task="pick",
+            huggingface_token=" hf_user_token ",
+        )
+
+    worker_env = popen_kwargs["env"]
+    assert isinstance(worker_env, dict)
+    assert worker_env["HF_TOKEN"] == "hf_user_token"
+    assert worker_env["HUGGINGFACE_HUB_TOKEN"] == "hf_user_token"

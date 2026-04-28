@@ -27,6 +27,7 @@ from interfaces_backend.services.recording_session import (
     get_recording_session_manager,
 )
 from interfaces_backend.services.recorder_bridge import RecorderBridge, get_recorder_bridge
+from interfaces_backend.services.settings_service import resolve_huggingface_token_for_user
 from interfaces_backend.services.session_manager import (
     BaseSessionManager,
     SessionProgressCallback,
@@ -401,10 +402,14 @@ class InferenceSessionManager(BaseSessionManager):
                 message="推論ワーカーを起動しています...",
             )
             try:
+                huggingface_token = resolve_huggingface_token_for_user(
+                    str(kwargs.get("user_id") or "")
+                )
                 worker_session_id = self._runtime.start(
                     model_id=kwargs["model_id"],
                     runtime_target_id=kwargs.get("runtime_target_id"),
                     task=kwargs.get("task"),
+                    huggingface_token=huggingface_token,
                     policy_options=kwargs.get("policy_options"),
                     joint_names=joint_names,
                     camera_key_aliases=camera_key_aliases,
