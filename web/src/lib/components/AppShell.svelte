@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { browser } from '$app/environment';
-  import { onDestroy } from 'svelte';
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
   import { navItems, quickActions } from '$lib/navigation';
@@ -10,18 +8,9 @@
   import { toStore } from 'svelte/store';
 
   import { api } from '$lib/api/client';
-  import {
-    registerRealtimeTrackConsumer,
-    type RealtimeTrackConsumerHandle,
-    type RealtimeTrackEvent
-  } from '$lib/realtime/trackClient';
-  import { queryClient } from '$lib/queryClient';
 
   let { children }: { children?: Snippet } = $props();
   let mobileOpen = $state(false);
-  let switchingProfile = $state(false);
-  let profileError = $state('');
-  let profilesReady = $state(false);
   const authenticated = $derived(Boolean(page.data.authenticated));
 
   type VlaborStatus = { dashboard_url?: string; status?: string };
@@ -37,26 +26,19 @@
     page.url.pathname.startsWith('/record/sessions/') || page.url.pathname.startsWith('/operate/sessions/')
   );
 
-  type VlaborProfile = {
-    name: string;
-    description?: string;
-  };
-
-  const profileListQuery = createQuery<{ profiles?: VlaborProfile[]; active_profile_name?: string }>(
-    toStore(() => ({
-      queryKey: ['app-shell', 'profiles', 'list'],
-      queryFn: api.profiles.list,
-      enabled: authenticated && profilesReady
-    }))
-  );
-
   const activeProfileQuery = createQuery<{ profile_name?: string }>(
     toStore(() => ({
-      queryKey: ['app-shell', 'profiles', 'active'],
+      queryKey: ['profiles', 'active'],
       queryFn: api.profiles.active,
-      enabled: authenticated && profilesReady
+      enabled: authenticated
     }))
   );
+  const activeProfileLabel = $derived.by(() => {
+    if (!authenticated) return '未ログイン';
+    if ($activeProfileQuery.isLoading || $activeProfileQuery.isFetching) return '読み込み中';
+    if ($activeProfileQuery.isError) return '取得失敗';
+    return $activeProfileQuery.data?.profile_name ?? '未選択';
+  });
 
   const authItems = {
     login: {
@@ -84,90 +66,6 @@
       mobileOpen = false;
     }
   });
-  let profileContributor: RealtimeTrackConsumerHandle | null = null;
-
-  const handleProfileRealtimeEvent = (event: RealtimeTrackEvent) => {
-    queryClient.setQueryData(['profiles', 'active', 'status'], event.detail);
-  };
-
-  $effect(() => {
-    if (!browser) {
-      return;
-    }
-
-    if (!authenticated || !profilesReady) {
-      profileContributor?.dispose();
-      profileContributor = null;
-      return;
-    }
-
-    if (profileContributor === null) {
-      profileContributor = registerRealtimeTrackConsumer({
-        contributorId: 'app-shell.profiles.active',
-        tracks: [
-          {
-            kind: 'profiles.active',
-            params: {}
-          }
-        ],
-        onEvent: handleProfileRealtimeEvent
-      });
-      if (!profileContributor) {
-        return;
-      }
-      return;
-    }
-
-    profileContributor.setEventHandler(handleProfileRealtimeEvent);
-    profileContributor.setTracks([
-      {
-        kind: 'profiles.active',
-        params: {}
-      }
-    ]);
-  });
-
-  onDestroy(() => {
-    profileContributor?.dispose();
-    profileContributor = null;
-  });
-
-  const formatProfileLabel = (profile: VlaborProfile) => {
-    return profile.name;
-  };
-
-  const handleProfileChange = async (event: Event) => {
-    const target = event.target as HTMLSelectElement;
-    const nextName = target.value;
-    if (!nextName) return;
-    switchingProfile = true;
-    profileError = '';
-    try {
-      await api.profiles.setActive({ profile_name: nextName });
-      await $activeProfileQuery?.refetch?.();
-      await $profileListQuery?.refetch?.();
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['profiles', 'list'] }),
-        queryClient.invalidateQueries({ queryKey: ['profiles', 'active'] }),
-        queryClient.invalidateQueries({ queryKey: ['profiles', 'active', 'status'] })
-      ]);
-    } catch (err) {
-      console.error(err);
-      profileError = '切り替えに失敗しました';
-    } finally {
-      switchingProfile = false;
-    }
-  };
-
-  const ensureProfilesLoaded = async () => {
-    if (profilesReady) return;
-    profilesReady = true;
-    try {
-      await Promise.all([$activeProfileQuery?.refetch?.(), $profileListQuery?.refetch?.()]);
-    } catch (err) {
-      console.error(err);
-    }
-  };
 </script>
 
 <div class="min-h-screen">
@@ -192,25 +90,11 @@
         </a>
       </div>
       <div class="hidden items-center gap-2 lg:flex">
-        <div class="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-sm h-10">
+        <div class="flex h-10 items-center gap-2 px-2 py-1 text-sm">
           <span class="text-xs uppercase tracking-[0.2em] text-slate-400">Profile</span>
-          <select
-            class="bg-transparent text-sm font-semibold text-slate-700 focus:outline-none h-8"
-            onchange={handleProfileChange}
-            onfocus={ensureProfilesLoaded}
-            onclick={ensureProfilesLoaded}
-            onmouseenter={ensureProfilesLoaded}
-            disabled={switchingProfile}
-            value={$activeProfileQuery.data?.profile_name ?? $profileListQuery.data?.active_profile_name ?? ''}
-          >
-            <option value="" disabled>プロファイル未選択</option>
-            {#each $profileListQuery.data?.profiles ?? [] as profile}
-              <option value={profile.name}>{formatProfileLabel(profile)}</option>
-            {/each}
-          </select>
-          {#if profileError}
-            <span class="text-xs text-rose-500">{profileError}</span>
-          {/if}
+          <span class="max-w-[14rem] truncate text-sm font-semibold text-slate-700" title={activeProfileLabel}>
+            {activeProfileLabel}
+          </span>
         </div>
         {#each quickActions as action}
           <Button.Root
