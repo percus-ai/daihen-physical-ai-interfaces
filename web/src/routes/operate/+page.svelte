@@ -24,6 +24,7 @@
   import TaskCandidateCombobox from '$lib/components/TaskCandidateCombobox.svelte';
   import { formatBytes } from '$lib/format';
   import { START_PHASE_LABELS } from '$lib/operate/startupPhases';
+  import { scrollIntoViewSoon } from '$lib/session/sessionUx';
   import type {
     InferenceModelsResponse,
     InferenceRuntimeTargetsResponse,
@@ -95,6 +96,7 @@
   let systemStatusSnapshot = $state<SystemStatusSnapshot | null>(null);
   let runnerLastStatusAt = $state('');
   let runnerStatusFingerprint = $state('');
+  let startupProgressAnchor = $state<HTMLElement | null>(null);
   let realtimeContributor: RealtimeTrackConsumerHandle | null = null;
   let startupContributor: RealtimeTrackConsumerHandle | null = null;
   let startupOperationId = $state('');
@@ -390,6 +392,11 @@
     );
     return parts.join(' / ') || 'CUDA';
   };
+
+  $effect(() => {
+    if (!showStartupBlock || !startupProgressAnchor) return;
+    return scrollIntoViewSoon(startupProgressAnchor, 80);
+  });
 
   $effect(() => {
     if (!runnerActive) {
@@ -765,7 +772,7 @@
   </div>
 
   {#if showStartupBlock}
-    <div class="border-t border-slate-200/80 px-6 py-5">
+    <div class="border-t border-slate-200/80 px-6 py-5" bind:this={startupProgressAnchor}>
       <div class={`rounded-2xl border p-4 ${startupPanelClass}`}>
         <div class={`flex items-center justify-between gap-3 text-xs ${startupTextClass}`}>
           <p>{startupStatus?.message ?? '推論セッションを準備中です...'}</p>
